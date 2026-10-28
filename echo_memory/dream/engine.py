@@ -62,12 +62,15 @@ class DreamReport:
     distillation: DistillationReport | None = None
     procedure_extraction: Any | None = None  # ProcedureExtractionReport
     evidence_review: Any | None = None  # ReviewBatchReport（證據審核 phase）
+    hypothesis: Any | None = None  # HypothesisReport（假說產生與維護 phase）
+    hypothesis_review: Any | None = None  # HypothesisReviewReport（假說審核 phase）
     sharing_reconcile: Any | None = None  # SharingReport（共享層對帳，Dream 開頭）
     sharing: Any | None = None  # SharingReport（分享 phase）
     edges_reevaluated: int = 0  # 既有 CONTRADICTS 邊本週期重判的配對數
     edges_superseded: int = 0  # 其中被改判為取代（邊已移除）的數量
     edges_updated: int = 0
     error: str | None = None
+    skipped_reason: str | None = None  # 未執行的原因（租約被占用、cron 同窗口已完成等）
 
     @property
     def duration_seconds(self) -> float:
@@ -98,6 +101,12 @@ class DreamReport:
         if self.evidence_review is not None:
             lines.append(f"  {self.evidence_review.summary()}")
 
+        if self.hypothesis is not None:
+            lines.append(f"  {self.hypothesis.summary()}")
+
+        if self.hypothesis_review is not None:
+            lines.append(f"  {self.hypothesis_review.summary()}")
+
         if self.sharing_reconcile is not None and (
             self.sharing_reconcile.revoked or self.sharing_reconcile.corroborations_invalidated
         ):
@@ -118,6 +127,10 @@ class DreamReport:
             lines.append(f"  ⚠️ 錯誤: {self.error}")
 
         return "\n".join(lines)
+
+
+class _LeaseLost(Exception):
+    """Dream 週期進行中失去跨行程租約（逾期被他行程接手），須中止後續階段。"""
 
 
 class DreamEngine:
@@ -155,6 +168,10 @@ class DreamEngine:
         share_layer: Any | None = None,
         privacy_ledger: Any | None = None,
         owner_uid: str | None = None,
+        lease: Any | None = None,
+        cron_window_seconds: float = 900.0,
+        hypothesis_enabled: bool = True,
+        namespace_id: str | None = None,
     ):
         """
         初始化 Dream Engine。
@@ -175,6 +192,13 @@ class DreamEngine:
             privacy_ledger: 擁有者的 PrivacyLedger；缺省取 Gate 的 privacy_ledger。分享判定必要，
                 缺少一律不分享（fail-closed）。
             owner_uid: 本 namespace 擁有者 uid（投影的 owner_uid；通常等於 namespace_id）。
+            lease: 跨行程租約（FileLease）。提供時所有觸發來源執行前都要先取得，取不到即跳過；
+                None 則不做跨行程互斥。
+            cron_window_seconds: cron 去重窗口；窗口內已有行程完成 cron 週期則跳過。
+            hypothesis_enabled: False 時不產生也不審核假說（共享 namespace 由 engine 傳 False）。
+                refuted 假說的 pair 仍會抑制 LATENT_BRIDGE 的建立。
+            namespace_id: 本 engine 的 namespace id；注入 Gate／假說 phase／審核器，共享 namespace
+                判斷不靠儲存路徑推得。
             lock_factory: 取得 storage_lock 的工廠（呼叫後回傳 context manager）。
                 手動 dream_now 與排程（idle / cron）觸發走同一條路徑，鎖語意一致：
                 只在讀快照與套用結果的短臨界區持鎖，LLM 階段一律在鎖外。
@@ -197,6 +221,8 @@ class DreamEngine:
         self._is_dreaming = False
         self._last_interaction: datetime = datetime.now(timezone.utc)
         self._last_dream_report: DreamReport | None = None
+        self._lease = lease
+        self.cron_window_seconds = cron_window_seconds
 
         # 保留 episodic 引用（給 stage 5 程序提取用）
         self._episodic_ref = episodic
@@ -214,10 +240,25 @@ class DreamEngine:
                 semantic=semantic,
             )
 
+        # Hypothesis：唯讀 store 取自 Gate（寫入只有 Gate 能做）；refuted 的 pair 抑制 LATENT_BRIDGE
+        hypothesis_gate = self._patch_coordinator.inhibitor if self._patch_coordinator else None
+        if hypothesis_gate is not None and not hasattr(hypothesis_gate, "process_hypothesis_patch"):
+            hypothesis_gate = None
+        if hypothesis_gate is not None and namespace_id and getattr(hypothesis_gate, "namespace_id", None) is None:
+            hypothesis_gate.namespace_id = namespace_id
+        self._hypothesis_store = (
+            hypothesis_gate.hypothesis_store if hypothesis_gate is not None else None
+        )
+        self._hypothesis_phase = None
+        self._hypothesis_reviewer = None
+
         # 子模組（傳入 semantic 供 LATENT_BRIDGE 使用）
         self._pruning = GraphPruning(
             graph, semantic=semantic,
             patch_coordinator=self._patch_coordinator,
+            bridge_suppressed=(
+                self._hypothesis_store.is_pair_refuted if self._hypothesis_store is not None else None
+            ),
         )
 
         # LiDER 反思重播（需要 episodic，llm_fn=None 時自動跳過）
@@ -262,6 +303,34 @@ class DreamEngine:
                     )
             except ImportError:
                 pass
+
+        # 假說 phase / 審核器（M5-D）：需要 Gate；審核另需 provenance（evidence_store）
+        if hypothesis_gate is not None and semantic is not None:
+            from echo_memory.dream.hypothesis_phase import HypothesisPhase
+
+            self._hypothesis_phase = HypothesisPhase(
+                semantic=semantic,
+                graph=graph,
+                store=self._hypothesis_store,
+                gate=hypothesis_gate,
+                provenance=provenance,
+                lock_factory=self._guard,
+                patch_coordinator=self._patch_coordinator,
+                enabled=hypothesis_enabled,
+                namespace_id=namespace_id,
+            )
+            if provenance is not None and hypothesis_enabled:
+                from echo_memory.affect.hypothesis_reviewer import HypothesisReviewer
+
+                self._hypothesis_reviewer = HypothesisReviewer(
+                    llm_fn=llm_fn,
+                    guard=hypothesis_gate,
+                    semantic=semantic,
+                    provenance=provenance,
+                    store=self._hypothesis_store,
+                    lock_factory=self._guard,
+                    namespace_id=namespace_id,
+                )
 
         # 分享 phase（M10）：需要審核器 + 共享層 + owner uid；條件不齊備時 phase 自行 skipped
         self._sharing_phase = None
@@ -321,6 +390,7 @@ class DreamEngine:
                     guard=self._guard,
                     episodic=episodic,
                     evidence_store=evidence_store,
+                    patch_coordinator=self._patch_coordinator,
                 )
             except ImportError:
                 pass
@@ -350,14 +420,19 @@ class DreamEngine:
     # 排程控制
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def start(self):
-        """啟動 APScheduler 排程器"""
+    @property
+    def is_running(self) -> bool:
+        """排程器是否正在運行。"""
+        return self._scheduler is not None and bool(self._scheduler.running)
+
+    def start(self) -> bool:
+        """啟動 APScheduler 排程器；實際啟動回傳 True，停用或已在運行回傳 False。"""
         if self._scheduler is None:
             logger.warning("[DreamEngine] apscheduler 未安裝，排程功能停用（手動觸發仍可用）")
-            return
+            return False
         if self._scheduler.running:
             logger.warning("[DreamEngine] 排程器已在運行")
-            return
+            return False
 
         # 閒置檢查（每分鐘檢查一次）
         if self.enable_idle:
@@ -395,6 +470,7 @@ class DreamEngine:
 
         self._scheduler.start()
         logger.info("[DreamEngine] 排程器已啟動")
+        return True
 
     def stop(self):
         """關閉排程器"""
@@ -402,9 +478,9 @@ class DreamEngine:
             self._scheduler.shutdown(wait=False)
             logger.info("[DreamEngine] 排程器已關閉")
 
-    def notify_interaction(self):
-        """通知有新的互動（重置閒置計時器）"""
-        self._last_interaction = datetime.now(timezone.utc)
+    def notify_interaction(self, at: datetime | None = None):
+        """通知有新的互動（重置閒置計時器）；at 供宿主補入先前累積的互動時間。"""
+        self._last_interaction = at or datetime.now(timezone.utc)
 
     def _idle_check(self):
         """檢查是否達到閒置觸發條件"""
@@ -423,6 +499,11 @@ class DreamEngine:
         """觸發夢境週期（內部調用）"""
         try:
             report = self.dream_now(triggered_by=triggered_by)
+            if report.skipped_reason:
+                # 被租約擋下：只對 idle 觸發重置閒置計時（避免每分鐘重試洗版）；cron 不重置
+                if triggered_by == "idle":
+                    self.notify_interaction()
+                return
             self._last_dream_report = report
             logger.info(f"[DreamEngine] {report.summary()}")
         except Exception as e:
@@ -459,6 +540,24 @@ class DreamEngine:
             triggered_by=triggered_by,
         )
 
+        # 跨行程租約：取不到（他行程在跑、cron 同窗口已完成）就跳過，不阻塞
+        lease_held = False
+        if self._lease is not None:
+            window = self.cron_window_seconds if triggered_by == "cron" else None
+            ok, reason = self._lease.try_acquire(
+                owner=triggered_by,
+                skip_if_completed_within=window,
+                completion_key="last_cron_completed_at",
+            )
+            if not ok:
+                report.skipped_reason = reason
+                report.finished_at = datetime.now(timezone.utc).isoformat()
+                with self._lock:
+                    self._is_dreaming = False
+                logger.info(f"[DreamEngine] 跳過夢境週期 [{triggered_by}]: {reason}")
+                return report
+            lease_held = True
+
         try:
             logger.info(f"[DreamEngine] 開始夢境週期 [{triggered_by}]")
 
@@ -479,15 +578,18 @@ class DreamEngine:
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 共享層對帳失敗（不影響夢境週期）: {e}")
 
+            self._renew_lease(lease_held, "共享層對帳")
             # ── 階段 1、2：邊權重更新 + 圖譜修剪（無 LLM，單一短臨界區）──
             with self._guard():
                 report.edges_updated = self._pruning.update_edge_weights()
                 report.pruning = self._pruning.run()
 
+            self._renew_lease(lease_held, "邊權重更新與修剪")
             # ── 階段 3：LiDER 反思重播（若有 LLM）──────────────────
             if self._replay is not None:
                 report.replay = self._replay.run()
 
+            self._renew_lease(lease_held, "LiDER 重播")
             # ── 階段 4：知識蒸餾（若有 LLM）─────────────────────────
             if self._distillation is not None:
                 report.distillation = self._distillation.run()
@@ -496,6 +598,7 @@ class DreamEngine:
                 with self._guard():
                     self.graph.save()
 
+            self._renew_lease(lease_held, "知識蒸餾")
             # ── 階段 4.5：證據審核（若有 LLM；LLM 在鎖外，寫回走 Gate）────
             # 優先序：新概念 > digest 失效 > held 待審；單次上限 evidence_review_batch
             if self._evidence_reviewer is not None:
@@ -504,6 +607,23 @@ class DreamEngine:
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 證據審核失敗（不影響夢境週期）: {e}")
 
+            self._renew_lease(lease_held, "證據審核")
+            # ── 階段 4.52：假說（先維護與產生，不需 LLM；再審核，LLM 在鎖外，寫回走 Gate）────
+            if self._hypothesis_phase is not None:
+                try:
+                    report.hypothesis = self._hypothesis_phase.run()
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 假說 phase 失敗（不影響夢境週期）: {e}")
+            if self._hypothesis_reviewer is not None and (
+                report.hypothesis is None or report.hypothesis.skipped_reason is None
+                or report.hypothesis.skipped_reason == "no_provenance"
+            ):
+                try:
+                    report.hypothesis_review = self._hypothesis_reviewer.review_batch()
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] 假說審核失敗（不影響夢境週期）: {e}")
+
+            self._renew_lease(lease_held, "假說")
             # ── 階段 4.55：分享（LLM 在鎖外；投影走 Gate share/project；無 LLM 不投影）────
             if self._sharing_phase is not None:
                 try:
@@ -511,6 +631,7 @@ class DreamEngine:
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 分享 phase 失敗（不影響夢境週期）: {e}")
 
+            self._renew_lease(lease_held, "分享")
             # ── 階段 4.6：既有 CONTRADICTS 邊重判（LLM 在鎖外；批次受 config 限制）────
             if self._contradiction_detector is not None and self._contradiction_detector.llm_fn:
                 try:
@@ -523,30 +644,22 @@ class DreamEngine:
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 矛盾重判失敗（不影響夢境週期）: {e}")
 
+            self._renew_lease(lease_held, "矛盾重判")
             # ── 階段 5：程序提取（若有 ProceduralMemory + LLM）────────
             if self._procedure_extractor is not None and self._episodic_ref is not None:
                 try:
-                    # audit-before-mutate：先取得 audit 許可
-                    can_extract = True
-                    candidates = []
+                    # 逐條 audit 由 write_procedure 負責；此處只在短臨界區讀候選
                     with self._guard():
-                        if self._patch_coordinator is not None:
-                            can_extract = self._patch_coordinator.audit_procedure_extraction(
-                                0, 0,  # 預 audit（數量未知）
-                            )
-                        if can_extract:
-                            candidates = self._episodic_ref.list_episodes(
-                                limit=10, sort_by="salience", ascending=False,
-                            )
-                    if can_extract:
-                        if candidates:
-                            # LLM 在鎖外；寫入由 extractor 在短臨界區內套用
-                            report.procedure_extraction = self._procedure_extractor.run(candidates)
-                    else:
-                        logger.warning("[DreamEngine] audit 失敗，跳過程序提取")
+                        candidates = self._episodic_ref.list_episodes(
+                            limit=10, sort_by="salience", ascending=False,
+                        )
+                    if candidates:
+                        # LLM 在鎖外；寫入由 extractor 在短臨界區內套用
+                        report.procedure_extraction = self._procedure_extractor.run(candidates)
                 except Exception as e:
                     logger.warning(f"[DreamEngine] 程序提取失敗（不影響夢境週期）: {e}")
 
+            self._renew_lease(lease_held, "程序提取")
             # ── 圖譜持久化（階段 5 的 Procedure 節點 + APPLIES_TO 邊）────
             # Critical #2 修復：Stage 5 建立的圖譜關聯也需要 save
             with self._guard():
@@ -592,6 +705,11 @@ class DreamEngine:
 
             logger.info("[DreamEngine] 夢境週期完成")
 
+        except _LeaseLost as e:
+            lease_held = False  # 已非持有者，不必（也不該）釋放
+            report.error = f"Dream 租約已失去，於「{e}」後中止後續階段"
+            logger.error(f"[DreamEngine] {report.error}")
+
         except Exception as e:
             report.error = str(e)
             logger.error(f"[DreamEngine] 夢境週期失敗: {e}", exc_info=True)
@@ -599,8 +717,27 @@ class DreamEngine:
         finally:
             report.finished_at = datetime.now(timezone.utc).isoformat()
             self._is_dreaming = False
+            if lease_held:
+                keys = ("last_completed_at",)
+                if triggered_by == "cron":
+                    keys += ("last_cron_completed_at",)
+                # 釋放失敗重試一次；仍失敗只記 log（租約會自行逾期）
+                for attempt in (1, 2):
+                    try:
+                        self._lease.release(completed=report.error is None, completion_keys=keys)
+                        break
+                    except Exception as exc:
+                        logger.warning(f"[DreamEngine] 釋放 Dream 租約失敗（第 {attempt} 次）: {exc}")
 
         return report
+
+    def _renew_lease(self, held: bool, after_stage: str) -> None:
+        """階段之間續租；原持有者已失租則丟 _LeaseLost 中止後續階段。"""
+        renew = getattr(self._lease, "renew", None) if held else None
+        if renew is None:
+            return
+        if not renew():
+            raise _LeaseLost(after_stage)
 
     def get_last_report(self) -> DreamReport | None:
         """獲取最後一次夢境報告"""

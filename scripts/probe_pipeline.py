@@ -468,7 +468,11 @@ def run_single_turn(
             }
 
             # 解析 + 排入 action queue
-            ops = parse_reflection_to_actions(reflection)
+            ops = parse_reflection_to_actions(
+                reflection,
+                cycle_id=f"refl_{uuid.uuid4().hex[:8]}",
+                source_episode_ids=[ep.id for ep in recent],
+            )
             trace["step6"]["action_ops"] = len(ops)
 
             for op_dict in ops:
@@ -485,6 +489,7 @@ def run_single_turn(
                     source="reflection",
                 )
                 action.pre_state = pre_state
+                reflection_executor.bind_action(action)
                 action_queue.persist_action(action)
 
             executed = action_queue.process_auto_actions(executor_fn)

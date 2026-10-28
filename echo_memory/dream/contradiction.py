@@ -837,11 +837,16 @@ class ContradictionDetector:
             return False
 
         try:
-            self.graph.add_contradicts_edge(
+            added = self.graph.add_contradicts_edge(
                 concept_a=result.concept_a_id,
                 concept_b=result.concept_b_id,
                 weight=result.strength,
+                on_bridge_displaced=coordinator.record_bridge_displaced,
             )
+            if added is False:
+                # bridge 降級紀錄寫入失敗：不建邊，並撤回剛套用的標記
+                coordinator.rollback_conflict_mark(tx)
+                return False
         except Exception as e:
             # 建邊拋例外：同樣撤回剛套用的標記，不留只有標記沒有邊的狀態
             coordinator.rollback_conflict_mark(tx)

@@ -292,8 +292,32 @@ class LiDERReplay:
                 report._replayed_episode_ids = [ep.id for ep in candidates if ep.id not in stale_ids]
                 return report
 
-        # ── 應用反思：更新圖譜 ──
+        # ── 應用反思：更新圖譜（每筆 mutation 套用前先寫逐條紀錄）──
         importances.clear()
+        # 第一輪：salience。episodic.update_salience 會從磁碟重載圖快照，
+        # 所以要先做完，之後才改記憶體中的圖邊，否則先前加的邊會被重載丟掉
+        for ref in reflections:
+            idx = ref.get("index", -1)
+            if not _valid(idx):
+                continue
+            importance = min(1.0, max(0.0, ref.get("importance", 0.5)))
+            related_indices = ref.get("related_indices", [])
+            ep = candidates[idx]
+
+            # 更新 Episode 的顯著性（反思後可能調高或調低）
+            new_salience = (ep.salience_score + importance) / 2
+            if self._audit_item(
+                "episode_salience",
+                {"episode_id": ep.id},
+                [ep.id] + [candidates[i].id for i in related_indices if _valid(i)],
+                prior={"salience_score": ep.salience_score},
+                new={"salience_score": new_salience},
+            ):
+                self.episodic.update_salience(ep.id, new_salience)
+            else:
+                report.errors.append(f"salience 逐條 audit 失敗，略過 {ep.id[:8]}")
+
+        # 第二輪：圖邊
         for ref in reflections:
             idx = ref.get("index", -1)
             if not _valid(idx):
@@ -304,10 +328,6 @@ class LiDERReplay:
             related_indices = ref.get("related_indices", [])
 
             ep = candidates[idx]
-
-            # 更新 Episode 的顯著性（反思後可能調高或調低）
-            new_salience = (ep.salience_score + importance) / 2
-            self.episodic.update_salience(ep.id, new_salience)
 
             # 建立/強化相關 Episode 之間的邊
             for rel_idx in related_indices:
@@ -325,34 +345,48 @@ class LiDERReplay:
                     self.graph.add_episode_node(rel_ep)
 
                 # 已有邊 → 強化
+                existing_dir = None
                 if self.graph.graph.has_edge(ep.id, rel_ep.id):
-                    edge_data = self.graph.graph[ep.id][rel_ep.id]
-                    edge_data["frequency"] = edge_data.get("frequency", 1) + 1
-                    edge_data["weight"] = min(
-                        1.0,
-                        edge_data.get("weight", 0.5) + importance * 0.1,
-                    )
-                    report.edges_strengthened += 1
+                    existing_dir = (ep.id, rel_ep.id)
                 elif self.graph.graph.has_edge(rel_ep.id, ep.id):
-                    edge_data = self.graph.graph[rel_ep.id][ep.id]
-                    edge_data["frequency"] = edge_data.get("frequency", 1) + 1
-                    edge_data["weight"] = min(
-                        1.0,
-                        edge_data.get("weight", 0.5) + importance * 0.1,
-                    )
+                    existing_dir = (rel_ep.id, ep.id)
+                if existing_dir is not None:
+                    edge_data = self.graph.graph[existing_dir[0]][existing_dir[1]]
+                    new_freq = edge_data.get("frequency", 1) + 1
+                    new_weight = min(1.0, edge_data.get("weight", 0.5) + importance * 0.1)
+                    if not self._audit_item(
+                        "edge_update",
+                        {"from": existing_dir[0], "to": existing_dir[1],
+                         "edge_type": edge_data.get("edge_type", "")},
+                        [ep.id, rel_ep.id],
+                        prior=dict(edge_data),
+                        new={"frequency": new_freq, "weight": new_weight},
+                    ):
+                        report.errors.append("edge 強化逐條 audit 失敗，已略過")
+                        continue
+                    edge_data["frequency"] = new_freq
+                    edge_data["weight"] = new_weight
                     report.edges_strengthened += 1
                 else:
                     # 新建反思邊（語義關聯，非時序關係）
+                    new_attrs = {
+                        "edge_type": "REPLAY_RELATED",
+                        "weight": importance * 0.6,
+                        "frequency": 1,
+                        "created_at": time.time(),
+                        "replay_created": True,
+                    }
+                    if not self._audit_item(
+                        "edge_add",
+                        {"from": ep.id, "to": rel_ep.id, "edge_type": "REPLAY_RELATED"},
+                        [ep.id, rel_ep.id],
+                        prior=None,
+                        new=new_attrs,
+                    ):
+                        report.errors.append("edge 建立逐條 audit 失敗，已略過")
+                        continue
                     with self.graph.lock:
-                        self.graph.graph.add_edge(
-                            ep.id,
-                            rel_ep.id,
-                            edge_type="REPLAY_RELATED",
-                            weight=importance * 0.6,
-                            frequency=1,
-                            created_at=time.time(),
-                            replay_created=True,
-                        )
+                        self.graph.graph.add_edge(ep.id, rel_ep.id, **new_attrs)
                     report.edges_created += 1
 
         report.avg_importance = (
@@ -367,6 +401,26 @@ class LiDERReplay:
 
         logger.info(f"[LiDERReplay] {report.summary()}")
         return report
+
+    def _audit_item(
+        self,
+        mutation: str,
+        target: dict[str, Any],
+        source_episode_ids: list[str],
+        prior: dict[str, Any] | None,
+        new: dict[str, Any] | None,
+    ) -> bool:
+        """套用前寫一筆逐條紀錄（stage=replay）；無 coordinator 視為通過。"""
+        if self._patch_coordinator is None:
+            return True
+        return self._patch_coordinator.record_mutation(
+            "replay", mutation,
+            target=target,
+            source_episode_ids=list(dict.fromkeys(source_episode_ids)),
+            prior=prior,
+            new=new,
+            reason="lider_replay",
+        )
 
     def _collect_candidates(
         self,

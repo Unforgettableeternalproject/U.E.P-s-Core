@@ -641,6 +641,9 @@ class EcphoryRetrieval:
                 edge = graph.graph.get_edge_data(concept_id, nid) or {}
                 if edge.get("edge_type") != "LATENT_BRIDGE":
                     edge = graph.graph.get_edge_data(nid, concept_id) or {}
+                # 降級／過期的 bridge 不參與檢索擴散（舊邊缺 state 視為 active）
+                if (edge.get("state") or "active") != "active":
+                    continue
                 decay = graph.bridge_decay_factor(
                     edge, cfg.latent_bridge_half_life_days, now_ts,
                 )

@@ -37,6 +37,7 @@ from echo_memory.affect.concept_patch import (
     SupersedeProposal,
 )
 from echo_memory.affect.concept_verifier import ConceptAssessment, ConceptVerification
+from echo_memory.affect.hypothesis_gate import HypothesisGateMixin
 from echo_memory.schemas.concept import Concept
 from echo_memory.config import get_config
 from echo_memory.schemas.evidence_review import (
@@ -96,6 +97,16 @@ def _producer_for_kind(evidence_kind: str | None) -> str:
         return "reflection"
     if kind == "evidence_review":
         return "reviewer"
+    # Dream 圖譜／episode／procedure 類階段（細分 producer）
+    dream_stage_kinds = {
+        "replay_reinforcement": "dream_replay",
+        "graph_pruning": "dream_pruning",
+        "latent_bridge": "dream_bridge",
+        "procedure_extraction": "dream_procedure",
+        "entity_extraction": "dream_entity",
+    }
+    if kind in dream_stage_kinds:
+        return dream_stage_kinds[kind]
     return "unknown"
 
 
@@ -183,7 +194,7 @@ class SimilarHint:
         }
 
 
-class ConceptInhibitor:
+class ConceptInhibitor(HypothesisGateMixin):
     """
     概念 Patch 閘門。
 
@@ -230,6 +241,7 @@ class ConceptInhibitor:
             privacy_ledger: 擁有者的隱私覆寫帳本。None 時以 namespace 根建立。
         """
         self._semantic = semantic
+        self.namespace_id: str | None = None  # 由宿主（MemoryEngine／DreamEngine）注入
         self._llm_fn = llm_fn
         self._audit_log_path = audit_log_path
         self._evidence_lookup = evidence_lookup
@@ -3151,6 +3163,9 @@ class ConceptInhibitor:
 
         mutation+save 在 SemanticMemory._lock 內完成，確保原子性。
         """
+        if patch.action == "hypothesis":
+            return self._apply_hypothesis(patch)  # 不綁單一概念：圖譜邊 + 假說檔
+
         if patch.action == "share" and not patch.concept_id:
             try:  # 只寫 ledger 的 restrict：不綁概念
                 return self._apply_share(None, patch)
@@ -3411,6 +3426,10 @@ class ConceptInhibitor:
         如果 old_value 不可用，記錄警告但不崩潰。
         mutation+save 在 SemanticMemory._lock 內完成。
         """
+        if patch.action == "hypothesis":
+            self._rollback_hypothesis(patch)
+            return
+
         if patch.action == "share" and not patch.concept_id:
             self._rollback_share(None, patch)  # 只寫 ledger 的 restrict
             return

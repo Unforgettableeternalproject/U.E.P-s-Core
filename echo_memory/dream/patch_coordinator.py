@@ -11,18 +11,23 @@ DreamPatchCoordinator — Dream Engine 的 Patch 協調層
 設計原則：
   - Dream 來源的 concept 可信度足夠，直接 approve
   - Graph edge 操作不需要 Inhibitor 審核，但需要 audit trail
-  - Batch 操作（如 update_edge_weights）用摘要 audit，不逐條記錄
+  - Batch 操作（如 update_edge_weights）用摘要 audit
+  - 圖譜／episode／procedure 的每一筆 mutation 另寫逐條紀錄（record_mutations）：
+    mutation 類型、目標、producer（細分 dream 階段）、來源 episode／concept、前值、cycle id；
+    套用前寫入（audit-before-mutate），寫入失敗則呼叫方不得 mutate；前值足以回滾
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from echo_memory.affect.concept_patch import PatchTransaction, SupersedeProposal
+from echo_memory.schemas.provenance import dream_producer
 
 logger = logging.getLogger("echo_memory.dream.patch_coordinator")
 
@@ -501,6 +506,198 @@ class DreamPatchCoordinator:
         })
 
     # ──────────────────────────────────────────────
+    # 逐條 mutation 紀錄（audit-before-mutate；供回滾與 M5-D Hypothesis 追溯）
+    # ──────────────────────────────────────────────
+
+    @property
+    def cycle_id(self) -> str:
+        """目前 Dream 週期 id（未開始週期時為空字串）。"""
+        return self._cycle_id
+
+    def record_mutations(self, stage: str, entries: list[dict[str, Any]]) -> bool:
+        """
+        套用前寫入一批「逐條」mutation 紀錄（單次寫檔，要嘛全寫要嘛全不寫）。
+
+        回傳 False 時呼叫方必須阻止對應的全部 mutation。
+
+        每個 entry 欄位：
+            mutation: 類型（edge_add／edge_update／edge_remove／node_archive／
+                episode_salience／procedure_write／bridge_create／bridge_confirm／
+                bridge_revoke／max_frequency ...）
+            target: 目標 id（邊兩端 from/to＋edge_type、node_id、episode_id、procedure_id）
+            source_episode_ids / source_concept_ids: 來源（bridge 為兩端概念及其 derivation）
+            prior: 前值（None 表示原本不存在），回滾用
+            new: 新值（選填）
+            reason: 原因（選填）
+            extra: 其他結構化欄位（選填，例如 provenance）
+        本方法補上 mutation_id（同時回填到 entry）、producer（依 stage 細分）、stage、
+        cycle_id、timestamp。
+        """
+        if not entries:
+            return True
+        producer = dream_producer(stage)
+        now = datetime.now(timezone.utc).isoformat()
+        lines: list[str] = []
+        for e in entries:
+            rec: dict[str, Any] = {
+                "operation": "mutation",
+                "mutation_id": uuid.uuid4().hex,
+                "mutation": e.get("mutation", ""),
+                "stage": stage,
+                "producer": producer,
+                "target": e.get("target", {}),
+                "source_episode_ids": list(e.get("source_episode_ids") or []),
+                "source_concept_ids": list(e.get("source_concept_ids") or []),
+                "prior": e.get("prior"),
+                "cycle_id": self._cycle_id,
+                "timestamp": now,
+            }
+            for key in ("new", "reason", "extra"):
+                if e.get(key) is not None:
+                    rec[key] = e[key]
+            e["mutation_id"] = rec["mutation_id"]
+            try:
+                lines.append(json.dumps(rec, ensure_ascii=False, default=str))
+            except (TypeError, ValueError) as ex:
+                logger.error("[DreamPatchCoordinator] 逐條紀錄序列化失敗，阻止 mutation: %s", ex)
+                return False
+        return self._append_audit_lines(lines)
+
+    def record_bridge_displaced(self, entries: list[dict[str, Any]]) -> bool:
+        """CONTRADICTS 取代 LATENT_BRIDGE 前的 bridge_revoke 逐條紀錄（供 add_contradicts_edge 回呼）。"""
+        return self.record_mutations("bridge", entries)
+
+    def record_mutation(self, stage: str, mutation: str, **fields: Any) -> bool:
+        """record_mutations 的單筆便利入口；fields 同 entry 欄位。"""
+        return self.record_mutations(stage, [{"mutation": mutation, **fields}])
+
+    def write_procedure(
+        self,
+        procedural: Any,
+        procedure: Any,
+        reason: str = "procedure_extraction",
+    ) -> tuple[str | None, str | None]:
+        """
+        Procedure 寫入的 patch 交易：先寫逐條紀錄（含來源 episode 與前值），再寫入。
+
+        Returns:
+            (procedure_id, mutation_id)；audit 失敗時回傳 (None, None) 且不寫入。
+        """
+        existing = procedural.get_by_name(procedure.name)
+        prior = None
+        if existing is not None:
+            prior = existing.to_dict()
+            prior.pop("embedding", None)  # 向量不入 audit（可由內容重算）
+        entry = {
+            "mutation": "procedure_write",
+            "target": {
+                "procedure_id": existing.id if existing else procedure.id,
+                "name": procedure.name,
+            },
+            "source_episode_ids": list(procedure.source_episode_ids),
+            "prior": prior,
+            "new": {
+                "description": procedure.description,
+                "steps": list(procedure.steps),
+                "domain": procedure.domain,
+                "trigger_patterns": list(procedure.trigger_patterns),
+                "is_new": existing is None,
+            },
+            "reason": reason,
+        }
+        if not self.record_mutations("procedure", [entry]):
+            return None, None
+        return procedural.write(procedure), entry["mutation_id"]
+
+    def rollback_mutation(
+        self,
+        record: dict[str, Any],
+        graph: Any = None,
+        episodic: Any = None,
+    ) -> bool:
+        """
+        依逐條紀錄的前值回滾單筆 mutation（圖譜邊／節點歸檔／episode salience）。
+
+        回滾本身也寫一筆 rollback 紀錄；寫入失敗則不回滾。
+        procedure_write 不在此回滾（ProceduralMemory 無刪除 API），回傳 False。
+        """
+        kind = record.get("mutation", "")
+        target = record.get("target") or {}
+        prior = record.get("prior")
+        edge_kinds = (
+            "edge_add", "edge_update", "edge_remove",
+            "bridge_create", "bridge_confirm", "bridge_revoke",
+        )
+        # 先判斷是否支援：不支援的 kind（含 procedure_write）在寫 audit 前就回傳 False
+        is_edge = kind in edge_kinds and graph is not None
+        is_archive = kind == "node_archive" and graph is not None
+        is_salience = (
+            kind == "episode_salience" and episodic is not None and isinstance(prior, dict)
+        )
+        if not (is_edge or is_archive or is_salience):
+            return False
+
+        # 實際能否還原：端點／節點／邊不存在時什麼都不會變，不能回報成功（回 False 並在 audit 記 noop）
+        effective = True
+        if is_edge:
+            with graph.lock:
+                g0 = graph.graph
+                src0, dst0 = target.get("from"), target.get("to")
+                effective = (
+                    g0.has_edge(src0, dst0) if prior is None
+                    else (g0.has_node(src0) and g0.has_node(dst0))
+                )
+        elif is_archive:
+            with graph.lock:
+                effective = graph.graph.has_node(target.get("node_id")) and isinstance(prior, dict)
+
+        if not self.record_mutations(record.get("stage", ""), [{
+            "mutation": "rollback",
+            "target": target,
+            "reason": f"rollback:{record.get('mutation_id', '')}",
+            "prior": record.get("new"),
+            "extra": {"rolled_back": kind, "noop": not effective},
+        }]):
+            return False
+        if not effective:
+            logger.info("[DreamPatchCoordinator] rollback 為 noop（目標已不存在）: %s", kind)
+            return False
+
+        if is_edge:
+            src, dst = target.get("from"), target.get("to")
+            g = graph.graph
+            with graph.lock:
+                if prior is None:
+                    if g.has_edge(src, dst):
+                        g.remove_edge(src, dst)
+                elif g.has_node(src) and g.has_node(dst):
+                    if g.has_edge(src, dst):
+                        g[src][dst].clear()
+                        g[src][dst].update(prior)
+                    else:
+                        g.add_edge(src, dst, **prior)
+            return self._persist_graph(graph)
+        if is_archive:
+            node_id = target.get("node_id")
+            with graph.lock:
+                if graph.graph.has_node(node_id) and isinstance(prior, dict):
+                    graph.graph.nodes[node_id]["archived"] = bool(prior.get("archived", False))
+            return self._persist_graph(graph)
+        return bool(
+            episodic.update_salience(target.get("episode_id"), prior.get("salience_score"))
+        )
+
+    @staticmethod
+    def _persist_graph(graph: Any) -> bool:
+        """回滾後持久化圖譜；失敗只記 log 並回傳 False（記憶體已還原，下次存檔會補上）。"""
+        try:
+            graph.save()
+            return True
+        except Exception as e:
+            logger.error("[DreamPatchCoordinator] 回滾後圖譜存檔失敗: %s", e)
+            return False
+
+    # ──────────────────────────────────────────────
     # Audit Log 寫入
     # ──────────────────────────────────────────────
 
@@ -527,11 +724,15 @@ class DreamPatchCoordinator:
         entry["timestamp"] = datetime.now(timezone.utc).isoformat()
         entry["cycle_id"] = self._cycle_id
 
+        return self._append_audit_lines([json.dumps(entry, ensure_ascii=False, default=str)])
+
+    def _append_audit_lines(self, lines: list[str]) -> bool:
+        """把已序列化的 JSONL 行一次寫入 audit log；失敗回傳 False。"""
         log_path = self._get_audit_path()
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with open(log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.write("".join(line + "\n" for line in lines))
             return True
         except Exception as e:
             logger.error(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -53,10 +54,14 @@ def _unlock(handle: BinaryIO) -> None:
 
 
 @contextmanager
-def storage_lock(storage_path: str | Path, timeout: float = 30.0) -> Iterator[None]:
+def storage_lock(
+    storage_path: str | Path,
+    timeout: float = 30.0,
+    lock_name: str = ".echo-memory.lock",
+) -> Iterator[None]:
     storage = Path(storage_path)
     storage.mkdir(parents=True, exist_ok=True)
-    lock_path = storage / ".echo-memory.lock"
+    lock_path = storage / lock_name
     lock = _thread_lock(lock_path)
     key = str(lock_path.resolve()).casefold()
 
@@ -149,3 +154,115 @@ class ReleasableRLock:
 
 def temporary_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+
+
+class FileLease:
+    """
+    跨行程租約：以獨立檔案鎖保護短臨界區，狀態寫在 JSON 檔（持有者 pid、取得時間、
+    最後完成時間）。租約有過期時間，持有者崩潰後逾期即可被其他行程接手。
+
+    不阻塞：取不到租約立即回報原因，由呼叫端決定跳過。
+    """
+
+    def __init__(self, directory: str | Path, name: str = "dream", ttl_seconds: float = 3600.0) -> None:
+        self._dir = Path(directory)
+        self._name = name
+        self._path = self._dir / f".{name}-lease.json"
+        self._lock_name = f".{name}-lease.lock"
+        self.ttl_seconds = float(ttl_seconds)
+        self.token = f"{os.getpid()}:{uuid.uuid4().hex}"
+
+    def _read(self) -> dict:
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _write(self, data: dict) -> None:
+        tmp = temporary_sibling(self._path)
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self._path)
+
+    def _guard(self):
+        return storage_lock(self._dir, timeout=5.0, lock_name=self._lock_name)
+
+    def read_state(self) -> dict:
+        """讀取目前租約狀態（供診斷與測試）。"""
+        with self._guard():
+            return self._read()
+
+    def try_acquire(
+        self,
+        owner: str = "",
+        *,
+        skip_if_completed_within: float | None = None,
+        completion_key: str = "last_completed_at",
+        now: float | None = None,
+    ) -> tuple[bool, str]:
+        """
+        嘗試取得租約。回傳 (是否取得, 原因)；原因在取得時為空字串。
+
+        skip_if_completed_within: 指定時，若 completion_key 的最後完成時間距今不到該秒數，
+            視為同一窗口已有人完成而不取得（cron 窗口去重）。
+        """
+        now = time.time() if now is None else now
+        try:
+            with self._guard():
+                state = self._read()
+                holder = state.get("holder_token")
+                expires_at = float(state.get("expires_at") or 0.0)
+                if holder and holder != self.token and expires_at > now:
+                    return False, (
+                        f"租約由 pid={state.get('holder_pid')} 持有"
+                        f"（約 {expires_at - now:.0f} 秒後過期）"
+                    )
+                if skip_if_completed_within is not None:
+                    done = float(state.get(completion_key) or 0.0)
+                    if done and now - done < skip_if_completed_within:
+                        return False, f"同一窗口內已於 {now - done:.0f} 秒前完成（{completion_key}）"
+                state.update(
+                    holder_token=self.token,
+                    holder_pid=os.getpid(),
+                    holder_owner=owner,
+                    acquired_at=now,
+                    expires_at=now + self.ttl_seconds,
+                )
+                self._write(state)
+                return True, ""
+        except TimeoutError:
+            return False, "租約檢查逾時"
+        except OSError as exc:
+            return False, f"租約檔無法存取: {exc}"
+
+    def renew(self, *, now: float | None = None) -> bool:
+        """
+        續租：本持有者仍持有時把 expires_at 延到 now + ttl，回傳 True；
+        已非持有者（租約逾期被接手或被清除）回傳 False；租約檔無法存取視為失租。
+        """
+        now = time.time() if now is None else now
+        try:
+            with self._guard():
+                state = self._read()
+                if state.get("holder_token") != self.token:
+                    return False
+                state["expires_at"] = now + self.ttl_seconds
+                self._write(state)
+                return True
+        except (TimeoutError, OSError):
+            return False
+
+    def release(self, *, completed: bool = False, completion_keys: tuple[str, ...] = ("last_completed_at",),
+                now: float | None = None) -> None:
+        """釋放租約；completed=True 時一併記錄完成時間。非本持有者呼叫不動作。"""
+        now = time.time() if now is None else now
+        with self._guard():
+            state = self._read()
+            if state.get("holder_token") != self.token:
+                return
+            for key in ("holder_token", "holder_pid", "holder_owner", "acquired_at", "expires_at"):
+                state.pop(key, None)
+            if completed:
+                for key in completion_keys:
+                    state[key] = now
+            self._write(state)

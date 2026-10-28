@@ -18,6 +18,26 @@ from echo_memory.schemas.evidence import EvidenceUnit, has_shared_context, is_un
 from echo_memory.schemas.procedure import Procedure
 
 
+HYPOTHESIS_LABEL = "候選關聯（未驗證，不可當事實）"
+
+
+@dataclass(frozen=True)
+class HypothesisItem:
+    """retrieve(include_hypotheses=True) 帶出的候選關聯（M5-D）。
+
+    proposed／under_review 只列端點（statement 為 None）；supported 在證據仍成立時才帶 statement。
+    永遠不是事實：to_text 一律標示「候選關聯（未驗證，不可當事實）」。
+    """
+
+    hypothesis_id: str
+    status: str
+    concept_a_id: str
+    concept_b_id: str
+    name_a: str
+    name_b: str
+    statement: str | None = None
+
+
 @dataclass
 class MemoryContext:
     """
@@ -43,6 +63,9 @@ class MemoryContext:
     # 僅由 lexical 路命中（不在向量路結果內）的 episode id；其 similarities 為補算的
     # 原始 cosine，向量不可用時為 0。供消費端辨識「沒有語意相似度背書」的命中。
     lexical_only_ids: list[str] = field(default_factory=list)
+    # 候選關聯（Hypothesis）：獨立欄位，僅 retrieve(include_hypotheses=True) 填入，預設空。
+    # 不影響 is_empty()，也不參與召回排序；共享輪次一律不含。
+    hypotheses: list[HypothesisItem] = field(default_factory=list)
 
     def _agent_text_for_prompt(self, ep: Episode) -> tuple[str, bool]:
         """回傳 (可注入的 agent 文字, 是否有未說出口的預定回覆)。
@@ -178,6 +201,16 @@ class MemoryContext:
 
         if self.is_empty():
             return "（無相關記憶）"
+
+        if self.hypotheses:
+            payload[HYPOTHESIS_LABEL] = [
+                {
+                    "status": "待驗證" if h.status != "supported" else "審核判定有關聯但仍待確認",
+                    "concepts": [h.name_a, h.name_b],
+                    **({"statement": h.statement} if h.statement else {}),
+                }
+                for h in self.hypotheses[:2]
+            ]
 
         serialized = json.dumps(payload, ensure_ascii=False, indent=2)
         serialized = serialized.replace(

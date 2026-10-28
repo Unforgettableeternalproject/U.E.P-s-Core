@@ -159,6 +159,10 @@ class ToolExecutor:
         )
 
         logger.info(f"[ToolExecutor] force_remember 儲存成功: {episode_id}")
+        # M6：對話 LLM 主動標記重要記憶 → 通知 Core（fire-and-forget；salience 只當 weight）
+        emitter = getattr(self.engine, "event_emitter", None)
+        if emitter is not None:
+            emitter.emit_episode_flagged(episode_id, "force_remember", salience)
         return {
             "success": True,
             "result": f"Stored with episode_id={episode_id}, salience={salience:.2f}",
@@ -236,6 +240,9 @@ class ToolExecutor:
             logger.info(
                 f"[ToolExecutor] adjust_importance 成功: {episode_id} → {new_salience:.2f}"
             )
+            emitter = getattr(self.engine, "event_emitter", None)
+            if emitter is not None:
+                emitter.emit_episode_flagged(episode_id, "adjust_importance", new_salience)
             return {
                 "success": True,
                 "result": (

@@ -251,6 +251,14 @@ class Config:
             os.getenv("LATENT_BRIDGE_EXPIRE_DAYS", "60")
         )
 
+        # === M6 Self Model（皆預設關閉；關閉時零行為差異）===
+        # 檢索時把 subject=agent 且帶 self_model 標記的概念以 SELF_OBSERVATION 區塊放進記憶區塊
+        self.self_model_enabled = os.getenv("SELF_MODEL_ENABLED", "false").lower() == "true"
+        # 對 Core 發出 MemoryEvent／ProactiveCandidate（需另行注入 CandidateSink）
+        self.self_model_events_enabled = (
+            os.getenv("SELF_MODEL_EVENTS_ENABLED", "false").lower() == "true"
+        )
+
         # === M5-D Hypothesis（LATENT_BRIDGE -> 待驗證假說）===
         # 總開關：關閉時 Dream 不產生也不審核假說（既有紀錄仍可查詢）
         self.hypothesis_enabled = os.getenv("HYPOTHESIS_ENABLED", "true").lower() == "true"

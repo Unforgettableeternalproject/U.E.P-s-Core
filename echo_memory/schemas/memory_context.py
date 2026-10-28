@@ -19,6 +19,9 @@ from echo_memory.schemas.procedure import Procedure
 
 
 HYPOTHESIS_LABEL = "候選關聯（未驗證，不可當事實）"
+# Self Model（M6）：只以「觀察」身分放在記憶區塊內，不進 system／character 層
+SELF_OBSERVATION_LABEL = "SELF_OBSERVATION：觀察，非設定"
+SELF_OBSERVATION_MAX_ITEMS = 3
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,9 @@ class MemoryContext:
     # 候選關聯（Hypothesis）：獨立欄位，僅 retrieve(include_hypotheses=True) 填入，預設空。
     # 不影響 is_empty()，也不參與召回排序；共享輪次一律不含。
     hypotheses: list[HypothesisItem] = field(default_factory=list)
+    # Self Model 條目（M6）：subject=agent 且帶 self_model 標記的概念；僅 self_model_enabled
+    # 時由 engine.retrieve 填入，預設空。不影響 is_empty()，也不參與召回排序。
+    self_observations: list[Concept] = field(default_factory=list)
 
     def _agent_text_for_prompt(self, ep: Episode) -> tuple[str, bool]:
         """回傳 (可注入的 agent 文字, 是否有未說出口的預定回覆)。
@@ -212,6 +218,16 @@ class MemoryContext:
                 for h in self.hypotheses[:2]
             ]
 
+        if self.self_observations:
+            payload[SELF_OBSERVATION_LABEL] = [
+                {
+                    "name": c.name,
+                    "observation": c.description,
+                    "status": self._self_observation_status(c),
+                }
+                for c in self.self_observations[:SELF_OBSERVATION_MAX_ITEMS]
+            ]
+
         serialized = json.dumps(payload, ensure_ascii=False, indent=2)
         serialized = serialized.replace(
             "</UNTRUSTED_MEMORY_DATA>",
@@ -223,6 +239,14 @@ class MemoryContext:
             f"{serialized}\n"
             "</UNTRUSTED_MEMORY_DATA>"
         )
+
+    @staticmethod
+    def _self_observation_status(c: Concept) -> str:
+        """Self Model 條目的驗證標籤（結構欄位判斷）：非 verified 一律標未驗證。"""
+        mark = c.metadata.get("self_model") if isinstance(c.metadata, dict) else None
+        if isinstance(mark, dict) and mark.get("verification") == "verified":
+            return "有證據支持的觀察，不是設定"
+        return "agent 自述，未驗證"
 
     # 審核狀態 → prompt 標籤。只標需要提醒的狀態；supported 與 not_checked
     # （現有概念絕大多數）不加標籤，避免雜訊與 token 浪費

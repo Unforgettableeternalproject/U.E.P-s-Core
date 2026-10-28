@@ -121,6 +121,8 @@ class PatchEvidence:
         "reflection_merge",
         # 證據審核（EvidenceReview）
         "evidence_review",
+        # Self Model 條目標記（M6）
+        "self_model",
         # 跨使用者分享（share：project／retract／restrict）
         "sharing",
         # Hypothesis 狀態轉移與昇格（hypothesis：propose／claim／review／expire／purge／reopen）
@@ -204,6 +206,7 @@ class ConceptPatch:
     action: Literal[
         "create", "expand", "modify", "deprecate",
         "link", "unlink", "merge", "mark_conflict", "review", "share", "hypothesis",
+        "self_model",
     ]
     evidence: PatchEvidence
 

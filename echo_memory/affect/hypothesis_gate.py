@@ -220,6 +220,7 @@ class HypothesisGateMixin:
             patch.status = "applied"
             tx.status = "committed"
             self._write_audit(tx)  # type: ignore[attr-defined]
+            self._notify_hypothesis_transition(op, patch)
             return True, tx
 
         self._rollback_patch(patch)  # type: ignore[attr-defined]
@@ -228,6 +229,30 @@ class HypothesisGateMixin:
         tx.status = "failed"
         self._write_audit(tx)  # type: ignore[attr-defined]
         return False, tx
+
+    def _notify_hypothesis_transition(self, op: str, patch: ConceptPatch) -> None:
+        """M6：review 已 commit 且結果為 supported／refuted 時通知 Core（fire-and-forget）。
+
+        evidence_refs 取自 Gate 驗證後寫入紀錄的引用（cited_evidence_ids），不是審核器原始 payload。
+        """
+        emitter = getattr(self, "event_emitter", None)
+        if emitter is None or op != "review":
+            return
+        try:
+            value = patch.new_value if isinstance(patch.new_value, dict) else {}
+            result = value.get("result")
+            if result not in ("supported", "refuted"):
+                return
+            put = value.get("records_put") or [{}]
+            review = (put[0] or {}).get("review") or {}
+            emitter.emit_hypothesis_transition(
+                str(value.get("hypothesis_id") or ""),
+                result == "supported",
+                list(review.get("cited_evidence_ids") or []),
+                float(review.get("support_strength") or 0.0),
+            )
+        except Exception as e:  # noqa: BLE001 - 事件層不影響 Gate 結果
+            logger.warning("[HypothesisGate] 事件通知失敗（已忽略）: %s", e)
 
     def rollback_hypothesis_patch(self, tx: PatchTransaction) -> None:
         """人工回滾已套用的 hypothesis patch（經 audit）：還原昇格邊、被移除的 bridge、假說紀錄。"""

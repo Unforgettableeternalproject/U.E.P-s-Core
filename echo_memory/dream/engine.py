@@ -172,6 +172,7 @@ class DreamEngine:
         cron_window_seconds: float = 900.0,
         hypothesis_enabled: bool = True,
         namespace_id: str | None = None,
+        event_emitter: Any | None = None,
     ):
         """
         初始化 Dream Engine。
@@ -376,6 +377,10 @@ class DreamEngine:
                 pass
 
         self._contradiction_detector = contradiction_detector
+        # M6：事件發射器（None＝不發）；矛盾偵測器共用同一個
+        self.event_emitter = event_emitter
+        if contradiction_detector is not None:
+            contradiction_detector.event_emitter = event_emitter
 
         # 程序提取（需要 procedural + episodic）
         self._procedure_extractor = None
@@ -704,6 +709,12 @@ class DreamEngine:
             self.notify_interaction()
 
             logger.info("[DreamEngine] 夢境週期完成")
+            # M6：週期正常結束後通知 Core（fire-and-forget，例外與逾時都不影響夢境）
+            if self.event_emitter is not None and self._patch_coordinator is not None:
+                # cycle id 只到秒；加上 started_at 讓相鄰週期的 event_id 不會被誤判為重複
+                self.event_emitter.emit_dream_completed(
+                    f"{self._patch_coordinator.cycle_id}@{report.started_at}"
+                )
 
         except _LeaseLost as e:
             lease_held = False  # 已非持有者，不必（也不該）釋放

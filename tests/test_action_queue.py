@@ -49,11 +49,22 @@ class TestActionPermissions:
         assert len(q.get_pending()) == 0
         assert len(q.get_history()) == 1
 
-    def test_unknown_type_defaults_confirm(self):
-        """未知行動類型預設為 CONFIRM。"""
+    def test_unknown_type_defaults_deny(self):
+        """未註冊行動類型一律 DENY（白名單制，M6）。"""
         q = ReflectionActionQueue()
         a = q.enqueue("unknown_action", target_id="x")
-        assert a.permission == ActionPermission.CONFIRM
+        assert a.permission == ActionPermission.DENY
+        assert a.status == ActionStatus.REJECTED
+        assert len(q.get_pending()) == 0
+
+    def test_modify_persona_and_identity_denied(self):
+        """modify_persona／modify_identity 為 DENY。"""
+        q = ReflectionActionQueue()
+        for action_type in ("modify_persona", "modify_identity"):
+            a = q.enqueue(action_type, target_id="persona")
+            assert a.permission == ActionPermission.DENY
+            assert a.status == ActionStatus.REJECTED
+        assert len(q.get_pending()) == 0
 
 
 class TestAutoExecution:

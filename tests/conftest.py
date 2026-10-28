@@ -116,3 +116,65 @@ def episodes_by_id(benchmark_dataset: dict[str, Any]) -> dict[str, dict]:
     Scope: session（與 benchmark_dataset 相同生命週期）。
     """
     return {ep["id"]: ep for ep in benchmark_dataset.get("episodes", [])}
+
+
+# ─── MCP 模組載入（CI 沒有 mcp SDK／starlette）────────────────────────────────
+
+def _load_mcp_module(monkeypatch, module_name: str):
+    """載入 mcp_server 下的模組；環境缺 mcp SDK 或 starlette 時以最小假模組取代 mcp.*。
+
+    載入後把 mcp_server.* 從 sys.modules 移除，避免帶假 SDK 的模組外洩到其他測試
+    （已取得的模組物件仍可使用）。
+    """
+    import importlib
+
+    def _purge() -> None:
+        for name in [m for m in sys.modules if m == "mcp_server" or m.startswith("mcp_server.")]:
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    try:
+        return importlib.import_module(module_name)
+    except ImportError:
+        pass
+    _purge()
+    try:
+        import mcp  # noqa: F401
+    except ImportError:
+        fake_pkg = types.ModuleType("mcp")
+        fake_pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, "mcp", fake_pkg)
+
+    class _AnyAttrModule(types.ModuleType):
+        """任何屬性都回傳一個可建構的空類別（供 mcp.types 的各種型別 import）。"""
+
+        def __getattr__(self, name):
+            if name.startswith("__"):
+                raise AttributeError(name)
+            cls = type(name, (), {"__init__": lambda self, *a, **k: None})
+            setattr(self, name, cls)
+            return cls
+
+    fake_types = _AnyAttrModule("mcp.types")
+    fake = types.ModuleType("mcp.server")
+    fake.__path__ = []
+    fake.Server = type("Server", (), {"__init__": lambda self, *a, **k: None})
+    fake_stdio = types.ModuleType("mcp.server.stdio")
+    fake_stdio.stdio_server = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "mcp.types", fake_types)
+    monkeypatch.setitem(sys.modules, "mcp.server", fake)
+    monkeypatch.setitem(sys.modules, "mcp.server.stdio", fake_stdio)
+    module = importlib.import_module(module_name)
+    _purge()
+    return module
+
+
+@pytest.fixture
+def srv(monkeypatch):
+    """mcp_server.server（缺 SDK／starlette 時以假模組載入）。"""
+    return _load_mcp_module(monkeypatch, "mcp_server.server")
+
+
+@pytest.fixture
+def mcp_handlers(monkeypatch):
+    """mcp_server.handlers（缺 SDK／starlette 時以假模組載入，handler 邏輯照常實跑）。"""
+    return _load_mcp_module(monkeypatch, "mcp_server.handlers")

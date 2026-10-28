@@ -48,6 +48,7 @@ from echo_memory.schemas.evidence_review import (
     compute_basis_digest,
     compute_review_confidence,
     review_confidence_cap,
+    is_sp_ref,
     validate_corroborated_by,
 )
 from echo_memory.schemas.sharing import (
@@ -1119,6 +1120,24 @@ class ConceptInhibitor(HypothesisGateMixin, SelfModelGateMixin):
             and not value.get("corroborated_by")
         ):
             return "intention 無 corroborated_by 不得 supported"
+        # 他人佐證也要乘學習權重：有算出佐證強度、且佐證全是本 namespace unit（無 sp: 參考）時，
+        # supported 必須達 support_threshold（None＝舊資料未計算，沿用有佐證即可）
+        corro_strength = value.get("corroboration_strength")
+        if corro_strength is not None:
+            try:
+                corro_value = float(corro_strength)
+            except (TypeError, ValueError):
+                return "corroboration_strength 不是數值"
+            if not 0.0 <= corro_value <= 1.0:
+                return "corroboration_strength 超出 [0,1]"
+            if (
+                claim_kind == "intention"
+                and value.get("status") == "supported"
+                and not any(is_sp_ref(r) for r in value.get("corroborated_by") or [])
+            ):
+                from echo_memory.config import get_config
+                if corro_value < float(get_config().support_threshold):
+                    return f"intention 的佐證強度 {corro_value:.2f} 低於門檻"
         # supported 必須達 support_threshold（intention 有佐證者例外：佐證本身即證據）
         if value.get("status") == "supported" and not (
             claim_kind == "intention" and value.get("corroborated_by")

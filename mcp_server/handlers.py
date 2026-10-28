@@ -306,6 +306,21 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                     "required": ["hypothesis_id"],
                 },
             ),
+            Tool(
+                name="review_concept",
+                description=(
+                    "請求對一個概念做證據審核。審核由伺服器端 LLM 依證據原文判斷，結果只經 Gate 寫回；"
+                    "缺 LLM 或共享 namespace 時不執行（共享 namespace 拒絕寫入）。"
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "namespace_id": _namespace_schema(),
+                        "concept_id": {"type": "string", "description": "概念 id"},
+                    },
+                    "required": ["concept_id"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -342,6 +357,8 @@ def register_tools(server: Server, get_engine: Callable) -> None:
                 result = await _handle_list_hypotheses(get_engine, args)
             elif name == "request_hypothesis_review":
                 result = await _handle_request_hypothesis_review(get_engine, args)
+            elif name == "review_concept":
+                result = await _handle_review_concept(get_engine, args)
             else:
                 result = f"未知的工具名稱: {name}"
 
@@ -698,3 +715,16 @@ async def _handle_request_hypothesis_review(get_engine: Callable, args: dict[str
     detail = f"（{result['reason']}）" if result.get("reason") else ""
     status = f"，結果: {result['status']}" if result.get("status") else ""
     return f"審核請求 {hypothesis_id}: {result.get('outcome')}{status}{detail}"
+
+
+async def _handle_review_concept(get_engine: Callable, args: dict[str, Any]) -> str:
+    """請求審核一個概念（寫入類：共享 namespace 一律拒絕；結果只經 Gate 寫回）。"""
+    concept_id: str = args["concept_id"]
+
+    def _sync() -> dict[str, Any]:
+        return _get_engine(get_engine, args, write=True).review_concept(concept_id)
+
+    result = await asyncio.to_thread(_sync)
+    logger.info(f"[MCP Handler] review_concept 完成: {result.get('outcome')}")
+    detail = f"（{result['reason']}）" if result.get("reason") else ""
+    return f"概念審核 {concept_id}: {result.get('outcome')}{detail}"

@@ -530,7 +530,8 @@ class DreamPatchCoordinator:
             new: 新值（選填）
             reason: 原因（選填）
             extra: 其他結構化欄位（選填，例如 provenance）
-        本方法補上 mutation_id（同時回填到 entry）、producer（依 stage 細分）、stage、
+        本方法補上 mutation_id（同時回填到 entry）、producer（依 stage 細分；entry 帶
+        producer 時以 entry 為準，供非 Dream 產生者如對話路徑的 extractor 使用）、stage、
         cycle_id、timestamp。
         """
         if not entries:
@@ -544,7 +545,7 @@ class DreamPatchCoordinator:
                 "mutation_id": uuid.uuid4().hex,
                 "mutation": e.get("mutation", ""),
                 "stage": stage,
-                "producer": producer,
+                "producer": e.get("producer") or producer,
                 "target": e.get("target", {}),
                 "source_episode_ids": list(e.get("source_episode_ids") or []),
                 "source_concept_ids": list(e.get("source_concept_ids") or []),

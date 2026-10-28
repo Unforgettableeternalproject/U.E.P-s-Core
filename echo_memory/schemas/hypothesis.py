@@ -296,6 +296,7 @@ class HypothesisSupport:
     strength: float = 0.0
     independent: bool = False  # 有使用者本人以外的獨立佐證
     independent_ids: list[str] = field(default_factory=list)
+    corroboration_strength: float | None = None  # intention 的佐證權重 noisy-OR（其餘為 None）
     status: str = "insufficient"  # supported｜insufficient
     notes: list[str] = field(default_factory=list)
 
@@ -313,7 +314,11 @@ def evaluate_hypothesis_support(
     - 最終狀態：decide_review_status（門檻 SUPPORT_THRESHOLD、intention 需佐證）且 independent。
     """
     from echo_memory.schemas.evidence import learning_weight
-    from echo_memory.schemas.evidence_review import decide_review_status, noisy_or
+    from echo_memory.schemas.evidence_review import (
+        compute_corroboration_strength,
+        decide_review_status,
+        noisy_or,
+    )
 
     if cfg is None:
         from echo_memory.config import get_config
@@ -339,7 +344,16 @@ def evaluate_hypothesis_support(
     if not user_units and not obs_ids:
         out.notes.append("no_eligible_citation")
         return out
-    status = decide_review_status("supported", out.strength, claim_kind, out.independent_ids, cfg)
+    # intention：獨立佐證也乘學習權重再進 noisy-OR（與 EvidenceReviewer 同一規則）
+    if claim_kind == "intention" and out.independent_ids:
+        by_id = {u.id: u for u in units}
+        out.corroboration_strength = compute_corroboration_strength(
+            [by_id[i] for i in out.independent_ids if i in by_id], cfg,
+        )
+    status = decide_review_status(
+        "supported", out.strength, claim_kind, out.independent_ids, cfg,
+        corroboration_strength=out.corroboration_strength,
+    )
     if status != "supported":
         out.notes.append(
             "intention_needs_corroboration" if claim_kind == "intention"

@@ -229,6 +229,13 @@ class ConceptExtractor:
 
             concept_ids: list[str] = []
 
+            # 支撐來源由來源 Episode 的證據角色推得（M-9 規則：user > legacy_unknown > agent_only）
+            from echo_memory.utils.source_view import load_units, support_source
+
+            support = support_source(
+                [episode], load_units(self._evidence_store, [episode]),
+            )
+
             for item in concepts:
                 noun = item.get("noun", "").strip()
                 desc = item.get("desc", "").strip()
@@ -237,7 +244,7 @@ class ConceptExtractor:
 
                 # Step 2: 同義詞/多義詞判斷
                 concept_id = self._upsert_with_similarity(
-                    noun, desc, episode.id
+                    noun, desc, episode.id, support_source=support,
                 )
                 if concept_id:
                     concept_ids.append(concept_id)
@@ -340,6 +347,7 @@ class ConceptExtractor:
         noun: str,
         desc: str,
         episode_id: str,
+        support_source: str | None = None,
     ) -> str | None:
         """
         根據同義詞/多義詞閾值決定：合併、建邊、或建新概念。
@@ -385,6 +393,7 @@ class ConceptExtractor:
         # ── 一律走 Patch Pipeline（未注入 inhibitor 時為降級 Gate）──
         return self._upsert_via_pipeline(
             noun, desc, episode_id, embedding, best_match, best_sim,
+            support_source=support_source,
         )
 
     def _upsert_via_pipeline(
@@ -395,6 +404,7 @@ class ConceptExtractor:
         embedding: list[float] | None,
         best_match,
         best_sim: float,
+        support_source: str | None = None,
     ) -> str | None:
         """透過 ConceptInhibitor patch pipeline 寫入。"""
         if best_match is None or best_sim < _POLYSEMY_THRESHOLD:
@@ -410,6 +420,7 @@ class ConceptExtractor:
                 evidence_kind=evidence_kind,
                 similarity_score=best_sim,
                 embedding=embedding,
+                support_source=support_source,
             )
             # Graph 邊由 extractor 自己管（inhibitor 不管 graph）
             if concept_id and embedding is not None:
@@ -436,6 +447,7 @@ class ConceptExtractor:
                 evidence_kind="extractor_synonym_merge",
                 similarity_score=best_sim,
                 existing_concept_id=best_match.id,
+                support_source=support_source,
             )
             return concept_id
 
@@ -452,6 +464,7 @@ class ConceptExtractor:
                 evidence_kind="extractor_polysemy",
                 similarity_score=best_sim,
                 embedding=embedding,
+                support_source=support_source,
             )
             # concept_id == best_match.id：Gate 判定為同一件事而 expand 既有概念，不建自環邊
             if concept_id and best_match.id and concept_id != best_match.id:

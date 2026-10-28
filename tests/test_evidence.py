@@ -210,26 +210,10 @@ def test_force_remember_tool_declares_origin_params():
     assert "content_origin" not in props["required"]
 
 
-def test_store_observation_is_tool_note(engine, monkeypatch):
+def test_store_observation_is_tool_note(engine, mcp_handlers):
     import asyncio
-    import importlib
-    import sys
-    import types
 
-    # 測試環境未必裝有 mcp 的完整相依（starlette）；以 stub 隔離，只驗證 handler 的寫入契約
-    mcp_mod = types.ModuleType("mcp")
-    server_mod = types.ModuleType("mcp.server")
-    server_mod.Server = object
-    types_mod = types.ModuleType("mcp.types")
-    types_mod.TextContent = object
-    types_mod.Tool = object
-    monkeypatch.setitem(sys.modules, "mcp", mcp_mod)
-    monkeypatch.setitem(sys.modules, "mcp.server", server_mod)
-    monkeypatch.setitem(sys.modules, "mcp.types", types_mod)
-    monkeypatch.delitem(sys.modules, "mcp_server.handlers", raising=False)
-    handlers = importlib.import_module("mcp_server.handlers")
-    monkeypatch.delitem(sys.modules, "mcp_server.handlers", raising=False)
-    _handle_store_observation = handlers._handle_store_observation
+    _handle_store_observation = mcp_handlers._handle_store_observation
 
     asyncio.run(_handle_store_observation(lambda _ns=None: engine, {"content": "觀察到的事"}))
     notes = [e for e in engine.episodic.list_episodes(limit=10) if e.episode_kind == "tool_note"]

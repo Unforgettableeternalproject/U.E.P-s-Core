@@ -51,6 +51,7 @@ from echo_memory.schemas.evidence_review import (
     REVIEWED_STATUSES,
     EvidenceReview,
     compute_basis_digest,
+    compute_corroboration_strength,
     decide_review_status,
     noisy_or,
 )
@@ -589,16 +590,28 @@ class EvidenceReviewer:
             notes.append("agent_only_cap")
 
         corroborated: list[str] = []
+        corro_strength: float | None = None
         if claim_kind == "intention":
             corroborated = self._eligible_corroborators(corro_ids, cited_units, shown)
             if corro_ids and not corroborated:
                 notes.append("corroboration_not_eligible")
+            if corroborated:
+                # 他人佐證也乘學習權重再進 noisy-OR；權重不足（例如群聊低權重）維持 insufficient
+                corro_strength = compute_corroboration_strength(
+                    [shown[i] for i in corroborated], self._cfg,
+                )
 
         before_gate = status
-        status = decide_review_status(status, strength, claim_kind, corroborated, self._cfg)
+        status = decide_review_status(
+            status, strength, claim_kind, corroborated, self._cfg,
+            corroboration_strength=corro_strength,
+        )
         if before_gate == "supported" and status == "insufficient":
             if claim_kind == "intention":
-                notes.append("intention_needs_corroboration")
+                notes.append(
+                    "corroboration_below_threshold" if corroborated
+                    else "intention_needs_corroboration"
+                )
             else:
                 notes.append("below_support_threshold")
 
@@ -608,7 +621,7 @@ class EvidenceReviewer:
         review = self._build_review(
             snap, status=status, strength=strength, cited=cited_ids, claim_kind=claim_kind,
             corroborated=corroborated, scope=scope, reason=reason or "LLM 證據審核",
-            reviewer="llm",
+            reviewer="llm", corroboration_strength=corro_strength,
         )
         return _Decision(review=review, notes=notes)
 
@@ -692,6 +705,7 @@ class EvidenceReviewer:
         scope: dict[str, Any],
         reason: str,
         reviewer: str,
+        corroboration_strength: float | None = None,
     ) -> EvidenceReview:
         return EvidenceReview(
             status=status,
@@ -707,6 +721,7 @@ class EvidenceReviewer:
             reason=reason,
             claim_kind=claim_kind,
             corroborated_by=list(corroborated),
+            corroboration_strength=corroboration_strength,
         )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1158,6 +1173,7 @@ class EvidenceReviewer:
             if status == "supported":
                 status = decide_review_status(
                     "supported", review.support_strength, review.claim_kind, remaining, self._cfg,
+                    corroboration_strength=review.corroboration_strength,
                 )
             new = dataclasses.replace(
                 review,

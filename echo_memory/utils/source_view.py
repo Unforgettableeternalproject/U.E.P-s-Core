@@ -192,6 +192,47 @@ def render_episode_block(
     return head + f"\n{pad}".join(lines)
 
 
+def user_only_summary(
+    episode: Any,
+    units: Sequence[EvidenceUnit],
+    *,
+    max_chars: int | None = 150,
+) -> str:
+    """只用 user 文字的 Episode 摘要（與共享輪次 summary 只取 user 文字的規則一致）。
+
+    不使用 content_summary（舊資料可能混有 agent 原文）。來源未確認的 user 文字加註標示，
+    助手、工具、系統內容一律不進摘要。無 user 文字時回傳空字串。
+    """
+    parts: list[str] = []
+    for u in units:
+        kind = classify_unit(u)
+        content = (u.content or "").strip()
+        if not content:
+            continue
+        if kind == "user_claim":
+            parts.append(content)
+        elif kind == "user_legacy":
+            parts.append(f"（來源未確認）{content}")
+    return _clip(" ".join(parts), max_chars)
+
+
+def recent_user_summaries(
+    evidence_store: Any | None,
+    episodes: Iterable[Any],
+    *,
+    max_chars: int | None = 150,
+) -> list[str]:
+    """批次產生來源感知的 user-only 摘要（供 Reflection 的 recent_summaries 使用）。"""
+    episodes = list(episodes)
+    units_by_episode = load_units(evidence_store, episodes)
+    summaries = []
+    for ep in episodes:
+        text = user_only_summary(ep, units_for(ep, units_by_episode), max_chars=max_chars)
+        if text:
+            summaries.append(text)
+    return summaries
+
+
 def attested_text(episode: Any, units: Sequence[EvidenceUnit]) -> str:
     """可作語意比對的文字：排除未說出口的 agent 內容；優先已說出口的 agent，其次其餘。"""
     agent = [

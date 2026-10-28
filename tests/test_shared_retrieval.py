@@ -678,7 +678,7 @@ class TestMcpNamespacePolicy:
         handlers = (base / "handlers.py").read_text(encoding="utf-8")
         server = (base / "server.py").read_text(encoding="utf-8")
         assert "check_namespace_access(" in handlers and "write=True" in handlers
-        assert handlers.count("write=True") == 4  # store_episode／trigger_dream／store_observation／request_hypothesis_review
+        assert handlers.count("write=True") == 5  # store_episode／trigger_dream／store_observation／request_hypothesis_review／review_concept
         assert "check_namespace_access(namespace_id, policy_from_config())" in server
 
 

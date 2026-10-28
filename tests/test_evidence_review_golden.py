@@ -848,11 +848,10 @@ class TestGateLockedPreconditions:
 
 
 class TestSearchConceptsFilter:
-    def test_superseded_and_merged_hidden(self, engine, gate):
+    def test_superseded_and_merged_hidden(self, engine, gate, mcp_handlers):
         import asyncio
 
-        pytest.importorskip("starlette")  # mcp handlers 需要 starlette；此環境缺時略過
-        from mcp_server.handlers import _handle_search_concepts
+        _handle_search_concepts = mcp_handlers._handle_search_concepts
 
         ep = user_ep(engine, "x")
         live = make_concept(engine, gate, "現行", [ep])

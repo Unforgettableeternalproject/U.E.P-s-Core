@@ -155,6 +155,8 @@ class EvidenceReview:
         patch_id: 寫入這筆審核的 review patch id（rollback／追溯用）
         claim_kind: fact / preference / state / intention（審核 LLM 判斷）
         corroborated_by: 交叉佐證的 unit id（intention 要 supported 必須非空）
+        corroboration_strength: 本 namespace 內 unit 佐證的學習權重 noisy-OR（M-13）；
+            None＝未計算（舊資料），沿用「有佐證即可」。有值且無 sp: 參考時須達 SUPPORT_THRESHOLD
     """
 
     status: str = "not_checked"
@@ -173,6 +175,7 @@ class EvidenceReview:
     # 主張類型與交叉佐證（§8.3）
     claim_kind: str = "fact"
     corroborated_by: list[str] = field(default_factory=list)  # 佐證 unit id
+    corroboration_strength: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -191,6 +194,10 @@ class EvidenceReview:
             "patch_id": self.patch_id,
             "claim_kind": self.claim_kind,
             "corroborated_by": list(self.corroborated_by),
+            "corroboration_strength": (
+                None if self.corroboration_strength is None
+                else round(float(self.corroboration_strength), 4)
+            ),
         }
 
     @classmethod
@@ -231,6 +238,10 @@ class EvidenceReview:
             claim_kind=claim_kind,
             corroborated_by=(
                 [str(x) for x in corroborated] if isinstance(corroborated, list) else []
+            ),
+            corroboration_strength=(
+                None if data.get("corroboration_strength") is None
+                else _clamp01(data.get("corroboration_strength"))
             ),
         )
 
@@ -312,6 +323,29 @@ def noisy_or(weights: Any) -> float:
     return max(0.0, min(1.0, 1.0 - prod))
 
 
+def compute_corroboration_strength(units: Any, cfg: Any = None) -> float:
+    """intention 交叉佐證的合成強度：各佐證 unit 乘學習權重後做 noisy-OR（同 episode 取最大）。
+
+    known 的 observation（平台觀察）權重 1.0；可作證的使用者陳述用 learning_weight
+    （群聊在場人數多 -> 權重低）；其餘來源不計。輸入已由呼叫端做過結構資格篩選。
+    """
+    from echo_memory.schemas.evidence import can_attest_user_claim, learning_weight
+
+    by_group: dict[str, float] = {}
+    for unit in units:
+        if unit.tombstoned_at is not None:
+            continue
+        if unit.source_type == "observation":
+            w = 1.0 if unit.provenance_status == "known" else 0.0
+        elif can_attest_user_claim(unit):
+            w = learning_weight(unit, cfg)
+        else:
+            continue
+        group = unit.episode_id or unit.id
+        by_group[group] = max(by_group.get(group, 0.0), w)
+    return noisy_or(by_group.values())
+
+
 def compute_support_strength(units: Any, cfg: Any = None) -> float:
     """獨立使用者陳述以 noisy-OR 合成 support_strength（§8.2）。
 
@@ -337,21 +371,33 @@ def decide_review_status(
     claim_kind: str = "fact",
     corroborated_by: Any = (),
     cfg: Any = None,
+    corroboration_strength: float | None = None,
 ) -> str:
     """由「LLM 判定」＋門檻決定最終 review status（§8.2、§8.3）。
 
     - LLM 判 supported 但 support_strength < SUPPORT_THRESHOLD -> insufficient
     - claim_kind=intention 且無 corroborated_by -> 最高 insufficient；
-      有交叉佐證時佐證本身即證據，不再套 support_strength 門檻
+      有交叉佐證時佐證本身即證據，不再套 support_strength 門檻，但他人佐證也要乘學習權重：
+      給了 corroboration_strength 且佐證中沒有 sp: 共享投影參考時，須 >= SUPPORT_THRESHOLD
+      （sp: 參考在寫入時已各自過門檻）；沒給（None）沿用「有佐證即可」
     - contradicted／insufficient 照 LLM 判定；非法值視為 insufficient
     """
     if llm_status not in REVIEWED_STATUSES:
         return "insufficient"
     if llm_status != "supported":
         return llm_status
-    if claim_kind == "intention":
-        return "supported" if list(corroborated_by) else "insufficient"
     if cfg is None:
         from echo_memory.config import get_config
         cfg = get_config()
+    if claim_kind == "intention":
+        refs = list(corroborated_by)
+        if not refs:
+            return "insufficient"
+        if corroboration_strength is None or any(is_sp_ref(r) for r in refs):
+            return "supported"
+        return (
+            "supported"
+            if _clamp01(corroboration_strength) >= float(cfg.support_threshold)
+            else "insufficient"
+        )
     return "supported" if _clamp01(support_strength) >= float(cfg.support_threshold) else "insufficient"

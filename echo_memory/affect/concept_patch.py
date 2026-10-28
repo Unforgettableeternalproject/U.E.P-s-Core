@@ -112,6 +112,9 @@ class PatchEvidence:
         "replay_reinforcement",
         "graph_pruning",
         "distillation",
+        "latent_bridge",
+        "procedure_extraction",
+        "entity_extraction",
         # ReflectionExecutor 來源
         "reflection_create",
         "reflection_tag",

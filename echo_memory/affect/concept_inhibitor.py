@@ -96,6 +96,16 @@ def _producer_for_kind(evidence_kind: str | None) -> str:
         return "reflection"
     if kind == "evidence_review":
         return "reviewer"
+    # Dream 圖譜／episode／procedure 類階段（細分 producer）
+    dream_stage_kinds = {
+        "replay_reinforcement": "dream_replay",
+        "graph_pruning": "dream_pruning",
+        "latent_bridge": "dream_bridge",
+        "procedure_extraction": "dream_procedure",
+        "entity_extraction": "dream_entity",
+    }
+    if kind in dream_stage_kinds:
+        return dream_stage_kinds[kind]
     return "unknown"
 
 

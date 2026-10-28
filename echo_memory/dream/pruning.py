@@ -9,9 +9,11 @@ Graph Pruning - 圖譜修剪模組
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from echo_memory.config import get_config
+from echo_memory.schemas.evidence_review import compute_basis_digest
 from echo_memory.storage.graph import MemoryGraph
 
 logger = logging.getLogger("echo_memory.dream.pruning")
@@ -69,7 +71,13 @@ class GraphPruning:
     _ARCHIVE_SALIENCE_THRESHOLD = 0.2
     _ARCHIVE_MIN_AGE_DAYS = 30
 
-    def __init__(self, graph: MemoryGraph, semantic=None, patch_coordinator=None):
+    def __init__(
+        self,
+        graph: MemoryGraph,
+        semantic=None,
+        patch_coordinator=None,
+        bridge_suppressed: Callable[[str, str], bool] | None = None,
+    ):
         """
         初始化修剪器。
 
@@ -77,13 +85,99 @@ class GraphPruning:
             graph: MemoryGraph 實例
             semantic: SemanticMemory 實例（用於 LATENT_BRIDGE，可選）
             patch_coordinator: DreamPatchCoordinator 實例（審計用，可選）
+            bridge_suppressed: (concept_a_id, concept_b_id) -> bool。回傳 True 的配對
+                不建立／不重新確認 LATENT_BRIDGE（預留給 Hypothesis refuted 後抑制）。
+                None＝不抑制；回呼丟例外視為不抑制並記 log。
         """
         self.graph = graph
+        self._bridge_suppressed = bridge_suppressed
         self._semantic = semantic
         self._patch_coordinator = patch_coordinator
         self.min_weight_threshold = 0.05  # 最低權重閾值（低於此值的邊將被刪除）
         self.isolated_node_grace_days = 7  # 孤立節點保留天數
         self._last_bridges_confirmed = 0  # 最近一次 _create_latent_bridges 重新確認的 bridge 數
+
+    # ── 逐條 mutation 紀錄輔助 ─────────────────────────────
+
+    _PROVENANCE_CAP = 50  # bridge 邊上保留的來源 id／derivation 上限
+
+    def _record(self, stage: str, entries: list[dict]) -> bool:
+        """套用前寫入逐條紀錄；無 coordinator 時視為通過。回傳 False 時呼叫方須阻止 mutation。"""
+        if self._patch_coordinator is None or not entries:
+            return True
+        return self._patch_coordinator.record_mutations(stage, entries)
+
+    def _cycle_id(self) -> str:
+        return self._patch_coordinator.cycle_id if self._patch_coordinator is not None else ""
+
+    def _is_suppressed(self, id_a: str, id_b: str) -> bool:
+        if self._bridge_suppressed is None:
+            return False
+        try:
+            return bool(self._bridge_suppressed(id_a, id_b))
+        except Exception as e:
+            logger.warning("[GraphPruning] bridge_suppressed 回呼失敗（視為不抑制）: %s", e)
+            return False
+
+    def _edge_entry(
+        self,
+        u: str,
+        v: str,
+        mutation: str,
+        reason: str,
+        prior: dict | None,
+        new: dict | None = None,
+        extra: dict | None = None,
+    ) -> dict:
+        """組一筆邊 mutation 紀錄；端點依節點型別歸入 source_episode_ids／source_concept_ids。"""
+        episodes: list[str] = []
+        concepts: list[str] = []
+        for nid in (u, v):
+            ntype = (
+                self.graph.graph.nodes[nid].get("node_type")
+                if self.graph.graph.has_node(nid) else None
+            )
+            if ntype == "Episode":
+                episodes.append(nid)
+            elif ntype == "Concept":
+                concepts.append(nid)
+        edge_type = (prior or {}).get("edge_type") or (new or {}).get("edge_type", "")
+        entry = {
+            "mutation": mutation,
+            "target": {"from": u, "to": v, "edge_type": edge_type},
+            "source_episode_ids": episodes,
+            "source_concept_ids": concepts,
+            "prior": prior,
+            "reason": reason,
+        }
+        if new is not None:
+            entry["new"] = new
+        if extra:
+            entry["extra"] = extra
+        return entry
+
+    def _concept_provenance(self, concept_id: str) -> dict:
+        """端點概念的來源摘要（來源 episode 與 derivation 參照），供 bridge 邊 provenance 使用。"""
+        concept = self._semantic.get(concept_id) if self._semantic is not None else None
+        if concept is None:
+            return {"concept_id": concept_id, "source_episode_ids": [], "derivations": []}
+        cap = self._PROVENANCE_CAP
+        return {
+            "concept_id": concept_id,
+            "name": concept.name,
+            "version": getattr(concept, "version", None),
+            "source_episode_ids": list(concept.source_episode_ids)[:cap],
+            "derivations": [
+                {"kind": d.get("kind"), "id": d.get("id"), "producer": d.get("producer")}
+                for d in (concept.derivations or [])[:cap]
+                if isinstance(d, dict)
+            ],
+        }
+
+    def _endpoint_digest(self, concept_id: str) -> str:
+        """端點概念當下的 basis_digest；概念不存在回傳空字串。"""
+        concept = self._semantic.get(concept_id) if self._semantic is not None else None
+        return compute_basis_digest(concept) if concept is not None else ""
 
     def run(self) -> PruningReport:
         """
@@ -109,7 +203,7 @@ class GraphPruning:
         report.nodes_archived = self._archive_stale_nodes()
 
         # 3. 更新 max_frequency 正規化基準（對齊 OpenSoul _update_max_frequency）
-        report.max_frequency_updated = self.graph.recalc_max_frequency()
+        report.max_frequency_updated = self._recalc_max_frequency()
 
         # 4. 建立 LATENT_BRIDGE（跨域橋接 / 頓悟機制）
         if self._semantic is not None:
@@ -134,6 +228,19 @@ class GraphPruning:
         )
 
         return report
+
+    def _recalc_max_frequency(self) -> int:
+        """重算 max_frequency 正規化基準；先寫逐條紀錄（含前值），audit 失敗則維持原值。"""
+        prior = getattr(self.graph, "_max_frequency", 1)
+        if not self._record("pruning", [{
+            "mutation": "max_frequency",
+            "target": {"graph": "memory_graph"},
+            "prior": {"max_frequency": prior},
+            "reason": "recalc_max_frequency",
+        }]):
+            logger.warning("[GraphPruning] audit 失敗，跳過 max_frequency 重算")
+            return prior
+        return self.graph.recalc_max_frequency()
 
     def _find_weak_edges(self) -> list[tuple[str, str]]:
         """
@@ -174,6 +281,18 @@ class GraphPruning:
             if not self._patch_coordinator.audit_graph_edge_removal(edges, reason="weak_edge_pruning"):
                 logger.warning("[GraphPruning] audit 失敗，跳過邊移除 (%d 條)", len(edges))
                 return 0
+
+        # 逐條紀錄（含前值）：audit 失敗同樣阻止移除
+        entries = [
+            self._edge_entry(
+                u, v, "edge_remove", "weak_edge_pruning",
+                prior=dict(self.graph.graph[u][v]),
+            )
+            for u, v in edges if self.graph.graph.has_edge(u, v)
+        ]
+        if not self._record("pruning", entries):
+            logger.warning("[GraphPruning] 逐條 audit 失敗，跳過邊移除 (%d 條)", len(edges))
+            return 0
 
         with self.graph.lock:
             self.graph.graph.remove_edges_from(edges)
@@ -222,8 +341,8 @@ class GraphPruning:
         Returns:
             歸檔的節點數
         """
-        archived_count = 0
         archived_node_ids: list[str] = []
+        archive_priors: dict[str, dict] = {}
         min_age_seconds = self._ARCHIVE_MIN_AGE_DAYS * 24 * _SECONDS_PER_HOUR
 
         for node_id, data in self.graph.graph.nodes(data=True):
@@ -259,21 +378,35 @@ class GraphPruning:
                 except (ValueError, TypeError):
                     continue
 
-            # 標記歸檔
-            data["archived"] = True
-            archived_count += 1
+            # 只收集候選；audit 通過後才標記（audit-before-mutate）
             archived_node_ids.append(node_id)
+            archive_priors[node_id] = {
+                "archived": bool(data.get("archived", False)),
+                "salience_score": salience,
+            }
 
+        archived_count = len(archived_node_ids)
         if archived_count:
-            # Audit-before-mutate：已標記但 audit 失敗時還原
             if self._patch_coordinator is not None:
                 if not self._patch_coordinator.audit_graph_node_archive(archived_node_ids):
-                    # 還原歸檔標記
-                    for node_id in archived_node_ids:
-                        if self.graph.graph.has_node(node_id):
-                            self.graph.graph.nodes[node_id]["archived"] = False
-                    logger.warning("[GraphPruning] audit 失敗，還原 %d 個節點歸檔", archived_count)
+                    logger.warning("[GraphPruning] audit 失敗，跳過 %d 個節點歸檔", archived_count)
                     return 0
+                entries = [
+                    {
+                        "mutation": "node_archive",
+                        "target": {"node_id": nid},
+                        "source_episode_ids": [nid],
+                        "prior": archive_priors[nid],
+                        "new": {"archived": True},
+                        "reason": "stale_node_archive",
+                    }
+                    for nid in archived_node_ids
+                ]
+                if not self._record("pruning", entries):
+                    logger.warning("[GraphPruning] 逐條 audit 失敗，跳過 %d 個節點歸檔", archived_count)
+                    return 0
+            for nid in archived_node_ids:
+                self.graph.graph.nodes[nid]["archived"] = True
             logger.info(f"[GraphPruning] 歸檔 {archived_count} 個低價值節點")
 
         return archived_count
@@ -345,6 +478,9 @@ class GraphPruning:
                 similarity = float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
                 if similarity < self._BRIDGE_SIMILARITY_THRESHOLD:
                     continue
+                # Hypothesis 已否決的配對：不建立也不重新確認（既有邊自然過期）
+                if self._is_suppressed(id_a, id_b):
+                    continue
 
                 # 檢查是否已有邊：LATENT_BRIDGE 重新確認；其他任何邊（RELATES_TO、
                 # CONTRADICTS 等）一律跳過，避免以 LATENT_BRIDGE 覆寫既有語意（例如矛盾邊）
@@ -376,14 +512,61 @@ class GraphPruning:
                 )
                 return 0
 
-        # ── 階段 3：批量建邊 ──
-        bridges_created = 0
+        # ── 階段 2.5：逐條紀錄（bridge 帶兩端概念的來源 episode／derivation）──
         now_ts = time.time()
+        cycle_id = self._cycle_id()
+        plans: list[tuple[str, str, str, str, float, dict]] = []
+        entries: list[dict] = []
         for id_a, id_b, name_a, name_b, similarity in candidates:
-            reason = f"夢境橋接：{name_a} ↔ {name_b}（相似度 {similarity:.3f}）"
             # add_edge 會自動生出缺屬性的裸節點；建邊前確認兩端節點都存在
             if not (self.graph.graph.has_node(id_a) and self.graph.graph.has_node(id_b)):
                 continue
+            ends = [self._concept_provenance(id_a), self._concept_provenance(id_b)]
+            union_eps: list[str] = []
+            for end in ends:
+                for ep_id in end["source_episode_ids"]:
+                    if ep_id not in union_eps:
+                        union_eps.append(ep_id)
+            union_eps = union_eps[:self._PROVENANCE_CAP]
+            attrs = {
+                "bridge_id": "|".join(sorted((id_a, id_b))),  # 穩定 pair key
+                "state": "active",  # active／degraded／expired；探索式關聯，非事實
+                "degraded_reason": "",
+                "confirm_count": 1,  # 以不同 Dream 週期累計（建立週期算第一次）
+                "created_cycle_id": cycle_id,
+                "last_confirmed_cycle_id": cycle_id,
+                "endpoint_digests": {
+                    id_a: self._endpoint_digest(id_a),
+                    id_b: self._endpoint_digest(id_b),
+                },
+                "provenance": {
+                    "producer": "dream_bridge",
+                    "cycle_id": cycle_id,
+                    "similarity": similarity,
+                    "endpoints": ends,
+                    "source_episode_ids": union_eps,
+                },
+            }
+            plans.append((id_a, id_b, name_a, name_b, similarity, attrs))
+            for src, dst in [(id_a, id_b), (id_b, id_a)]:
+                entries.append({
+                    "mutation": "bridge_create",
+                    "target": {"from": src, "to": dst, "edge_type": "LATENT_BRIDGE"},
+                    "source_episode_ids": union_eps,
+                    "source_concept_ids": [id_a, id_b],
+                    "prior": None,
+                    "new": {"similarity": similarity},
+                    "reason": "latent_bridge_create",
+                    "extra": {"bridge": attrs},
+                })
+        if not self._record("bridge", entries):
+            logger.warning("[GraphPruning] 逐條 audit 失敗，跳過 LATENT_BRIDGE 建立 (%d 條)", len(plans))
+            return 0
+
+        # ── 階段 3：批量建邊 ──
+        bridges_created = 0
+        for id_a, id_b, name_a, name_b, similarity, attrs in plans:
+            reason = f"夢境橋接：{name_a} ↔ {name_b}（相似度 {similarity:.3f}）"
             for src, dst in [(id_a, id_b), (id_b, id_a)]:
                 with self.graph.lock:
                     self.graph.graph.add_edge(
@@ -394,6 +577,7 @@ class GraphPruning:
                         reason=reason,
                         created_at=now_ts,
                         last_confirmed_at=now_ts,
+                        **{k: (dict(v) if isinstance(v, dict) else v) for k, v in attrs.items()},
                     )
             bridges_created += 1
             logger.debug(
@@ -429,8 +613,26 @@ class GraphPruning:
                 return 0
         import time
         now_ts = time.time()
+        cycle_id = self._cycle_id()
+
+        # 逐條紀錄（含前值）：audit 失敗則不刷新
+        entries: list[dict] = []
+        for src, dst, similarity in pairs:
+            for a, b in ((src, dst), (dst, src)):
+                if self.graph.graph.has_edge(a, b):
+                    data = self.graph.graph[a][b]
+                    if data.get("edge_type") == "LATENT_BRIDGE":
+                        entries.append(self._edge_entry(
+                            a, b, "bridge_confirm", "latent_bridge_reconfirm",
+                            prior=dict(data), new={"similarity": similarity},
+                        ))
+        if not self._record("bridge", entries):
+            logger.warning("[GraphPruning] 逐條 audit 失敗，跳過 bridge 重新確認 (%d 條)", len(entries))
+            return 0
+
         pair_keys: set[frozenset[str]] = set()
         for src, dst, similarity in pairs:
+            digests = {src: self._endpoint_digest(src), dst: self._endpoint_digest(dst)}
             for a, b in ((src, dst), (dst, src)):
                 if self.graph.graph.has_edge(a, b):
                     data = self.graph.graph[a][b]
@@ -438,6 +640,13 @@ class GraphPruning:
                         data["last_confirmed_at"] = now_ts
                         data["similarity"] = similarity
                         data["weight"] = similarity
+                        data["endpoint_digests"] = dict(digests)
+                        data.setdefault("bridge_id", "|".join(sorted((src, dst))))
+                        # 不同週期才累計 confirm_count；舊邊缺欄位視為 0
+                        if cycle_id and data.get("last_confirmed_cycle_id") != cycle_id:
+                            data["confirm_count"] = int(data.get("confirm_count", 0)) + 1
+                        if cycle_id:
+                            data["last_confirmed_cycle_id"] = cycle_id
             pair_keys.add(frozenset((src, dst)))
         return len(pair_keys)
 
@@ -471,13 +680,37 @@ class GraphPruning:
             )
 
         to_remove: list[tuple[str, str]] = []
+        remove_entries: list[dict] = []
+        to_degrade: list[tuple[str, str]] = []
+        degrade_entries: list[dict] = []
         for u, v, data in self.graph.graph.edges(data=True):
             if data.get("edge_type") != "LATENT_BRIDGE":
                 continue
             ref = data.get("last_confirmed_at") or data.get("created_at") or now_ts
             expired = expire_secs > 0 and (now_ts - ref) > expire_secs
-            if expired or _inactive(u) or _inactive(v):
+            # 撤銷原因（結構性判斷）：端點失效／逾期 -> 移除；兩端出現 CONTRADICTS -> 降級
+            if _inactive(u) or _inactive(v) or expired:
+                why = "endpoint_inactive" if (_inactive(u) or _inactive(v)) else "expired"
                 to_remove.append((u, v))
+                remove_entries.append(self._edge_entry(
+                    u, v, "bridge_revoke", why, prior=dict(data),
+                    new={"state": "expired", "degraded_reason": why},
+                ))
+            elif data.get("state", "active") == "active" and self.graph.has_contradicts_edge(u, v):
+                to_degrade.append((u, v))
+                degrade_entries.append(self._edge_entry(
+                    u, v, "bridge_degrade", "endpoint_contradicts", prior=dict(data),
+                    new={"state": "degraded", "degraded_reason": "endpoint_contradicts"},
+                ))
+
+        # 降級（保留邊，檢索排除）：audit-before-mutate
+        if to_degrade and self._record("bridge", degrade_entries):
+            for u, v in to_degrade:
+                self.graph.graph[u][v]["state"] = "degraded"
+                self.graph.graph[u][v]["degraded_reason"] = "endpoint_contradicts"
+            logger.info("[GraphPruning] 降級 %d 條 LATENT_BRIDGE（端點出現 CONTRADICTS）", len(to_degrade))
+        elif to_degrade:
+            logger.warning("[GraphPruning] 逐條 audit 失敗，跳過 bridge 降級 (%d 條)", len(to_degrade))
 
         if not to_remove:
             return 0
@@ -487,6 +720,9 @@ class GraphPruning:
             ):
                 logger.warning("[GraphPruning] audit 失敗，跳過 bridge 過期清除 (%d 條)", len(to_remove))
                 return 0
+        if not self._record("bridge", remove_entries):
+            logger.warning("[GraphPruning] 逐條 audit 失敗，跳過 bridge 撤銷 (%d 條)", len(to_remove))
+            return 0
         with self.graph.lock:
             self.graph.graph.remove_edges_from(to_remove)
         # 清掉 bridge 殘留的裸節點：無任何屬性（add_edge 自動生成）且已無邊

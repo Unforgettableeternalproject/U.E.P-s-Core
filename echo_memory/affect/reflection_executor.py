@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,9 @@ _MAX_OPS = 3
 
 def parse_reflection_to_actions(
     reflection: ReflectionOutput,
+    *,
+    cycle_id: str | None = None,
+    source_episode_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     將 ReflectionOutput.memory_ops 轉為 ActionQueue 可接受的 enqueue 參數列表。
@@ -69,6 +73,8 @@ def parse_reflection_to_actions(
 
     Args:
         reflection: 反思模組的輸出
+        cycle_id: 本次反思週期 ID（寫入 params["_provenance"]，供 EpisodeGate 記錄來源）
+        source_episode_ids: 觸發本次反思的 episode IDs
 
     Returns:
         轉換後的行動參數列表
@@ -82,6 +88,12 @@ def parse_reflection_to_actions(
         raw_ops = raw_ops[:_MAX_OPS]
 
     actions: list[dict[str, Any]] = []
+    provenance: dict[str, Any] | None = None
+    if cycle_id or source_episode_ids:
+        provenance = {
+            "reflection_cycle_id": cycle_id,
+            "source_episode_ids": list(source_episode_ids or []),
+        }
 
     for i, op in enumerate(raw_ops):
         if not isinstance(op, dict):
@@ -106,10 +118,13 @@ def parse_reflection_to_actions(
             )
             continue
 
+        params = dict(op.get("params", {})) if isinstance(op.get("params"), dict) else {}
+        if provenance is not None:
+            params["_provenance"] = dict(provenance)
         actions.append({
             "action_type": str(op_type),
             "target_id": str(op.get("target", "")),
-            "params": op.get("params", {}) if isinstance(op.get("params"), dict) else {},
+            "params": params,
             "reasoning": str(op.get("reason", "")),
         })
 
@@ -144,16 +159,20 @@ class ReflectionExecutor:
         engine: Any,
         soul_notes: Any | None = None,
         concept_inhibitor: Any | None = None,
+        episode_gate: Any | None = None,
     ):
         """
         Args:
             engine: MemoryEngine 實例
             soul_notes: SoulNoteManager 實例（用於 add_note 操作）
             concept_inhibitor: ConceptInhibitor 實例（可選，用於概念變更 audit）
+            episode_gate: EpisodeGate 實例（可選，adjust_salience／archive_episode／add_note 的
+                audit-before-mutate 入口；未注入時依 engine.storage_path 建立）
         """
         self._engine = engine
         self._soul_notes = soul_notes
         self._inhibitor = concept_inhibitor
+        self._episode_gate_inst = episode_gate
 
         # action_type → 執行方法映射
         self._dispatch: dict[str, Any] = {
@@ -179,6 +198,44 @@ class ReflectionExecutor:
 
             self._inhibitor = ConceptInhibitor(semantic=self._engine.semantic, llm_fn=None)
         return self._inhibitor
+
+    def _episode_gate(self) -> Any:
+        """取得 EpisodeGate。audit 檔放在 engine.storage_path 下；無可用路徑時只留記憶體記錄。"""
+        if self._episode_gate_inst is None:
+            from echo_memory.affect.episode_gate import EpisodeGate
+
+            storage_path = getattr(self._engine, "storage_path", None)
+            audit_path = (
+                Path(storage_path) / "episode_gate_audit.jsonl"
+                if isinstance(storage_path, (str, Path)) else None
+            )
+            self._episode_gate_inst = EpisodeGate(audit_path)
+        return self._episode_gate_inst
+
+    @staticmethod
+    def _gate_context(
+        params: dict[str, Any] | None = None,
+        pre_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """組 EpisodeGate 的 audit 脈絡（行動 id、來源、理由）。前向取 params，回滾取 pre_state。"""
+        src = params if params is not None else (pre_state or {})
+        return {
+            "action_id": src.get("_action_id") or src.get("action_id"),
+            "provenance": src.get("_provenance") or src.get("provenance") or {},
+            "reasoning": str(src.get("_reasoning") or src.get("reasoning") or ""),
+        }
+
+    def bind_action(self, action: Any) -> None:
+        """把 queue 行動的 id／理由綁進 params 與 pre_state，讓 EpisodeGate 記得到行動 id。
+
+        須在 enqueue 且設定 pre_state 之後、persist_action 之前呼叫；
+        重建（_restore_pending_from_audit）後仍從持久化的 params／pre_state 取得。
+        """
+        action.params["_action_id"] = action.id
+        action.params["_reasoning"] = action.reasoning
+        if action.pre_state:
+            action.pre_state["action_id"] = action.id
+            action.pre_state["reasoning"] = action.reasoning
 
     def build_executor_fn(self):
         """
@@ -558,10 +615,13 @@ class ReflectionExecutor:
         self, action_type: str, target_id: str, pre_state: dict[str, Any]
     ) -> None:
         """依 action_type 執行實際回滾（由 build_rollback_fn 包上 storage_lock 後呼叫）。"""
+        ctx = self._gate_context(pre_state=pre_state)
         if action_type == "adjust_salience":
             old = pre_state.get("salience_score")
             if old is not None:
-                self._engine.episodic.update_salience(target_id, old)
+                self._episode_gate().restore_salience(
+                    self._engine.episodic, target_id, old, ctx,
+                )
 
         elif action_type == "tag_concept":
             old_tags = pre_state.get("tags")
@@ -569,11 +629,8 @@ class ReflectionExecutor:
                 self._gated_undo("undo_tag", target_id, {"tags": old_tags})
 
         elif action_type == "archive_episode":
-            old_salience = pre_state.get("salience_score")
-            if old_salience is not None:
-                self._engine.episodic.update_salience(target_id, old_salience)
-            self._engine.episodic.update_episode_metadata(
-                target_id, {"archived": False, "archived_by": None}
+            self._episode_gate().restore_archive(
+                self._engine.episodic, target_id, pre_state, ctx,
             )
 
         elif action_type == "create_concept":
@@ -581,10 +638,11 @@ class ReflectionExecutor:
                 self._gated_undo("undo_create", target_id, {})
 
         elif action_type == "add_note":
-            # SoulNote 不支援刪除，rollback 無法還原
-            logger.warning(
-                "[ReflectionExecutor] add_note 不支援 rollback"
-            )
+            # SoulNote 不支援刪除：追加撤回標記（經 EpisodeGate 留 audit）
+            note_id = pre_state.get("note_id")
+            if not note_id or self._soul_notes is None:
+                raise ValueError("add_note 回滾缺少 note_id 或 SoulNoteManager 未配置")
+            self._episode_gate().retract_note(self._soul_notes, note_id, ctx)
 
         elif action_type == "merge_concepts":
             # 次概念只是被標成 merged（資料與合併前主概念快照都還在），可完整還原
@@ -617,7 +675,16 @@ class ReflectionExecutor:
             if action_type == "adjust_salience":
                 ep = self._engine.episodic.get(target_id)
                 if ep:
-                    return {"salience_score": ep.salience_score}
+                    return self._with_provenance(
+                        {"salience_score": ep.salience_score}, params,
+                    )
+
+            elif action_type == "add_note":
+                # 預先配發 note_id（寫入 params 與 pre_state），回滾才能精確撤回；
+                # pre_state 為空時 ActionQueue.rollback 不會呼叫 rollback_fn
+                note_id = params.get("_note_id") or f"note_{uuid.uuid4().hex[:12]}"
+                params["_note_id"] = note_id
+                return self._with_provenance({"note_id": note_id}, params)
 
             elif action_type == "tag_concept":
                 concept = self._engine.semantic.get_by_name(target_id)
@@ -649,10 +716,11 @@ class ReflectionExecutor:
             elif action_type == "archive_episode":
                 ep = self._engine.episodic.get(target_id)
                 if ep:
-                    return {
+                    return self._with_provenance({
                         "salience_score": ep.salience_score,
                         "archived": ep.metadata.get("archived", False),
-                    }
+                        "archived_by": ep.metadata.get("archived_by"),
+                    }, params)
 
             elif action_type == "create_concept":
                 existing = self._engine.semantic.get_by_name(target_id)
@@ -670,6 +738,14 @@ class ReflectionExecutor:
 
         return {}
 
+    @staticmethod
+    def _with_provenance(state: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        """把來源（反思週期／觸發 episode）帶進 pre_state，重建後回滾的 audit 仍有來源。"""
+        prov = params.get("_provenance")
+        if prov:
+            state["provenance"] = copy.deepcopy(prov)
+        return state
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 各行動的具體實作
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -677,20 +753,13 @@ class ReflectionExecutor:
     def _exec_adjust_salience(
         self, target_id: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """調整 episode 的顯著性分數。"""
+        """調整 episode 的顯著性分數（經 EpisodeGate：audit 先行、可回滾）。"""
         new_salience = float(params.get("new_salience", 0.5))
         new_salience = min(1.0, max(0.0, new_salience))
-
-        ep = self._engine.episodic.get(target_id)
-        if ep is None:
-            raise ValueError(f"Episode 不存在: {target_id}")
-
-        old_salience = ep.salience_score
-        ok = self._engine.episodic.update_salience(target_id, new_salience)
-        if not ok:
-            raise RuntimeError(f"update_salience 失敗: {target_id}")
-
-        return {"old_salience": old_salience, "new_salience": new_salience}
+        return self._episode_gate().adjust_salience(
+            self._engine.episodic, target_id, new_salience,
+            self._gate_context(params),
+        )
 
     def _exec_tag_concept(
         self, target_id: str, params: dict[str, Any]
@@ -724,20 +793,13 @@ class ReflectionExecutor:
         if self._soul_notes is None:
             raise RuntimeError("SoulNoteManager 未配置，無法寫入 note")
 
-        from echo_memory.affect.soul_note import SoulNote
-
         content = str(params.get("content", ""))
         if not content:
             raise ValueError("add_note 缺少 content 參數")
 
-        self._soul_notes.add_note(SoulNote(
-            category="reflection_action",
-            content=content,
-            metadata={"source": "reflection_executor"},
-            tags=["reflection", "auto"],
-        ))
-
-        return {"written": True, "content_length": len(content)}
+        return self._episode_gate().add_note(
+            self._soul_notes, content, params.get("_note_id"), self._gate_context(params),
+        )
 
     def _exec_merge_concepts(
         self, target_id: str, params: dict[str, Any]
@@ -774,25 +836,12 @@ class ReflectionExecutor:
         return result
 
     def _exec_archive_episode(
-        self, target_id: str, _params: dict[str, Any]
+        self, target_id: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """歸檔 episode（原子性：一次 lock 內完成 salience 降低 + metadata 標記）。"""
-        ep = self._engine.episodic.get(target_id)
-        if ep is None:
-            raise ValueError(f"Episode 不存在: {target_id}")
-
-        old_salience = ep.salience_score
-
-        # 原子操作：一次 lock 內完成 salience + metadata 更新
-        ok = self._engine.episodic.archive_episode(target_id)
-        if not ok:
-            raise RuntimeError(f"archive_episode 失敗: {target_id}")
-
-        return {
-            "old_salience": old_salience,
-            "new_salience": 0.05,
-            "archived": True,
-        }
+        """歸檔 episode（經 EpisodeGate：audit 先行；底層一次 lock 內完成 salience 降低 + metadata 標記）。"""
+        return self._episode_gate().archive_episode(
+            self._engine.episodic, target_id, self._gate_context(params),
+        )
 
     def _exec_create_concept(
         self, target_id: str, params: dict[str, Any]

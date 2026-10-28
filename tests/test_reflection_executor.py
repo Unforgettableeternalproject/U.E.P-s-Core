@@ -423,10 +423,12 @@ class TestCapturePreState:
         )
         assert state == {}
 
-    def test_add_note_pre_state_empty(self, executor):
-        """add_note 沒有 pre_state（新建操作）。"""
-        state = executor.capture_pre_state("add_note", "", {})
-        assert state == {}
+    def test_add_note_pre_state_has_note_id(self, executor):
+        """add_note 預先配發 note_id（回滾撤回用），且同步寫入 params。"""
+        params = {}
+        state = executor.capture_pre_state("add_note", "", params)
+        assert state["note_id"].startswith("note_")
+        assert params["_note_id"] == state["note_id"]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -68,6 +68,7 @@ class DreamReport:
     edges_superseded: int = 0  # 其中被改判為取代（邊已移除）的數量
     edges_updated: int = 0
     error: str | None = None
+    skipped_reason: str | None = None  # 未執行的原因（租約被占用、cron 同窗口已完成等）
 
     @property
     def duration_seconds(self) -> float:
@@ -155,6 +156,8 @@ class DreamEngine:
         share_layer: Any | None = None,
         privacy_ledger: Any | None = None,
         owner_uid: str | None = None,
+        lease: Any | None = None,
+        cron_window_seconds: float = 900.0,
     ):
         """
         初始化 Dream Engine。
@@ -175,6 +178,9 @@ class DreamEngine:
             privacy_ledger: 擁有者的 PrivacyLedger；缺省取 Gate 的 privacy_ledger。分享判定必要，
                 缺少一律不分享（fail-closed）。
             owner_uid: 本 namespace 擁有者 uid（投影的 owner_uid；通常等於 namespace_id）。
+            lease: 跨行程租約（FileLease）。提供時所有觸發來源執行前都要先取得，取不到即跳過；
+                None 則不做跨行程互斥。
+            cron_window_seconds: cron 去重窗口；窗口內已有行程完成 cron 週期則跳過。
             lock_factory: 取得 storage_lock 的工廠（呼叫後回傳 context manager）。
                 手動 dream_now 與排程（idle / cron）觸發走同一條路徑，鎖語意一致：
                 只在讀快照與套用結果的短臨界區持鎖，LLM 階段一律在鎖外。
@@ -197,6 +203,8 @@ class DreamEngine:
         self._is_dreaming = False
         self._last_interaction: datetime = datetime.now(timezone.utc)
         self._last_dream_report: DreamReport | None = None
+        self._lease = lease
+        self.cron_window_seconds = cron_window_seconds
 
         # 保留 episodic 引用（給 stage 5 程序提取用）
         self._episodic_ref = episodic
@@ -321,6 +329,7 @@ class DreamEngine:
                     guard=self._guard,
                     episodic=episodic,
                     evidence_store=evidence_store,
+                    patch_coordinator=self._patch_coordinator,
                 )
             except ImportError:
                 pass
@@ -350,14 +359,19 @@ class DreamEngine:
     # 排程控制
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def start(self):
-        """啟動 APScheduler 排程器"""
+    @property
+    def is_running(self) -> bool:
+        """排程器是否正在運行。"""
+        return self._scheduler is not None and bool(self._scheduler.running)
+
+    def start(self) -> bool:
+        """啟動 APScheduler 排程器；實際啟動回傳 True，停用或已在運行回傳 False。"""
         if self._scheduler is None:
             logger.warning("[DreamEngine] apscheduler 未安裝，排程功能停用（手動觸發仍可用）")
-            return
+            return False
         if self._scheduler.running:
             logger.warning("[DreamEngine] 排程器已在運行")
-            return
+            return False
 
         # 閒置檢查（每分鐘檢查一次）
         if self.enable_idle:
@@ -395,6 +409,7 @@ class DreamEngine:
 
         self._scheduler.start()
         logger.info("[DreamEngine] 排程器已啟動")
+        return True
 
     def stop(self):
         """關閉排程器"""
@@ -402,9 +417,9 @@ class DreamEngine:
             self._scheduler.shutdown(wait=False)
             logger.info("[DreamEngine] 排程器已關閉")
 
-    def notify_interaction(self):
-        """通知有新的互動（重置閒置計時器）"""
-        self._last_interaction = datetime.now(timezone.utc)
+    def notify_interaction(self, at: datetime | None = None):
+        """通知有新的互動（重置閒置計時器）；at 供宿主補入先前累積的互動時間。"""
+        self._last_interaction = at or datetime.now(timezone.utc)
 
     def _idle_check(self):
         """檢查是否達到閒置觸發條件"""
@@ -423,6 +438,10 @@ class DreamEngine:
         """觸發夢境週期（內部調用）"""
         try:
             report = self.dream_now(triggered_by=triggered_by)
+            if report.skipped_reason:
+                # 被租約擋下：重置閒置計時，避免 idle 每分鐘重試洗版
+                self.notify_interaction()
+                return
             self._last_dream_report = report
             logger.info(f"[DreamEngine] {report.summary()}")
         except Exception as e:
@@ -458,6 +477,24 @@ class DreamEngine:
             started_at=datetime.now(timezone.utc).isoformat(),
             triggered_by=triggered_by,
         )
+
+        # 跨行程租約：取不到（他行程在跑、cron 同窗口已完成）就跳過，不阻塞
+        lease_held = False
+        if self._lease is not None:
+            window = self.cron_window_seconds if triggered_by == "cron" else None
+            ok, reason = self._lease.try_acquire(
+                owner=triggered_by,
+                skip_if_completed_within=window,
+                completion_key="last_cron_completed_at",
+            )
+            if not ok:
+                report.skipped_reason = reason
+                report.finished_at = datetime.now(timezone.utc).isoformat()
+                with self._lock:
+                    self._is_dreaming = False
+                logger.info(f"[DreamEngine] 跳過夢境週期 [{triggered_by}]: {reason}")
+                return report
+            lease_held = True
 
         try:
             logger.info(f"[DreamEngine] 開始夢境週期 [{triggered_by}]")
@@ -599,6 +636,14 @@ class DreamEngine:
         finally:
             report.finished_at = datetime.now(timezone.utc).isoformat()
             self._is_dreaming = False
+            if lease_held:
+                try:
+                    keys = ("last_completed_at",)
+                    if triggered_by == "cron":
+                        keys += ("last_cron_completed_at",)
+                    self._lease.release(completed=report.error is None, completion_keys=keys)
+                except Exception as exc:
+                    logger.warning(f"[DreamEngine] 釋放 Dream 租約失敗: {exc}")
 
         return report
 

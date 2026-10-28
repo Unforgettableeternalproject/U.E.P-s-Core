@@ -16,7 +16,19 @@ from typing import Any
 
 DERIVATION_KINDS = ("evidence", "episode", "concept")
 # 產生者；unknown 保留給無法辨識呼叫端的舊式寫入
-PRODUCERS = ("dream", "reflection", "extractor", "conversation", "reviewer", "unknown")
+PRODUCERS = (
+    "dream", "reflection", "extractor", "conversation", "reviewer", "unknown",
+    # Dream 各階段的細分產生者（逐條 mutation 紀錄用；"dream" 保留給舊資料與蒸餾 derivation）
+    "dream_replay", "dream_pruning", "dream_bridge",
+    "dream_distillation", "dream_procedure", "dream_entity",
+)
+# Dream 階段名稱 → 細分 producer
+DREAM_STAGES = ("replay", "pruning", "bridge", "distillation", "procedure", "entity")
+
+
+def dream_producer(stage: str) -> str:
+    """Dream 階段名稱對應的細分 producer；未知階段退回泛稱 "dream"。"""
+    return f"dream_{stage}" if stage in DREAM_STAGES else "dream"
 
 
 @dataclass(frozen=True)

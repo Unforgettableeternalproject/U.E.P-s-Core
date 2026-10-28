@@ -55,6 +55,7 @@ from mcp.server.stdio import stdio_server
 from echo_memory import MemoryEngine
 from echo_memory.config import get_config
 from echo_memory.namespace import NamespaceEngineRegistry
+from echo_memory.schemas.sharing import is_scope_namespace_id
 from mcp_server.access_policy import check_namespace_access, policy_from_config
 
 # ─── 導入 handlers 和 resources ───────────────────────────────────────────────
@@ -75,13 +76,16 @@ server = Server("echo-memory")
 # ─── 每個 namespace 一個 MemoryEngine（延遲初始化）───────────────────────────
 
 
+_scheduled_engines: list[MemoryEngine] = []  # 已啟動 Dream 排程的 engine，結束時統一停止
+
+
 def _create_engine(namespace_id: str) -> MemoryEngine:
     config = get_config()
     logger.info(
         f"[MCP Server] 初始化 MemoryEngine - namespace={namespace_id}, "
         f"存儲根路徑: {config.memory_storage_path}"
     )
-    return MemoryEngine(
+    engine = MemoryEngine(
         storage_path=config.memory_storage_path,
         embedding_model=config.embedding_model,
         device=config.embedding_device,
@@ -91,6 +95,14 @@ def _create_engine(namespace_id: str) -> MemoryEngine:
         embedding_backend=config.embedding_backend,
         ollama_base_url=config.ollama_base_url,
     )
+    # 場域共享 namespace 對 MCP 唯讀（寫入被存取策略拒絕），不啟動會改寫圖譜的 Dream 排程
+    if not is_scope_namespace_id(namespace_id):
+        result = engine.start_dream_scheduler()
+        if result["started"]:
+            _scheduled_engines.append(engine)
+        else:
+            logger.info(f"[MCP Server] Dream 排程未啟動 ({namespace_id}): {result['reason']}")
+    return engine
 
 
 _engines = NamespaceEngineRegistry(_create_engine)
@@ -135,7 +147,14 @@ def main() -> None:
                 server.create_initialization_options(),
             )
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        for scheduled in _scheduled_engines:
+            try:
+                scheduled.stop_dream_scheduler()
+            except Exception as exc:
+                logger.warning(f"[MCP Server] 停止 Dream 排程失敗: {exc}")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ import pickle
 import os
 import threading
 import time
+from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,26 @@ logger = logging.getLogger("echo_memory.graph")
 # 秒轉小時的換算常數
 _SECONDS_PER_HOUR = 3600.0
 
+
+
+@dataclass
+class BridgeInfo:
+    """LATENT_BRIDGE 的唯讀視圖（探索式關聯，非事實；不影響 Concept confidence）。"""
+
+    bridge_id: str  # 排序後 concept id 對（a|b）
+    concept_a: str
+    concept_b: str
+    similarity: float = 0.0
+    state: str = "active"  # active／degraded／expired
+    degraded_reason: str = ""
+    confirm_count: int = 0  # 以不同 Dream 週期累計
+    created_cycle_id: str = ""
+    last_confirmed_cycle_id: str = ""
+    created_at: float | None = None
+    last_confirmed_at: float | None = None
+    endpoint_digests: dict[str, str] = field(default_factory=dict)  # concept id -> basis_digest
+    endpoints: list[dict[str, Any]] = field(default_factory=list)  # 兩端概念來源參照
+    source_episode_ids: list[str] = field(default_factory=list)
 
 
 def _json_safe(value: Any) -> Any:
@@ -365,6 +386,47 @@ class MemoryGraph:
             created = True
         return created
 
+    def iter_latent_bridges(self, states: tuple[str, ...] | None = None) -> list[BridgeInfo]:
+        """
+        列出所有 LATENT_BRIDGE（每個無向配對一筆）。上層不應直接讀 networkx 邊屬性。
+
+        舊邊缺欄位時容錯：confirm_count=0、state=active。
+        Args:
+            states: 只回傳指定 state（active／degraded／expired）；None 表示全部。
+        """
+        seen: set[str] = set()
+        result: list[BridgeInfo] = []
+        with self.lock:
+            for u, v, data in self.graph.edges(data=True):
+                if data.get("edge_type") != "LATENT_BRIDGE":
+                    continue
+                a, b = sorted((u, v))
+                key = data.get("bridge_id") or f"{a}|{b}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                state = data.get("state") or "active"
+                if states is not None and state not in states:
+                    continue
+                prov = data.get("provenance") if isinstance(data.get("provenance"), dict) else {}
+                result.append(BridgeInfo(
+                    bridge_id=key,
+                    concept_a=a,
+                    concept_b=b,
+                    similarity=float(data.get("similarity", data.get("weight", 0.0)) or 0.0),
+                    state=state,
+                    degraded_reason=data.get("degraded_reason") or "",
+                    confirm_count=int(data.get("confirm_count", 0) or 0),
+                    created_cycle_id=data.get("created_cycle_id") or "",
+                    last_confirmed_cycle_id=data.get("last_confirmed_cycle_id") or "",
+                    created_at=data.get("created_at"),
+                    last_confirmed_at=data.get("last_confirmed_at"),
+                    endpoint_digests=dict(data.get("endpoint_digests") or {}),
+                    endpoints=list(prov.get("endpoints") or []),
+                    source_episode_ids=list(prov.get("source_episode_ids") or []),
+                ))
+        return result
+
     @staticmethod
     def bridge_decay_factor(
         edge_data: dict[str, Any],
@@ -390,9 +452,14 @@ class MemoryGraph:
         concept_a: str,
         concept_b: str,
         weight: float = 0.5,
-    ) -> None:
+        on_bridge_displaced: Any = None,
+    ) -> bool:
         """
         添加 CONTRADICTS 邊（矛盾關係）。
+
+        DiGraph 同方向只能有一條邊：若該配對已有 LATENT_BRIDGE，CONTRADICTS 會取代它。
+        取代前先以 on_bridge_displaced(entries) 回報（entries 為 bridge_degrade 逐條紀錄，
+        含前值）；回呼回傳 False（audit 失敗）則不建邊、回傳 False。未提供回呼時沿用舊行為。
 
         用於 EcphoryRetrieval 的矛盾 penalty：
         如果查詢命中 A，且 A→B 有 CONTRADICTS 邊，B 的分數會被降低。
@@ -401,25 +468,60 @@ class MemoryGraph:
             concept_a: 概念 A 的 ID
             concept_b: 概念 B 的 ID
             weight: 矛盾強度 (0-1)
+            on_bridge_displaced: 取代 LATENT_BRIDGE 前的 audit 回呼
+
+        Returns:
+            False 表示被回呼阻止；其餘（含節點不存在而忽略）為 True
         """
         if concept_a == concept_b:
             logger.debug(f"[MemoryGraph] 自我矛盾邊被忽略: {concept_a}")
-            return
+            return True
 
         if not self.graph.has_node(concept_a) or not self.graph.has_node(concept_b):
             logger.warning(
                 f"[MemoryGraph] 節點不存在，無法添加 CONTRADICTS 邊: "
                 f"{concept_a} <-> {concept_b}"
             )
-            return
+            return True
 
         weight = min(1.0, max(0.0, weight))
+
+        displaced = [
+            {
+                "mutation": "bridge_degrade",
+                "target": {"from": src, "to": dst, "edge_type": "LATENT_BRIDGE"},
+                "source_concept_ids": [concept_a, concept_b],
+                "prior": dict(self.graph[src][dst]),
+                "new": {
+                    "state": "degraded",
+                    "degraded_reason": "endpoint_contradicts",
+                    "replaced_by": "CONTRADICTS",
+                },
+                "reason": "endpoint_contradicts",
+            }
+            for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]
+            if self.graph.has_edge(src, dst)
+            and self.graph[src][dst].get("edge_type") == "LATENT_BRIDGE"
+        ]
+        if displaced and on_bridge_displaced is not None:
+            if not on_bridge_displaced(displaced):
+                logger.warning(
+                    f"[MemoryGraph] bridge 降級 audit 失敗，不建 CONTRADICTS 邊: "
+                    f"{concept_a[:12]} <-> {concept_b[:12]}"
+                )
+                return False
 
         for src, dst in [(concept_a, concept_b), (concept_b, concept_a)]:
             if not (
                 self.graph.has_edge(src, dst)
                 and self.graph[src][dst].get("edge_type") == "CONTRADICTS"
             ):
+                # networkx 的 add_edge 會把新屬性併進舊邊：先移除 bridge，避免屬性混入矛盾邊
+                if (
+                    self.graph.has_edge(src, dst)
+                    and self.graph[src][dst].get("edge_type") == "LATENT_BRIDGE"
+                ):
+                    self.graph.remove_edge(src, dst)
                 self.graph.add_edge(
                     src, dst,
                     edge_type="CONTRADICTS",
@@ -431,6 +533,7 @@ class MemoryGraph:
             f"[MemoryGraph] 添加 CONTRADICTS 邊: "
             f"{concept_a[:12]} <-> {concept_b[:12]} (weight={weight:.3f})"
         )
+        return True
 
     @_locked
     def ensure_placeholder_concept_node(self, concept_id: str) -> bool:

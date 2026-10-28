@@ -223,6 +223,10 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
     )
     # 注入 ConceptInhibitor 到 MemoryEngine，供 DreamEngine 使用
     engine.set_concept_inhibitor(concept_inhibitor)
+    # llm_fn 與 inhibitor 皆已注入，明確啟動 Dream 自動排程（閒置 + cron）
+    dream_start = engine.start_dream_scheduler()
+    if not dream_start["started"]:
+        logger.info(f"[run_chat] Dream 排程未啟動: {dream_start['reason']}")
     subconscious_assessor = SubconsciousAssessor(
         llm_fn=eval_fn,
         structured_llm_fn=structured_assessment_fn,
@@ -758,7 +762,11 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                     )
 
                     # ── 6.1 解析 memory_ops → ActionQueue ──
-                    ops = parse_reflection_to_actions(reflection)
+                    ops = parse_reflection_to_actions(
+                        reflection,
+                        cycle_id=f"refl_{uuid.uuid4().hex[:8]}",
+                        source_episode_ids=[ep.id for ep in recent],
+                    )
                     for op_dict in ops:
                         # 捕捉 pre_state
                         pre_state = reflection_executor.capture_pre_state(
@@ -774,6 +782,7 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
                             source="reflection",
                         )
                         action.pre_state = pre_state
+                        reflection_executor.bind_action(action)
                         # 更新 audit snapshot（確保 pre_state 被持久化）
                         action_queue.persist_action(action)
 
@@ -798,6 +807,12 @@ def run_chat(engine: MemoryEngine, llm: LLMClient, config, tools_enabled: bool =
 
         except Exception as e:
             logger.warning(f"Store error: {e}")
+
+    # ── 清理：停止 Dream 排程 ──
+    try:
+        engine.stop_dream_scheduler()
+    except Exception as e:
+        logger.debug(f"[run_chat] Dream scheduler stop: {e}")
 
     # ── 清理：等待背景概念提取完成並關閉執行緒池 ──
     try:
@@ -1035,6 +1050,9 @@ def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):
 
         report = engine.dream(triggered_by="manual")
 
+    if report.get("skipped_reason"):
+        console.print(f"[yellow]Dream skipped: {report['skipped_reason']}[/]")
+        return
     if report.get("error"):
         console.print(f"[red]Dream failed: {report['error']}[/]")
         return

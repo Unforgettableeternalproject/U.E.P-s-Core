@@ -161,6 +161,8 @@ class MemoryEngine:
         self._procedural = None
         self._retrieval = None
         self._dream_engine = None
+        self._dream_lock = threading.Lock()  # 保護 DreamEngine 的冪等建構
+        self._last_interaction: datetime | None = None  # 最近一次 store/retrieve（Dream 未建時先自記）
         self._concept_inhibitor_obj = None  # 由外部注入（Entry.py），供 DreamEngine 使用
         self._entity_store = None
         self._entity_extractor = None
@@ -655,6 +657,7 @@ class MemoryEngine:
         self._neurochem.tick()
         self._save_neurochem()
 
+        self._note_interaction()
         return episode_id
 
     @staticmethod
@@ -760,6 +763,7 @@ class MemoryEngine:
         timings["total"] = round((t_end - t_start) * 1000, 1)
         context.timings_ms = timings
 
+        self._note_interaction()
         logger.info(
             f"[MemoryEngine] 檢索完成 - "
             f"Episodes: {len(context.episodes)}, "
@@ -1647,6 +1651,88 @@ class MemoryEngine:
             "privacy_ledger": getattr(self._concept_inhibitor, "privacy_ledger", None),
         }
 
+    def _note_interaction(self) -> None:
+        """記錄互動時間；DreamEngine 已建立時同步重置其閒置計時（未建立時僅自記，成本極低）。"""
+        now = datetime.now(timezone.utc)
+        self._last_interaction = now
+        dream_engine = self._dream_engine
+        if dream_engine is not None:
+            dream_engine.notify_interaction(now)
+
+    def _ensure_dream_engine(self):
+        """冪等建構 DreamEngine（不啟動排程）。呼叫前須已 ensure_initialized()。"""
+        if self._dream_engine is not None:
+            return self._dream_engine
+        with self._dream_lock:
+            if self._dream_engine is None:
+                from echo_memory.config import get_config
+                from echo_memory.dream.engine import DreamEngine
+                from echo_memory.storage.locking import FileLease
+
+                config = get_config()
+                engine = DreamEngine(
+                    graph=self.episodic.graph,
+                    episodic=self.episodic,
+                    semantic=self.semantic,
+                    procedural=self.procedural,
+                    llm_fn=self._llm_fn,
+                    concept_inhibitor=self._concept_inhibitor,
+                    idle_minutes=config.dream_idle_minutes,
+                    cron_schedule=config.dream_cron,
+                    enable_idle=config.dream_enable_idle,
+                    enable_cron=config.dream_enable_cron,
+                    lock_factory=lambda: storage_lock(self.storage_path),
+                    evidence_store=self.evidence,
+                    lease=FileLease(
+                        self.storage_path, "dream",
+                        ttl_seconds=config.dream_lease_ttl_seconds,
+                    ),
+                    cron_window_seconds=config.dream_cron_window_seconds,
+                    **self._dream_sharing_kwargs(config),
+                )
+                if self._last_interaction is not None:
+                    engine.notify_interaction(self._last_interaction)
+                self._dream_engine = engine
+        return self._dream_engine
+
+    def start_dream_scheduler(self) -> dict[str, Any]:
+        """
+        啟動 Dream 自動排程（閒置 + cron）。
+
+        宿主須在 set_concept_inhibitor／set_llm_fn 注入完成後明確呼叫；
+        dream() 不會隱式啟動排程。回傳 {"started": bool, "reason": str}。
+        """
+        from echo_memory.config import get_config
+
+        config = get_config()
+        if not config.dream_enabled:
+            logger.info("[MemoryEngine] Dream 已停用（dream_enabled=False），不啟動排程")
+            return {"started": False, "reason": "disabled"}
+        if not (config.dream_enable_idle or config.dream_enable_cron):
+            return {"started": False, "reason": "no_trigger_enabled"}
+        self.ensure_initialized()
+        dream_engine = self._ensure_dream_engine()
+        if dream_engine.is_running:
+            return {"started": False, "reason": "already_running"}
+        try:
+            started = dream_engine.start()
+        except Exception as e:
+            logger.warning(f"[MemoryEngine] Dream 排程器啟動失敗: {e}")
+            return {"started": False, "reason": f"error: {e}"}
+        if not started:
+            return {"started": False, "reason": "apscheduler_unavailable"}
+        logger.info(
+            f"[MemoryEngine] Dream 排程器已啟動 "
+            f"(idle={config.dream_enable_idle}, cron={config.dream_enable_cron})"
+        )
+        return {"started": True, "reason": "started"}
+
+    def stop_dream_scheduler(self) -> None:
+        """停止 Dream 自動排程（未建立或未運行時無動作）。"""
+        dream_engine = self._dream_engine
+        if dream_engine is not None:
+            dream_engine.stop()
+
     def dream(self, triggered_by: str = "manual") -> dict[str, Any]:
         """
         執行離線記憶鞏固（Dream Engine - 簡化版已實作）。
@@ -1658,38 +1744,7 @@ class MemoryEngine:
             DreamReport: 鞏固報告
         """
         self.ensure_initialized()
-        if self._dream_engine is None:
-            from echo_memory.config import get_config
-            from echo_memory.dream.engine import DreamEngine
-
-            config = get_config()
-            self._dream_engine = DreamEngine(
-                graph=self.episodic.graph,
-                episodic=self.episodic,
-                semantic=self.semantic,
-                procedural=self.procedural,
-                llm_fn=self._llm_fn,
-                concept_inhibitor=self._concept_inhibitor,
-                idle_minutes=config.dream_idle_minutes,
-                cron_schedule=config.dream_cron,
-                enable_idle=config.dream_enable_idle,
-                enable_cron=config.dream_enable_cron,
-                lock_factory=lambda: storage_lock(self.storage_path),
-                evidence_store=self.evidence,
-                **self._dream_sharing_kwargs(config),
-            )
-
-            # 啟動自動觸發排程器（閒置 + cron）
-            if config.dream_enable_idle or config.dream_enable_cron:
-                try:
-                    self._dream_engine.start()
-                    logger.info(
-                        f"[MemoryEngine] Dream 排程器已啟動 "
-                        f"(idle={config.dream_enable_idle}, "
-                        f"cron={config.dream_enable_cron})"
-                    )
-                except Exception as e:
-                    logger.warning(f"[MemoryEngine] Dream 排程器啟動失敗: {e}")
+        self._ensure_dream_engine()
 
         # 重送共享層尚未處理的撤回級聯（hook 未設時只是留在待辦，不影響 Dream）
         self._ensure_change_listener()
@@ -1710,6 +1765,7 @@ class MemoryEngine:
             "edges_updated": report.edges_updated,
             "edges_pruned": report.pruning.edges_pruned if report.pruning else 0,
             "error": report.error,
+            "skipped_reason": report.skipped_reason,
         }
 
         # 重播報告

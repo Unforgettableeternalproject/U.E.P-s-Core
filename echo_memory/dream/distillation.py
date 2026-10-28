@@ -612,6 +612,21 @@ class KnowledgeDistillation:
                 concept_id, ep_ids_for_edge,
             )
 
+        # 逐條紀錄（每條 DERIVED_FROM 邊一筆）；audit 失敗同樣阻止建邊
+        if can_create_edges and ep_ids_for_edge and self._patch_coordinator is not None:
+            can_create_edges = self._patch_coordinator.record_mutations("distillation", [
+                {
+                    "mutation": "edge_add",
+                    "target": {"from": concept_id, "to": ep_id, "edge_type": "DERIVED_FROM"},
+                    "source_episode_ids": [ep_id],
+                    "source_concept_ids": [concept_id],
+                    "prior": None,
+                    "new": {"weight": 0.7},
+                    "reason": "distillation_derived_from",
+                }
+                for ep_id in ep_ids_for_edge
+            ])
+
         if can_create_edges:
             for ep in source_eps:
                 if not self.graph.has_node(ep.id):
@@ -703,6 +718,33 @@ class KnowledgeDistillation:
                 logger.warning(
                     "[KnowledgeDistillation] audit 失敗，跳過 RELATES_TO 建立 (%s, %d 條)",
                     concept_id[:12], len(pending),
+                )
+                return 0
+
+        # 逐條紀錄：RELATES_TO 雙向各一筆，前值為既有邊屬性（bridge 升級時即 LATENT_BRIDGE）
+        if self._patch_coordinator is not None:
+            entries = []
+            for other_id, jaccard, weight in pending:
+                for src, dst in ((concept_id, other_id), (other_id, concept_id)):
+                    prior = (
+                        dict(self.graph.graph[src][dst])
+                        if self.graph.graph.has_edge(src, dst) else None
+                    )
+                    entries.append({
+                        "mutation": "edge_add" if prior is None else "edge_update",
+                        "target": {"from": src, "to": dst, "edge_type": "RELATES_TO"},
+                        "source_episode_ids": sorted(
+                            set(concept.source_episode_ids) | batch_source_ids
+                        ),
+                        "source_concept_ids": [concept_id, other_id],
+                        "prior": prior,
+                        "new": {"weight": weight, "jaccard": jaccard},
+                        "reason": "distillation_overlap",
+                    })
+            if not self._patch_coordinator.record_mutations("distillation", entries):
+                logger.warning(
+                    "[KnowledgeDistillation] 逐條 audit 失敗，跳過 RELATES_TO 建立 (%s)",
+                    concept_id[:12],
                 )
                 return 0
 

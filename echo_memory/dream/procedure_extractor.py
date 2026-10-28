@@ -131,9 +131,12 @@ class ProcedureExtractor:
         guard: Guard | None = None,
         episodic: Any | None = None,
         evidence_store: Any | None = None,
+        patch_coordinator: Any | None = None,
     ):
         """
         Args:
+            patch_coordinator: DreamPatchCoordinator。提供時 Procedure 寫入與 APPLIES_TO 邊
+                走逐條紀錄（audit-before-mutate、帶 source_episode_ids、含前值）；None 為舊式直寫。
             procedural: ProceduralMemory 實例
             semantic: SemanticMemory 實例（可選，用於建立 APPLIES_TO 邊）
             graph: MemoryGraph 實例（可選，用於建立 APPLIES_TO 邊）
@@ -150,6 +153,7 @@ class ProcedureExtractor:
         self._guard = resolve_guard(guard)
         self._episodic = episodic
         self._evidence_store = evidence_store
+        self._patch_coordinator = patch_coordinator
         self.semantic = semantic
         self.graph = graph
         self.llm_fn = llm_fn
@@ -337,7 +341,17 @@ class ProcedureExtractor:
             source_episode_ids=source_ids,
         )
 
-        proc_id = self.procedural.write(procedure)
+        if self._patch_coordinator is not None:
+            # Patch 交易：先寫逐條紀錄（來源 episode＋前值），audit 失敗則不寫入
+            proc_id, _mutation_id = self._patch_coordinator.write_procedure(
+                self.procedural, procedure,
+            )
+            if proc_id is None:
+                logger.warning("[ProcedureExtractor] audit 失敗，跳過 Procedure 寫入: %s", name)
+                report.skipped_reason = "audit_failure"
+                return
+        else:
+            proc_id = self.procedural.write(procedure)
 
         if is_new:
             report.procedures_created += 1
@@ -346,7 +360,7 @@ class ProcedureExtractor:
 
         # 建立 APPLIES_TO 邊（Procedure → 相關 Concept）
         if self.graph is not None and self.semantic is not None:
-            self._link_to_concepts(proc_id, name, description, domain, report)
+            self._link_to_concepts(proc_id, name, description, domain, report, source_ids)
 
     def _link_to_concepts(
         self,
@@ -355,6 +369,7 @@ class ProcedureExtractor:
         description: str,
         domain: str,
         report: ProcedureExtractionReport,
+        source_episode_ids: list[str] | None = None,
     ) -> None:
         """嘗試將 Procedure 與相關 Concept 建立 APPLIES_TO 邊。"""
         if self.semantic.count() == 0:
@@ -371,6 +386,22 @@ class ProcedureExtractor:
             related = self.semantic.search_by_vector(query_vec, top_k=3, min_similarity=0.4)
 
             for concept, sim in related:
+                if self._patch_coordinator is not None:
+                    prior_edge = (
+                        dict(self.graph.graph[proc_id][concept.id])
+                        if self.graph.graph.has_edge(proc_id, concept.id) else None
+                    )
+                    if prior_edge is None and not self._patch_coordinator.record_mutation(
+                        "procedure", "edge_add",
+                        target={"from": proc_id, "to": concept.id, "edge_type": "APPLIES_TO"},
+                        source_episode_ids=list(source_episode_ids or []),
+                        source_concept_ids=[concept.id],
+                        prior=None,
+                        new={"weight": sim},
+                        reason="procedure_applies_to",
+                    ):
+                        logger.warning("[ProcedureExtractor] audit 失敗，跳過 APPLIES_TO 邊")
+                        continue
                 if not self.graph.has_node(concept.id):
                     self.graph.add_concept_node(concept.id, concept.name, concept.concept_type)
                 self.graph.add_applies_to_edge(proc_id, concept.id, weight=sim)

@@ -118,6 +118,8 @@ class Config:
         self.dream_cron = os.getenv("DREAM_CRON", "0 3 * * *")
         self.dream_enable_idle = os.getenv("DREAM_ENABLE_IDLE", "true").lower() == "true"
         self.dream_enable_cron = os.getenv("DREAM_ENABLE_CRON", "true").lower() == "true"
+        self.dream_lease_ttl_seconds = float(os.getenv("DREAM_LEASE_TTL_SECONDS", "3600"))
+        self.dream_cron_window_seconds = float(os.getenv("DREAM_CRON_WINDOW_SECONDS", "900"))
         self.dream_replay_da_threshold = float(
             os.getenv("DREAM_REPLAY_DA_THRESHOLD", "0.6")
         )

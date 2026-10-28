@@ -246,10 +246,30 @@ def srv(monkeypatch):
         pass
     for name in [m for m in sys.modules if m == "mcp_server" or m.startswith("mcp_server.")]:
         monkeypatch.delitem(sys.modules, name, raising=False)
+    # CI 未安裝 mcp SDK：連頂層套件與 mcp.types 一併以最小假模組取代
+    try:
+        import mcp  # noqa: F401
+    except ImportError:
+        fake_pkg = types.ModuleType("mcp")
+        fake_pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, "mcp", fake_pkg)
+    class _AnyAttrModule(types.ModuleType):
+        """任何屬性都回傳一個可建構的空類別（供 mcp.types 的各種型別 import）。"""
+
+        def __getattr__(self, name):
+            if name.startswith("__"):
+                raise AttributeError(name)
+            cls = type(name, (), {"__init__": lambda self, *a, **k: None})
+            setattr(self, name, cls)
+            return cls
+
+    fake_types = _AnyAttrModule("mcp.types")
     fake = types.ModuleType("mcp.server")
+    fake.__path__ = []
     fake.Server = type("Server", (), {"__init__": lambda self, *a, **k: None})
     fake_stdio = types.ModuleType("mcp.server.stdio")
     fake_stdio.stdio_server = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "mcp.types", fake_types)
     monkeypatch.setitem(sys.modules, "mcp.server", fake)
     monkeypatch.setitem(sys.modules, "mcp.server.stdio", fake_stdio)
     module = importlib.import_module("mcp_server.server")

@@ -47,6 +47,7 @@ class HypothesisReport:
     reopened: int = 0
     released: int = 0
     purged: int = 0
+    orphans_unlinked: int = 0
     candidates: int = 0
     skipped_reason: str | None = None
     proposed_ids: list[str] = field(default_factory=list)
@@ -56,7 +57,7 @@ class HypothesisReport:
             return f"假說: 略過（{self.skipped_reason}）"
         return (
             f"假說: 新提案 {self.proposed}（候選 {self.candidates}, 被 Gate 拒絕 {self.rejected}）, "
-            f"過期 {self.expired}, 重開 {self.reopened}, 釋放 {self.released}, 清除 {self.purged}"
+            f"過期 {self.expired}, 重開 {self.reopened}, 釋放 {self.released}, 清除 {self.purged}, 孤兒邊 {self.orphans_unlinked}"
         )
 
 
@@ -176,7 +177,25 @@ class HypothesisPhase:
         if purge_ids:
             ok, _ = self._submit("purge", {"hypothesis_ids": purge_ids})
             report.purged += len(purge_ids) if ok else 0
+        self._unlink_orphan_edges(report)
         return report
+
+    def _unlink_orphan_edges(self, report: HypothesisReport) -> None:
+        """掃描 origin=hypothesis 但對應假說非 supported（或不存在）的邊，經 Gate unlink 撤回。
+
+        昇格是先存圖譜邊再寫假說檔，兩步之間崩潰會留下孤兒邊；Gate 會再次確認才放行。
+        """
+        for a, b, hid in self._graph.hypothesis_edges():
+            try:
+                rec = self._store.get(hid)
+                if rec is not None and rec.outcome.promoted_edge:
+                    continue  # 假說仍認領這條邊（supported，或漂移後待重審）
+                ok, _ = self._submit(
+                    "unlink", {"hypothesis_id": hid, "concept_a": a, "concept_b": b},
+                )
+                report.orphans_unlinked += int(ok)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[HypothesisPhase] 撤回孤兒邊 %s 失敗: %s", hid[:12], e)
 
     def _verify(self, h: Any) -> str | None:
         """supported 假說是否仍成立；沒有 provenance 無法重解析時 fail-closed 視為證據消失。"""

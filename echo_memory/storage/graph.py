@@ -437,6 +437,16 @@ class MemoryGraph:
                     types.add(str(data.get("edge_type", "")))
         return types
 
+    def hypothesis_edges(self) -> list[tuple[str, str, str]]:
+        """由 Hypothesis 昇格的 RELATES_TO 邊：[(a, b, hypothesis_id)]，每個無向配對一筆（a < b）。"""
+        out: dict[tuple[str, str, str], None] = {}
+        with self.lock:
+            for u, v, data in self.graph.edges(data=True):
+                if data.get("edge_type") == "RELATES_TO" and data.get("origin") == "hypothesis":
+                    a, b = sorted((u, v))
+                    out[(a, b, str(data.get("hypothesis_id") or ""))] = None
+        return list(out)
+
     def concept_neighbor_ids(self, concept_id: str) -> set[str]:
         """與概念相鄰的其他 Concept 節點 id（不含 LATENT_BRIDGE／CONTRADICTS，那不是已確立的關聯）。"""
         out: set[str] = set()

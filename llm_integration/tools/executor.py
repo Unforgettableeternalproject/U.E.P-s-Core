@@ -46,6 +46,9 @@ class ToolExecutor:
         # adjust_importance 只允許操作白名單內的 episode_id（當前脈絡）
         self._context_whitelist: set[str] = set()
 
+        # 本輪是否為共享（群組）輪次：由宿主在執行脈絡設定，不開放給 LLM 參數覆寫
+        self.shared_turn: bool = False
+
         # Dream 冷卻：記錄上次呼叫時的輪數計數
         self._dream_last_turn: int = -999
         self._current_turn: int = 0
@@ -302,7 +305,9 @@ class ToolExecutor:
 
     def handle_list_hypotheses(self, args: dict) -> dict:
         """列出候選關聯（唯讀）。這些是待驗證的猜測，不是事實。"""
-        items = self.engine.list_hypotheses(status=args.get("status") or None)
+        items = self.engine.list_hypotheses(
+            status=args.get("status") or None, shared_turn=self.shared_turn,
+        )
         if not items:
             return {"success": True, "result": "No candidate relations."}
         lines = ["Candidate relations (UNVERIFIED, never state them as facts):"]

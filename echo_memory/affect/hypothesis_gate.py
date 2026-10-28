@@ -45,7 +45,7 @@ from echo_memory.storage.hypothesis import HypothesisStore, HypothesisWriter
 
 logger = logging.getLogger("echo_memory.affect.hypothesis_gate")
 
-HYPOTHESIS_OPS = ("propose", "claim", "release", "review", "expire", "purge", "reopen")
+HYPOTHESIS_OPS = ("propose", "claim", "release", "review", "expire", "purge", "reopen", "unlink")
 REVIEW_RESULTS = ("supported", "refuted", "insufficient", "llm_failed")
 REOPEN_REASONS = ("digest_drift", "evidence_gone")
 GATE_EXPIRE_REASONS = ("ttl", "endpoint_gone", "pair_contradicts")
@@ -80,6 +80,28 @@ class HypothesisGateMixin:
         """namespace id：優先用宿主明確注入的 namespace_id，未注入才由儲存路徑推得（相容舊呼叫端）。"""
         explicit = getattr(self, "namespace_id", None)
         return str(explicit) if explicit else self._namespace_root().name
+
+    def _hyp_side_unit_ids(self, rec: Hypothesis) -> tuple[set[str], set[str]]:
+        """Gate 自行以 provenance 重算兩端「具證據資格」的 live unit id 集合（不信任審核器 payload）。
+
+        沒有 provenance 提供者（未由 engine 注入）一律 fail-closed 拒絕。
+        """
+        provider = getattr(self, "hypothesis_provenance_provider", None)
+        if provider is None:
+            raise _Reject("no_provenance: Gate 沒有 provenance，無法驗證引用歸屬")
+        from echo_memory.affect.hypothesis_reviewer import endpoint_units
+
+        try:
+            provenance = provider()
+            a, b = rec.endpoints  # type: ignore[misc]
+            return (
+                {u.id for u in endpoint_units(provenance, a)},
+                {u.id for u in endpoint_units(provenance, b)},
+            )
+        except _Reject:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise _Reject(f"provenance_error: {e}") from e
 
     def _hypothesis_store(self) -> HypothesisStore:
         store = getattr(self, "_hyp_store_obj", None)
@@ -386,6 +408,39 @@ class HypothesisGateMixin:
             "claim", new, put=[new], old_records={rec.id: rec.to_dict()},
         )
 
+    # ── unlink（撤回孤兒昇格邊）────────────────────
+
+    def _plan_hyp_unlink(self, payload, patch_id, cfg, now, store) -> dict[str, Any]:
+        """撤回「origin=hypothesis 但對應假說不是 supported（或不存在）」的 RELATES_TO 邊。
+
+        成因：昇格時先存圖譜邊再寫假說檔，兩步之間崩潰會留下孤兒邊。Gate 自行確認邊確實存在、
+        且假說確實沒有認領這條邊，才放行。
+        """
+        hid = str(payload.get("hypothesis_id") or "")
+        a, b = str(payload.get("concept_a") or ""), str(payload.get("concept_b") or "")
+        if not hid or not a or not b or a == b:
+            raise _Reject("hypothesis_id／concept_a／concept_b 必填")
+        key = make_pair_key(a, b)
+        rec = store.get(hid)
+        if rec is not None:
+            if rec.pair_key != key:
+                raise _Reject("pair_mismatch: 邊與假說的配對不符")
+            if rec.outcome.promoted_edge:
+                raise _Reject("still_promoted: 假說仍認領這條昇格邊（supported 或待重審）")
+        graph = self._hyp_graph()
+        found = any(
+            e.get("edge_type") == "RELATES_TO" and e.get("origin") == "hypothesis"
+            and e.get("hypothesis_id") == hid
+            for e in self._pair_edges(graph, a, b).values()
+        )
+        if not found:
+            raise _Reject("no_orphan_edge: 找不到該假說的昇格邊")
+        return self._plan_result(
+            "unlink", rec, old_records={rec.id: rec.to_dict()} if rec is not None else None,
+            edges={"unlink_promoted": True, "a": a, "b": b}, risk="medium",
+            extra={"hypothesis_id": hid, "pair_key": key, "endpoints": [a, b]},
+        )
+
     # ── release ────────────────────────────────
 
     def _plan_hyp_release(self, payload, patch_id, cfg, now, store) -> dict[str, Any]:
@@ -475,6 +530,11 @@ class HypothesisGateMixin:
             raise _Reject(f"cited_unit_missing: {missing[0]}")
         if any(hypothesis_evidence_kind(units[i]) is None for i in cited):
             raise _Reject("cited_unit_ineligible: 引用了不具證據資格的 unit（agent／dream／未確認來源）")
+        # 引用必須屬於兩端概念的 live 證據；歸屬由 Gate 重算，refuted／supported 一律適用
+        side_a, side_b = self._hyp_side_unit_ids(rec)
+        stray = [i for i in cited if i not in side_a and i not in side_b]
+        if stray:
+            raise _Reject(f"cited_not_in_endpoints: {stray[0]} 不屬於任一端概念的證據")
         review.cited_evidence_ids = cited
 
         if result == "refuted":
@@ -497,9 +557,9 @@ class HypothesisGateMixin:
         statement = str(payload.get("statement") or "").strip()
         if not statement or len(statement) > int(cfg.hypothesis_statement_max_chars):
             raise _Reject("statement 無效: supported 必須有長度合法的關聯描述")
-        coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
-        cov_a = [str(x) for x in coverage.get("a", []) if str(x) in cited]
-        cov_b = [str(x) for x in coverage.get("b", []) if str(x) in cited]
+        # 覆蓋兩端由 Gate 依 provenance 重算，忽略 payload 的 coverage
+        cov_a = [i for i in cited if i in side_a]
+        cov_b = [i for i in cited if i in side_b]
         if not cov_a or not cov_b:
             raise _Reject("coverage: supported 的引用證據必須同時覆蓋兩端概念")
         support = evaluate_hypothesis_support([units[i] for i in cited], claim_kind, cfg)

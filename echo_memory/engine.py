@@ -193,6 +193,12 @@ class MemoryEngine:
                 inhibitor.namespace_id = self.namespace_id
             except AttributeError:
                 pass
+        # Hypothesis Gate 自行重算引用歸屬所需的 provenance（惰性取得，避免設定時建構元件）
+        if inhibitor is not None and getattr(inhibitor, "hypothesis_provenance_provider", None) is None:
+            try:
+                inhibitor.hypothesis_provenance_provider = self._provenance_resolver
+            except AttributeError:
+                pass
         self._ensure_change_listener()
 
     def set_concept_inhibitor(self, inhibitor) -> None:
@@ -1894,13 +1900,16 @@ class MemoryEngine:
             logger.warning(f"[MemoryEngine] 假說重解析失敗（視為證據消失）: {e}")
             return "evidence_gone"
 
-    def list_hypotheses(self, status: str | None = None) -> list[dict[str, Any]]:
+    def list_hypotheses(
+        self, status: str | None = None, *, shared_turn: bool = False,
+    ) -> list[dict[str, Any]]:
         """列出假說（唯讀）。共享 namespace 一律空。
 
         statement 只在 status=supported 且證據仍成立時帶出；否則為 None（fail-closed），
         並以 stale 欄位標示失效原因。這些都是候選關聯，不是事實。
+        shared_turn=True（本輪是共享輪次）一律回空，與 retrieve 一致。
         """
-        if not self._hypothesis_allowed():
+        if shared_turn or not self._hypothesis_allowed():
             return []
         self.ensure_initialized()
         out: list[dict[str, Any]] = []

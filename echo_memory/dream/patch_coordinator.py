@@ -637,13 +637,30 @@ class DreamPatchCoordinator:
         if not (is_edge or is_archive or is_salience):
             return False
 
+        # 實際能否還原：端點／節點／邊不存在時什麼都不會變，不能回報成功（回 False 並在 audit 記 noop）
+        effective = True
+        if is_edge:
+            with graph.lock:
+                g0 = graph.graph
+                src0, dst0 = target.get("from"), target.get("to")
+                effective = (
+                    g0.has_edge(src0, dst0) if prior is None
+                    else (g0.has_node(src0) and g0.has_node(dst0))
+                )
+        elif is_archive:
+            with graph.lock:
+                effective = graph.graph.has_node(target.get("node_id")) and isinstance(prior, dict)
+
         if not self.record_mutations(record.get("stage", ""), [{
             "mutation": "rollback",
             "target": target,
             "reason": f"rollback:{record.get('mutation_id', '')}",
             "prior": record.get("new"),
-            "extra": {"rolled_back": kind},
+            "extra": {"rolled_back": kind, "noop": not effective},
         }]):
+            return False
+        if not effective:
+            logger.info("[DreamPatchCoordinator] rollback 為 noop（目標已不存在）: %s", kind)
             return False
 
         if is_edge:

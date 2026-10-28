@@ -951,6 +951,17 @@ class ScopeShareLayer:
                 break
         return out
 
+    def query_dimension_mismatch(self, scope: Any, query_embedding: list[float]) -> tuple[int, int] | None:
+        """scope 的概念向量維度與查詢向量不符時回傳 (資料維度, 查詢維度)，否則 None（供 retrieve_shared 標 degraded）。"""
+        try:
+            _scope_id, ns = normalize_scope(scope)
+        except ValueError:
+            return None
+        ns_path = resolve_namespace_path(self._root, ns)
+        if not (ns_path / SEMANTIC_DIRNAME / "concepts.json").exists():
+            return None
+        return self._semantic(ns).dimension_mismatch(query_embedding)
+
     def validate_sp_ref(self, ref: str) -> bool:
         """交叉佐證參考是否仍有效：投影存在、未撤回、擁有者未 block、digest 相符。"""
         parsed = parse_sp_ref(ref)

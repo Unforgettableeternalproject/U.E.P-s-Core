@@ -192,6 +192,9 @@ class ReflectionExecutor:
         不再有直寫 SemanticMemory 的旁路。
         """
         if self._inhibitor is None:
+            ensure = getattr(self._engine, "ensure_initialized", None)
+            if callable(ensure):
+                ensure()  # 未注入 Gate 時由 engine 建立預設 Gate
             self._inhibitor = getattr(self._engine, "_concept_inhibitor", None)
         if self._inhibitor is None:
             from echo_memory.affect.concept_inhibitor import ConceptInhibitor
@@ -321,6 +324,9 @@ class ReflectionExecutor:
         except Exception as e:
             tx.status = "failed"
             success, result = False, {"error": str(e)}
+        if success and not tx.patches and result.get("removed") is not False:
+            # 回滾確實改了資料卻沒有任何 patch 可記錄：audit 無法還原內容，至少留下警示
+            logger.error("[ReflectionExecutor] 回滾 %s 成功但 audit 沒有 patch 記錄: %s", operation, target_name)
         self._gate()._write_audit(tx)
         if not success:
             raise RuntimeError(f"回滾 {operation} 失敗: {result.get('error', '未知')}")

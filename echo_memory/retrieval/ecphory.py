@@ -356,6 +356,13 @@ class EcphoryRetrieval:
             timings_ms=timings,
             lexical_only_ids=lexical_only_ids,
         )
+        # 無狀態判定（不靠 semantic 實例旗標，避免並行檢索互相覆蓋）
+        dim_mismatch = self.semantic.dimension_mismatch(query_embedding)
+        if dim_mismatch is not None:
+            context.degraded = True
+            context.degraded_reason = (
+                f"概念向量維度不符（資料 {dim_mismatch[0]}、查詢 {dim_mismatch[1]}），語意向量路已略過"
+            )
 
         logger.debug(
             f"[EcphoryRetrieval] 檢索完成 - "

@@ -35,6 +35,10 @@ from echo_memory.storage.atomic import atomic_write, atomic_write_json
 logger = logging.getLogger("echo_memory.semantic")
 
 
+class EmbeddingDimensionError(ValueError):
+    """向量維度與既有索引不符（通常是換了 embedding 模型）；寫入端據此拒絕，不留混維資料。"""
+
+
 class SemanticMemory:
     """
     語義記憶管理器 — 持久化 + 向量索引。
@@ -72,6 +76,7 @@ class SemanticMemory:
         self._concepts: dict[str, Concept] = {}       # name → Concept
         self._concepts_by_id: dict[str, Concept] = {}  # id → Concept
         self._embeddings: np.ndarray | None = None
+        self._dim_warned: set[tuple[str, int, int]] = set()  # 已警告過的 (位置, 資料維度, 向量維度)，只用來去重 log
         self._id_to_index: dict[str, int] = {}   # concept_id → row index
         self._idx_to_id: dict[int, str] = {}     # row index → concept_id（反向查詢，O(1)）
 
@@ -140,6 +145,9 @@ class SemanticMemory:
             metadata = {k: v for k, v in metadata.items() if k != "self_model"}
 
         with self._write():
+            # 維度防護：在改動任何記憶體狀態前檢查，換模型後的寫入乾淨失敗，不留混維資料
+            if vec is not None:
+                self.check_vector_dim(self._normalize_vector(vec))
             is_update = name in self._concepts
 
             if is_update:
@@ -423,6 +431,13 @@ class SemanticMemory:
             if self._embeddings is None or len(self._concepts) == 0:
                 return []
 
+            # 維度防護：換 embedding 模型後資料維度與查詢不同，語意向量路降級（不改寫既有資料）
+            if self._embeddings.shape[1] != query_vec.shape[0]:
+                self._warn_dim_mismatch(
+                    "search_by_vector", int(self._embeddings.shape[1]), int(query_vec.shape[0]),
+                )
+                return []
+
             # dot product = cosine similarity（因為已 L2-normalize）
             similarities = np.dot(self._embeddings, query_vec)
             top_indices = np.argsort(similarities)[::-1][:top_k]
@@ -484,6 +499,9 @@ class SemanticMemory:
             if self._embeddings is None or not self._concepts_by_id:
                 return []
             if self._embeddings.shape[1] != query_vec.shape[0]:
+                self._warn_dim_mismatch(
+                    "find_similar", int(self._embeddings.shape[1]), int(query_vec.shape[0]),
+                )
                 return []
             sims = np.dot(self._embeddings, query_vec)
             results: list[tuple[Concept, float]] = []
@@ -587,12 +605,48 @@ class SemanticMemory:
     # 內部：向量索引管理
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    def _warn_dim_mismatch(self, where: str, data_dim: int, vec_dim: int) -> None:
+        """維度不符只警告一次（以 (位置, 維度) 去重；僅影響 log，不影響回傳）。"""
+        key = (where, data_dim, vec_dim)
+        if key in self._dim_warned:
+            return
+        self._dim_warned.add(key)
+        logger.warning(
+            "[SemanticMemory] %s 向量維度不符（資料 %d、向量 %d），語意向量路降級；"
+            "需以目前模型重建概念向量", where, data_dim, vec_dim,
+        )
+
+    def dimension_mismatch(self, query_embedding: list[float] | np.ndarray) -> tuple[int, int] | None:
+        """查詢向量維度與目前索引不符時回傳 (資料維度, 查詢維度)，否則 None。無狀態，供呼叫端標 degraded。"""
+        query_dim = int(np.asarray(query_embedding).reshape(-1).shape[0]) if query_embedding is not None else 0
+        with self._mem:
+            if self._embeddings is None or len(self._concepts) == 0 or query_dim == 0:
+                return None
+            data_dim = int(self._embeddings.shape[1])
+        return None if data_dim == query_dim else (data_dim, query_dim)
+
+    def check_vector_dim(self, vector: list[float] | np.ndarray) -> None:
+        """寫入前檢查：向量維度與既有索引不符就拒絕（EmbeddingDimensionError），不碰任何狀態。"""
+        if vector is None:
+            return
+        vec_dim = int(np.asarray(vector).reshape(-1).shape[0])
+        embeddings = self._embeddings
+        if embeddings is None or len(embeddings) == 0 or vec_dim == 0:
+            return
+        data_dim = int(embeddings.shape[1])
+        if data_dim != vec_dim:
+            self._warn_dim_mismatch("write", data_dim, vec_dim)
+            raise EmbeddingDimensionError(
+                f"向量維度不符（既有索引 {data_dim}、新向量 {vec_dim}）：拒絕寫入，請先以目前模型重建概念向量"
+            )
+
     def _update_embedding_index(self, concept: Concept, is_update: bool) -> None:
-        """新增或更新單一概念的向量索引。"""
+        """新增或更新單一概念的向量索引。維度與既有索引不符時拒絕（不改動索引）。"""
         if not concept.embedding:
             return
 
         new_vec = np.asarray(concept.embedding, dtype=np.float32)
+        self.check_vector_dim(new_vec)
 
         if is_update and concept.id in self._id_to_index:
             # 原地更新已有的行
@@ -631,6 +685,10 @@ class SemanticMemory:
                 vectors.append(vec)
 
         if vectors:
+            dims = {int(v.shape[0]) for v in vectors}
+            if len(dims) > 1:
+                logger.warning("[SemanticMemory] 概念向量維度混雜 %s，拒絕重建索引", sorted(dims))
+                raise EmbeddingDimensionError(f"概念向量維度混雜: {sorted(dims)}")
             self._embeddings = np.vstack(vectors).astype(np.float32)
         else:
             self._embeddings = None

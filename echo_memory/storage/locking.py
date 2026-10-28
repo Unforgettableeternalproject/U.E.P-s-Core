@@ -235,6 +235,23 @@ class FileLease:
         except OSError as exc:
             return False, f"租約檔無法存取: {exc}"
 
+    def renew(self, *, now: float | None = None) -> bool:
+        """
+        續租：本持有者仍持有時把 expires_at 延到 now + ttl，回傳 True；
+        已非持有者（租約逾期被接手或被清除）回傳 False；租約檔無法存取視為失租。
+        """
+        now = time.time() if now is None else now
+        try:
+            with self._guard():
+                state = self._read()
+                if state.get("holder_token") != self.token:
+                    return False
+                state["expires_at"] = now + self.ttl_seconds
+                self._write(state)
+                return True
+        except (TimeoutError, OSError):
+            return False
+
     def release(self, *, completed: bool = False, completion_keys: tuple[str, ...] = ("last_completed_at",),
                 now: float | None = None) -> None:
         """釋放租約；completed=True 時一併記錄完成時間。非本持有者呼叫不動作。"""

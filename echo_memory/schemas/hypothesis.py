@@ -31,7 +31,7 @@ HYPOTHESIS_STATUSES = ("proposed", "under_review", "supported", "refuted", "expi
 OPEN_STATUSES = ("proposed", "under_review")
 # 已結案且會被保留一段時間後清除的狀態
 RETAINED_STATUSES = ("refuted", "expired")
-EXPIRE_REASONS = ("ttl", "endpoint_gone", "insufficient_exhausted")
+EXPIRE_REASONS = ("ttl", "endpoint_gone", "insufficient_exhausted", "pair_contradicts")
 ORIGIN_TYPES = ("latent_bridge",)
 
 

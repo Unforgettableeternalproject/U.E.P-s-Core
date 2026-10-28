@@ -241,6 +241,7 @@ class ConceptInhibitor(HypothesisGateMixin):
             privacy_ledger: 擁有者的隱私覆寫帳本。None 時以 namespace 根建立。
         """
         self._semantic = semantic
+        self.namespace_id: str | None = None  # 由宿主（MemoryEngine／DreamEngine）注入
         self._llm_fn = llm_fn
         self._audit_log_path = audit_log_path
         self._evidence_lookup = evidence_lookup

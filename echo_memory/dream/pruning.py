@@ -95,6 +95,7 @@ class GraphPruning:
         self._patch_coordinator = patch_coordinator
         self.min_weight_threshold = 0.05  # 最低權重閾值（低於此值的邊將被刪除）
         self.isolated_node_grace_days = 7  # 孤立節點保留天數
+        self._run_cycle_id = ""  # 無 coordinator 週期 id 時的替代識別（每次 run() 重新產生）
         self._last_bridges_confirmed = 0  # 最近一次 _create_latent_bridges 重新確認的 bridge 數
 
     # ── 逐條 mutation 紀錄輔助 ─────────────────────────────
@@ -108,7 +109,18 @@ class GraphPruning:
         return self._patch_coordinator.record_mutations(stage, entries)
 
     def _cycle_id(self) -> str:
-        return self._patch_coordinator.cycle_id if self._patch_coordinator is not None else ""
+        """目前週期識別；無 coordinator 週期 id 時改用本次 run 的時間戳，確保跨週期可累計 confirm_count。"""
+        cid = self._patch_coordinator.cycle_id if self._patch_coordinator is not None else ""
+        if cid:
+            return cid
+        if not self._run_cycle_id:
+            self._run_cycle_id = self._new_run_cycle_id()
+        return self._run_cycle_id
+
+    @staticmethod
+    def _new_run_cycle_id() -> str:
+        import time
+        return f"prune_{time.time_ns()}"
 
     def _is_suppressed(self, id_a: str, id_b: str) -> bool:
         if self._bridge_suppressed is None:
@@ -189,6 +201,7 @@ class GraphPruning:
         logger.info("[GraphPruning] 開始圖譜修剪")
 
         report = PruningReport()
+        self._run_cycle_id = self._new_run_cycle_id()
 
         # 記錄修剪前狀態
         stats_before = self.graph.get_stats()
@@ -530,7 +543,7 @@ class GraphPruning:
             union_eps = union_eps[:self._PROVENANCE_CAP]
             attrs = {
                 "bridge_id": "|".join(sorted((id_a, id_b))),  # 穩定 pair key
-                "state": "active",  # active／degraded／expired；探索式關聯，非事實
+                "state": "active",  # active／expired（degraded 為保留值）；探索式關聯，非事實
                 "degraded_reason": "",
                 "confirm_count": 1,  # 以不同 Dream 週期累計（建立週期算第一次）
                 "created_cycle_id": cycle_id,
@@ -681,14 +694,13 @@ class GraphPruning:
 
         to_remove: list[tuple[str, str]] = []
         remove_entries: list[dict] = []
-        to_degrade: list[tuple[str, str]] = []
-        degrade_entries: list[dict] = []
         for u, v, data in self.graph.graph.edges(data=True):
             if data.get("edge_type") != "LATENT_BRIDGE":
                 continue
             ref = data.get("last_confirmed_at") or data.get("created_at") or now_ts
             expired = expire_secs > 0 and (now_ts - ref) > expire_secs
-            # 撤銷原因（結構性判斷）：端點失效／逾期 -> 移除；兩端出現 CONTRADICTS -> 降級
+            # 撤銷原因（結構性判斷）：端點失效／逾期 -> 移除
+            # （CONTRADICTS 取代 bridge 由 graph.add_contradicts_edge 負責並記 bridge_revoke）
             if _inactive(u) or _inactive(v) or expired:
                 why = "endpoint_inactive" if (_inactive(u) or _inactive(v)) else "expired"
                 to_remove.append((u, v))
@@ -696,21 +708,6 @@ class GraphPruning:
                     u, v, "bridge_revoke", why, prior=dict(data),
                     new={"state": "expired", "degraded_reason": why},
                 ))
-            elif data.get("state", "active") == "active" and self.graph.has_contradicts_edge(u, v):
-                to_degrade.append((u, v))
-                degrade_entries.append(self._edge_entry(
-                    u, v, "bridge_degrade", "endpoint_contradicts", prior=dict(data),
-                    new={"state": "degraded", "degraded_reason": "endpoint_contradicts"},
-                ))
-
-        # 降級（保留邊，檢索排除）：audit-before-mutate
-        if to_degrade and self._record("bridge", degrade_entries):
-            for u, v in to_degrade:
-                self.graph.graph[u][v]["state"] = "degraded"
-                self.graph.graph[u][v]["degraded_reason"] = "endpoint_contradicts"
-            logger.info("[GraphPruning] 降級 %d 條 LATENT_BRIDGE（端點出現 CONTRADICTS）", len(to_degrade))
-        elif to_degrade:
-            logger.warning("[GraphPruning] 逐條 audit 失敗，跳過 bridge 降級 (%d 條)", len(to_degrade))
 
         if not to_remove:
             return 0
@@ -770,6 +767,9 @@ class GraphPruning:
                 logger.warning("[GraphPruning] audit 失敗，跳過權重更新 (%d 條)", precedes_count)
                 return 0
 
+        # 先算出全部新值（不 mutate），再寫逐條紀錄（含前值），audit 失敗則整批不套用
+        planned: list[tuple[str, str, float, float]] = []
+        entries: list[dict] = []
         for u, v, data in self.graph.graph.edges(data=True):
             if data.get("edge_type") != "PRECEDES":
                 continue
@@ -791,12 +791,25 @@ class GraphPruning:
                 frequency,
                 avg_salience
             )
+            planned.append((u, v, recency_score, new_weight))
+            entries.append(self._edge_entry(
+                u, v, "edge_update", "edge_weight_decay", prior=dict(data),
+                new={"weight": new_weight, "recency_score": recency_score},
+            ))
 
-            # 更新權重和時間衰減分數
-            data["recency_score"] = recency_score
-            data["weight"] = new_weight
+        if not self._record("pruning", entries):
+            logger.warning("[GraphPruning] 逐條 audit 失敗，跳過權重更新 (%d 條)", len(entries))
+            return 0
 
-            updated_count += 1
+        with self.graph.lock:
+            for u, v, recency_score, new_weight in planned:
+                if not self.graph.graph.has_edge(u, v):
+                    continue
+                data = self.graph.graph[u][v]
+                # 更新權重和時間衰減分數
+                data["recency_score"] = recency_score
+                data["weight"] = new_weight
+                updated_count += 1
 
         logger.info(f"[GraphPruning] 更新 {updated_count} 條邊的權重")
 

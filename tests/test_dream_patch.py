@@ -447,8 +447,8 @@ class TestReplayWithCoordinator:
 class TestDreamEngineAuditBeforeMutation:
     """DreamEngine 層級的 audit-before-mutate 契約。"""
 
-    def test_procedure_audit_failure_skips_extractor(self, storage_path: Path):
-        """程序提取會改 procedural/graph，必須 audit 成功後才呼叫。"""
+    def test_procedure_stage_has_no_summary_preaudit(self, storage_path: Path):
+        """程序提取不再有數量未知的預 audit；寫入由 write_procedure 逐條 audit 把關（M5-B）。"""
         episodic = _episodic_with_fixed_embedding(storage_path / "episodic_procedure")
         episodic.write(Episode(
             user_input="u",
@@ -477,7 +477,7 @@ class TestDreamEngineAuditBeforeMutation:
 
             def run(self, candidates):
                 self.called = True
-                raise AssertionError("audit failure should skip procedure extractor")
+                return None
 
         extractor = ProcedureExtractor()
         engine._procedure_extractor = extractor
@@ -485,7 +485,7 @@ class TestDreamEngineAuditBeforeMutation:
         report = engine.dream_now("audit_failure_test")
 
         assert report.error is None
-        assert extractor.called is False
+        assert extractor.called is True
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -45,7 +45,7 @@ class BridgeInfo:
     concept_a: str
     concept_b: str
     similarity: float = 0.0
-    state: str = "active"  # active／degraded／expired
+    state: str = "active"  # active／expired（degraded 為保留值：DiGraph 同向僅一條邊，目前無產生來源）
     degraded_reason: str = ""
     confirm_count: int = 0  # 以不同 Dream 週期累計
     created_cycle_id: str = ""
@@ -392,7 +392,7 @@ class MemoryGraph:
 
         舊邊缺欄位時容錯：confirm_count=0、state=active。
         Args:
-            states: 只回傳指定 state（active／degraded／expired）；None 表示全部。
+            states: 只回傳指定 state（active／expired；degraded 為保留值）；None 表示全部。
         """
         seen: set[str] = set()
         result: list[BridgeInfo] = []
@@ -484,7 +484,7 @@ class MemoryGraph:
         添加 CONTRADICTS 邊（矛盾關係）。
 
         DiGraph 同方向只能有一條邊：若該配對已有 LATENT_BRIDGE，CONTRADICTS 會取代它。
-        取代前先以 on_bridge_displaced(entries) 回報（entries 為 bridge_degrade 逐條紀錄，
+        取代前先以 on_bridge_displaced(entries) 回報（entries 為 bridge_revoke 逐條紀錄，
         含前值）；回呼回傳 False（audit 失敗）則不建邊、回傳 False。未提供回呼時沿用舊行為。
 
         用於 EcphoryRetrieval 的矛盾 penalty：
@@ -514,12 +514,12 @@ class MemoryGraph:
 
         displaced = [
             {
-                "mutation": "bridge_degrade",
+                "mutation": "bridge_revoke",
                 "target": {"from": src, "to": dst, "edge_type": "LATENT_BRIDGE"},
                 "source_concept_ids": [concept_a, concept_b],
                 "prior": dict(self.graph[src][dst]),
                 "new": {
-                    "state": "degraded",
+                    "state": "expired",
                     "degraded_reason": "endpoint_contradicts",
                     "replaced_by": "CONTRADICTS",
                 },
@@ -532,7 +532,7 @@ class MemoryGraph:
         if displaced and on_bridge_displaced is not None:
             if not on_bridge_displaced(displaced):
                 logger.warning(
-                    f"[MemoryGraph] bridge 降級 audit 失敗，不建 CONTRADICTS 邊: "
+                    f"[MemoryGraph] bridge 撤銷 audit 失敗，不建 CONTRADICTS 邊: "
                     f"{concept_a[:12]} <-> {concept_b[:12]}"
                 )
                 return False

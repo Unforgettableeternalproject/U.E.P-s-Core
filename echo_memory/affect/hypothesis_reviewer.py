@@ -203,6 +203,7 @@ class HypothesisReviewer:
         lock_factory: Callable[[], Any] | None = None,
         cfg: Any = None,
         triggered_by: str = "dream",
+        namespace_id: str | None = None,
     ):
         if cfg is None:
             from echo_memory.config import get_config
@@ -215,6 +216,7 @@ class HypothesisReviewer:
         self._store = store
         self._lock = lock_factory if lock_factory is not None else contextlib.nullcontext
         self._triggered_by = triggered_by
+        self._namespace_id = namespace_id  # 明確注入；None 時才由儲存路徑推得
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 公共 API
@@ -484,7 +486,8 @@ class HypothesisReviewer:
     def _is_scope_namespace(self) -> bool:
         from echo_memory.schemas.sharing import is_scope_namespace_id
 
-        return is_scope_namespace_id(Path(self._semantic.storage_path).parent.name)
+        ns = self._namespace_id or Path(self._semantic.storage_path).parent.name
+        return is_scope_namespace_id(ns)
 
     @staticmethod
     def _reason(tx: Any) -> str:

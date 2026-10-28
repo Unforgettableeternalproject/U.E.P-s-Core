@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 # ─── 設定 sys.path，讓 echo_memory 和 llm_integration 可被 import ─────────────
@@ -77,6 +78,44 @@ server = Server("echo-memory")
 
 
 _scheduled_engines: list[MemoryEngine] = []  # 已啟動 Dream 排程的 engine，結束時統一停止
+_schedule_requested: set[int] = set()  # 已排入啟動的 engine（id），確保每個 engine 只啟動一次
+_schedule_lock = threading.Lock()
+
+
+def _start_dream_scheduler_safe(engine: MemoryEngine, namespace_id: str) -> None:
+    """啟動 Dream 排程；任何失敗只記 log，不影響記憶讀寫。"""
+    try:
+        result = engine.start_dream_scheduler()
+        if result["started"]:
+            with _schedule_lock:
+                _scheduled_engines.append(engine)
+        else:
+            logger.info(f"[MCP Server] Dream 排程未啟動 ({namespace_id}): {result['reason']}")
+    except Exception as exc:
+        logger.warning(f"[MCP Server] Dream 排程啟動失敗 ({namespace_id}): {exc}")
+
+
+def _ensure_dream_scheduler(engine: MemoryEngine, namespace_id: str) -> None:
+    """
+    在 registry 鎖之外以背景執行緒啟動 Dream 排程（每個 engine 只啟動一次）。
+
+    start_dream_scheduler 會 ensure_initialized（載入 embedding），不能放進
+    NamespaceEngineRegistry 的全域鎖，否則會卡住其他 namespace。
+    場域共享 namespace 對 MCP 唯讀（寫入被存取策略拒絕），不啟動會改寫圖譜的 Dream 排程。
+    """
+    if is_scope_namespace_id(namespace_id):
+        return
+    with _schedule_lock:
+        if id(engine) in _schedule_requested:
+            return
+        _schedule_requested.add(id(engine))
+    try:
+        threading.Thread(
+            target=_start_dream_scheduler_safe, args=(engine, namespace_id),
+            name=f"dream-scheduler-{namespace_id}", daemon=True,
+        ).start()
+    except Exception as exc:
+        logger.warning(f"[MCP Server] Dream 排程執行緒建立失敗 ({namespace_id}): {exc}")
 
 
 def _create_engine(namespace_id: str) -> MemoryEngine:
@@ -95,13 +134,6 @@ def _create_engine(namespace_id: str) -> MemoryEngine:
         embedding_backend=config.embedding_backend,
         ollama_base_url=config.ollama_base_url,
     )
-    # 場域共享 namespace 對 MCP 唯讀（寫入被存取策略拒絕），不啟動會改寫圖譜的 Dream 排程
-    if not is_scope_namespace_id(namespace_id):
-        result = engine.start_dream_scheduler()
-        if result["started"]:
-            _scheduled_engines.append(engine)
-        else:
-            logger.info(f"[MCP Server] Dream 排程未啟動 ({namespace_id}): {result['reason']}")
     return engine
 
 
@@ -118,7 +150,9 @@ def get_engine(namespace_id: str | None = None) -> MemoryEngine:
     資源（resources）等不經 handlers 的入口也不能繞過。
     """
     namespace_id = check_namespace_access(namespace_id, policy_from_config())
-    return _engines.get(namespace_id)
+    engine = _engines.get(namespace_id)
+    _ensure_dream_scheduler(engine, namespace_id)
+    return engine
 
 
 def main() -> None:

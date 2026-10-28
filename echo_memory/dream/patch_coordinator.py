@@ -564,7 +564,7 @@ class DreamPatchCoordinator:
         return self._append_audit_lines(lines)
 
     def record_bridge_displaced(self, entries: list[dict[str, Any]]) -> bool:
-        """CONTRADICTS 取代 LATENT_BRIDGE 前的 bridge_degrade 逐條紀錄（供 add_contradicts_edge 回呼）。"""
+        """CONTRADICTS 取代 LATENT_BRIDGE 前的 bridge_revoke 逐條紀錄（供 add_contradicts_edge 回呼）。"""
         return self.record_mutations("bridge", entries)
 
     def record_mutation(self, stage: str, mutation: str, **fields: Any) -> bool:
@@ -624,8 +624,19 @@ class DreamPatchCoordinator:
         kind = record.get("mutation", "")
         target = record.get("target") or {}
         prior = record.get("prior")
-        if kind == "procedure_write":
+        edge_kinds = (
+            "edge_add", "edge_update", "edge_remove",
+            "bridge_create", "bridge_confirm", "bridge_revoke",
+        )
+        # 先判斷是否支援：不支援的 kind（含 procedure_write）在寫 audit 前就回傳 False
+        is_edge = kind in edge_kinds and graph is not None
+        is_archive = kind == "node_archive" and graph is not None
+        is_salience = (
+            kind == "episode_salience" and episodic is not None and isinstance(prior, dict)
+        )
+        if not (is_edge or is_archive or is_salience):
             return False
+
         if not self.record_mutations(record.get("stage", ""), [{
             "mutation": "rollback",
             "target": target,
@@ -635,33 +646,39 @@ class DreamPatchCoordinator:
         }]):
             return False
 
-        edge_kinds = (
-            "edge_add", "edge_update", "edge_remove",
-            "bridge_create", "bridge_confirm", "bridge_revoke",
-        )
-        if kind in edge_kinds and graph is not None:
+        if is_edge:
             src, dst = target.get("from"), target.get("to")
             g = graph.graph
-            if prior is None:
-                if g.has_edge(src, dst):
-                    g.remove_edge(src, dst)
-            elif g.has_node(src) and g.has_node(dst):
-                if g.has_edge(src, dst):
-                    g[src][dst].clear()
-                    g[src][dst].update(prior)
-                else:
-                    g.add_edge(src, dst, **prior)
-            return True
-        if kind == "node_archive" and graph is not None:
+            with graph.lock:
+                if prior is None:
+                    if g.has_edge(src, dst):
+                        g.remove_edge(src, dst)
+                elif g.has_node(src) and g.has_node(dst):
+                    if g.has_edge(src, dst):
+                        g[src][dst].clear()
+                        g[src][dst].update(prior)
+                    else:
+                        g.add_edge(src, dst, **prior)
+            return self._persist_graph(graph)
+        if is_archive:
             node_id = target.get("node_id")
-            if graph.graph.has_node(node_id) and isinstance(prior, dict):
-                graph.graph.nodes[node_id]["archived"] = bool(prior.get("archived", False))
+            with graph.lock:
+                if graph.graph.has_node(node_id) and isinstance(prior, dict):
+                    graph.graph.nodes[node_id]["archived"] = bool(prior.get("archived", False))
+            return self._persist_graph(graph)
+        return bool(
+            episodic.update_salience(target.get("episode_id"), prior.get("salience_score"))
+        )
+
+    @staticmethod
+    def _persist_graph(graph: Any) -> bool:
+        """回滾後持久化圖譜；失敗只記 log 並回傳 False（記憶體已還原，下次存檔會補上）。"""
+        try:
+            graph.save()
             return True
-        if kind == "episode_salience" and episodic is not None and isinstance(prior, dict):
-            return bool(
-                episodic.update_salience(target.get("episode_id"), prior.get("salience_score"))
-            )
-        return False
+        except Exception as e:
+            logger.error("[DreamPatchCoordinator] 回滾後圖譜存檔失敗: %s", e)
+            return False
 
     # ──────────────────────────────────────────────
     # Audit Log 寫入

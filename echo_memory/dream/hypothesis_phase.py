@@ -73,6 +73,7 @@ class HypothesisPhase:
         patch_coordinator: 取 cycle_id 用（可選）。
         cfg: Config；None 取全域。
         enabled: False 時整個 phase 略過（例如共享 namespace）。
+        namespace_id: 明確注入的 namespace id；None 時才由 semantic 儲存路徑推得（相容舊呼叫端）。
     """
 
     def __init__(
@@ -86,6 +87,7 @@ class HypothesisPhase:
         patch_coordinator: Any = None,
         cfg: Any = None,
         enabled: bool = True,
+        namespace_id: str | None = None,
     ):
         if cfg is None:
             from echo_memory.config import get_config
@@ -99,6 +101,7 @@ class HypothesisPhase:
         self._lock = lock_factory if lock_factory is not None else contextlib.nullcontext
         self._coordinator = patch_coordinator
         self._enabled = enabled
+        self._namespace_id = namespace_id
 
     def run(self) -> HypothesisReport:
         report = HypothesisReport()
@@ -131,6 +134,12 @@ class HypothesisPhase:
                 return False
         return len(ends) == 2
 
+    def _pair_contradicts(self, pair_key: str) -> bool:
+        ends = pair_key.split("|")
+        if len(ends) != 2:
+            return False
+        return "CONTRADICTS" in self._graph.edge_types_between(ends[0], ends[1])
+
     def maintain(self, report: HypothesisReport | None = None) -> HypothesisReport:
         report = report or HypothesisReport()
         now = datetime.now(timezone.utc)
@@ -144,6 +153,10 @@ class HypothesisPhase:
                 if h.is_open:
                     if not self._endpoints_active(h.pair_key):
                         ok, _ = self._submit("expire", {"hypothesis_id": h.id, "reason": "endpoint_gone"})
+                        report.expired += int(ok)
+                    elif self._pair_contradicts(h.pair_key):
+                        # 配對出現 CONTRADICTS：直接結案，不退避到 TTL
+                        ok, _ = self._submit("expire", {"hypothesis_id": h.id, "reason": "pair_contradicts"})
                         report.expired += int(ok)
                     elif h.expires_at is not None and h.expires_at <= now:
                         ok, _ = self._submit("expire", {"hypothesis_id": h.id, "reason": "ttl"})
@@ -260,4 +273,5 @@ class HypothesisPhase:
     def _is_scope_namespace(self) -> bool:
         from echo_memory.schemas.sharing import is_scope_namespace_id
 
-        return is_scope_namespace_id(Path(self._semantic.storage_path).parent.name)
+        ns = self._namespace_id or Path(self._semantic.storage_path).parent.name
+        return is_scope_namespace_id(ns)

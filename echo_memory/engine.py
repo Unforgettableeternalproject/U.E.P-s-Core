@@ -187,6 +187,12 @@ class MemoryEngine:
     def _concept_inhibitor(self, inhibitor) -> None:
         # 任何賦值方式（含 Entry.py 直接賦值）都在此註冊概念變更 callback
         self._concept_inhibitor_obj = inhibitor
+        # 明確注入 namespace id（Hypothesis 的共享 namespace 判斷不靠儲存路徑推得）
+        if inhibitor is not None and getattr(inhibitor, "namespace_id", None) is None:
+            try:
+                inhibitor.namespace_id = self.namespace_id
+            except AttributeError:
+                pass
         self._ensure_change_listener()
 
     def set_concept_inhibitor(self, inhibitor) -> None:
@@ -1700,6 +1706,7 @@ class MemoryEngine:
                     ),
                     cron_window_seconds=config.dream_cron_window_seconds,
                     hypothesis_enabled=self._hypothesis_allowed(),
+                    namespace_id=self.namespace_id,
                     **self._dream_sharing_kwargs(config),
                 )
                 if self._last_interaction is not None:

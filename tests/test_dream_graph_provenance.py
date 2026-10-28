@@ -279,24 +279,15 @@ def test_iter_latent_bridges_tolerates_legacy_edges(env):
     assert graph.iter_latent_bridges(states=("degraded",)) == []
 
 
-def test_bridge_degraded_when_contradicts_appears(env, coord, audit_path):
+def test_expire_no_longer_degrades_bridge_on_contradicts(env, coord, audit_path):
+    """DiGraph 同向只能一條邊：降級分支已移除，CONTRADICTS 取代由 graph 記 bridge_revoke。"""
     _, semantic, graph, ids = env
     _legacy_bridge(graph, ids["X"], ids["Y"])
-    # 只有單向 CONTRADICTS：bridge 的另一個方向仍在
     graph.graph.add_edge(ids["Y"], ids["X"], edge_type="CONTRADICTS", weight=0.8)
     gp = GraphPruning(graph, semantic=semantic, patch_coordinator=coord)
-    assert gp._expire_latent_bridges() == 0  # 降級不刪邊
-
-    edge = graph.graph[ids["X"]][ids["Y"]]
-    assert edge["edge_type"] == "LATENT_BRIDGE"
-    assert edge["state"] == "degraded"
-    assert edge["degraded_reason"] == "endpoint_contradicts"
-    recs = _mutations(audit_path, "bridge_degrade")
-    assert len(recs) == 1
-    _check_common(recs[0], "bridge")
-    assert recs[0]["prior"].get("state") is None
-    info = graph.iter_latent_bridges()[0]
-    assert info.state == "degraded" and info.degraded_reason == "endpoint_contradicts"
+    assert gp._expire_latent_bridges() == 0
+    assert graph.graph[ids["X"]][ids["Y"]].get("state", "active") == "active"
+    assert _mutations(audit_path, "bridge_degrade") == []
 
 
 def test_degraded_bridge_excluded_from_retrieval(env, coord):
@@ -314,14 +305,6 @@ def test_degraded_bridge_excluded_from_retrieval(env, coord):
     for s, d in ((ids["X"], ids["Y"]), (ids["Y"], ids["X"])):
         graph.graph[s][d]["state"] = "degraded"
     assert ids["Y"] not in recalled()
-
-
-def test_bridge_degrade_blocked_when_record_fails(env, bad_coord):
-    _, semantic, graph, ids = env
-    _legacy_bridge(graph, ids["X"], ids["Y"])
-    graph.graph.add_edge(ids["Y"], ids["X"], edge_type="CONTRADICTS", weight=0.8)
-    GraphPruning(graph, semantic=semantic, patch_coordinator=bad_coord)._expire_latent_bridges()
-    assert graph.graph[ids["X"]][ids["Y"]].get("state", "active") == "active"
 
 
 def test_bridge_revoked_on_deprecated_endpoint_has_record_and_blocked_on_failure(
@@ -559,7 +542,7 @@ def test_rollback_restores_removed_edge_and_archive(env, coord, audit_path):
 # ─── CONTRADICTS 取代 bridge 前先留逐條紀錄 ──────────────────────────────────
 
 
-def test_contradicts_replacing_bridge_records_degrade_first(env, coord, audit_path):
+def test_contradicts_replacing_bridge_records_revoke_first(env, coord, audit_path):
     _, _, graph, ids = env
     _legacy_bridge(graph, ids["X"], ids["Y"])
     assert graph.add_contradicts_edge(
@@ -567,12 +550,14 @@ def test_contradicts_replacing_bridge_records_degrade_first(env, coord, audit_pa
     ) is True
     assert graph.graph[ids["X"]][ids["Y"]]["edge_type"] == "CONTRADICTS"
     assert "similarity" not in graph.graph[ids["X"]][ids["Y"]]  # 不混入 bridge 屬性
-    recs = _mutations(audit_path, "bridge_degrade")
+    recs = _mutations(audit_path, "bridge_revoke")
     assert len(recs) == 2
     for r in recs:
         _check_common(r, "bridge")
         assert r["prior"]["edge_type"] == "LATENT_BRIDGE"
         assert r["new"]["degraded_reason"] == "endpoint_contradicts"
+        assert r["new"]["state"] == "expired"
+        assert r["reason"] == "endpoint_contradicts"
 
 
 def test_contradicts_blocked_when_bridge_record_fails(env, bad_coord):

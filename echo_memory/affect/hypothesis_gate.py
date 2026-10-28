@@ -48,7 +48,7 @@ logger = logging.getLogger("echo_memory.affect.hypothesis_gate")
 HYPOTHESIS_OPS = ("propose", "claim", "release", "review", "expire", "purge", "reopen")
 REVIEW_RESULTS = ("supported", "refuted", "insufficient", "llm_failed")
 REOPEN_REASONS = ("digest_drift", "evidence_gone")
-GATE_EXPIRE_REASONS = ("ttl", "endpoint_gone")
+GATE_EXPIRE_REASONS = ("ttl", "endpoint_gone", "pair_contradicts")
 _MAX_BACKOFF_HOURS = 24.0 * 7
 
 
@@ -75,6 +75,11 @@ class HypothesisGateMixin:
 
     def _namespace_root(self) -> Path:
         return Path(self._semantic.storage_path).parent  # type: ignore[attr-defined]
+
+    def _hyp_namespace_id(self) -> str:
+        """namespace id：優先用宿主明確注入的 namespace_id，未注入才由儲存路徑推得（相容舊呼叫端）。"""
+        explicit = getattr(self, "namespace_id", None)
+        return str(explicit) if explicit else self._namespace_root().name
 
     def _hypothesis_store(self) -> HypothesisStore:
         store = getattr(self, "_hyp_store_obj", None)
@@ -118,7 +123,7 @@ class HypothesisGateMixin:
           - "review": hypothesis_id、token、result（supported／refuted／insufficient／llm_failed）、
             pair_digest、review、statement、claim_kind、coverage{a,b}。supported 時 Gate 以被引用
             unit 重算支持度與獨立佐證（使用者自述只是主觀事實），通過才昇格 RELATES_TO。
-          - "expire": hypothesis_id、reason（ttl／endpoint_gone）。
+          - "expire": hypothesis_id、reason（ttl／endpoint_gone／pair_contradicts）。
           - "purge": hypothesis_ids（refuted／expired 且保留期限已過）。
           - "reopen": hypothesis_id、reason（digest_drift／evidence_gone）：supported 回 proposed 重審。
 
@@ -297,7 +302,7 @@ class HypothesisGateMixin:
             raise _Reject("hypothesis 已停用")
         from echo_memory.schemas.sharing import is_scope_namespace_id
 
-        if is_scope_namespace_id(self._namespace_root().name):
+        if is_scope_namespace_id(self._hyp_namespace_id()):
             raise _Reject("scope_namespace: 共享 namespace 不產生假說")
         a, b = str(payload.get("concept_a") or ""), str(payload.get("concept_b") or "")
         if not a or not b or a == b:
@@ -552,6 +557,14 @@ class HypothesisGateMixin:
         if reason == "ttl":
             if not rec.is_open or rec.expires_at is None or rec.expires_at > now:
                 raise _Reject("ttl_not_elapsed")
+        elif reason == "pair_contradicts":
+            # 開放假說的配對出現 CONTRADICTS：Gate 自行確認邊確實存在，直接結案不退避到 TTL
+            if not rec.is_open:
+                raise _Reject(f"not_open: status={rec.status}")
+            a, b = rec.endpoints  # type: ignore[misc]
+            types = {e.get("edge_type") for e in self._pair_edges(self._hyp_graph(), a, b).values()}
+            if "CONTRADICTS" not in types:
+                raise _Reject("no_contradicts: 端點間沒有 CONTRADICTS")
         else:  # endpoint_gone：Gate 自行確認端點確實失效
             try:
                 self._hyp_endpoint_concepts(rec.pair_key)

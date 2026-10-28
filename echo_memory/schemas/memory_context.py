@@ -72,6 +72,8 @@ class MemoryContext:
     # Self Model 條目（M6）：subject=agent 且帶 self_model 標記的概念；僅 self_model_enabled
     # 時由 engine.retrieve 填入，預設空。不影響 is_empty()，也不參與召回排序。
     self_observations: list[Concept] = field(default_factory=list)
+    # 注入前重查發現部分證據已失效的 Self Model 條目 id：一律標未驗證
+    self_observation_unverified: set[str] = field(default_factory=set)
 
     def _agent_text_for_prompt(self, ep: Episode) -> tuple[str, bool]:
         """回傳 (可注入的 agent 文字, 是否有未說出口的預定回覆)。
@@ -223,7 +225,9 @@ class MemoryContext:
                 {
                     "name": c.name,
                     "observation": c.description,
-                    "status": self._self_observation_status(c),
+                    "status": self._self_observation_status(
+                        c, forced_unverified=c.id in self.self_observation_unverified,
+                    ),
                 }
                 for c in self.self_observations[:SELF_OBSERVATION_MAX_ITEMS]
             ]
@@ -241,10 +245,11 @@ class MemoryContext:
         )
 
     @staticmethod
-    def _self_observation_status(c: Concept) -> str:
-        """Self Model 條目的驗證標籤（結構欄位判斷）：非 verified 一律標未驗證。"""
-        mark = c.metadata.get("self_model") if isinstance(c.metadata, dict) else None
-        if isinstance(mark, dict) and mark.get("verification") == "verified":
+    def _self_observation_status(c: Concept, forced_unverified: bool = False) -> str:
+        """Self Model 條目的驗證標籤（結構欄位判斷）：描述被改過、證據部分失效、非 verified 一律標未驗證。"""
+        from echo_memory.schemas.self_model import VERIFICATION_VERIFIED, effective_verification
+
+        if not forced_unverified and effective_verification(c) == VERIFICATION_VERIFIED:
             return "有證據支持的觀察，不是設定"
         return "agent 自述，未驗證"
 

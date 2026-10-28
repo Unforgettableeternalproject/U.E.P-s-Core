@@ -799,7 +799,9 @@ class MemoryEngine:
         # M6：Self Model 觀察（預設關閉；共享輪次與共享 namespace 一律不帶）
         if not shared_turn and self._self_model_allowed():
             try:
-                context.self_observations = self._retrieve_self_observations()
+                context.self_observations, context.self_observation_unverified = (
+                    self._retrieve_self_observations()
+                )
             except Exception as e:  # noqa: BLE001 - 自我觀察是附加資訊，失敗不影響召回
                 logger.warning(f"[MemoryEngine] 帶出 Self Model 觀察失敗（略過）: {e}")
         t_end = time.perf_counter()
@@ -827,9 +829,13 @@ class MemoryEngine:
 
         return bool(get_config().self_model_enabled) and not is_scope_namespace_id(self.namespace_id)
 
-    def _retrieve_self_observations(self, limit: int = 3) -> list:
-        """active 的 Self Model 條目（subject=agent＋self_model 標記），依 standing 排序。"""
-        from echo_memory.affect.self_model_gate import is_self_model_concept
+    def _retrieve_self_observations(self, limit: int = 3) -> tuple[list, set[str]]:
+        """active 的 Self Model 條目（subject=agent＋self_model 標記），依 standing 排序。
+
+        注入前重查 evidence_refs 是否仍存在且未塗銷：全部失效不注入，部分失效降為未驗證。
+        回傳 (條目, 被迫降為未驗證的概念 id 集合)。
+        """
+        from echo_memory.schemas.self_model import is_self_model_concept
         from echo_memory.config import get_config
         from echo_memory.retrieval import standing as standing_mod
 
@@ -844,7 +850,19 @@ class MemoryEngine:
             key=lambda c: standing_mod.standing(c, params["status_table"], params["rank_table"]),
             reverse=True,
         )
-        return candidates[:limit]
+        kept: list = []
+        degraded: set[str] = set()
+        for c in candidates:
+            refs = [str(r) for r in c.metadata["self_model"]["evidence_refs"]]
+            alive = {u.id for u in self.evidence.get(refs) if getattr(u, "tombstoned_at", None) is None}
+            if not alive:
+                continue
+            if len(alive) < len(set(refs)):
+                degraded.add(c.id)
+            kept.append(c)
+            if len(kept) >= limit:
+                break
+        return kept, degraded
 
     def retrieve_evidence(
         self,

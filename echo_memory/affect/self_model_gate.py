@@ -8,6 +8,7 @@ audit-before-mutate、可 rollback，與其他 ConceptInhibitor patch 同一條�
 規則（皆在 Gate 內重算，不信任呼叫端）：
   - 目標必須是 active、subject="agent" 的概念；
   - evidence_refs 必填，且每個 id 都必須是存在、未塗銷的證據 unit；
+  - 標記存 description 指紋；描述之後被 expand／modify／merge 改變，effective_verification 即降為 unverified；
   - verification 只有 "unverified"／"verified"：僅 agent 自述（agent_only／沒有任何
     具證據資格的引用）的條目一律 unverified，且不得被要求升 verified（沿用 M-9 規則）；
   - Self Model 只是「觀察」，不是設定：本 mixin 不碰 persona／character。
@@ -28,24 +29,16 @@ from echo_memory.affect.concept_patch import (
     PatchTransaction,
 )
 from echo_memory.schemas.hypothesis import hypothesis_evidence_kind
+from echo_memory.schemas.self_model import (  # noqa: F401 - is_self_model_concept 供外部沿用此路徑
+    SELF_MODEL_KEY,
+    VERIFICATION_UNVERIFIED,
+    VERIFICATION_VERIFIED,
+    VERIFICATIONS,
+    description_digest,
+    is_self_model_concept,
+)
 
 logger = logging.getLogger("echo_memory.affect.self_model_gate")
-
-SELF_MODEL_KEY = "self_model"
-VERIFICATION_UNVERIFIED = "unverified"
-VERIFICATION_VERIFIED = "verified"
-_VERIFICATIONS = (VERIFICATION_UNVERIFIED, VERIFICATION_VERIFIED)
-
-
-def is_self_model_concept(concept: Any) -> bool:
-    """概念是否為 Self Model 條目：subject=agent 且帶 self_model 標記（結構欄位判斷）。"""
-    metadata = getattr(concept, "metadata", None)
-    return (
-        getattr(concept, "subject", "") == "agent"
-        and isinstance(metadata, dict)
-        and isinstance(metadata.get(SELF_MODEL_KEY), dict)
-    )
-
 
 class SelfModelGateMixin:
     """ConceptInhibitor 的 Self Model 子系統。依賴宿主的 _semantic／_lookup_units／_apply_patch。"""
@@ -87,6 +80,7 @@ class SelfModelGateMixin:
             value: dict[str, Any] = {
                 "evidence_refs": refs,
                 "verification": VERIFICATION_UNVERIFIED,
+                "description_digest": description_digest(concept.description),
                 "tagged_at": datetime.now(timezone.utc).isoformat(),
             }
             if concept.status != "active" or concept.metadata.get("merged_into"):
@@ -95,7 +89,7 @@ class SelfModelGateMixin:
                 reject = "Self Model 只能標記 subject=agent 的概念"
             elif not refs:
                 reject = "no_evidence_refs: Self Model 條目必須帶 evidence_refs"
-            elif verification not in _VERIFICATIONS:
+            elif verification not in VERIFICATIONS:
                 reject = f"verification 無效: {verification!r}"
             else:
                 units = self._lookup_units(refs)  # type: ignore[attr-defined]
@@ -177,7 +171,14 @@ class SelfModelGateMixin:
         value = patch.new_value if isinstance(patch.new_value, dict) else None
         if value is None or not value.get("evidence_refs"):
             return False
-        if concept.subject != "agent":
+        # 套用時重查（規劃到套用之間狀態可能變動）：active、agent、描述未變、證據仍有效
+        if concept.subject != "agent" or concept.status != "active" or concept.metadata.get("merged_into"):
+            return False
+        if value.get("description_digest") != description_digest(concept.description):
+            return False
+        refs = [str(x) for x in value["evidence_refs"]]
+        units = self._lookup_units(refs)  # type: ignore[attr-defined]
+        if any(i not in units or getattr(units[i], "tombstoned_at", None) is not None for i in refs):
             return False
         patch.rollback_payload = patch.rollback_payload or {}
         patch.rollback_payload["self_model_undo"] = {

@@ -244,12 +244,20 @@ class HypothesisGateMixin:
             if result not in ("supported", "refuted"):
                 return
             put = value.get("records_put") or [{}]
-            review = (put[0] or {}).get("review") or {}
+            record = put[0] or {}
+            review = record.get("review") or {}
+            hid = str(value.get("hypothesis_id") or "")
+            # 只有狀態真的改變才算轉移（supported 重審仍 supported 不重發）
+            old = (patch.old_value or {}).get(hid) or {}
+            new_status = "supported" if result == "supported" else "refuted"
+            if old.get("status") == new_status:
+                return
             emitter.emit_hypothesis_transition(
-                str(value.get("hypothesis_id") or ""),
+                hid,
                 result == "supported",
                 list(review.get("cited_evidence_ids") or []),
                 float(review.get("support_strength") or 0.0),
+                record_version=record.get("version", ""),
             )
         except Exception as e:  # noqa: BLE001 - 事件層不影響 Gate 結果
             logger.warning("[HypothesisGate] 事件通知失敗（已忽略）: %s", e)

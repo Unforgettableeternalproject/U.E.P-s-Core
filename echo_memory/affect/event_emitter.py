@@ -60,7 +60,8 @@ class MemoryEventEmitter:
         self.namespace_id = namespace_id
         self._enabled_fn = enabled_fn or _default_enabled
         self._sink: CandidateSink | None = None
-        self._seen: OrderedDict[str, None] = OrderedDict()
+        self._seen: OrderedDict[str, None] = OrderedDict()  # 已成功投遞的 key
+        self._pending: set[str] = set()  # 在途（已預約、尚未成功）的 key，避免同事件並行重送
         self._lock = threading.Lock()
         self._inflight = 0
 
@@ -114,6 +115,7 @@ class MemoryEventEmitter:
         supported: bool,
         cited_evidence_ids: list[str],
         support_strength: float = 0.0,
+        record_version: int | str = "",
     ) -> None:
         """Hypothesis 經 Gate 變為 supported／refuted。evidence_refs 等於 Gate 驗證後的引用。
 
@@ -121,9 +123,9 @@ class MemoryEventEmitter:
         """
         kind = KIND_HYPOTHESIS_SUPPORTED if supported else KIND_HYPOTHESIS_CONTRADICTED
         refs = tuple(str(x) for x in cited_evidence_ids if x)
-        draft = self._emit(
-            kind, refs, derived_from=(f"hypothesis:{hypothesis_id}",), weight=support_strength,
-        )
+        # 轉移識別：同一假說 supported→refuted→supported 每次真實轉移的紀錄版本不同，key 隨之不同
+        derived = (f"hypothesis:{hypothesis_id}", f"version:{record_version}")
+        draft = self._emit(kind, refs, derived_from=derived, weight=support_strength)
         if draft is not None and supported:
             self._emit_candidate_from(kind, draft, hypothesis_id, support_strength)
 
@@ -132,10 +134,18 @@ class MemoryEventEmitter:
         refs = tuple(sorted({str(concept_a_id), str(concept_b_id)} - {""}))
         self._emit(KIND_CONTRADICTION_FOUND, refs, derived_from=(), weight=strength)
 
-    def emit_episode_flagged(self, episode_id: str, via: str, weight: float = 0.0) -> None:
-        """對話 LLM 主動呼叫 force_remember／adjust_importance 之後（via 為工具名）。"""
+    def emit_episode_flagged(
+        self, episode_id: str, via: str, weight: float = 0.0, action_id: str = "",
+    ) -> None:
+        """對話 LLM 主動呼叫 force_remember／adjust_importance 之後（via 為工具名）。
+
+        action_id 是該次工具呼叫的識別：同一 episode 多次 adjust_importance 是不同的事件。
+        """
         refs = (str(episode_id),) if episode_id else ()
-        self._emit(KIND_EPISODE_FLAGGED, refs, derived_from=(f"tool:{via}",), weight=weight)
+        self._emit(
+            KIND_EPISODE_FLAGGED, refs,
+            derived_from=(f"tool:{via}", f"action:{action_id}"), weight=weight,
+        )
 
     def emit_self_observation_proposed(self, concept_id: str, evidence_refs: list[str]) -> None:
         """subject=agent 的 Self Model 條目經 Gate 套用之後。"""
@@ -154,14 +164,17 @@ class MemoryEventEmitter:
         derived_from: tuple[str, ...],
         weight: float,
     ) -> EventDraft | None:
-        """組裝、去重（以 idempotency_key）、投遞。回傳草稿僅供本模組內組候選，hook 不使用。"""
+        """組裝、預約 key、投遞。回傳草稿僅供本模組內組候選，hook 不使用。
+
+        key 只在投遞成功後才記入已送清單；被丟棄或接收端失敗會釋放預約，之後同一事件可再送。
+        """
         try:
             if not evidence_refs or not self._active():
                 return None
             draft = build_memory_draft(
                 kind, self.namespace_id, evidence_refs, derived_from, weight,
             )
-            if not self._first_time(draft.idempotency_key):
+            if not self._reserve(draft.idempotency_key):
                 return None
             self._deliver(draft)
             return draft
@@ -169,14 +182,25 @@ class MemoryEventEmitter:
             logger.warning("[EventEmitter] 組裝事件失敗（已忽略）: %s", e)
             return None
 
-    def _first_time(self, key: str) -> bool:
+    def _reserve(self, key: str) -> bool:
+        """預約 key：已成功送過或正在送就回 False。"""
         with self._lock:
-            if key in self._seen:
+            if key in self._seen or key in self._pending:
                 return False
+            self._pending.add(key)
+            return True
+
+    def _release(self, key: str) -> None:
+        with self._lock:
+            self._pending.discard(key)
+
+    def _commit(self, key: str) -> None:
+        """投遞成功：由預約轉入已送清單。"""
+        with self._lock:
+            self._pending.discard(key)
             self._seen[key] = None
             while len(self._seen) > _SEEN_CAPACITY:
                 self._seen.popitem(last=False)
-            return True
 
     def _emit_candidate_from(
         self, kind: str, source: EventDraft, hypothesis_id: str, confidence: float,
@@ -193,29 +217,45 @@ class MemoryEventEmitter:
                 confidence=confidence,
                 expires_at=datetime.now(timezone.utc) + _CANDIDATE_TTL,
                 summary=f"假說 {hypothesis_id} 已通過證據審核",
+                transition_ref=source.idempotency_key,
             )
-            if self._first_time(draft.idempotency_key):
+            if self._reserve(draft.idempotency_key):
                 self._deliver(draft)
         except Exception as e:  # noqa: BLE001
             logger.warning("[EventEmitter] 組裝候選失敗（已忽略）: %s", e)
 
     def _deliver(self, draft: EventDraft) -> None:
-        """在 daemon 執行緒呼叫 sink.emit，不等待、不讀回傳值；並行達上限就直接丟棄（不排隊）。"""
+        """在 daemon 執行緒呼叫 sink.emit，不等待、不讀回傳值；並行達上限就丟棄（不排隊）。
+
+        成功才記入已送清單；丟棄或接收端例外都釋放預約，同一事件之後再觸發可再送。
+        """
         sink = self._sink
+        key = draft.idempotency_key
         if sink is None:
+            self._release(key)
             return
         with self._lock:
             if self._inflight >= _MAX_INFLIGHT:
-                logger.debug("[EventEmitter] 投遞執行緒已滿（接收端可能卡住），丟棄 %s", draft.event_type)
+                self._pending.discard(key)
+                logger.warning(
+                    "[EventEmitter] 投遞執行緒已滿（接收端可能卡住），丟棄 %s key=%s",
+                    draft.event_type, key,
+                )
                 return
             self._inflight += 1
 
         def _run() -> None:
+            ok = False
             try:
                 sink.emit(draft)
+                ok = True
             except Exception as e:  # noqa: BLE001 - 接收端例外一律吞掉
                 logger.warning("[EventEmitter] 接收端 emit 失敗（已忽略）: %s", e)
             finally:
+                if ok:
+                    self._commit(key)
+                else:
+                    self._release(key)
                 with self._lock:
                     self._inflight -= 1
 

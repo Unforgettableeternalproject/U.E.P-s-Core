@@ -277,3 +277,41 @@ def test_echo_event_schema_has_no_trust_fields():
         for n in c.body if isinstance(n, ast.AnnAssign)
     ]
     assert draft_fields == ["event_type", "payload", "idempotency_key", "scope_ref"]
+
+
+# ─── 7. 審查補強：dict literal 與整包 metadata 賦值 ────────────────────────────
+
+# reflection_executor 的 rollback 只把「先前快照」放回 primary.metadata，不產生新標記
+_METADATA_ASSIGN_ALLOWED = _GATE_FILES | {"echo_memory/affect/reflection_executor.py"}
+
+
+def test_no_self_model_dict_literal_outside_gate():
+    offenders: list[str] = []
+    for path in _py_files(_PRODUCTION, _PRODUCTION_FILES):
+        rel = _rel(path)
+        if rel in _GATE_FILES:
+            continue
+        for node in ast.walk(_parse(path)):
+            if isinstance(node, ast.Dict):
+                for k in node.keys:
+                    if isinstance(k, ast.Constant) and k.value == "self_model":
+                        offenders.append(f"{rel}:{node.lineno} dict literal self_model")
+    assert offenders == []
+
+
+def test_no_whole_metadata_assignment_outside_gate():
+    offenders: list[str] = []
+    for path in _py_files(_PRODUCTION, _PRODUCTION_FILES):
+        rel = _rel(path)
+        if rel in _METADATA_ASSIGN_ALLOWED:
+            continue
+        for node in ast.walk(_parse(path)):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                targets = [node.target]
+            for t in targets:
+                if isinstance(t, ast.Attribute) and t.attr == "metadata":
+                    offenders.append(f"{rel}:{node.lineno} .metadata 整包賦值")
+    assert offenders == []

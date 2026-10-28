@@ -193,7 +193,8 @@ def test_hypothesis_promotion_emits_exactly_one_event(tmp_path, events_on):
     # evidence_refs 等於 Gate 驗證後記錄的引用
     p = ev.payload
     assert set(p["evidence_refs"]) == set(h.review.cited_evidence_ids) == {d["ua"], d["ub"]}
-    assert p["derived_from"] == [f"hypothesis:{hid}"]
+    assert p["derived_from"][0] == f"hypothesis:{hid}"
+    assert p["derived_from"][1].startswith("version:") and len(p["derived_from"]) == 2
     assert p["privacy_scope"] == "private"
     assert ev.scope_ref == "scope_private_ns1"
     assert ev.idempotency_key == compute_idempotency_key(
@@ -221,7 +222,7 @@ def test_hypothesis_promotion_emits_exactly_one_event(tmp_path, events_on):
 
     # 同一份重審（同引用）不會再發第二個
     env.engine.event_emitter.emit_hypothesis_transition(
-        hid, True, [d["ua"], d["ub"]], 0.9,
+        hid, True, [d["ua"], d["ub"]], 0.9, record_version=p["derived_from"][1].split(":")[1],
     )
     env.engine.event_emitter.drain()
     assert len(core.events) == 1
@@ -294,3 +295,114 @@ def test_dream_completed_emitted_once_per_cycle(tmp_path, events_on):
     assert len({e.idempotency_key for e in core.events}) == len(core.events)
     for e in core.events:
         assert all(r.startswith("dream_cycle:") for r in e.payload["evidence_refs"])
+
+
+# ─── M1：丟棄或失敗後同一事件可再送 ─────────────────────────────────────────────
+
+def _wait(pred, timeout=2.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if pred():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def test_dropped_event_can_be_resent_later(events_on):
+    blocked = HostileCore("block")
+    em = MemoryEventEmitter("ns1")
+    em.set_sink(blocked)
+    for i in range(4):  # 填滿並行上限
+        em.emit_episode_flagged(f"fill{i}", "force_remember", 0.5, "a")
+    assert _wait(lambda: blocked.calls == 4)
+    em.emit_episode_flagged("ep_drop", "force_remember", 0.5, "a")  # 被丟棄
+    assert blocked.calls == 4
+    blocked.release.set()
+    assert em.drain()
+
+    good = FakeCore()
+    em.set_sink(good)
+    em.emit_episode_flagged("ep_drop", "force_remember", 0.5, "a")  # 同一事件：可再送
+    assert em.drain()
+    assert len(good.events) == 1
+    em.emit_episode_flagged("ep_drop", "force_remember", 0.5, "a")  # 成功後才算送過
+    assert em.drain() and len(good.events) == 1
+
+
+def test_sink_failure_does_not_consume_the_key(events_on):
+    em = MemoryEventEmitter("ns1")
+    em.set_sink(HostileCore("raise"))
+    em.emit_dream_completed("cyc@1")
+    assert em.drain()
+    good = FakeCore()
+    em.set_sink(good)
+    em.emit_dream_completed("cyc@1")
+    assert em.drain()
+    assert len(good.events) == 1
+
+
+# ─── M2：每次真實轉移的 key 不同，重放同一轉移相同 ─────────────────────────────────
+
+def test_hypothesis_flip_flop_emits_each_transition(events_on):
+    core = FakeCore()
+    em = MemoryEventEmitter("ns1")
+    em.set_sink(core)
+    refs = ["u1", "u2"]
+    em.emit_hypothesis_transition("h1", True, refs, 0.9, record_version=3)
+    em.emit_hypothesis_transition("h1", False, refs, 0.9, record_version=4)
+    em.emit_hypothesis_transition("h1", True, refs, 0.9, record_version=5)
+    assert em.drain()
+    types = [e.event_type for e in core.events]
+    assert types == [
+        "memory.hypothesis_supported", "memory.hypothesis_contradicted", "memory.hypothesis_supported",
+    ]
+    assert len({e.idempotency_key for e in core.events}) == 3
+    assert len(core.candidates) == 2  # 兩次 supported 各一個候選
+    assert len({c.idempotency_key for c in core.candidates}) == 2
+    em.emit_hypothesis_transition("h1", True, refs, 0.9, record_version=5)  # 重放同一轉移
+    assert em.drain()
+    assert len(core.events) == 3 and len(core.candidates) == 2
+
+
+def test_repeated_adjust_importance_on_same_episode_all_emitted(events_on):
+    core = FakeCore()
+    em = MemoryEventEmitter("ns1")
+    em.set_sink(core)
+    em.emit_episode_flagged("ep1", "adjust_importance", 0.2, "call-a")
+    em.emit_episode_flagged("ep1", "adjust_importance", 0.9, "call-b")
+    em.emit_episode_flagged("ep1", "adjust_importance", 0.9, "call-b")  # 同一次呼叫重放
+    assert em.drain()
+    assert len(core.events) == 2
+
+
+def test_tool_executor_calls_get_distinct_action_ids(events_on):
+    from llm_integration.tools.executor import ToolExecutor
+
+    class _Eng:
+        def __init__(self):
+            self.event_emitter = MemoryEventEmitter("ns1")
+            self.episodic = type("E", (), {"update_salience": staticmethod(lambda i, s: True)})()
+
+    eng = _Eng()
+    core = FakeCore()
+    eng.event_emitter.set_sink(core)
+    ex = ToolExecutor(eng, "s1")
+    ex.update_context_whitelist(["ep1"])
+    ex.handle_adjust_importance({"episode_id": "ep1", "new_salience": 0.4})
+    ex.handle_adjust_importance({"episode_id": "ep1", "new_salience": 0.4})
+    assert eng.event_emitter.drain()
+    assert len(core.events) == 2
+
+
+# ─── m7：namespace 規則下 scope_ref_for 不會拋錯 ───────────────────────────────
+
+@pytest.mark.parametrize(
+    "ns", ["local-default", "ns1", "A_b-9", "x" * 64, "0", "scope-g123"],
+)
+def test_scope_ref_for_accepts_every_valid_namespace(ns):
+    from echo_memory.namespace import normalize_namespace_id
+    from echo_memory.schemas.events import scope_ref_for
+
+    normalize_namespace_id(ns)  # 確認這是合法 namespace
+    ref = scope_ref_for(ns)
+    assert ref == f"scope_private_{ns}" and is_safe_token(ref)

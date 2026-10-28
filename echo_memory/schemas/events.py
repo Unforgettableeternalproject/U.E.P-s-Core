@@ -11,6 +11,10 @@ schema 集中在本檔，Core 契約調整只需改這裡。
   - 事件只描述「已發生」的 Gate 狀態轉移或圖譜結構變化，不含任何指令。
   - evidence_refs 必填；沒有引用就不發。weight 只用於排序，不是門檻（0 與 1 都會發）。
   - payload 只放 ID、狀態、計數、權重；不得帶私人原文。
+  - 事件代表「當時發生」：送出後不撤回；之後的 rollback 不會產生補償事件，
+    Core 端須自行以 evidence_refs 回查現況。
+  - idempotency_key 含轉移識別（假說紀錄版本、工具呼叫 id 等）：每次真實轉移 key 不同，
+    重放同一轉移 key 相同。
   - ProactiveCandidate 以 proactive.trigger_observed 送出（trigger_kind=memory_*），
     只有描述性欄位，不含 urgency／interruptibility_cost／desired_location／goal_ref。
 """
@@ -188,6 +192,7 @@ def build_candidate_draft(
     expires_at: datetime,
     summary: str,
     privacy_scope: str = PRIVACY_PRIVATE,
+    transition_ref: str = "",
 ) -> EventDraft:
     """組 proactive.trigger_observed 候選草稿（trigger_kind=memory_<kind>）。summary 純描述。"""
     if kind not in EVENT_KINDS:
@@ -195,7 +200,7 @@ def build_candidate_draft(
     if not evidence_refs:
         raise ValueError("evidence_refs 必填")
     key = compute_idempotency_key(
-        kind, namespace_id, evidence_refs, (dedupe_key,), prefix="memc",
+        kind, namespace_id, evidence_refs, (dedupe_key, transition_ref), prefix="memc",
     )
     if not is_safe_token(key):
         raise ValueError("idempotency_key 不合規")

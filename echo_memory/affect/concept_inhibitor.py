@@ -2330,6 +2330,7 @@ class ConceptInhibitor(HypothesisGateMixin, SelfModelGateMixin):
                     modify_patch.rollback_payload["old_embedding"] = old_embedding
                     new_vec = self._semantic._embed_fn(f"{primary.name}: {merged_desc}")
                     new_embedding = self._semantic._normalize_vector(new_vec).tolist()
+                    self._semantic.check_vector_dim(new_embedding)  # 維度不符：在改 primary 前失敗
                 primary.description = merged_desc
                 primary.metadata = merged_meta
                 primary.updated_at = datetime.now(timezone.utc)
@@ -3259,6 +3260,7 @@ class ConceptInhibitor(HypothesisGateMixin, SelfModelGateMixin):
         if self._semantic._embed_fn is not None:
             new_vec = self._semantic._embed_fn(f"{concept.name}: {new_description}")
             new_embedding = self._semantic._normalize_vector(new_vec).tolist()
+            self._semantic.check_vector_dim(new_embedding)  # 維度不符：整筆不套用（patch 失敗）
             # 先保存舊 embedding 供 rollback 用
             patch.rollback_payload = patch.rollback_payload or {}
             patch.rollback_payload["old_embedding"] = list(concept.embedding)

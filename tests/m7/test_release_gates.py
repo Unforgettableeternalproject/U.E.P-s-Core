@@ -146,8 +146,12 @@ def test_r3_manual_review_without_injected_gate_uses_default_gate(make_sim):
     assert isinstance(engine._concept_inhibitor, ConceptInhibitor)
     assert engine._concept_inhibitor._llm_fn is llm
     c = engine.semantic.get_by_name("寵物")
+    before = c.to_dict()
     out = engine.review_concept(c.id)
     assert out["reason"] != "no_gate"
+    # RoutedLLM 沒有 review 路由：不得動到概念；LLM 回非 JSON -> held／llm_invalid_json
+    assert (out["outcome"], out["reason"]) == ("held", "llm_invalid_json"), out
+    assert engine.semantic.get(c.id).to_dict() == before
 
 
 def test_r3_default_gate_follows_set_llm_fn_and_is_replaced_by_host_gate(make_sim):
@@ -425,8 +429,13 @@ def test_r8_r9_switching_embedding_model_does_not_crash_retrieve(tmp_path, monke
 
     monkeypatch.setattr(EpisodicMemory, "_generate_embedding", _fake_embedding(512))
     e2 = MemoryEngine(storage_path=tmp_path / "d", namespace_id="ns1", llm_fn=llm)
-    ctx = e2.retrieve("貓", top_k=3, min_similarity=0.0)       # 目前在這裡拋 ValueError
-    assert ctx.degraded is True or ctx.is_empty() or ctx is not None
+    # 前提：語意向量路確實會碰到維度不符（資料 1024、查詢 512）
+    e2.ensure_initialized()
+    assert e2.semantic.get_by_name("貓") is not None
+    assert e2.semantic.dimension_mismatch([0.1] * 512) == (1024, 512)
+    ctx = e2.retrieve("貓", top_k=3, min_similarity=0.0)       # 修正前在 semantic.search_by_vector 拋 ValueError
+    assert ctx.degraded is True
+    assert "維度不符" in ctx.degraded_reason
 
 
 # ━━━ R3／R5：Dream 內部 Gate 的變更通知要能到達 engine（共享投影失效依賴它） ━━━━━━━━━━━━━━━━━━

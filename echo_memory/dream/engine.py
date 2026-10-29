@@ -652,6 +652,8 @@ class DreamEngine:
                 return report
             lease_held = True
 
+        cycle_started = False  # 已寫 cycle_start 才在 finally 補 cycle_end
+        marked_count = 0
         try:
             logger.info(f"[DreamEngine] 開始夢境週期 [{triggered_by}]")
 
@@ -662,6 +664,12 @@ class DreamEngine:
             if self._patch_coordinator is not None:
                 with self._guard():
                     self._patch_coordinator.begin_cycle(triggered_by)
+                try:
+                    cycle_started = self._patch_coordinator.record_cycle_start(
+                        pending=self.pending_count()
+                    )
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] cycle_start audit 寫入失敗（不影響夢境週期）: {e}")
                 # 重審先前 held 的 concept patch（LLM 在鎖外，apply 在鎖內）
                 self._patch_coordinator.review_held(guard=self._guard)
 
@@ -792,6 +800,7 @@ class DreamEngine:
             # else: 蒸餾啟用但空結果 → 不標記，下一輪重試
 
             if dreamed_ids and self._episodic_ref is not None:
+                marked_count = len(dreamed_ids)
                 with self._guard():
                     self._episodic_ref.mark_as_dreamed(list(dreamed_ids))
                 logger.info(
@@ -821,6 +830,16 @@ class DreamEngine:
         finally:
             report.finished_at = datetime.now(timezone.utc).isoformat()
             self._is_dreaming = False
+            if cycle_started and self._patch_coordinator is not None:
+                try:
+                    self._patch_coordinator.record_cycle_end(
+                        status="error" if report.error else "completed",
+                        error=report.error,
+                        skipped_reason=report.skipped_reason,
+                        episodes_marked=marked_count,
+                    )
+                except Exception as e:
+                    logger.warning(f"[DreamEngine] cycle_end audit 寫入失敗: {e}")
             if lease_held:
                 keys = ("last_completed_at",)
                 if triggered_by == "cron":

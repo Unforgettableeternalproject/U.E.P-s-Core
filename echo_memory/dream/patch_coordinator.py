@@ -60,6 +60,7 @@ class DreamPatchCoordinator:
         self._inhibitor = inhibitor
         self._audit_log_path = Path(audit_log_path) if audit_log_path else None
         self._cycle_id: str = ""
+        self._triggered_by: str = "manual"
         # ConflictLedger（可選）：held 的 supersede 經通用重審套用後，在這裡補標 resolved
         self.conflict_ledger: Any = None
 
@@ -78,8 +79,9 @@ class DreamPatchCoordinator:
             from echo_memory.affect.concept_inhibitor import ConceptInhibitor
             self._inhibitor = ConceptInhibitor(semantic=semantic, llm_fn=None)
 
-    def begin_cycle(self, triggered_by: str) -> None:
-        """開始新的 Dream 週期，設定 cycle_id。"""
+    def begin_cycle(self, triggered_by: str = "manual") -> None:
+        """開始新的 Dream 週期，設定 cycle_id 並記住觸發來源（之後每筆 audit 都會帶）。"""
+        self._triggered_by = triggered_by or "manual"
         self._cycle_id = (
             f"dream_{triggered_by}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         )
@@ -514,6 +516,34 @@ class DreamPatchCoordinator:
         """目前 Dream 週期 id（未開始週期時為空字串）。"""
         return self._cycle_id
 
+    @property
+    def triggered_by(self) -> str:
+        """目前 Dream 週期的觸發來源（idle／daydream／cron／manual）。"""
+        return self._triggered_by
+
+    def record_cycle_start(self, pending: int | None = None) -> bool:
+        """寫入 operation="cycle_start"（cycle_id、triggered_by、pending、timestamp）。失敗不阻止週期。"""
+        return self._write_dream_audit({"operation": "cycle_start", "pending": pending})
+
+    def record_cycle_end(
+        self,
+        status: str,
+        error: str | None = None,
+        skipped_reason: str | None = None,
+        episodes_marked: int = 0,
+    ) -> bool:
+        """寫入 operation="cycle_end"（status＝completed／error，skipped_reason 若有，episodes_marked 計數）。"""
+        entry: dict[str, Any] = {
+            "operation": "cycle_end",
+            "status": status,
+            "episodes_marked": episodes_marked,
+        }
+        if error:
+            entry["error"] = error
+        if skipped_reason:
+            entry["skipped_reason"] = skipped_reason
+        return self._write_dream_audit(entry)
+
     def record_mutations(self, stage: str, entries: list[dict[str, Any]]) -> bool:
         """
         套用前寫入一批「逐條」mutation 紀錄（單次寫檔，要嘛全寫要嘛全不寫）。
@@ -551,6 +581,7 @@ class DreamPatchCoordinator:
                 "source_concept_ids": list(e.get("source_concept_ids") or []),
                 "prior": e.get("prior"),
                 "cycle_id": self._cycle_id,
+                "triggered_by": self._triggered_by,
                 "timestamp": now,
             }
             for key in ("new", "reason", "extra"):
@@ -724,6 +755,7 @@ class DreamPatchCoordinator:
         """
         entry["timestamp"] = datetime.now(timezone.utc).isoformat()
         entry["cycle_id"] = self._cycle_id
+        entry["triggered_by"] = self._triggered_by
 
         return self._append_audit_lines([json.dumps(entry, ensure_ascii=False, default=str)])
 

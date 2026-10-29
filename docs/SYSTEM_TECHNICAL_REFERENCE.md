@@ -550,8 +550,9 @@ concept_extractor.shutdown(wait=False) # 關閉執行緒池
 
 | 類型 | 預設配置 | 控制參數 |
 |------|---------|---------|
-| 閒置觸發 | 距上次對話 30 分鐘 | `DREAM_ENABLE_IDLE`, `DREAM_IDLE_MINUTES` |
-| Cron 觸發 | 每日 03:00 | `DREAM_ENABLE_CRON`, `DREAM_CRON` |
+| 閒置觸發 | 距上次對話 30 分鐘，且待做夢 episode >= 5 | `DREAM_ENABLE_IDLE`, `DREAM_IDLE_MINUTES`, `DREAM_MIN_PENDING` |
+| Daydream 觸發 | 待做夢 episode >= 20 即觸發，不等閒置；失敗退避一個閒置週期 | `DREAM_DAYDREAM_PENDING`（0 停用） |
+| Cron 觸發 | 每日 03:00，且待做夢 episode >= 1 | `DREAM_ENABLE_CRON`, `DREAM_CRON`, `DREAM_CRON_REQUIRE_PENDING` |
 | 手動觸發 | `/dream` CLI 指令 | 永遠可用 |
 
 ### 鞏固流程
@@ -981,6 +982,9 @@ Echo Memory 參考 OpenSoul 的完整設計，但做了**基礎設施適配**而
 | `DREAM_ENABLED` | `true` | Dream Engine 總開關 |
 | `DREAM_IDLE_MINUTES` | `30` | 閒置觸發閾值 |
 | `DREAM_CRON` | `0 3 * * *` | Cron 觸發排程 |
+| `DREAM_MIN_PENDING` | `5` | idle 觸發所需待做夢 episode 數（0 = 無門檻） |
+| `DREAM_DAYDREAM_PENDING` | `20` | daydream 觸發門檻（0 = 停用） |
+| `DREAM_CRON_REQUIRE_PENDING` | `true` | cron 是否需至少 1 個待做夢 episode |
 | `NEUROCHEM_DOPAMINE` | `0.5` | DA 初始值 |
 | `NEUROCHEM_SEROTONIN` | `0.5` | 5-HT 初始值 |
 

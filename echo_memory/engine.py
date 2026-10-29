@@ -1885,6 +1885,9 @@ class MemoryEngine:
                         ttl_seconds=config.dream_lease_ttl_seconds,
                     ),
                     cron_window_seconds=config.dream_cron_window_seconds,
+                    min_pending=config.dream_min_pending,
+                    daydream_pending=config.dream_daydream_pending,
+                    cron_require_pending=config.dream_cron_require_pending,
                     hypothesis_enabled=self._hypothesis_allowed(),
                     namespace_id=self.namespace_id,
                     event_emitter=self._event_emitter,
@@ -1908,7 +1911,11 @@ class MemoryEngine:
         if not config.dream_enabled:
             logger.info("[MemoryEngine] Dream 已停用（dream_enabled=False），不啟動排程")
             return {"started": False, "reason": "disabled"}
-        if not (config.dream_enable_idle or config.dream_enable_cron):
+        if not (
+            config.dream_enable_idle
+            or config.dream_enable_cron
+            or config.dream_daydream_pending > 0
+        ):
             return {"started": False, "reason": "no_trigger_enabled"}
         self.ensure_initialized()
         dream_engine = self._ensure_dream_engine()
@@ -1927,6 +1934,16 @@ class MemoryEngine:
         )
         return {"started": True, "reason": "started"}
 
+    def dream_readiness(self) -> dict[str, Any]:
+        """
+        做夢準備度查詢（唯讀，不觸發做夢）。
+
+        回傳欄位見 DreamEngine.readiness（待做夢數、各門檻、建議觸發來源、閒置秒數等）；
+        供宿主的休息時段／順延判斷使用。
+        """
+        self.ensure_initialized()
+        return self._ensure_dream_engine().readiness()
+
     def stop_dream_scheduler(self) -> None:
         """停止 Dream 自動排程（未建立或未運行時無動作）。"""
         dream_engine = self._dream_engine
@@ -1938,7 +1955,7 @@ class MemoryEngine:
         執行離線記憶鞏固（Dream Engine - 簡化版已實作）。
 
         Args:
-            triggered_by: 觸發來源 (manual/sleep/idle/cron)
+            triggered_by: 觸發來源 (manual/sleep/idle/daydream/cron)
 
         Returns:
             DreamReport: 鞏固報告

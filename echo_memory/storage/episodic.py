@@ -316,6 +316,18 @@ class EpisodicMemory:
         with self._mem_lock:
             return len(self._episodes)
 
+    def count_pending(self, min_salience: float) -> int:
+        """
+        統計待做夢的情節數：未 is_dreamed 且 salience_score >= min_salience。
+
+        只在 _mem_lock 內掃記憶體字典，不取 storage_lock、不碰磁碟，可被排程每分鐘呼叫。
+        """
+        with self._mem_lock:
+            return sum(
+                1 for ep in self._episodes.values()
+                if not ep.is_dreamed and ep.salience_score >= min_salience
+            )
+
     def mark_as_dreamed(self, episode_ids: list[str]) -> int:
         """
         將指定的 Episode 標記為已處理（is_dreamed=True）並持久化。

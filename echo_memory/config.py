@@ -120,6 +120,15 @@ class Config:
         self.dream_enable_cron = os.getenv("DREAM_ENABLE_CRON", "true").lower() == "true"
         self.dream_lease_ttl_seconds = float(os.getenv("DREAM_LEASE_TTL_SECONDS", "3600"))
         self.dream_cron_window_seconds = float(os.getenv("DREAM_CRON_WINDOW_SECONDS", "900"))
+        # 累積門檻：salience 只決定「何時做夢」，不影響 episode 是否存儲
+        # idle 觸發需待做夢 episode 數 >= 此值（0 = 不設門檻，閒置到就跑）
+        self.dream_min_pending = int(os.getenv("DREAM_MIN_PENDING", "5"))
+        # daydream：待做夢數 >= 此值即在定期 tick 觸發，不等閒置（0 = 停用）
+        self.dream_daydream_pending = int(os.getenv("DREAM_DAYDREAM_PENDING", "20"))
+        # cron 觸發需至少 1 個待做夢 episode；false 時每晚無條件跑（維持 pruning／衰減）
+        self.dream_cron_require_pending = (
+            os.getenv("DREAM_CRON_REQUIRE_PENDING", "true").lower() == "true"
+        )
         self.dream_replay_da_threshold = float(
             os.getenv("DREAM_REPLAY_DA_THRESHOLD", "0.6")
         )

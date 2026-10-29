@@ -21,7 +21,7 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # 延遲導入型別（避免循環依賴）
@@ -56,7 +56,7 @@ class DreamReport:
 
     started_at: str = ""
     finished_at: str = ""
-    triggered_by: str = "manual"  # "idle" | "cron" | "manual"
+    triggered_by: str = "manual"  # "idle" | "daydream" | "cron" | "manual"
     pruning: PruningReport | None = None
     replay: ReplayReport | None = None
     distillation: DistillationReport | None = None
@@ -173,6 +173,9 @@ class DreamEngine:
         hypothesis_enabled: bool = True,
         namespace_id: str | None = None,
         event_emitter: Any | None = None,
+        min_pending: int = 5,
+        daydream_pending: int = 20,
+        cron_require_pending: bool = True,
     ):
         """
         初始化 Dream Engine。
@@ -200,6 +203,11 @@ class DreamEngine:
                 refuted 假說的 pair 仍會抑制 LATENT_BRIDGE 的建立。
             namespace_id: 本 engine 的 namespace id；注入 Gate／假說 phase／審核器，共享 namespace
                 判斷不靠儲存路徑推得。
+            min_pending: idle 觸發所需待做夢 episode 數（未 is_dreamed 且 salience 達蒸餾門檻）；
+                不足則不跑並重置閒置計時。0 = 不設門檻。
+            daydream_pending: 待做夢數達此值即在定期 tick 觸發 daydream，不等閒置；0 = 停用。
+            cron_require_pending: True 時 cron 需至少 1 個待做夢 episode 才跑；False 則無條件跑。
+                以上門檻只決定「何時做夢」，不影響 episode 存儲；手動 dream_now 不受限。
             lock_factory: 取得 storage_lock 的工廠（呼叫後回傳 context manager）。
                 手動 dream_now 與排程（idle / cron）觸發走同一條路徑，鎖語意一致：
                 只在讀快照與套用結果的短臨界區持鎖，LLM 階段一律在鎖外。
@@ -215,6 +223,10 @@ class DreamEngine:
         self.cron_schedule = cron_schedule
         self.enable_idle = enable_idle
         self.enable_cron = enable_cron
+        self.min_pending = max(0, int(min_pending))
+        self.daydream_pending = max(0, int(daydream_pending))
+        self.cron_require_pending = cron_require_pending
+        self._daydream_backoff_until: datetime | None = None
 
         # APScheduler（可選，缺少時排程功能停用，手動觸發仍可用）
         self._scheduler = BackgroundScheduler(timezone="UTC") if HAS_APSCHEDULER else None
@@ -439,16 +451,20 @@ class DreamEngine:
             logger.warning("[DreamEngine] 排程器已在運行")
             return False
 
-        # 閒置檢查（每分鐘檢查一次）
-        if self.enable_idle:
+        # 定期 tick（每分鐘）：閒置觸發與 daydream 共用
+        if self.enable_idle or self.daydream_pending > 0:
             self._scheduler.add_job(
-                func=self._idle_check,
+                func=self.scheduler_tick,
                 trigger=IntervalTrigger(minutes=1),
                 id="idle_check",
                 replace_existing=True,
                 misfire_grace_time=30,
             )
-            logger.info(f"[DreamEngine] 已啟用閒置觸發（{self.idle_minutes} 分鐘）")
+            logger.info(
+                f"[DreamEngine] 已啟用定期 tick（閒置 {self.idle_minutes} 分鐘"
+                f"{'' if self.enable_idle else '，閒置觸發停用'}；"
+                f"idle 門檻 {self.min_pending}；daydream 門檻 {self.daydream_pending}）"
+            )
 
         # Cron 定時觸發
         if self.enable_cron:
@@ -457,7 +473,7 @@ class DreamEngine:
                 if len(cron_parts) == 5:
                     minute, hour, day, month, day_of_week = cron_parts
                     self._scheduler.add_job(
-                        func=lambda: self._trigger_dream("cron"),
+                        func=self._cron_tick,
                         trigger=CronTrigger(
                             minute=minute,
                             hour=hour,
@@ -487,32 +503,105 @@ class DreamEngine:
         """通知有新的互動（重置閒置計時器）；at 供宿主補入先前累積的互動時間。"""
         self._last_interaction = at or datetime.now(timezone.utc)
 
-    def _idle_check(self):
-        """檢查是否達到閒置觸發條件"""
-        now = datetime.now(timezone.utc)
-        idle_seconds = (now - self._last_interaction).total_seconds()
-        idle_threshold = self.idle_minutes * 60
+    def pending_count(self) -> int:
+        """待做夢 episode 數：未 is_dreamed 且 salience_score >= 蒸餾門檻。
 
-        if idle_seconds >= idle_threshold:
-            logger.info(
-                f"[DreamEngine] 閒置觸發條件滿足 "
-                f"({idle_seconds / 60:.1f} 分鐘)"
-            )
-            self._trigger_dream("idle")
+        直接統計 episodic store 記憶體（只取 _mem_lock），不分頁；無 episodic 時為 0。
+        """
+        if self._episodic_ref is None:
+            return 0
+        try:
+            return self._episodic_ref.count_pending(KnowledgeDistillation.MIN_SALIENCE_THRESHOLD)
+        except Exception as e:  # noqa: BLE001 - 統計失敗視為無料，不讓排程 tick 崩潰
+            logger.warning(f"[DreamEngine] 統計待做夢數失敗: {e}")
+            return 0
+
+    def _idle_elapsed(self, now: datetime) -> bool:
+        """閒置時間是否已達閒置觸發時間。"""
+        return (now - self._last_interaction).total_seconds() >= self.idle_minutes * 60
+
+    def _decide_trigger(self, now: datetime, pending: int) -> str | None:
+        """依累積量與閒置時間決定建議的觸發來源（"daydream" / "idle" / None），不執行任何動作。"""
+        if (
+            self.daydream_pending > 0
+            and pending >= self.daydream_pending
+            and (self._daydream_backoff_until is None or now >= self._daydream_backoff_until)
+        ):
+            return "daydream"
+        if self.enable_idle and self._idle_elapsed(now) and pending >= self.min_pending:
+            return "idle"
+        return None
+
+    def readiness(self, now: datetime | None = None) -> dict[str, Any]:
+        """回報做夢準備度（唯讀）：供宿主的休息時段／順延判斷使用。"""
+        now = now or datetime.now(timezone.utc)
+        pending = self.pending_count()
+        return {
+            "pending": pending,
+            "salience_threshold": KnowledgeDistillation.MIN_SALIENCE_THRESHOLD,
+            "min_pending": self.min_pending,
+            "daydream_pending": self.daydream_pending,
+            "suggested_trigger": self._decide_trigger(now, pending),
+            "idle_seconds": max(0.0, (now - self._last_interaction).total_seconds()),
+            "idle_threshold_seconds": self.idle_minutes * 60,
+            "is_dreaming": self._is_dreaming,
+        }
+
+    def scheduler_tick(self, now: datetime | None = None) -> str | None:
+        """判斷一次是否該做夢並執行（定期 job 與日後共用排程器輪詢各 engine 的入口）。
+
+        daydream 優先；idle 閒置到但累積不足時不跑並重置閒置計時（不每分鐘重撞）。
+        回傳實際觸發的來源，未觸發為 None。
+        """
+        now = now or datetime.now(timezone.utc)
+        pending = self.pending_count()
+        trigger = self._decide_trigger(now, pending)
+        if trigger is None:
+            if self.enable_idle and self._idle_elapsed(now):
+                # 閒置到了但累積不足：重置計時，等下一個閒置週期再看
+                logger.info(
+                    f"[DreamEngine] 閒置已到但待做夢 {pending} < {self.min_pending}，不做夢"
+                )
+                self.notify_interaction(now)
+            return None
+        logger.info(f"[DreamEngine] {trigger} 觸發條件滿足（待做夢 {pending}）")
+        self._trigger_dream(trigger)
+        return trigger
+
+    def _idle_check(self):
+        """相容舊名：等同 scheduler_tick。"""
+        self.scheduler_tick()
+
+    def _cron_tick(self):
+        """cron job 入口：cron_require_pending 時無待做夢 episode 則跳過。"""
+        if self.cron_require_pending and self.pending_count() < 1:
+            logger.info("[DreamEngine] cron 觸發但無待做夢 episode，跳過")
+            return
+        self._trigger_dream("cron")
 
     def _trigger_dream(self, triggered_by: str):
         """觸發夢境週期（內部調用）"""
         try:
             report = self.dream_now(triggered_by=triggered_by)
-            if report.skipped_reason:
-                # 被租約擋下：只對 idle 觸發重置閒置計時（避免每分鐘重試洗版）；cron 不重置
-                if triggered_by == "idle":
-                    self.notify_interaction()
-                return
+            if report.skipped_reason or report.error:
+                # 被租約擋下或失敗：idle／daydream 退避一個 idle 週期（避免每分鐘重試洗版）；cron 不退避
+                self._back_off(triggered_by)
+                if report.skipped_reason:
+                    return
             self._last_dream_report = report
             logger.info(f"[DreamEngine] {report.summary()}")
         except Exception as e:
+            self._back_off(triggered_by)
             logger.error(f"[DreamEngine] 夢境週期失敗: {e}", exc_info=True)
+
+    def _back_off(self, triggered_by: str) -> None:
+        """idle 重置閒置計時；daydream 設定退避期限，皆為一個 idle 週期。"""
+        if triggered_by == "idle":
+            self.notify_interaction()
+        elif triggered_by == "daydream":
+            self._daydream_backoff_until = datetime.now(timezone.utc) + timedelta(
+                minutes=self.idle_minutes
+            )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 夢境執行

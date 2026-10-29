@@ -118,6 +118,7 @@ def test_idle_check_uses_notified_time(engine, monkeypatch):
     engine.ensure_initialized()
     dream_engine = engine._ensure_dream_engine()
     calls = []
+    dream_engine.min_pending = 0  # 本測試只驗閒置計時，不涉累積門檻
     monkeypatch.setattr(dream_engine, "_trigger_dream", lambda by: calls.append(by))
     dream_engine._last_interaction = datetime.now(timezone.utc) - timedelta(
         minutes=dream_engine.idle_minutes + 1

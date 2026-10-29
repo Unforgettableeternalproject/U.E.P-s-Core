@@ -16,7 +16,7 @@ jobs:
       - name: 設定 Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: 安裝 ruff
         run: pip install "ruff>=0.1.9"
@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -72,7 +72,7 @@ jobs:
 
       - name: 上傳覆蓋率報告
         uses: actions/upload-artifact@v4
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.12'
         with:
           name: coverage-report
           path: coverage.xml
@@ -88,7 +88,7 @@ jobs:
       - name: 設定 Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: pip install . smoke test
         run: pip install .

@@ -3226,3 +3226,15 @@
 
 ---
 
+### docs: P3 S4 實作註記，D5／D79／D82 與已知限制更新. 10/30
+
+> Date: Fri, 30 Oct 2026 19:43:24 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `d1acd1b227b83c5924c478430706e01433ab9cc9`
+
+---
+

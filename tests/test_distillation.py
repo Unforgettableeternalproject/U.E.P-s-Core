@@ -456,3 +456,10 @@ def test_prompt_mentions_subject_and_user_priority():
 
     assert '"subject"' in _DISTILLATION_PROMPT
     assert "認識使用者" in _DISTILLATION_PROMPT
+
+
+def test_prompt_keeps_public_proper_nouns():
+    """蒸餾只抽象句子結構，公開專有名詞（遊戲、作品等）要照原文保留（D87 實測：遊戲名被泛化）。"""
+    from echo_memory.dream.distillation import _DISTILLATION_PROMPT
+
+    assert "公開專有名詞照原文保留" in _DISTILLATION_PROMPT

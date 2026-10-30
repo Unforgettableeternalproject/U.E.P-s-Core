@@ -359,11 +359,15 @@ class SharedItem:
 
     @property
     def support_label(self) -> str:
-        """沿用 M4 §5.2 標籤：intention 標「宣稱」，insufficient 標「證據不足」。"""
+        """沿用 M4 §5.2 標籤：intention 標「宣稱」；insufficient 標「僅本人提過，未經他人佐證」。
+
+        共享項目的 insufficient 只代表沒有其他成員佐證，不代表本人沒說過；
+        用「證據不足」會讓模型把整條當成不可靠而回答查無此人（D85 實測）。
+        """
         if self.claim_kind == "intention":
             return "宣稱"
         if self.review_status == "insufficient":
-            return "證據不足"
+            return "僅本人提過，未經他人佐證"
         return ""
 
 

@@ -111,7 +111,7 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 | `priority` | enum{low, normal, high, urgent} | Y | GW 重建 | 外部 payload 自稱「緊急」不生效（提案 §9.3） |
 | `expires_at` | ts? | N | 產生者／Gateway | 過期事件不再觸發主動打擾，仍可留存稽核 |
 | `scope_ref` | str | Y | GW 重建 | 資料可見範圍（私人／群組／公開），**只能縮不能放大**（見 E-6） |
-| `fence` | obj? | C | Core | 與 CC-4 授權六元組同構：`{persona_id, endpoint_id, lease_id, fencing_epoch, core_epoch, presence_generation}`，互動回合另加 `turn_generation`；承載輸出或位置相關動作的事件必填（CC-4／CC-5） |
+| `fence` | obj? | C | Core | 與 CC-4 授權六元組同構：`{persona_id, endpoint_id, lease_id, fencing_epoch, core_epoch, presence_generation}`，互動回合另加 `turn_generation`；承載輸出或位置相關動作的事件必填（CC-4／CC-5）。**`turn_generation` 是 persona 範圍內單調遞增的序號**（簽發新 ticket 取下一個值，回合被取消時該回合改取下一個值；P3 S3 實作 `uep/turn/generations.py`），不是每個 turn 各自從 1 起算——否則一個回合的 stop（`CliEndpoint._stopped_turn`）會誤擋其他回合的輸出；`turn.cancelled` 的 fence 帶取消後的新值 |
 | `payload` | obj | Y | 產生者 | 僅限**不含私人原文**的小型結構化內容（ID、狀態、計數、結果碼）；其餘一律走 `payload_ref`（D33） |
 | `payload_ref` | str? | C | 產生者 | 指向可刪除 blob 的引用；含私人原文（對話、轉錄、記憶內容）、音檔、長文時必填。**P3 慣例**：語音轉錄文字與 `Utterance.metadata` 的私人部分、記憶端的自由文字（如 `proactive.trigger_observed.summary`，D78）一律走此欄，`payload` 只放 ID、語言、信心、毫秒統計、`speaker_ref` 等小型結構化值 |
 | `payload_hash` | str? | C | Journal | `payload_ref` 內容的雜湊；blob 被刪除後仍保留，供完整性稽核。格式 `hmac-sha256:<kid>:<hex>`（E-18） |
@@ -583,7 +583,7 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 | `origin` | enum{persona, system} | Y | Core | `system` = 中性服務回條或告警，**不得**以她的口吻（提案 §10.3、§17.1） |
 | 授權六元組 `(persona_id, endpoint_id, lease_id, fencing_epoch, core_epoch, presence_generation)` | | Y | Core（取自 CC-4 當前授權） | |
 | `activity_id`、`turn_id`、`turn_generation`、`attempt_id` | | C | Core | 互動輸出必填；主動通知用 `activity_id` |
-| `sequence` | int | Y | Core | 同 `output_id` 序列內單調。P3：一句一個 intent，`sequence=Sentence.index`，`output_id` 以 `(turn_id, attempt_id)` 為單位（D73 先採逐句）；墊片音（gap／tool filler）用獨立序列區段，`origin=persona`、`kind=audio_stream`，`content_format` 標 `is_filler`，歷史中不計入 `spoken_text` |
+| `sequence` | int | Y | Core | 同 `output_id` 序列內單調。P3：一句一個 intent，`sequence=Sentence.index`，`output_id` 以 `(turn_id, attempt_id)` 為單位（D73 先採逐句）；墊片音（gap／tool filler）用獨立序列區段，`origin=persona`、`kind=audio_stream`，`content_format` 標 `is_filler`，歷史中不計入 `spoken_text`；**在 coordinator 路徑不適用**（P3 不用 GapFiller，墊話由 Think 的 `tool_lead_in` 產生、與一般句子同路，Q-6），僅適用 `PipelineRunner` 單輪路徑 |
 | `audience_scope` | ScopeRef | Y | Core | |
 | `content_ref` | str | Y | Core | 文字或 artifact 引用；音訊以串流通道傳，這裡存參照與格式 `{sample_rate, channels, codec}` |
 | `valid_until` | ts | Y | Core | 短期限播放許可；須 tz-aware（O-15） |

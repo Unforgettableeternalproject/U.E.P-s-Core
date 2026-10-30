@@ -3118,3 +3118,15 @@
 
 ---
 
+### docs: P3 S3 實作註記，R10、stale 語意與 CC-5 墊片音. 10/30
+
+> Date: Fri, 30 Oct 2026 15:59:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `c7411425d75e56c571f947b29069ebaaf7f4ccb8`
+
+---
+

@@ -114,6 +114,11 @@ DEFAULT_EVENT_SPECS["turn.attempt_started"] = EventSpec(_D, payload_keys=_keys("
 DEFAULT_EVENT_SPECS["turn.skipped"] = EventSpec(
     _D, payload_keys=_keys("reply_mode", "proposal_ref")
 )
+# ES 轉錄進 journal（§1.5 (a)）：payload 只放 ID、語言、信心、毫秒統計與 speaker_ref（平台字串），
+# 文字與 Utterance.metadata 的私人部分走 payload_blob；S3 補註冊（S1 當時只有預設鍵）
+DEFAULT_EVENT_SPECS["input.utterance_final"] = EventSpec(
+    _I, payload_keys=_keys("speaker_ref", "language", "confidence", "duration_ms", "utterance_seq")
+)
 _PARTICIPANT_KEYS = _keys("speaker_ref", "role")
 DEFAULT_EVENT_SPECS["conversation.participant_joined"] = EventSpec(_D, payload_keys=_PARTICIPANT_KEYS)
 DEFAULT_EVENT_SPECS["conversation.participant_left"] = EventSpec(_D, payload_keys=_PARTICIPANT_KEYS)

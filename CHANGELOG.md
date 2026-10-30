@@ -3094,3 +3094,15 @@
 
 ---
 
+### feat: P3 S3 ES 綁定，EchoPipelineHost 與 Turn Orchestrator. 10/30
+
+> Date: Fri, 30 Oct 2026 15:59:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `1d18da3256bcf4c9e2caaf43e99523fd4ac7079e`
+
+---
+

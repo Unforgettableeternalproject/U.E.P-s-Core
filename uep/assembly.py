@@ -27,6 +27,8 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from secrets import token_bytes
+from typing import TYPE_CHECKING
 
 from pydantic import SecretStr
 from sqlalchemy.orm import Session, sessionmaker
@@ -42,11 +44,14 @@ from uep.control.channel import (
     ControlSubscription,
 )
 from uep.control.socket_transport import SocketControlServer
+from uep.echo.services import EchoServices
 from uep.endpoint.auth import (
     DEFAULT_SKEW_SECONDS,
     RequestVerifier,
+    SignedRequest,
     load_secrets_from_env,
 )
+from uep.endpoint.protocol import RpcCoreApi
 from uep.endpoint.service import EndpointService
 from uep.events.bus import EventBus
 from uep.events.payload_hash import MIN_KEY_BYTES
@@ -71,6 +76,9 @@ from uep.tasks.presence_bridge import (
     PresenceTaskBridge,
 )
 from uep.tasks.states import RunStatus
+
+if TYPE_CHECKING:  # 組裝層不得硬依賴 echo_stream：只有 uep/echo/host 會 import 它
+    from uep.echo.host import EchoPipelineHost
 
 logger = logging.getLogger("uep.assembly")
 
@@ -143,6 +151,7 @@ class CoreAssembly:
     start_log: list[str] = field(default_factory=list)  # 啟動順序紀錄（測試與診斷用）
     started: bool = False
     memory: MemoryHost | None = None  # P3-M：可選；啟動於 presence／Bus／維護迴圈之後、relay 之前
+    echo: EchoPipelineHost | None = None  # P3 S3：可選；啟動於 memory 之後（ES 需要 MemoryPort）、relay 之前
 
     def start(self) -> None:
         """依上述順序啟動；冪等。失敗時關閉已綁定的入口（stop API、endpoint socket）、訂閱與 Bus 後上拋。"""
@@ -176,6 +185,9 @@ class CoreAssembly:
         if self.memory is not None:
             self.memory.start()  # 記憶 Host 在 Presence／Bus 之後（事件才有地方落）；ES Host（S3）將在它之後
             self.start_log.append("memory.start")
+        if self.echo is not None:
+            self.echo.start()  # ES Host 在 memory 之後（ES 需要 MemoryPort）、endpoint socket 之前
+            self.start_log.append("echo.start")
         for starter in self.relay_starters:
             starter()  # 此時 presence 已啟動：relay 送出的輸出才會受 Gate 判定
         if self.relay_starters:
@@ -188,12 +200,23 @@ class CoreAssembly:
         self.started = True
 
     def _close_inputs(self) -> None:
-        """關閉入口、訂閱與 Bus（不寫 DB）；可重複呼叫。記憶 Host 最先停（它的 sink 還要經 Bus 發布）。"""
+        """關閉入口、訂閱與 Bus（不寫 DB）；可重複呼叫。
+
+        停止序反向於啟動：ES Host 最先停（停 feed、cancel_all、等 commit 與事件寫完；它的 sink 與事件都還要
+        經 Bus／Gateway，也還要用 memory 做 store），其次記憶 Host（它的 sink 還要經 Bus 發布），之後才關
+        endpoint socket 等入口。每一步獨立容錯。"""
+        if self.echo is not None:
+            try:
+                self.echo.stop()
+            except Exception:
+                logger.exception("EchoPipelineHost 停止失敗")
+            self.start_log.append("echo.stop")
         if self.memory is not None:
             try:
                 self.memory.stop()
             except Exception:
                 logger.exception("MemoryHost 停止失敗")
+            self.start_log.append("memory.stop")
         if self.stop_api is not None:
             self.stop_api.stop()
         if self.endpoint_server is not None:
@@ -274,6 +297,7 @@ def assemble_core(
     maintenance_interval: float | None = DEFAULT_MAINTENANCE_INTERVAL,
     strict: bool = False,
     memory: MemoryHost | None = None,
+    echo: EchoPipelineHost | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -302,6 +326,16 @@ def assemble_core(
     assert bus is not None and publisher is not None and control is not None
     if memory is not None and memory.publisher is not publisher:
         raise AssemblyError("MemoryHost 必須與組裝層使用同一個 publisher（同一個 Bus）：否則記憶事件不會進同一條 journal／Bus")
+    if echo is not None:
+        if echo.publisher is not publisher:
+            raise AssemblyError("EchoPipelineHost 必須與組裝層使用同一個 publisher（同一個 Bus）")
+        if adapter is not echo.adapter:
+            raise AssemblyError("EchoPipelineHost 的端點必須就是 DeliveryManager 的 adapter（echo.adapter）")
+        if turn_generation_source != echo.generation_source:
+            raise AssemblyError(
+                "Output Gate 的 turn_generation_source 必須是 echo.generation_source，"
+                "否則舊 generation 的輸出不會被 Gate 拒絕（V12）"
+            )
     assert adapter is not None and executors is not None
     assert turn_generation_source is not None and presence_audience is not None
 
@@ -340,6 +374,18 @@ def assemble_core(
         presence_check=presence_check, action_guard=state.action_entry_blocked, **clock_kw,
     )
     _assert_wired(tasks, delivery)
+    if echo is not None:
+        # ES 端點以行程內專用的隨機 secret 經 EndpointService 走既有 acquire／renew 流程（沿用 P-21／P-22，
+        # 不離開 loopback）；secret 不落地、不離開行程
+        secret = token_bytes(32)
+        service = EndpointService(presence, build_request_verifier({echo.endpoint_id: secret}), **clock_kw)
+        core_api = RpcCoreApi(
+            echo.endpoint_id, secret, lambda wire: service.handle(SignedRequest.from_wire(wire))
+        )
+        echo.bind(EchoServices(
+            core_api=core_api, state=state, control=control, session_factory=session_factory,
+            delivery=delivery, gate=gate,
+        ))
     stop = GlobalStop(session_factory, presence, control, publisher=publisher, token=stop_token, **clock_kw)
     bridge = PresenceTaskBridge(bus, tasks, lambda: presence.current().status, persona_id=persona_id)
 
@@ -374,5 +420,5 @@ def assemble_core(
         persona_id=persona_id, bus=bus, publisher=publisher, control=control, presence=presence, gate=gate,
         delivery=delivery, tasks=tasks, state=state, stop=stop, bridge=bridge, maintenance=maintenance,
         stop_api=api,
-        endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory,
+        endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory, echo=echo,
     )

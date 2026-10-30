@@ -331,3 +331,44 @@ class TestApply:
     def test_unknown_namespace_rejected(self, world):
         with pytest.raises(bf.BackfillError):
             bf.run(world["root"], roster=roster_of(world), namespaces="9999")
+
+
+class TestPromptAndRejudgeAll:
+    def test_share_prompt_keeps_public_proper_nouns(self, world):
+        llm = AboutLLM(about_names=["乙"])
+        bf.run(world["root"], roster=roster_of(world), apply=True, backup=backup(world["tmp"]), llm_fn=llm)
+        prompt = llm.share_calls[0]
+        assert "保留公開專有名詞" in prompt
+        assert "不要抽象化" in prompt
+
+    def test_rejudge_all_selects_projections_with_subject_uids(self, world):
+        root = world["root"]
+        bk = backup(world["tmp"])
+        bf.run(root, roster=roster_of(world), apply=True, backup=bk, llm_fn=AboutLLM(about_names=["乙"]))
+        # 原回填已完成：預設模式沒有目標
+        assert bf.run(root, roster=roster_of(world))["namespaces"][0]["targets"] == 0
+        # rejudge-all dry-run：選中已有 subject_uids 的 guild 42 投影，且不寫任何檔案
+        before = snapshot(root)
+        dry = bf.run(root, roster=roster_of(world), rejudge_all=True)
+        assert snapshot(root) == before
+        ns = dry["namespaces"][0]
+        assert dry["rejudge_all"] is True and ns["targets"] == 2 and ns["skipped"]["no_roster"] == 1
+
+    def test_rejudge_all_idempotent_with_separate_ledger(self, world):
+        root = world["root"]
+        bk = backup(world["tmp"])
+        ns_dir = root / "namespaces" / UID
+        bf.run(root, roster=roster_of(world), apply=True, backup=bk, llm_fn=AboutLLM(about_names=["乙"]))
+        orig_ledger = (ns_dir / "semantic" / bf.LEDGER_NAME).read_bytes()
+        llm = AboutLLM(about_names=["乙"], summary="保留遊戲名的新摘要")
+        report = bf.run(root, roster=roster_of(world), apply=True, backup=bk, llm_fn=llm, rejudge_all=True)
+        assert len(llm.share_calls) == 2 and report["totals"]["outcomes"].get("rewritten") == 2
+        assert {v.summary for v in world["layer"].list_projections(G42)} == {"保留遊戲名的新摘要"}
+        # 原登記簿不變；另寫 rejudge 登記簿與 audit
+        assert (ns_dir / "semantic" / bf.LEDGER_NAME).read_bytes() == orig_ledger
+        assert set(bf.load_ledger(ns_dir, rejudge_all=True)) == {world["cids"]["a"], world["cids"]["b"]}
+        assert (ns_dir / "semantic" / bf.REJUDGE_AUDIT_NAME).exists()
+        # 再跑一次：冪等
+        llm2 = AboutLLM(about_names=["乙"])
+        again = bf.run(root, roster=roster_of(world), apply=True, backup=bk, llm_fn=llm2, rejudge_all=True)
+        assert again["namespaces"][0]["targets"] == 0 and llm2.share_calls == []

@@ -128,8 +128,9 @@ _SHARE_PROMPT = """你是記憶系統的分享審核員。下列「證據」都�
   self_fact＝使用者講到自己的相關事實且不容易驗證（自稱的經歷、身分、能力）。拿不準時填 self_fact。
 - cited_unit_ids：支撐這個概念的證據 id，只能填上面列出的 id。
 - supports_summary_from_cited_only：shareable_summary 是否完全被 cited_unit_ids 的證據支撐（true／false）。
-- shareable_summary：第三人稱、去逐字、不含任何人的名字與私密細節，{max_chars} 字以內；
-  只能依 cited_unit_ids 的證據撰寫。
+- shareable_summary：第三人稱、去逐字，{max_chars} 字以內；只能依 cited_unit_ids 的證據撰寫。
+  保留公開專有名詞：遊戲、作品、話題、團體、公開地點（城市以上）等照證據原樣寫出，不要抽象化成「某款遊戲」之類的泛稱；
+  只去掉人名（提到成員時以「某成員」表示，不寫名字）與私密細節。
 - privacy_restrict_unit_ids：說話者表達了「不希望被轉述、別說出去」意圖的證據 id（沒有就留空陣列）。
 
 以純 JSON 回覆：

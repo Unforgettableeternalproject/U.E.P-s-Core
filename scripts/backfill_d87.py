@@ -18,6 +18,8 @@ namespace 的來源概念，套用名冊後做分享重判（重新判定：sens
   python scripts/backfill_d87.py --data-root <資料目錄> --roster <名冊.json> --report <json 路徑>
   # apply：需 bot 停機並已備份
   python scripts/backfill_d87.py --data-root <資料目錄> --roster <名冊.json> --apply --i-have-backup <備份路徑>
+  # 全部重判：改過分享摘要 prompt 後，對所有 active 投影的來源概念重寫摘要（另用 backfill_d87_rejudge.json 登記）
+  python scripts/backfill_d87.py ... --rejudge-all [--apply --i-have-backup <備份路徑>]
 
 名冊 JSON 格式（與 MemoryEngine.set_member_roster_fn 回傳值相同，外層以 guild id 分組）：
   {"<guild_id>": [{"uid": "<字串>", "display_name": "<字串>", "aliases": ["<字串>", ...]}]}
@@ -56,6 +58,9 @@ logger = logging.getLogger("echo_memory.backfill_d87")
 BackfillError = d88.BackfillError
 LEDGER_NAME = "backfill_d87.json"
 AUDIT_NAME = "backfill_d87_audit.jsonl"
+# --rejudge-all 專用登記簿／audit：與原回填登記分開，互不影響冪等
+REJUDGE_LEDGER_NAME = "backfill_d87_rejudge.json"
+REJUDGE_AUDIT_NAME = "backfill_d87_rejudge_audit.jsonl"
 _DONE_OUTCOMES = ("revoked", "rewritten", "reissued_same")
 
 
@@ -123,8 +128,9 @@ def _roster_fn(roster: dict[str, list[dict[str, Any]]]) -> Callable[[str], Any]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def load_ledger(ns_dir: Path) -> dict[str, dict[str, Any]]:
-    data = d88._read_json(ns_dir / "semantic" / LEDGER_NAME, {})
+def load_ledger(ns_dir: Path, rejudge_all: bool = False) -> dict[str, dict[str, Any]]:
+    name = REJUDGE_LEDGER_NAME if rejudge_all else LEDGER_NAME
+    data = d88._read_json(ns_dir / "semantic" / name, {})
     return data if isinstance(data, dict) else {}
 
 
@@ -143,12 +149,17 @@ def _proj_snapshot(p: Any) -> dict[str, Any]:
     }
 
 
-def _scope_old_projections(data_root: Path, scope_ns: str) -> dict[str, dict[str, Any]]:
-    """scope namespace 內 active 且沒有 subject_uids 欄位的投影：projection_id -> 前狀態＋來源。"""
+def _scope_old_projections(
+    data_root: Path, scope_ns: str, rejudge_all: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """scope namespace 內 active 的投影：projection_id -> 前狀態＋來源。
+
+    預設只取沒有 subject_uids 欄位的舊格式投影；rejudge_all 取全部 active 投影。
+    """
     out: dict[str, dict[str, Any]] = {}
     for p in d88._load_active_concepts(data_root / "namespaces" / scope_ns):
         meta = p.metadata or {}
-        if meta.get("kind") != "projection" or "subject_uids" in meta:
+        if meta.get("kind") != "projection" or (not rejudge_all and "subject_uids" in meta):
             continue
         snap = _proj_snapshot(p)
         if not snap["pid"]:
@@ -161,7 +172,7 @@ def _scope_old_projections(data_root: Path, scope_ns: str) -> dict[str, dict[str
 
 def analyze_namespace(
     data_root: Path, ns_id: str, roster: dict[str, list[dict[str, Any]]],
-    scope_old: dict[str, dict[str, dict[str, Any]]],
+    scope_old: dict[str, dict[str, dict[str, Any]]], rejudge_all: bool = False,
 ) -> dict[str, Any]:
     """單一擁有者 namespace 的唯讀分析。回傳含內部目標清單（_targets）的 dict；報告前須移除。
 
@@ -169,7 +180,7 @@ def analyze_namespace(
     """
     ns_dir = data_root / "namespaces" / ns_id
     concepts = d88._load_active_concepts(ns_dir)
-    ledger = load_ledger(ns_dir)
+    ledger = load_ledger(ns_dir, rejudge_all)
     targets: list[tuple[Any, list[dict[str, Any]]]] = []
     skipped = {"no_roster": 0, "pinned_or_not_shared": 0, "already_backfilled": 0}
     old_total = 0
@@ -227,6 +238,7 @@ def _apply_limit(per_ns: dict[str, dict[str, Any]], order: list[str], limit: int
 
 def plan(
     data_root: Path, roster: dict[str, list[dict[str, Any]]], namespaces: str, limit: int | None,
+    rejudge_all: bool = False,
 ) -> tuple[list[str], dict[str, int], dict[str, dict[str, Any]], list[dict[str, Any]]]:
     """回傳 (被選 namespace, ns_id -> 序號, 各 namespace 分析, 各 scope 概況)。"""
     all_ns = d88.list_user_namespaces(data_root)
@@ -247,7 +259,7 @@ def plan(
         if scope_id is None:
             continue
         gid = parse_guild_scope(scope_id) or ""
-        old = _scope_old_projections(data_root, scope_ns)
+        old = _scope_old_projections(data_root, scope_ns, rejudge_all)
         scope_old[scope_id] = old
         scopes_report.append({
             "scope": f"scope#{i}",
@@ -256,7 +268,7 @@ def plan(
             "old_format_projections": len(old),
         })
 
-    per_ns = {ns: analyze_namespace(data_root, ns, roster, scope_old) for ns in selected}
+    per_ns = {ns: analyze_namespace(data_root, ns, roster, scope_old, rejudge_all) for ns in selected}
     _apply_limit(per_ns, selected, limit)
     return selected, index, per_ns, scopes_report
 
@@ -266,11 +278,11 @@ def plan(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def _append_audit(ns_dir: Path, record: dict[str, Any]) -> None:
+def _append_audit(ns_dir: Path, record: dict[str, Any], rejudge_all: bool = False) -> None:
     """audit 先於資料修改：寫入失敗即拋例外，呼叫端不得繼續改該概念。"""
     import os
 
-    path = ns_dir / "semantic" / AUDIT_NAME
+    path = ns_dir / "semantic" / (REJUDGE_AUDIT_NAME if rejudge_all else AUDIT_NAME)
     record = {"at": datetime.now(timezone.utc).isoformat(), **record}
     try:
         with open(path, "a", encoding="utf-8") as f:
@@ -302,6 +314,7 @@ def _bump(d: dict[str, int], key: str, n: int = 1) -> None:
 def _process_namespace(
     data_root: Path, ns_id: str, targets: list[dict[str, Any]], llm_fn: Callable[[str], str],
     roster: dict[str, list[dict[str, Any]]], engine_kwargs: dict[str, Any], lease: FileLease,
+    rejudge_all: bool = False,
 ) -> dict[str, Any]:
     from echo_memory.engine import MemoryEngine
 
@@ -331,8 +344,8 @@ def _process_namespace(
         from echo_memory.dream.sharing_phase import SharingReport
 
         layer = engine.share_layer
-        ledger = load_ledger(ns_dir)
-        _append_audit(ns_dir, {"event": "run_start", "targets": len(targets)})
+        ledger = load_ledger(ns_dir, rejudge_all)
+        _append_audit(ns_dir, {"event": "run_start", "targets": len(targets)}, rejudge_all)
         for t in targets:
             if not lease.renew():
                 raise BackfillError("dream 租約已遺失，中止")
@@ -342,7 +355,7 @@ def _process_namespace(
             _append_audit(ns_dir, {
                 "event": "intent", "concept_id": cid,
                 "projections": [{"scope": x["scope_id"], "projection_id": x["before"]["pid"]} for x in t["scopes"]],
-            })
+            }, rejudge_all)
             rep = SharingReport()
             phase._forget_judged(cid)
             try:
@@ -350,7 +363,7 @@ def _process_namespace(
             except Exception as exc:  # noqa: BLE001 - 單筆失敗留待下次重跑
                 logger.warning("分享重判失敗: %s", exc)
                 _bump(result["outcomes"], "error")
-                _append_audit(ns_dir, {"event": "result", "concept_id": cid, "error": type(exc).__name__})
+                _append_audit(ns_dir, {"event": "result", "concept_id": cid, "error": type(exc).__name__}, rejudge_all)
                 continue
             concept = engine.semantic.get(cid)
             state = concept.sharing_state() if concept is not None else None
@@ -385,13 +398,13 @@ def _process_namespace(
             _append_audit(ns_dir, {
                 "event": "result", "concept_id": cid, "outcomes": per_scope,
                 "judged": rep.judged, "projected": rep.projected, "held": rep.held,
-            })
+            }, rejudge_all)
             if any(v in _DONE_OUTCOMES for v in per_scope.values()):
                 prev = ledger.get(cid) if isinstance(ledger.get(cid), dict) else {}
                 scopes = dict(prev.get("scopes") or {})
                 scopes.update({k: v for k, v in per_scope.items() if v in _DONE_OUTCOMES})
                 ledger[cid] = {"at": datetime.now(timezone.utc).isoformat(), "scopes": scopes}
-                d88._atomic_write_json(ns_dir / "semantic" / LEDGER_NAME, ledger)
+                d88._atomic_write_json(ns_dir / "semantic" / (REJUDGE_LEDGER_NAME if rejudge_all else LEDGER_NAME), ledger)
     finally:
         engine.close()
     return result
@@ -408,6 +421,7 @@ def run(
     llm_fn: Callable[[str], str] | None = None,
     engine_kwargs: dict[str, Any] | None = None,
     lease_ttl: float = 3600.0,
+    rejudge_all: bool = False,
 ) -> dict[str, Any]:
     """執行（或 dry-run）並回傳遮罩後的報告 dict。roster 為 load_roster 的結果。"""
     data_root = Path(data_root)
@@ -421,9 +435,10 @@ def run(
         if llm_fn is None:
             raise BackfillError("apply 需要可用的 LLM（llm_fn）")
 
-    selected, index, per_ns, scopes_report = plan(data_root, roster, namespaces, limit)
+    selected, index, per_ns, scopes_report = plan(data_root, roster, namespaces, limit, rejudge_all)
     report: dict[str, Any] = {
         "mode": "apply" if apply else "dry-run",
+        "rejudge_all": rejudge_all,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "limit": limit,
         "roster": {
@@ -442,14 +457,15 @@ def run(
             for ns in work:
                 # 取得租約後再讀一次，避免計畫與實際落差
                 scope_old = {
-                    sid: _scope_old_projections(data_root, scope_to_namespace_id(sid))
+                    sid: _scope_old_projections(data_root, scope_to_namespace_id(sid), rejudge_all)
                     for sid in (namespace_to_scope(s) for s in d88.list_scope_namespaces(data_root)) if sid
                 }
-                fresh = analyze_namespace(data_root, ns, roster, scope_old)
+                fresh = analyze_namespace(data_root, ns, roster, scope_old, rejudge_all)
                 planned = {t["cid"] for t in per_ns[ns]["_targets"]}
                 targets = [t for t in fresh["_targets"] if t["cid"] in planned]
                 applied[ns] = _process_namespace(
                     data_root, ns, targets, llm_fn, roster, engine_kwargs or {}, leases[ns],  # type: ignore[arg-type]
+                    rejudge_all,
                 )
         finally:
             for lease in leases.values():
@@ -514,7 +530,7 @@ def _totals(entries: list[dict[str, Any]], apply: bool) -> dict[str, Any]:
 def format_report(report: dict[str, Any]) -> str:
     r = report["roster"]
     lines = [
-        f"[D87 回填] 模式: {report['mode']}（limit={report['limit']}）",
+        f"[D87 回填] 模式: {report['mode']}{'（rejudge-all）' if report.get('rejudge_all') else ''}（limit={report['limit']}）",
         f"名冊: {r['guilds']} 個 guild、共 {r['members']} 人（每次 prompt 最多取 {r['max_members_per_prompt']} 位）",
         "scope | 名冊人數 | 舊格式投影",
     ]
@@ -557,6 +573,11 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--dry-run", action="store_true", help="只讀預覽（預設）")
     mode.add_argument("--apply", action="store_true", help="實際寫入（需 --i-have-backup）")
     ap.add_argument("--i-have-backup", type=Path, default=None, help="備份路徑（apply 必填且須存在）")
+    ap.add_argument(
+        "--rejudge-all", action="store_true",
+        help="目標放寬為所有 active 投影的來源概念（含已有 subject_uids），用於改 prompt 後重寫摘要；"
+             "冪等登記改用 backfill_d87_rejudge.json",
+    )
     ap.add_argument("--limit", type=int, default=None, help="本次最多重判幾個來源概念（跨 namespace 總數）")
     ap.add_argument("--report", type=Path, default=None, help="報告 JSON 輸出路徑（遮罩後）")
     ap.add_argument("--embedding-model", default=None, help="apply 用；預設取 config/env，須與 bot 一致")
@@ -582,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
         report = run(
             args.data_root, roster=roster, namespaces=args.namespaces, apply=args.apply,
             backup=args.i_have_backup, limit=args.limit, llm_fn=llm_fn, engine_kwargs=kwargs,
+            rejudge_all=args.rejudge_all,
         )
     except BackfillError as exc:
         print(f"中止: {exc}", file=sys.stderr)

@@ -900,7 +900,7 @@ D35 已定案（A8）：新增輕量第七契約。編號為 6A 以保持既有�
 | Interaction 軸 | State Coordinator | 提議者只能發請求 |
 | 他人實體表（presence／tasks／deliveries 等） | 各 Manager | State Coordinator 不寫 |
 
-**P3 註記（proposer 表，P3接入方案 §2.1）**：`DEFAULT_PROPOSERS`（`uep/assembly.py`）的 Interaction 軸新增 `core.turn`（Turn Orchestrator 依事件提 phase 轉換）與 `core.decision`（決策插槽提 reply_mode 相關轉換，如進入 passive 觀察）；`core.agent` 已由 D63 預留（SYS 契約）。Behavior 軸不動；ES 轉接層與 ES 本身不是 proposer，只送事實（S-1）。
+**P3 註記（proposer 表，P3接入方案 §2.1）**：`DEFAULT_PROPOSERS`（`uep/assembly.py`）的 Interaction 軸新增 `core.turn`（Turn Orchestrator 依事件提 phase 轉換）與 `core.decision`（決策插槽提 reply_mode 相關轉換，如進入 passive 觀察）；`core.agent` 已由 D63 預留（SYS 契約）。Behavior 軸不動；ES 轉接層與 ES 本身不是 proposer，只送事實（S-1）。**S5 補充**：`core.decision` 是 CC-7 的提議者**身分**（由 Orchestrator 固定使用，proposer 實作換成什麼都一樣）；具體實作以 `proposer_id` 註冊，與此身分分開。Proposal 的 `interaction_to` 只接受 Interaction 軸的值，Behavior 值在 Orchestrator 驗證層即被擋，`core.decision` 直接對 Behavior 軸提請求則由 CC-7 回 `REJECTED_UNAUTHORIZED`；請求被拒時回 D80 預設，不重試（P3接入方案 §5.2）。
 
 ### 6A.4 不變條件
 

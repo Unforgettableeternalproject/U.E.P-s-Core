@@ -3166,3 +3166,15 @@
 
 ---
 
+### docs: P3 S5 實作註記，bot 對照表、D80 暫定值與偏離. 10/30
+
+> Date: Fri, 30 Oct 2026 17:54:16 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `eb4b81264df8185ca8e539b0919e100905e09469`
+
+---
+

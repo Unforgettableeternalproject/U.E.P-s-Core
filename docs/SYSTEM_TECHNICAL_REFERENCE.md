@@ -359,6 +359,27 @@ class MemoryContext:
 - 一般檢索與指名模式皆回傳 `ctx.ids`，回覆後傳給 `store_episode(shared_context_ids=..., shared_scope_id=...)` 登記消費紀錄，撤回級聯照舊。
 - 觀測 log：`[retrieve_shared] scope=... owner=... items=...`，指名模式 `owner` 只記 uid 末四碼（`*1234`），一般模式為 `-`。
 
+**關於成員（D87）**：任何人都可以問其他人的事——公開資訊一律可以說，只有本人標為敏感、或系統判定為敏感時才擋。指名模式因此回兩段：
+
+- 本人段：`owner_uid` 本人的投影（上述邏輯），最多 3 則。
+- 旁證段：其他成員的投影中 `subject_uids` 含 `owner_uid` 者，最多 3 則，同樣用 `OWNER_RECALL_MIN_SIMILARITY`。`SharedItem.relation == "about"`、`owner_uid` 為發言者、`about_uid` 為被提到的當事人；`SharedContext.owner_items`／`about_items` 可分段取用，`ids` 兩段都含（消費記錄與撤回級聯照舊）。`to_text()` 的旁證行渲染成「- 甲 提到〈乙〉：摘要」（名字由 `display_name` 解析）。
+- 敏感度與一般共享相同：旁證只放行 `none`／`personal`，`sensitive` 與本人標的 privacy_restrict 不會有投影。排除 viewer 自己說的投影；不遞增其他投影的 `access_count`（`search_about` 沿用 `similarities_for`／`record_access`）。
+- 旁證不計入當事人自述的佐證：Dream 的交叉佐證（D88）排除 `subject_uids` 含擁有者的候選。
+
+標記來源是分享審核（`affect/evidence_reviewer.py` 的 `_SHARE_PROMPT`）新增的 `about_members` 輸出：
+
+- 宿主以 `MemoryEngine.set_member_roster_fn(fn)` 注入名冊（記憶端不自己查；也可設在共用的 `ScopeShareLayer.member_roster_fn`，engine 設定優先）。`fn(guild_id: str) -> list[dict]`，每個 dict：`uid`（必填，字串）、`display_name`（字串）、`aliases`（字串 list，可省略，取前 5 個）；顯示名與別名至少一個。Core S4 的 `roster(guild_id)` 直接對接此介面。
+- prompt 中 uid 換成臨時代號 `m1`、`m2`…（擁有者排除、最多 100 位）；**uid 不會出現在 prompt**，顯示名與別名會。prompt 註明逐字稿人名可能是 STT 同音或近音誤辨，依讀音與上下文對應名冊，不確定就不標。LLM 只能挑代號，記憶端對回 uid，名冊以外的代號一律丟棄；擁有者不放進 about_members。
+- 沒注入名冊（或名冊為空／取得失敗）時 prompt 與行為與 D88 完全相同，不產生 `about_members`。
+- 投影 metadata 新增 `subject_uids`（`ProjectionView.subject_uids`）；舊投影沒有此欄位或格式不符視為空。既有投影不會自動補標，概念內容改變（digest 變動）重新投影時才會標。
+
+**當事人的撤回權與糾正權**（防汙名化）：`subject_optouts` 索引（`subject_optouts.jsonl`，與撤回索引同層、append-only）。索引損毀、未知紀錄、或檔案遺失但已有帶 `subject_uids` 的投影時 fail-closed：旁證一律不回（本人段不受影響），撤回／糾正／退出動作也拒絕（`optout_index_unhealthy`）。以下三個方法由宿主傳入 `actor_uid`（Gateway 重建身分，D77）；**工具 schema 不得讓模型指定替誰操作**。actor 必須 ∈ 該投影的 `subject_uids`，否則回 `not_subject`。三者只做讀取遮蔽，不刪發言者的原始資料，並寫 share audit（`about_retract`／`about_correct`／`about_opt_out`，只記 id 與動作）：
+
+- `retract_about_me(scope_id, actor_uid, projection_id) -> {"ok", "reason", "projection_id"}`：撤回單則（對 actor 遮蔽；其他被提到的人仍看得到）。
+- `opt_out_about_me(scope_id, actor_uid, enabled: bool) -> {"ok", "reason", "enabled"}`：整體退出／恢復，在該場域的旁證一律不回（含之後新投影）。
+- `correct_about_me(scope_id, actor_uid, projection_id, correction_text, *, evidence=None, session_id=None) -> {"ok", "reason", "projection_id", "correction_stored", "episode_id"}`：該則對 actor 轉為 contradicted，不再當旁證回傳；`correction_text` 經 `store_episode` 寫成 actor 自己的 episode。可在共享 engine 或當事人自己的 engine 上呼叫（其他 engine 回 `engine_mismatch`）；共享 engine 需先 `set_engine_resolver(registry.get)` 才找得到 actor 的 engine（否則 `no_actor_engine`，無副作用）。`evidence` 缺省時以私有的使用者陳述寫入；要讓糾正內容像一般發言一樣被分享，宿主傳入帶 `channel_kind`／`audience_size`／`scope` 的 `EvidenceInput`。
+- 本人陳述優先：本人糾正過的旁證不再回傳；系統不做語意衝突偵測。
+
 ---
 
 ## 7. 神經化學調控：NeurochemState

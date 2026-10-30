@@ -356,6 +356,10 @@ class SharedItem:
     similarity: float = 0.0
     source_digest: str = ""
     owner_present: bool = False
+    # D87：relation="owner" 是被查詢成員本人（或一般檢索）的投影；"about" 是其他成員提到
+    # about_uid 的旁證（owner_uid＝發言者，about_uid＝被提到的當事人）
+    relation: str = "owner"
+    about_uid: str = ""
 
     @property
     def support_label(self) -> str:
@@ -367,6 +371,8 @@ class SharedItem:
         """
         if self.claim_kind == "intention":
             return "宣稱"
+        if self.relation == "about":
+            return ""  # 旁證：「僅本人提過」不適用（說話的不是當事人），渲染成「X 提到〈Y〉」本身已表明來源
         if self.review_status == "insufficient":
             return "僅本人提過，未經他人佐證"
         return ""
@@ -383,8 +389,18 @@ class SharedContext:
 
     @property
     def ids(self) -> list[str]:
-        """本輪帶入的 projection id；store_episode(shared_context_ids=...) 用。"""
+        """本輪帶入的 projection id（本人段與旁證段）；store_episode(shared_context_ids=...) 用。"""
         return [it.projection_id for it in self.items]
+
+    @property
+    def owner_items(self) -> list[SharedItem]:
+        """本人段（relation="owner"）：被查詢成員自己的投影，或一般檢索結果。"""
+        return [it for it in self.items if it.relation != "about"]
+
+    @property
+    def about_items(self) -> list[SharedItem]:
+        """旁證段（relation="about"）：其他成員提到被查詢成員的投影。"""
+        return [it for it in self.items if it.relation == "about"]
 
     def is_empty(self) -> bool:
         return not self.items
@@ -398,16 +414,23 @@ class SharedContext:
         if not self.items:
             return ""
         lines = [f"<{SHARED_BLOCK_TAG}>", SHARED_BLOCK_NOTE, SHARED_BLOCK_HEADER]
-        for it in self.items[:SHARED_MAX_ITEMS]:
+
+        def _name(uid: str) -> str:
             name = ""
             if display_name is not None:
                 try:
-                    name = str(display_name(it.owner_uid) or "")
+                    name = str(display_name(uid) or "")
                 except Exception:
                     name = ""
-            name = _one_line(name or f"成員 {it.owner_uid}", _SHARED_NAME_MAX_CHARS)
+            return _one_line(name or f"成員 {uid}", _SHARED_NAME_MAX_CHARS)
+
+        for it in self.owner_items[:SHARED_MAX_ITEMS]:
             summary = _one_line(it.summary, SHARED_SUMMARY_MAX_CHARS)
             label = f"（{it.support_label}）" if it.support_label else ""
-            lines.append(f"- {name} 在本伺服器提過：{summary}{label}")
+            lines.append(f"- {_name(it.owner_uid)} 在本伺服器提過：{summary}{label}")
+        for it in self.about_items[:SHARED_MAX_ITEMS]:
+            summary = _one_line(it.summary, SHARED_SUMMARY_MAX_CHARS)
+            label = f"（{it.support_label}）" if it.support_label else ""
+            lines.append(f"- {_name(it.owner_uid)} 提到〈{_name(it.about_uid)}〉：{summary}{label}")
         lines.append(f"</{SHARED_BLOCK_TAG}>")
         return "\n".join(lines)

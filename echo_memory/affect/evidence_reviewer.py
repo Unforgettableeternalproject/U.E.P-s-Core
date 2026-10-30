@@ -119,7 +119,7 @@ _SHARE_PROMPT = """你是記憶系統的分享審核員。下列「證據」都�
 
 證據（每行格式：[id] 時間 | 來源標示: 內容）：
 {evidence}
-
+{roster_block}
 判斷規則：
 - sensitivity：none＝客觀事實或公開資訊；personal＝一般個人偏好、習慣；
   sensitive＝健康、財務、感情、身分識別、位置、對他人的指控等不宜轉述的資訊。
@@ -133,7 +133,22 @@ _SHARE_PROMPT = """你是記憶系統的分享審核員。下列「證據」都�
 - privacy_restrict_unit_ids：說話者表達了「不希望被轉述、別說出去」意圖的證據 id（沒有就留空陣列）。
 
 以純 JSON 回覆：
-{{"sensitivity": "none|personal|sensitive", "claim_kind": "fact|preference|state|intention", "corroboration_class": "identity|general|self_fact", "cited_unit_ids": ["..."], "supports_summary_from_cited_only": true, "shareable_summary": "...", "privacy_restrict_unit_ids": ["..."], "reason": "..."}}"""
+{{"sensitivity": "none|personal|sensitive", "claim_kind": "fact|preference|state|intention", "corroboration_class": "identity|general|self_fact", "cited_unit_ids": ["..."], "supports_summary_from_cited_only": true, "shareable_summary": "...", "privacy_restrict_unit_ids": ["..."]{about_json}, "reason": "..."}}"""
+
+# 名冊區塊（D87）：只在宿主注入名冊時附上。uid 一律不出現，代號 m1、m2… 由記憶端對回 uid。
+_ROSTER_BLOCK = """
+場域成員名冊（代號：顯示名／別名）。about_members 只能從這份名冊挑代號：
+{roster}
+
+about_members 規則：
+- 這則概念若是在講名冊內的某位成員（不是說話者本人），把該成員的代號填入 about_members；沒有就留空陣列。
+- 逐字稿裡的人名可能是語音辨識（STT）的同音或近音誤辨，請依讀音與上下文對應名冊成員；不確定就不要標。
+- 只能填名冊上的代號，不得填名冊以外的人；名冊只用來辨識，shareable_summary 仍不得出現任何人的名字。
+"""
+
+ROSTER_MAX_MEMBERS = 100
+_ROSTER_NAME_MAX_CHARS = 40
+_ROSTER_MAX_ALIASES = 5
 
 _PRIVACY_SCAN_PROMPT = """你是記憶系統的隱私意圖掃描員。下列是群組場合中使用者說的話。
 判斷哪些話的說話者表達了「不希望被轉述、別說出去」的意圖。依語意與語氣判斷，不得依賴特定字詞。
@@ -240,6 +255,51 @@ class SharingJudgement:
     review_status: str = "insufficient"
     support_strength: float = 0.0
     corroboration_class: str = ""
+    # D87：這則概念在講誰（名冊成員 uid；已由臨時代號對回，名冊以外與擁有者本人已丟棄）
+    about_members: list[str] = field(default_factory=list)
+
+
+def _roster_text(value: Any) -> str:
+    """名冊文字單行化並截斷（名稱屬不可信資料，不得換行跳出名冊）。"""
+    return " ".join(str(value or "").split())[:_ROSTER_NAME_MAX_CHARS]
+
+
+def build_roster_block(
+    entries: Any, owner_uid: str = "",
+) -> tuple[str, dict[str, str]]:
+    """名冊 -> (prompt 區塊, {代號: uid})。uid 只留在回傳的對照表，不進 prompt。
+
+    entries: ``[{"uid", "display_name", "aliases"}]``；格式不符的項目略過，擁有者本人排除，
+    最多 ROSTER_MAX_MEMBERS 位。沒有可用成員回傳 ("", {})。
+    """
+    if not isinstance(entries, (list, tuple)):
+        return "", {}
+    owner = str(owner_uid or "").strip()
+    lines: list[str] = []
+    code_map: dict[str, str] = {}
+    seen: set[str] = set()
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        uid = str(e.get("uid") or "").strip()
+        if not uid or uid == owner or uid in seen:
+            continue
+        names = [_roster_text(e.get("display_name"))]
+        aliases = e.get("aliases")
+        if isinstance(aliases, (list, tuple)):
+            names.extend(_roster_text(a) for a in list(aliases)[:_ROSTER_MAX_ALIASES])
+        names = [n for n in dict.fromkeys(names) if n]
+        if not names:
+            continue
+        seen.add(uid)
+        code = f"m{len(code_map) + 1}"
+        code_map[code] = uid
+        lines.append(f"{code}: {'／'.join(names)}")
+        if len(code_map) >= ROSTER_MAX_MEMBERS:
+            break
+    if not code_map:
+        return "", {}
+    return _ROSTER_BLOCK.format(roster="\n".join(lines)), code_map
 
 
 def aware(dt: datetime | None) -> datetime | None:
@@ -382,12 +442,15 @@ class EvidenceReviewer:
         triggered_by: str = "dream",
         privacy_ledger: Any = None,
         visibility_fn: Callable[[Any, Any], str] | None = None,
+        member_roster_fn: Callable[[str], Any] | None = None,
     ):
         if cfg is None:
             from echo_memory.config import get_config
             cfg = get_config()
         self._cfg = cfg
         self._llm_fn = llm_fn
+        # 名冊注入（D87）：fn(guild_id) -> [{"uid","display_name","aliases"}]；None＝不產生 about_members
+        self.member_roster_fn = member_roster_fn
         self._gate = guard
         self._semantic = semantic
         self._provenance = provenance
@@ -927,8 +990,24 @@ class EvidenceReviewer:
             return []
         return sorted({s for s in (self._shareable_scope(u) for u in snap.units) if s})
 
-    def judge_sharing(self, concept_id: str, scope_id: str) -> SharingJudgement:
+    def _roster_for_scope(self, scope_id: str, owner_uid: str) -> tuple[str, dict[str, str]]:
+        """取得場域名冊並轉成 (prompt 區塊, 代號對照)；沒注入／失敗／空名冊 -> ("", {})。"""
+        fn = self.member_roster_fn
+        gid = parse_guild_scope(scope_id)
+        if fn is None or gid is None:
+            return "", {}
+        try:
+            return build_roster_block(fn(gid), owner_uid)
+        except Exception as e:  # noqa: BLE001 - 名冊失敗只是不標 about_members，不影響分享判定
+            logger.warning("[EvidenceReviewer] 取得名冊失敗（本次不標 about_members）: %s", e)
+            return "", {}
+
+    def judge_sharing(
+        self, concept_id: str, scope_id: str, owner_uid: str = "",
+    ) -> SharingJudgement:
         """判定概念能否在 scope_id 分享（不寫入）。fail-closed：任何缺漏／例外都不分享。
+
+        owner_uid：概念擁有者（名冊排除本人；about_members 不含本人）。
 
         步驟 1 鎖內：快照、算 U_S 與 digest；步驟 2 鎖外：LLM 只看 U_S；
         步驟 3 結構驗證（欄位層級，不看文字內容）。
@@ -972,8 +1051,11 @@ class EvidenceReviewer:
             base.reason = "no_renderable_units"
             return base
 
+        roster_block, code_map = self._roster_for_scope(scope_id, owner_uid)
         prompt = _SHARE_PROMPT.format(
             legend=SOURCE_LEGEND, evidence=evidence_text, max_chars=SHARE_SUMMARY_MAX_CHARS,
+            roster_block=roster_block,
+            about_json=', "about_members": ["m1"]' if code_map else "",
         )
         try:
             raw = self._llm_fn(prompt)
@@ -983,7 +1065,7 @@ class EvidenceReviewer:
         parsed = parse_llm_json(raw)
         if parsed is None:
             return dataclasses.replace(base, outcome="held", reason="llm_invalid_json")
-        out = self._decide_sharing(base, review, parsed, shown)
+        out = self._decide_sharing(base, review, parsed, shown, code_map)
         if out.outcome == "judged" and out.shareable:
             # 只依 U_S 的被引用 unit 重算：不帶入全部來源（含 DM／其他場域）的審核結果
             cited_units = [shown[i] for i in out.cited_unit_ids]
@@ -1014,8 +1096,12 @@ class EvidenceReviewer:
         review: EvidenceReview,
         parsed: dict[str, Any],
         shown: dict[str, EvidenceUnit],
+        code_map: dict[str, str] | None = None,
     ) -> SharingJudgement:
-        """LLM 分享判定 -> 結構驗證。只看欄位，不看文字內容。"""
+        """LLM 分享判定 -> 結構驗證。只看欄位，不看文字內容。
+
+        code_map：名冊臨時代號 -> uid（沒注入名冊為空，about_members 一律丟棄）。
+        """
 
         def held(reason: str) -> SharingJudgement:
             return dataclasses.replace(base, outcome="held", reason=reason)
@@ -1043,11 +1129,19 @@ class EvidenceReviewer:
         if len(summary) > SHARE_SUMMARY_MAX_CHARS:
             return held("summary_too_long")
         supports = parsed.get("supports_summary_from_cited_only") is True
+        about: list[str] = []
+        about_raw = parsed.get("about_members")
+        if code_map and isinstance(about_raw, list):
+            for code in about_raw:  # 名冊以外的代號（含 uid、亂編）一律丟棄，不 hold
+                uid = code_map.get(code.strip().lower()) if isinstance(code, str) else None
+                if uid and uid not in about:
+                    about.append(uid)
 
         out = dataclasses.replace(
             base, outcome="judged", sensitivity=sensitivity, claim_kind=claim_kind,
             cited_unit_ids=cited, shareable_summary=summary,
             privacy_restrict_unit_ids=restrict, corroboration_class=corro_class,
+            about_members=about,
         )
         if sensitivity not in SHAREABLE_SENSITIVITIES:
             out.reason = "sensitive"

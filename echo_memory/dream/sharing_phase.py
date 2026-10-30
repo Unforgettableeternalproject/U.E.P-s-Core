@@ -298,9 +298,9 @@ class SharingPhase:
             if self._layer.is_owner_blocked(scope_id, self._owner):
                 all_final = False
                 continue
-            j = self._reviewer.judge_sharing(cid, scope_id)  # LLM 在鎖外
+            j = self._reviewer.judge_sharing(cid, scope_id, owner_uid=self._owner)  # LLM 在鎖外
             if j.outcome == "held" and j.reason == "summary_too_long":
-                j = self._reviewer.judge_sharing(cid, scope_id)  # 摘要過長：重試一次
+                j = self._reviewer.judge_sharing(cid, scope_id, owner_uid=self._owner)  # 摘要過長：重試一次
             if j.outcome == "held":
                 rep.held += 1  # held 不佔批次名額，但計次，超過上限放棄（內容改變才重來）
                 self._note_held(cid, digest)
@@ -353,7 +353,8 @@ class SharingPhase:
             rep.skipped += 1
             return False
         pid = f"proj_{uuid.uuid4().hex[:12]}"
-        # 步驟 3：持 scope 鎖寫投影（只存摘要與 provenance）
+        # 步驟 3：持 scope 鎖寫投影（只存摘要與 provenance）。about_members 非空才帶 subject_uids
+        extra = {"subject_uids": list(j.about_members)} if getattr(j, "about_members", None) else {}
         res = self._layer.project(
             scope_id,
             owner_uid=self._owner,
@@ -367,6 +368,7 @@ class SharingPhase:
             cited_unit_count=len(j.cited_unit_ids),
             embedding=vec,
             projection_id=pid,
+            **extra,
         )
         if not res.ok:
             rep.skipped += 1
@@ -469,6 +471,8 @@ class SharingPhase:
             # 循環防護：曾被帶入本投影的成員，其陳述不算獨立來源（結構判斷）
             consumers = self._layer.consumers_of(scope_id, pid)
             cands = [c for c in cands if c.owner_uid not in consumers]
+            # D87：關於本人的旁證（他人轉述）不是本人自述的獨立佐證
+            cands = [c for c in cands if self._owner not in (getattr(c, "subject_uids", ()) or ())]
             if not cands:
                 continue
             done += 1

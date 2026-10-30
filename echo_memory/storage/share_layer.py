@@ -51,6 +51,7 @@ logger = logging.getLogger("echo_memory.storage.share_layer")
 REVOCATIONS_FILENAME = "revocations.jsonl"
 AUDIT_FILENAME = "share_audit_log.jsonl"
 CONSUMPTIONS_FILENAME = "consumptions.jsonl"
+SUBJECT_OPTOUTS_FILENAME = "subject_optouts.jsonl"
 CASCADE_PENDING_FILENAME = "cascade_pending.json"
 SEMANTIC_DIRNAME = "semantic"
 
@@ -59,6 +60,7 @@ PROJECTION_NAME_PREFIX = "proj:"
 SUMMARY_MAX_CHARS = 120
 
 _INDEX_RECORD_TYPES = ("init", "revoke", "owner_block", "owner_unblock")
+_OPTOUT_RECORD_TYPES = ("init", "retract", "correct", "opt_out")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -98,6 +100,17 @@ class ProjectionView:
     sensitivity: str = "none"
     learned_at: str = ""
     similarity: float = 0.0
+    # 這則投影「在講誰」（D87）：被提到的其他成員 uid（不含擁有者）；舊投影沒有此欄位視為空
+    subject_uids: tuple[str, ...] = ()
+
+
+@dataclass
+class AboutResult:
+    """當事人對旁證的動作結果（撤回／糾正／整體退出）。reason 為空代表成功或已生效。"""
+
+    ok: bool
+    reason: str = ""
+    projection_id: str = ""
 
 
 @dataclass
@@ -184,8 +197,31 @@ class _Index:
     reason: str = ""
 
 
+@dataclass
+class _OptoutIndex:
+    """當事人撤回索引（subject_optouts.jsonl）：和撤回索引一樣 fail-closed。"""
+
+    healthy: bool = True
+    # (projection_id, subject_uid)：該當事人撤回／糾正的旁證，對他而言不再回傳
+    hidden: set[tuple[str, str]] = field(default_factory=set)
+    opted_out: set[str] = field(default_factory=set)
+    reason: str = ""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _clean_subject_uids(values: Any, owner: str = "") -> tuple[str, ...]:
+    """subject_uids 正規化：非 list／tuple 視為空；去空白、去重、排除擁有者本人。"""
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return ()
+    out: list[str] = []
+    for v in values:
+        uid = str(v).strip() if v is not None else ""
+        if uid and uid != owner and uid not in out:
+            out.append(uid)
+    return tuple(out)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -225,6 +261,10 @@ class ScopeShareLayer:
         self._sem_sigs: dict[tuple[str, int], tuple] = {}
         self._cache_lock = threading.Lock()
         self._index_cache: dict[str, tuple[Any, _Index]] = {}
+        self._optout_cache: dict[str, tuple[Any, _OptoutIndex]] = {}
+        # 名冊注入（D87）：fn(guild_id) -> [{"uid","display_name","aliases"}]；整個行程共用此 layer，
+        # 宿主設一次即可（各 MemoryEngine 也可個別 set_member_roster_fn，engine 設定優先）
+        self.member_roster_fn: Callable[[str], list[dict[str, Any]]] | None = None
         self._cascade_hook: Callable[[CascadeEvent], bool] | None = None
 
     # ── 路徑與 store ────────────────────────────────────────────
@@ -411,6 +451,230 @@ class ScopeShareLayer:
             logger.warning("[ScopeShareLayer] audit 寫入失敗: %s", e)
             return False
 
+    # ── 當事人撤回索引（D87）────────────────────────────────────
+
+    def _optout_file(self, ns_path: Path) -> Path:
+        return ns_path / SUBJECT_OPTOUTS_FILENAME
+
+    def _load_optouts(self, ns: str, ns_path: Path) -> _OptoutIndex:
+        """讀當事人撤回索引（mtime 快取）。損毀 -> unhealthy；遺失但已有帶 subject_uids 的投影 -> unhealthy。"""
+        if not ns_path.exists():
+            return _OptoutIndex()
+        path = self._optout_file(ns_path)
+        if not path.exists():
+            try:
+                tagged = (ns_path / SEMANTIC_DIRNAME / "concepts.json").exists() and any(
+                    (c.metadata or {}).get("subject_uids")
+                    for c in self._projection_concepts(self._semantic(ns))
+                )
+            except Exception:  # noqa: BLE001 - 無法確認就當作異常
+                tagged = True
+            return _OptoutIndex(healthy=False, reason="optout_index_missing") if tagged else _OptoutIndex()
+        try:
+            st = path.stat()
+            sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return _OptoutIndex(healthy=False, reason="optout_index_unreadable")
+        with self._cache_lock:
+            cached = self._optout_cache.get(str(path))
+            if cached is not None and cached[0] == sig:
+                return cached[1]
+        idx = _OptoutIndex()
+        try:
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                if not raw.strip():
+                    continue
+                rec = json.loads(raw)
+                if not isinstance(rec, dict) or rec.get("type") not in _OPTOUT_RECORD_TYPES:
+                    raise ValueError("unknown record")
+                kind = rec["type"]
+                actor = str(rec.get("actor_uid") or "")
+                if kind in ("retract", "correct"):
+                    pid = str(rec.get("projection_id") or "")
+                    if not pid or not actor:
+                        raise ValueError(f"{kind} without projection_id/actor_uid")
+                    idx.hidden.add((pid, actor))
+                elif kind == "opt_out":
+                    if not actor or not isinstance(rec.get("enabled"), bool):
+                        raise ValueError("opt_out without actor_uid/enabled")
+                    if rec["enabled"]:
+                        idx.opted_out.add(actor)
+                    else:
+                        idx.opted_out.discard(actor)
+        except Exception as e:  # noqa: BLE001 - 任何損毀都 fail-closed（旁證一律不回）
+            logger.warning("[ScopeShareLayer] 當事人撤回索引損毀 %s: %s", path, e)
+            return _OptoutIndex(healthy=False, reason="optout_index_corrupt")
+        with self._cache_lock:
+            self._optout_cache[str(path)] = (sig, idx)
+        return idx
+
+    def _ensure_optout_index(self, ns: str, ns_path: Path) -> _OptoutIndex | None:
+        """（須持 scope 鎖）確保當事人撤回索引存在；異常回傳 None。"""
+        idx = self._load_optouts(ns, ns_path)
+        if not idx.healthy:
+            return None
+        path = self._optout_file(ns_path)
+        if not path.exists():
+            self._append_jsonl(path, [{"type": "init", "at": _now()}])
+            idx = self._load_optouts(ns, ns_path)
+        return idx if idx.healthy else None
+
+    def is_about_healthy(self, scope: Any) -> bool:
+        """當事人撤回索引是否可用（不可用時旁證一律不回）。"""
+        try:
+            _, ns = normalize_scope(scope)
+        except ValueError:
+            return False
+        return self._load_optouts(ns, resolve_namespace_path(self._root, ns)).healthy
+
+    def is_about_opted_out(self, scope: Any, subject_uid: str) -> bool:
+        """成員是否整體退出「被他人提及」；索引異常一律視為已退出（fail-closed）。"""
+        try:
+            _, ns = normalize_scope(scope)
+        except ValueError:
+            return True
+        idx = self._load_optouts(ns, resolve_namespace_path(self._root, ns))
+        return (not idx.healthy) or str(subject_uid) in idx.opted_out
+
+    def _about_write(
+        self, scope: Any, actor_uid: str, projection_id: str | None, kind: str,
+        enabled: bool | None = None,
+    ) -> AboutResult:
+        """寫一筆當事人紀錄（撤回／糾正／整體退出）。先驗證，再 audit-before-mutate 寫索引。"""
+        try:
+            scope_id, ns = normalize_scope(scope)
+        except ValueError:
+            return AboutResult(False, "invalid_scope")
+        actor = str(actor_uid or "").strip()
+        if not actor:
+            return AboutResult(False, "missing_actor")
+        pid = str(projection_id or "").strip()
+        if kind != "opt_out" and not pid:
+            return AboutResult(False, "missing_projection")
+        ns_path = resolve_namespace_path(self._root, ns)
+        try:
+            with storage_lock(ns_path, timeout=self._lock_timeout):
+                oidx = self._ensure_optout_index(ns, ns_path)
+                if oidx is None:
+                    return AboutResult(False, "optout_index_unhealthy", pid)
+                audit_owner = ""
+                if kind != "opt_out":
+                    view = self.get_projection(scope_id, pid)
+                    if view is None:
+                        return AboutResult(False, "projection_not_found", pid)
+                    if actor not in view.subject_uids:
+                        return AboutResult(False, "not_subject", pid)
+                    if (pid, actor) in oidx.hidden:
+                        return AboutResult(True, "already_hidden", pid)
+                    record = {"type": kind, "projection_id": pid, "actor_uid": actor, "at": _now()}
+                    audit_owner = view.owner_uid
+                else:
+                    record = {"type": "opt_out", "actor_uid": actor, "enabled": bool(enabled), "at": _now()}
+                action = {"retract": "about_retract", "correct": "about_correct", "opt_out": "about_opt_out"}[kind]
+                fields: dict[str, Any] = {"actor_uid": actor, "reason_code": action}
+                if pid:
+                    fields["projection_id"] = pid
+                if audit_owner:
+                    fields["owner_uid"] = audit_owner
+                if kind == "opt_out":
+                    fields["reason_code"] = "opt_out" if enabled else "opt_in"
+                # audit-before-mutate：audit 失敗則不寫索引
+                if not self._audit(ns_path, action, **fields):
+                    return AboutResult(False, "audit_failed", pid)
+                self._append_jsonl(self._optout_file(ns_path), [record])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[ScopeShareLayer] 當事人動作失敗: %s", e)
+            return AboutResult(False, f"io_error: {e}", pid)
+        return AboutResult(True, "", pid)
+
+    def retract_about(self, scope: Any, actor_uid: str, projection_id: str) -> AboutResult:
+        """當事人撤回單則旁證（只對 actor 遮蔽讀取；不刪發言者的投影）。actor 必須 ∈ subject_uids。"""
+        return self._about_write(scope, actor_uid, projection_id, "retract")
+
+    def correct_about(self, scope: Any, actor_uid: str, projection_id: str) -> AboutResult:
+        """當事人糾正旁證：該則對 actor 轉為 contradicted，之後不再當旁證回傳。actor 必須 ∈ subject_uids。"""
+        return self._about_write(scope, actor_uid, projection_id, "correct")
+
+    def set_about_optout(self, scope: Any, actor_uid: str, enabled: bool) -> AboutResult:
+        """整體退出（enabled=True）或恢復（False）「被他人提及」的旁證。"""
+        return self._about_write(scope, actor_uid, None, "opt_out", enabled=bool(enabled))
+
+    def _about_candidates(
+        self, sem: Any, idx: _Index, oidx: _OptoutIndex, subject: str, exclude_owner: str | None,
+    ) -> list[Any]:
+        """關於 subject 的旁證候選：可見、其他成員說的、標了 subject、當事人未撤回／糾正／退出。"""
+        if not oidx.healthy or subject in oidx.opted_out:
+            return []
+        out = []
+        for c in self._projection_concepts(sem):
+            if not self._visible(c, idx):
+                continue
+            m = c.metadata or {}
+            owner = str(m.get("owner_uid", ""))
+            if owner == subject or (exclude_owner is not None and owner == str(exclude_owner)):
+                continue
+            if subject not in _clean_subject_uids(m.get("subject_uids"), owner):
+                continue
+            if (str(m.get("projection_id", "")), subject) in oidx.hidden:
+                continue
+            out.append(c)
+        return out
+
+    def list_about(
+        self, scope: Any, subject_uid: str, *, exclude_owner: str | None = None,
+    ) -> list[ProjectionView]:
+        """關於 subject_uid 的旁證（不含相似度；索引異常回空）。"""
+        try:
+            scope_id, ns = normalize_scope(scope)
+        except ValueError:
+            return []
+        ns_path = resolve_namespace_path(self._root, ns)
+        idx = self._load_index(ns, ns_path)
+        if not idx.healthy or not ns_path.exists():
+            return []
+        if not (ns_path / SEMANTIC_DIRNAME / "concepts.json").exists():
+            return []
+        oidx = self._load_optouts(ns, ns_path)
+        sem = self._semantic(ns)
+        return [
+            self._view(c, scope_id)
+            for c in self._about_candidates(sem, idx, oidx, str(subject_uid), exclude_owner)
+        ]
+
+    def search_about(
+        self,
+        scope: Any,
+        query_embedding: list[float],
+        subject_uid: str,
+        *,
+        exclude_owner: str | None = None,
+        top_k: int = 3,
+        min_similarity: float = 0.1,
+    ) -> list[ProjectionView]:
+        """關於 subject_uid 的旁證向量搜尋。只對候選算 cosine，只有最終回傳者計一次存取。"""
+        try:
+            scope_id, ns = normalize_scope(scope)
+        except ValueError:
+            return []
+        ns_path = resolve_namespace_path(self._root, ns)
+        idx = self._load_index(ns, ns_path)
+        if not idx.healthy or not ns_path.exists() or not query_embedding or top_k <= 0:
+            return []
+        if not (ns_path / SEMANTIC_DIRNAME / "concepts.json").exists():
+            return []
+        oidx = self._load_optouts(ns, ns_path)
+        sem = self._semantic(ns)
+        cands = self._about_candidates(sem, idx, oidx, str(subject_uid), exclude_owner)
+        if not cands:
+            return []
+        sims = sem.similarities_for([c.id for c in cands], query_embedding)
+        ranked = sorted(
+            ((c, sims[c.id]) for c in cands if c.id in sims and sims[c.id] >= min_similarity),
+            key=lambda pair: pair[1], reverse=True,
+        )[:top_k]
+        sem.record_access([c.id for c, _ in ranked])
+        return [self._view(c, scope_id, similarity=float(sim)) for c, sim in ranked]
+
     # ── 投影 ────────────────────────────────────────────────────
 
     def project(
@@ -428,10 +692,12 @@ class ScopeShareLayer:
         cited_unit_count: int = 0,
         embedding: list[float] | None = None,
         projection_id: str | None = None,
+        subject_uids: Iterable[str] | None = None,
     ) -> ProjectResult:
         """寫入一筆投影（只存摘要與 provenance）。同擁有者同來源概念的舊投影會先被撤回。
 
         embedding 與摘要長度驗證都在 scope 鎖之外；鎖內只做索引檢查、單一概念寫入與 audit。
+        subject_uids（D87）：這則投影在講的其他成員 uid（已由宿主名冊對回，擁有者本人會被排除）。
         """
         try:
             scope_id, ns = normalize_scope(scope)
@@ -461,6 +727,7 @@ class ScopeShareLayer:
             return ProjectResult(False, reason="embedding_unavailable")
 
         pid = projection_id or f"proj_{uuid.uuid4().hex[:12]}"
+        subjects = _clean_subject_uids(list(subject_uids) if subject_uids is not None else (), owner)
         ns_path = resolve_namespace_path(self._root, ns)
         replaced: list[str] = []
         try:
@@ -496,6 +763,9 @@ class ScopeShareLayer:
                     for c in live_stale
                 ])
                 replaced = [str(c.metadata.get("projection_id")) for c in live_stale]
+                if subjects:
+                    # 先確保當事人撤回索引存在：之後該檔遺失才能被偵測為異常（fail-closed）
+                    self._ensure_optout_index(ns, ns_path)
                 sem.upsert_concept(
                     name=f"{PROJECTION_NAME_PREFIX}{pid}",
                     description=text,
@@ -514,9 +784,11 @@ class ScopeShareLayer:
                         "sensitivity": sensitivity,
                         "cited_unit_count": int(cited_unit_count),
                         "learned_at": _now(),
+                        "subject_uids": list(subjects),
                     },
                     producer="share",
                 )
+
                 for c in stale:
                     try:
                         sem.remove_concept(c.name)
@@ -860,6 +1132,7 @@ class ScopeShareLayer:
             sensitivity=str(m.get("sensitivity", "none")),
             learned_at=str(m.get("learned_at", "")),
             similarity=similarity,
+            subject_uids=_clean_subject_uids(m.get("subject_uids"), str(m.get("owner_uid", ""))),
         )
 
     def _visible(self, concept: Any, idx: _Index) -> bool:

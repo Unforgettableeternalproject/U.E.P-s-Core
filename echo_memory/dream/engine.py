@@ -177,6 +177,7 @@ class DreamEngine:
         min_pending: int = 5,
         daydream_pending: int = 20,
         cron_require_pending: bool = True,
+        member_roster_fn: Callable[[str], Any] | None = None,
     ):
         """
         初始化 Dream Engine。
@@ -197,6 +198,8 @@ class DreamEngine:
             privacy_ledger: 擁有者的 PrivacyLedger；缺省取 Gate 的 privacy_ledger。分享判定必要，
                 缺少一律不分享（fail-closed）。
             owner_uid: 本 namespace 擁有者 uid（投影的 owner_uid；通常等於 namespace_id）。
+            member_roster_fn: ``(guild_id) -> [{"uid","display_name","aliases"}] | None``（D87），
+                供分享審核標記「在講誰」；每次判定時呼叫（可晚綁定）。None 或回空＝不標 about_members。
             lease: 跨行程租約（FileLease）。提供時所有觸發來源執行前都要先取得，取不到即跳過；
                 None 則不做跨行程互斥。
             cron_window_seconds: cron 去重窗口；窗口內已有行程完成 cron 週期則跳過。
@@ -314,6 +317,7 @@ class DreamEngine:
                             (privacy_ledger or getattr(gate, "privacy_ledger", None))
                             if share_layer is not None else None
                         ),
+                        member_roster_fn=member_roster_fn,
                     )
             except ImportError:
                 pass

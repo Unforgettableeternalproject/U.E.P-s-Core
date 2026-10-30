@@ -187,6 +187,8 @@ class MemoryEngine:
         self._activity = None
         self._share_layer = None  # 場域共享層（宿主以 attach_share_layer 注入，或延遲建立）
         self._share_layer_attached = False
+        self._member_roster_fn: Callable[[str], Any] | None = None  # D87 名冊注入（宿主）
+        self._engine_resolver: Callable[[str], Any] | None = None  # D87 uid -> 使用者 engine（糾正寫入用）
 
         # ── 神經化學狀態（session 級別，跨對話持久化）──────────────────
         self._neurochem: NeurochemState = self._load_neurochem()
@@ -1401,9 +1403,11 @@ class MemoryEngine:
     ) -> SharedContext:
         """檢索場域共享摘要（只給概念摘要，不含任何逐字證據）。
 
-        ``owner_uid`` 為指名成員查詢（D85）：宿主把名字解析成 uid 後傳入，只回該成員的投影
-        （門檻 OWNER_RECALL_MIN_SIMILARITY、最多 3 則；query 可為空字串，改依新近度）。
-        viewer 等於 owner_uid 回空。
+        ``owner_uid`` 為指名成員查詢（D85）：宿主把名字解析成 uid 後傳入，回兩段（D87）：
+        本人段＝該成員自己的投影；旁證段＝其他成員的投影中 subject_uids 含該成員者
+        （``SharedItem.relation == "about"``、``about_uid`` 為該成員）。各最多 3 則、門檻
+        OWNER_RECALL_MIN_SIMILARITY；query 可為空字串，改依新近度。旁證只放行 none／personal，
+        當事人撤回／糾正／整體退出的不回，撤回索引異常時旁證一律不回。viewer 等於 owner_uid 回空。
 
         呼叫對象是「共享 engine」（namespace 必須是 scope_id 對應的 ``scope-g<guild_id>``），
         不是使用者 engine；宿主以 ``registry.get("scope-g<id>")`` 取得。DM／無 scope_id
@@ -1435,6 +1439,149 @@ class MemoryEngine:
             summary_max_chars=cfg.sharing_summary_max_chars,
             owner_uid=owner_uid,
         )
+
+    # ── 關於成員（D87）：名冊注入與當事人的撤回／糾正權 ──────────────────
+
+    def set_member_roster_fn(self, fn: Callable[[str], list[dict[str, Any]]] | None) -> None:
+        """注入場域成員名冊（宿主；記憶端不自己查）。None＝取消。
+
+        ``fn(guild_id: str) -> list[dict]``，每個 dict 欄位：
+          - ``uid``（必填，字串）：成員 uid，只留在記憶端，**不會**送進任何 LLM prompt；
+          - ``display_name``（字串）：顯示名，會送進分享審核的 prompt；
+          - ``aliases``（字串 list，可省略）：別名／暱稱，最多取前 5 個。
+        顯示名與別名至少要有一個。分享審核（Dream 的 sharing phase）判定時才呼叫，
+        每次都可回傳最新名單；回傳 None／空 list／丟例外＝本次不標 about_members（其餘行為不變）。
+        擁有者（跑 Dream 的那個 namespace）會被自動排除。名冊最多取前 100 位。
+
+        Dream 在擁有者（使用者）engine 上跑，所以名冊要設在擁有者 engine；也可以對共用的
+        ``ScopeShareLayer.member_roster_fn`` 設一次（整個行程共用），engine 本身有設時以 engine 為準。
+        """
+        self._member_roster_fn = fn
+
+    def _roster_for_guild(self, guild_id: str) -> list[dict[str, Any]] | None:
+        """DreamEngine／審核器呼叫的晚綁定名冊來源：engine 設定優先，其次共用 layer 的設定。"""
+        fn = self._member_roster_fn
+        if fn is None:
+            fn = getattr(self._share_layer, "member_roster_fn", None)
+        return fn(guild_id) if callable(fn) else None
+
+    def set_engine_resolver(self, resolver: Callable[[str], Any] | None) -> None:
+        """注入 ``uid -> 使用者 MemoryEngine``（通常是 ``registry.get``）。
+
+        在「共享 engine」上呼叫 ``correct_about_me`` 時，用它找到當事人自己的 engine 寫入糾正內容；
+        在當事人自己的 engine 上呼叫則不需要。
+        """
+        self._engine_resolver = resolver
+
+    def _about_context(self, scope_id: str, actor_uid: str) -> tuple[Any, str, str]:
+        """(layer, scope_id, 拒絕原因)。身分只信任宿主傳入的 actor_uid（Gateway 重建身分）。"""
+        from echo_memory.schemas.sharing import normalize_scope as _norm_scope
+        from echo_memory.schemas.sharing import scope_to_namespace_id
+
+        scope = _norm_scope(scope_id)
+        if scope is None:
+            return None, "", "invalid_scope"
+        actor = str(actor_uid or "").strip()
+        if not actor:
+            return None, "", "missing_actor"
+        own_scope_engine = self.namespace_id == scope_to_namespace_id(scope)
+        if not own_scope_engine and self.namespace_id != actor:
+            # 既不是該場域的共享 engine，也不是當事人自己的 engine：拒絕（避免拿別人的 engine 代操作）
+            return None, scope, "engine_mismatch"
+        return self.share_layer, scope, ""
+
+    def retract_about_me(self, scope_id: str, actor_uid: str, projection_id: str) -> dict[str, Any]:
+        """當事人撤回單則「別人提到我」的旁證（只對 actor 遮蔽讀取，不刪發言者的原始資料）。
+
+        actor_uid 由宿主（Gateway 重建身分）傳入，工具 schema 不得讓模型指定替誰操作。
+        actor_uid 必須 ∈ 該投影的 subject_uids，否則拒絕。
+        回傳 ``{"ok": bool, "reason": str, "projection_id": str}``；reason 為空代表成功，
+        ``already_hidden`` 代表先前已撤回／糾正（冪等，ok 仍為 True）。
+        """
+        self.ensure_initialized()
+        layer, scope, why = self._about_context(scope_id, actor_uid)
+        if layer is None:
+            return {"ok": False, "reason": why, "projection_id": str(projection_id or "")}
+        res = layer.retract_about(scope, actor_uid, projection_id)
+        return {"ok": res.ok, "reason": res.reason, "projection_id": res.projection_id}
+
+    def opt_out_about_me(self, scope_id: str, actor_uid: str, enabled: bool) -> dict[str, Any]:
+        """整體退出（enabled=True）或恢復（False）：此後別人提到 actor 的旁證在該場域一律不回。
+
+        同樣只信任宿主傳入的 actor_uid。回傳 ``{"ok": bool, "reason": str, "enabled": bool}``。
+        """
+        self.ensure_initialized()
+        layer, scope, why = self._about_context(scope_id, actor_uid)
+        if layer is None:
+            return {"ok": False, "reason": why, "enabled": bool(enabled)}
+        res = layer.set_about_optout(scope, actor_uid, bool(enabled))
+        return {"ok": res.ok, "reason": res.reason, "enabled": bool(enabled)}
+
+    def correct_about_me(
+        self,
+        scope_id: str,
+        actor_uid: str,
+        projection_id: str,
+        correction_text: str,
+        *,
+        evidence: Sequence[EvidenceInput] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """當事人糾正一則旁證：該則對 actor 轉為 contradicted（之後不再當旁證回傳），
+        並把 correction_text 寫成 actor 自己的 episode（走 store_episode，照常進 Dream／投影）。
+
+        actor_uid 只信任宿主傳入的值，且必須 ∈ 該投影的 subject_uids。寫入目標：本 engine 就是
+        actor 的 engine 時直接寫；否則經 ``set_engine_resolver`` 找 actor 的 engine（找不到＝拒絕，
+        沒有任何副作用）。evidence 缺省時以「私有」的使用者陳述寫入（不推測頻道屬性）；宿主若要
+        讓糾正內容像一般發言一樣被分享，傳入帶 channel_kind／audience_size／scope 的 EvidenceInput。
+
+        回傳 ``{"ok", "reason", "projection_id", "correction_stored", "episode_id"}``。
+        遮蔽已生效但 episode 寫入失敗時 ok=True、correction_stored=False（請宿主重送糾正內容）。
+        """
+        self.ensure_initialized()
+        pid = str(projection_id or "")
+        out: dict[str, Any] = {
+            "ok": False, "reason": "", "projection_id": pid,
+            "correction_stored": False, "episode_id": "",
+        }
+        text = str(correction_text or "").strip()
+        if not text:
+            out["reason"] = "empty_correction"
+            return out
+        layer, scope, why = self._about_context(scope_id, actor_uid)
+        if layer is None:
+            out["reason"] = why
+            return out
+        actor = str(actor_uid).strip()
+        target = self if self.namespace_id == actor else None
+        if target is None and callable(self._engine_resolver):
+            try:
+                target = self._engine_resolver(actor)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[MemoryEngine] 糾正：取得當事人 engine 失敗: {exc}")
+                target = None
+        if target is None:
+            out["reason"] = "no_actor_engine"
+            return out
+        res = layer.correct_about(scope, actor, pid)
+        out["reason"] = res.reason
+        if not res.ok:
+            return out
+        out["ok"] = True
+        try:
+            ev = list(evidence) if evidence else [
+                EvidenceInput(source_type="user", content=text, speaker_id=actor)
+            ]
+            out["episode_id"] = target.store_episode(
+                text, "", session_id or "about_correction",
+                evidence=ev,
+                about_correction_of=pid, about_correction_scope=scope,
+            )
+            out["correction_stored"] = bool(out["episode_id"])
+        except Exception as exc:  # noqa: BLE001 - 遮蔽已生效；內容未寫入由宿主重送
+            logger.warning(f"[MemoryEngine] 糾正內容寫入失敗（遮蔽已生效）: {exc}")
+            out["reason"] = "correction_store_failed"
+        return out
 
     # ── 撤回（擁有者端）──────────────────────────────────────────
 
@@ -2064,6 +2211,7 @@ class MemoryEngine:
                     hypothesis_enabled=self._hypothesis_allowed(),
                     namespace_id=self.namespace_id,
                     event_emitter=self._event_emitter,
+                    member_roster_fn=self._roster_for_guild,
                     **self._dream_sharing_kwargs(config),
                 )
                 engine.set_listener(self._emit_dream_report)

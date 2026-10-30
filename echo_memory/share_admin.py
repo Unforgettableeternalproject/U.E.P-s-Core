@@ -35,7 +35,7 @@ ROLE_SYSTEM = "system"
 ROLES = (ROLE_DEVELOPER, ROLE_MEMBER, ROLE_SYSTEM)
 
 # audit 只回傳這些欄位（id／動作／原因碼／時間），其餘一律丟棄
-_AUDIT_FIELDS = ("at", "action", "projection_id", "owner_uid", "reason_code")
+_AUDIT_FIELDS = ("at", "action", "projection_id", "owner_uid", "actor_uid", "reason_code")
 _AUDIT_DEFAULT_LIMIT = 200
 
 

@@ -12,6 +12,10 @@
 
 ``present_uids`` 內的擁有者排序加成（在場者的事更相關），不在場者仍可出現；
 加成只影響排序，不放寬相似度門檻。
+
+指名模式（owner_uid）另回「旁證段」（D87）：其他成員的投影中 subject_uids 含該成員者，
+relation="about"。旁證只放行 none／personal（與一般共享規則相同）；當事人撤回／糾正／整體退出
+的旁證、以及當事人撤回索引異常時，旁證一律不回（本人段不受影響）。
 """
 
 from __future__ import annotations
@@ -95,6 +99,7 @@ def _retrieve_shared_context(
         owner_uid: 指名成員查詢（宿主把名字解析成 uid 後傳入，結構化篩選）。給定時只回該擁有者的
             投影、門檻改用 ``OWNER_RECALL_MIN_SIMILARITY``（忽略 min_similarity）；viewer 等於
             owner_uid 回空；query 可為空字串，改依投影 learned_at 由新到舊取前幾則。
+            另附旁證段（其他成員提到該成員的投影，最多同樣的上限）。
     """
     if parse_guild_scope(scope_id) is None:
         return _degraded(str(scope_id), "invalid_scope")
@@ -152,6 +157,24 @@ def _retrieve_shared_context(
         logger.warning("[retrieve_shared] 檢索失敗（回空）: %s", e)
         return _degraded(scope_id, "error")
 
+    about_views: list[Any] = []
+    if owner_filter is not None:
+        try:
+            if query_empty:
+                about_views = sorted(
+                    layer.list_about(scope_id, owner_filter, exclude_owner=viewer),
+                    key=lambda v: str(getattr(v, "learned_at", "") or ""),
+                    reverse=True,
+                )
+            else:
+                about_views = layer.search_about(
+                    scope_id, vec, owner_filter, exclude_owner=viewer,
+                    top_k=_CANDIDATE_POOL, min_similarity=OWNER_RECALL_MIN_SIMILARITY,
+                )
+        except Exception as e:  # noqa: BLE001 - 旁證失敗只丟旁證（fail-closed），不影響本人段
+            logger.warning("[retrieve_shared] 旁證檢索失敗（旁證回空）: %s", e)
+            about_views = []
+
     present = _clean_uids(present_uids)
     present.discard(viewer)
     seen: set[str] = set()
@@ -184,4 +207,33 @@ def _retrieve_shared_context(
         ranked.append((sim + (PRESENT_OWNER_BONUS if in_present else 0.0), item))
     if not query_empty:  # 空 query 保持 learned_at 新到舊，不以相似度重排
         ranked.sort(key=lambda pair: pair[0], reverse=True)
-    return SharedContext(scope_id=scope_id, items=[it for _, it in ranked[:limit]])
+    items = [it for _, it in ranked[:limit]]
+
+    for v in about_views:
+        if len([it for it in items if it.relation == "about"]) >= limit:
+            break
+        pid = str(getattr(v, "projection_id", "") or "")
+        speaker = str(getattr(v, "owner_uid", "") or "")
+        summary = str(getattr(v, "summary", "") or "").strip()
+        if not pid or not speaker or not summary or pid in seen:
+            continue
+        if speaker == viewer or speaker == owner_filter:
+            continue
+        if getattr(v, "sensitivity", "none") not in SHAREABLE_SENSITIVITIES:
+            continue
+        if owner_filter not in tuple(getattr(v, "subject_uids", ()) or ()):
+            continue
+        seen.add(pid)
+        items.append(SharedItem(
+            projection_id=pid,
+            owner_uid=speaker,
+            summary=summary[: max(1, int(summary_max_chars))],
+            claim_kind=str(getattr(v, "claim_kind", "fact") or "fact"),
+            review_status=str(getattr(v, "review_status", "insufficient") or "insufficient"),
+            similarity=float(getattr(v, "similarity", 0.0) or 0.0),
+            source_digest=str(getattr(v, "source_digest", "") or ""),
+            owner_present=speaker in present,
+            relation="about",
+            about_uid=owner_filter,
+        ))
+    return SharedContext(scope_id=scope_id, items=items)

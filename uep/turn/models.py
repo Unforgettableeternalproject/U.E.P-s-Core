@@ -142,6 +142,10 @@ class TurnEndFacts:
     attempt_no: int = 1
     snapshot_version: int = 0
     barge_in: bool = False  # 使用者插話打斷了這一輪（outcome.barge_in）；Q-1 的冷卻由 proposer 讀它
+    # D5：ES 的 cancel_turn 撤回結果（outcome.metadata）。None = outcome 沒有帶（非宿主取消）；
+    # True = 確定這一輪不在歷史中；False = 不保證。error 只供 log 與 metric，不進任何事件。
+    history_retracted: bool | None = None
+    history_retract_error: str | None = None
 
 
 @dataclass(frozen=True)

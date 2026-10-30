@@ -42,8 +42,12 @@ _ALLOWED_ENGINE_KWARGS = frozenset({"include_history", "include_hypotheses"})
 _KEY_SAFE = re.compile(r"[A-Za-z0-9_:.\-]{1,200}")
 _PRIVATE_SCOPE = re.compile(r"scope_private_([A-Za-z0-9]+)")
 
-# D79（待裁決）暫定白名單：recall 為 internal_read、remember 為 reversible_local；事後補記 action.* 事件留待 D79
-TOOL_CLASSES: Mapping[str, str] = {"deep_recall": "internal_read", "force_remember": "reversible_local"}
+# D79（艾斯維爾 2026-10-30 裁決）：ES 內建記憶工具由 Host 白名單放行。recall 類為 internal_read、remember 為
+# reversible_local；執行後由轉接層事後補記 action.* 事件（payload 不放原文）。Part S S3 之後改走 ActionIntent。
+TOOL_CLASSES: Mapping[str, str] = {
+    "deep_recall": "internal_read", "force_remember": "reversible_local", "member_recall": "internal_read",
+}
+MEMBER_RECALL = "member_recall"
 
 
 class MemoryRuntime(Protocol):
@@ -67,7 +71,11 @@ class GuildMembership(Protocol):
 
     S3 必須提供實作（平台成員資格來源在 Adapter 側）；沒注入時所有 group scope 讀取一律拒絕。
     ``members`` 回傳該場域成員的平台使用者 id（與身分映射的 ``platform_uid`` 同一格式），
-    ``present_uids`` 只會被裁成它的子集。"""
+    ``present_uids`` 只會被裁成它的子集。
+
+    成員集合的定義（Bernie 裁決）：由平台轉接器經 ``GuildRoster.set_members`` 提供。bot 的人員名單
+    （PeopleStore／stt_people）裡的人預設視為伺服器成員，轉接器可交給 Core ``guild.members`` 與 PeopleStore 的聯集；
+    Core 不自己讀 PeopleStore。``is_member``、``members``、``roster`` 都以這份集合為準。"""
 
     def is_member(self, guild_id: str, actor_id: str) -> bool: ...
 
@@ -394,32 +402,70 @@ class MemoryAccessLayer:
 
     def execute_tool(
         self, name: str, args: Mapping[str, Any], *, actor_id: str | None, audience: str,
-        session_id: str | None = None,
+        session_id: str | None = None, context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """白名單再擋一次；工具都碰 owner 私人範圍，audience 不能看就拒絕。"""
-        refusal = {"success": False, "result": f"Tool {name!r} is not available."}
+        """白名單再擋一次；audience 不能看就拒絕。失敗結果帶 ``code``（denied／timeout／failed）供稽核，成功結果不變。
+
+        ``deep_recall``／``force_remember`` 碰 owner 私人範圍；``member_recall`` 碰共享層（場域成員記憶），
+        只認 ``context`` 內 Core 寫入的 ``guild_id``／``member_uid``（已由轉接層用 roster 解析）／``present_uids``，
+        LLM 給的 ``args`` 不能指定範圍；檢查沿用 ``_admit``（audience、成員資格 fail-closed）。"""
         if self._tool_backend is None or name not in TOOL_CLASSES:
-            return refusal
+            return _tool_denied(name)
+        if name == MEMBER_RECALL:
+            return self._execute_member_recall(args, actor_id, audience, session_id, context)
         ident = self._identity.resolve_actor(actor_id)
         if ident.owner_id is None:
-            return refusal
+            return _tool_denied(name)
         try:
             if not scope_admits(audience, owner_scope_ref(ident.owner_id)):
-                return refusal
+                return _tool_denied(name)
         except ValueError:
-            return refusal
+            return _tool_denied(name)
         namespace_id = self._runtime.namespace_for_owner(ident.owner_id)
         if namespace_id is None:
-            return refusal
+            return _tool_denied(name)
+        return self._run_tool(namespace_id, name, args, self._current_session(session_id))
+
+    def _run_tool(self, namespace_id: str, name: str, args: Mapping[str, Any], sid: str) -> dict[str, Any]:
         backend = self._tool_backend
-        sid = self._current_session(session_id)
+        assert backend is not None
         try:
             return dict(self._runtime.call(
                 namespace_id, lambda e: backend.execute(e, name, args, sid), timeout_s=self._store_timeout_s,
             ))
+        except TimeoutError:
+            self._metrics.inc("memory.tool.timeout")
+            return {"success": False, "result": "tool timeout", "code": "timeout"}
         except Exception as exc:  # noqa: BLE001 - 對外降級；只記例外類別，不記內容
             logger.warning("記憶工具執行失敗：%s %s", name, type(exc).__name__)
-            return {"success": False, "result": "tool failed"}
+            return {"success": False, "result": "tool failed", "code": "failed"}
+
+    def _execute_member_recall(
+        self, args: Mapping[str, Any], actor_id: str | None, audience: str, session_id: str | None,
+        context: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        ctx = context or {}
+        guild_id, member_uid = ctx.get("guild_id"), ctx.get("member_uid")
+        if not isinstance(guild_id, str) or not guild_id or not isinstance(member_uid, str) or not member_uid:
+            return _tool_denied(MEMBER_RECALL)
+        admitted = self._admit(group_scope_ref(guild_id), audience, actor_id)
+        if isinstance(admitted, RetrieveResult):
+            return _tool_denied(MEMBER_RECALL)
+        ident, namespace_id = admitted
+        assert self._membership is not None  # _admit 已確認有成員資格 Port
+        members = {str(m) for m in self._membership.members(guild_id)}
+        if member_uid not in members:
+            return _tool_denied(MEMBER_RECALL)  # 目標不是這個場域的成員：不碰 engine
+        present = [str(u) for u in (ctx.get("present_uids") or ()) if str(u) in members]
+        call_args = {
+            "query": str(args.get("query") or "").strip(), "member_uid": member_uid,
+            "viewer_uid": ident.platform_uid or "", "present_uids": present, "scope_id": f"guild:{guild_id}",
+        }
+        return self._run_tool(namespace_id, MEMBER_RECALL, call_args, self._current_session(session_id))
+
+
+def _tool_denied(name: str) -> dict[str, Any]:
+    return {"success": False, "result": f"Tool {name!r} is not available.", "code": "denied"}
 
 
 def _clip(text: str, max_chars: int | None) -> str:

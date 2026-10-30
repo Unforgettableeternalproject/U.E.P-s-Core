@@ -28,6 +28,8 @@ def _code(value: object, default: str | None) -> str | None:
 
 def facts_from_outcome(outcome: TurnOutcome) -> TurnEndFacts:
     meta = outcome.metadata or {}
+    retracted = meta.get("history_retracted")
+    error = meta.get("history_retract_error")
     status = _STATUS[outcome.status]
     reason: str | None
     if outcome.status is OutcomeStatus.COMPLETED:
@@ -48,4 +50,6 @@ def facts_from_outcome(outcome: TurnOutcome) -> TurnEndFacts:
         spoken_text=(outcome.spoken_text or "") if outcome.spoken_known else "",
         attempt_no=outcome.attempt_id, snapshot_version=outcome.snapshot_version,
         barge_in=bool(outcome.barge_in),
+        history_retracted=retracted if isinstance(retracted, bool) else None,
+        history_retract_error=str(error)[:200] if error else None,
     )

@@ -108,5 +108,5 @@ class MemoryPort(Protocol):
 
     def execute_tool(
         self, name: str, args: Mapping[str, Any], *, actor_id: str | None, audience: str,
-        session_id: str | None = None,
+        session_id: str | None = None, context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]: ...

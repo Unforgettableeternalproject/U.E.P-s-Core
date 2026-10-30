@@ -16,6 +16,7 @@ import logging
 import threading
 from collections.abc import Callable, Collection, Mapping
 from concurrent.futures import Executor
+from dataclasses import dataclass
 from typing import Any, cast
 
 from uep.context.snapshot import MemoryStatus
@@ -77,13 +78,57 @@ def make_memory_resolver(
     return resolve
 
 
-class GuildRoster:
-    """``GuildMembership`` 實作。``members`` 為 ``{guild_id: {actor_id: platform_uid}}``（平台 Adapter 提供）。"""
+@dataclass(frozen=True)
+class RosterEntry:
+    """``GuildRoster.roster`` 的一筆：平台使用者 id、顯示名、別名（顯示名與別名都由平台轉接器提供）。"""
 
-    def __init__(self, members: Mapping[str, Mapping[str, str]] | None = None) -> None:
+    uid: str
+    display_name: str = ""
+    aliases: tuple[str, ...] = ()
+
+
+def _norm_name(value: str) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+class GuildRoster:
+    """``GuildMembership`` 實作。``members`` 為 ``{guild_id: {actor_id: platform_uid}}``（平台 Adapter 提供）。
+
+    成員集合 = 轉接器經 ``set_members`` 提供的集合（可為 ``guild.members`` 與 bot PeopleStore 的聯集，Core 不讀
+    PeopleStore）；``is_member``、``roster`` 都以它為準。
+    顯示名與別名（D87 前置）同樣由平台轉接器經 ``set_members(profiles=...)`` 提供，Core 不自行維護；
+    ``roster`` 回報每位成員的 uid、顯示名、別名，``resolve_member`` 供 ``member_recall`` 把名稱解析成 uid。
+    """
+
+    def __init__(
+        self, members: Mapping[str, Mapping[str, str]] | None = None,
+        profiles: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._members: dict[str, dict[str, str]] = {g: dict(m) for g, m in (members or {}).items()}
+        self._profiles: dict[str, dict[str, RosterEntry]] = {}
+        for guild_id, table in (profiles or {}).items():
+            self._profiles[guild_id] = self._build_profiles(self._members.get(guild_id, {}), table)
         self._present: dict[str, set[str]] = {}
+
+    @staticmethod
+    def _build_profiles(
+        members: Mapping[str, str], table: Mapping[str, Mapping[str, Any]]
+    ) -> dict[str, RosterEntry]:
+        """``table`` 以平台 uid 為鍵：``{"display_name": str, "aliases": [str, ...]}``；非成員的項目丟棄。"""
+        uids = set(members.values())
+        entries: dict[str, RosterEntry] = {}
+        for uid, raw in table.items():
+            if uid not in uids:
+                continue
+            aliases = raw.get("aliases") or ()
+            if isinstance(aliases, str):
+                aliases = (aliases,)
+            entries[uid] = RosterEntry(
+                uid, " ".join(str(raw.get("display_name") or "").split()),
+                tuple(" ".join(str(a).split()) for a in aliases if str(a).strip()),
+            )
+        return entries
 
     # ---- GuildMembership ----
 
@@ -97,12 +142,39 @@ class GuildRoster:
 
     # ---- 平台 Adapter 與 session ----
 
-    def set_members(self, guild_id: str, members: Mapping[str, str]) -> None:
+    def set_members(
+        self, guild_id: str, members: Mapping[str, str], profiles: Mapping[str, Mapping[str, Any]] | None = None
+    ) -> None:
+        """整批取代該場域的成員（``{actor_id: platform_uid}``）；``profiles`` 以平台 uid 為鍵，提供顯示名與別名。"""
         with self._lock:
             self._members[guild_id] = dict(members)
+            self._profiles[guild_id] = self._build_profiles(self._members[guild_id], profiles or {})
             present = self._present.get(guild_id)
             if present is not None:
                 present.intersection_update(self._members[guild_id].values())
+
+    def roster(self, guild_id: str) -> list[RosterEntry]:
+        """每位成員的 uid、顯示名、別名（依 uid 排序）；沒有提供檔案的成員顯示名為空、別名為空元組。"""
+        with self._lock:
+            uids = sorted(set(self._members.get(guild_id, {}).values()))
+            table = self._profiles.get(guild_id, {})
+            return [table.get(uid) or RosterEntry(uid) for uid in uids]
+
+    def resolve_member(self, guild_id: str, name: str) -> str | None:
+        """名稱（顯示名或別名，忽略大小寫與多餘空白）-> 平台 uid；查無或不只一位符合回 None（不猜）。"""
+        key = _norm_name(name)
+        if not key:
+            return None
+        hits = {
+            e.uid for e in self.roster(guild_id)
+            if key == _norm_name(e.display_name) or any(key == _norm_name(a) for a in e.aliases)
+        }
+        return next(iter(hits)) if len(hits) == 1 else None
+
+    def display_name(self, guild_id: str, uid: str) -> str:
+        with self._lock:
+            entry = self._profiles.get(guild_id, {}).get(uid)
+            return entry.display_name if entry is not None else ""
 
     def join(self, guild_id: str, platform_uid: str) -> None:
         with self._lock:

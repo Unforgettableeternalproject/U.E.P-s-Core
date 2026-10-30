@@ -11,6 +11,9 @@
   （``getattr`` 預設值語意不變）。刻意不透傳 ``reset``：包裝帶有每輪狀態，每輪必須新建。
 - ``collect_evidence`` 依內層 ``played_duration_s`` 與各句累積區間算出逐句已播範圍；呼叫時機是 coordinator
   確認停止／播完之後（``on_turn_ended``），內層的實播量此時已凍結。
+- 播放進度（S4、O-16）：宣告 ``playback_confirmed`` 的內層，每次 ``write`` 之後檢查「後面已有新句子開始、
+  且實播量已越過句尾」的句子，經 ``on_progress`` 即時回報完整播畢（不必等整輪結束）。最後一句與被截斷的句子只在
+  ``collect_evidence`` 回報。只有 ``transport_sent`` 證據的內層（如 Discord）永遠不產生進度回報。
 """
 from __future__ import annotations
 
@@ -61,6 +64,7 @@ class AdmittingSink:
         on_sentence: Callable[[AdmittingSink, int, int, int], None],
         on_reject: Callable[[AdmittingSink, GateDecision], None],
         on_discard: Callable[[AdmittingSink], None],
+        on_progress: Callable[[AdmittingSink, list[SentenceEvidence]], None] | None = None,
         context: Any = None,
     ) -> None:
         self._inner = inner
@@ -72,6 +76,8 @@ class AdmittingSink:
         self._on_sentence = on_sentence
         self._on_reject = on_reject
         self._on_discard = on_discard
+        self._on_progress = on_progress
+        self._progressed: set[int] = set()  # 已即時回報完整播畢的句子（collect_evidence 不再重複）
         self._lock = threading.Lock()
         self._stopped = False
         self.rejected: GateDecision | None = None
@@ -94,6 +100,7 @@ class AdmittingSink:
         if self._stopped:
             return  # 寫入期間被停止：這個 chunk 內層可能已丟棄，不記入句界
         self._record(chunk)
+        self._progress()
 
     def stop(self) -> None:
         """同步、冪等、任何執行緒（barge-in 等不了 event loop）。"""
@@ -158,11 +165,37 @@ class AdmittingSink:
 
     # ---- 證據 ----
 
+    def _progress(self) -> None:
+        """即時回報：後面已有新句子開始、實播量越過句尾的句子 = 確定完整播畢。"""
+        if self._on_progress is None or len(self._spans) < 2:
+            return
+        if sink_played_evidence(self._inner) is not PlayedEvidence.PLAYBACK_CONFIRMED:
+            return
+        try:
+            played = float(self._inner.played_duration_s or 0.0)
+        except Exception:
+            logger.debug("讀取播放進度失敗", exc_info=True)
+            return
+        latest = max(self._spans)
+        done: list[SentenceEvidence] = []
+        for index, (start, duration, rate) in sorted(self._spans.items()):
+            if index >= latest or index in self._progressed or played < start + duration - _COMPLETE_EPSILON_S:
+                continue
+            self._progressed.add(index)
+            done.append(SentenceEvidence(index, True, duration, duration, True, int(rate)))
+        if done:
+            try:
+                self._on_progress(self, done)
+            except Exception:
+                logger.exception("播放進度回報失敗")
+
     def collect_evidence(self) -> list[SentenceEvidence]:
         played = float(self._inner.played_duration_s or 0.0)
         confirmed = sink_played_evidence(self._inner) is PlayedEvidence.PLAYBACK_CONFIRMED
         result: list[SentenceEvidence] = []
         for index, (start, duration, rate) in sorted(self._spans.items()):
+            if index in self._progressed:
+                continue  # 已即時回報完整播畢
             played_i = min(max(played - start, 0.0), duration)
             if played_i <= 0.0:
                 continue

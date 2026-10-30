@@ -16,8 +16,9 @@ payload_blob）；``turn.started``／``turn.attempt_started``／``turn.generatio
   ``turn.completed(status=skipped, reason_code=<跳過原因>)``；
 - dropped_busy -> ``turn.skipped(reason_code=dropped_busy)``；
 - cancelled／voided／failed -> ``turn.cancelled(reason_code)``，generation 前進（``shutdown`` 例外）。
-Core 自己發起的取消（``cancel_turn``）以 Core 的原因碼為準（ES 的 ``reason_code`` 對 ``global_stop`` 等無法標記，
-介面清單 D5／C2），僅在 ES 回報為取消／作廢／語音取消時覆寫；已完成的輪不被覆寫。
+Core 自己發起的取消（``cancel_turn``）：S4 起轉接層以 ES 的 ``cancel_turn(turn_id, reason_code=...)`` 停輪，
+Core 的原因碼直接隨 ``outcome.metadata["reason_code"]`` 回來，這裡不再覆寫 ES 回報的終結原因（S3 的覆寫繞道已拿掉）；
+已結束的輪不被事後改寫。
 
 S5 決策插槽：utterance 先進 ``TurnAggregator``（預設逐句通過），完成的 turn 才進 proposer（在 Core 端的專屬
 執行緒、預算內執行；逾時／例外／驗證失敗／被 CC-7 拒絕都回 D80 預設）；``Proposal.interaction_to`` 以 ``core.decision``
@@ -96,12 +97,11 @@ PHASE_PROPOSER = "core.turn"
 DECISION_PROPOSER = DECISION_ACTOR  # 決策插槽向 CC-7 提請求的身分（只在 Interaction 軸）
 
 REASON_SHUTDOWN = "shutdown"
-# ES 只能標 shutdown（cancel_all）或 voice_cancelled（cancel_voice）：只有這兩種是「Core 要求停止」的回音，
-# 才以 Core 登記的原因覆寫；barge_in、timeout、yielded 等 ES 自己判定的原因保留 ES 的值
-_ES_ECHO_CANCEL_REASONS = frozenset({"shutdown"})
-_ES_ECHO_SKIP_REASONS = frozenset({"voice_cancelled"})
-# Core 因輸出被拒而取消的回合：ES 的 history 已有全文，不登記快照、不寫記憶
+# Core 因輸出被拒而取消的回合：不登記快照、不寫記憶
 REJECTION_REASONS = frozenset({"admission_rejected", "dispatch_refused", "dispatch_failed"})
+# 整輪撤回歷史的原因（D5、D82）：被拒、撤銷、停止一律以 ES cancel_turn(commit="none") 整輪撤出歷史，
+# 不受 D82 的 spoken-only 開關影響（開關只管讓位與插話）
+RETRACT_REASONS = REJECTION_REASONS | frozenset({"presence_lost", "global_stop", "control_stop"})
 _SAFE_REF = re.compile(r"[A-Za-z0-9_:.\-]{1,128}")
 _SAFE_LANGUAGE = re.compile(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8}){0,3}")
 UNKNOWN_SPEAKER = "unknown:invalid"
@@ -719,11 +719,6 @@ class TurnOrchestrator:
         kind: str | None = None
         try:
             status, reason = facts.status, facts.reason_code
-            if live.cancel_reason is not None and (
-                (status in ("cancelled", "voided") and reason in _ES_ECHO_CANCEL_REASONS)
-                or (status == "skipped" and reason in _ES_ECHO_SKIP_REASONS)
-            ):
-                status, reason = "cancelled", live.cancel_reason
             if status == "dropped_busy":
                 kind, payload = "turn.skipped", {"reason_code": "dropped_busy", "reply_mode": ticket.reply_mode}
             elif status in ("cancelled", "voided", "failed"):

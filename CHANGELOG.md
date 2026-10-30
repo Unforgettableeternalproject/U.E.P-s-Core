@@ -3202,3 +3202,15 @@
 
 ---
 
+### feat: P3 S4 播放證據、cancel_turn 與工具白名單. 10/30
+
+> Date: Fri, 30 Oct 2026 19:43:08 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `91ba5f8e6751838932bdd1cded68b605465a7f0a`
+
+---
+

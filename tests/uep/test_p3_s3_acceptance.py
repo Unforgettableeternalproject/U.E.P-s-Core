@@ -5,11 +5,15 @@ V09 一入一出、journal 內 turn 事件序列、V07 取消後晚到輸出被�
 """
 from __future__ import annotations
 
+import asyncio
+import threading
+
 import pytest
 
 pytest.importorskip("echo_stream")
 
 from echo_stream.contracts.types import AudioChunk
+from echo_stream.fakes.stages import FakeSpeakStage
 
 from tests.uep.echo_support import (
     SPEAKER,
@@ -20,6 +24,25 @@ from tests.uep.echo_support import (
 from uep.output.delivery import DeliveryStatus
 
 pytestmark = pytest.mark.usefixtures("session_factory")
+
+
+class GatedSpeak(FakeSpeakStage):
+    """每個 chunk 交給下游後先停住，直到 ``release`` 才合成下一個。
+
+    讓測試能在「首個 chunk 已寫入、第二個還沒產生」這個確切的點動作，不靠 sleep 賭 ES 的速度
+    （rtf=0 的 fake 會在輪詢到首個 chunk 之前就把所有句子寫完）。
+    """
+
+    def __init__(self, **kw) -> None:
+        super().__init__(first_chunk_extra_s=0.0, rtf=0.0, **kw)
+        self.release = threading.Event()
+
+    async def stream(self, sentences, token):
+        async for chunk in super().stream(sentences, token):
+            yield chunk
+            while not self.release.is_set():
+                token.raise_if_cancelled()
+                await asyncio.sleep(0.005)
 
 
 @pytest.fixture
@@ -120,12 +143,18 @@ def test_v07_late_chunks_after_cancel_are_discarded_and_create_no_intent(rig):
 # ---- V12：舊 generation 的輸出被拒 ----
 
 def test_v12_old_generation_output_rejected_before_inner_write(rig):
-    r = rig(realtime=True, responses=("第一句話很長很長很長很長很長。第二句話也很長很長很長很長。第三句。",))
+    speak = GatedSpeak()
+    r = rig(realtime=True, speak=speak, responses=("第一句話很長很長很長很長很長。第二句話也很長很長很長很長。第三句。",))
     result = r.say("講點什麼")
     turn_id = result.ticket.turn_id
     r.wait_for(lambda: r.inner_sinks and r.inner_sinks[0].chunks, what="首個 chunk")
-    # 模擬 Core 讓該 turn 的 generation 前進（例如取代／撤銷）而 ES 還在寫舊輸出
+    # 首句的 intent 由工作緒 dispatch 過 Gate；bump 若搶在它之前，Gate 會先以 dispatch_refused 取消該輪，
+    # 測不到 sink 這一側的第二次接納。等 dispatch 完成（delivery_id 登記）再前進 generation。
+    r.wait_for(lambda: any(0 in w.delivery_ids for w in r.host.wrappers_of(turn_id)), what="首句 dispatch")
+    # 模擬 Core 讓該 turn 的 generation 前進（例如取代／撤銷）而 ES 還在寫舊輸出：
+    # speak 停在首個 chunk 之後，bump 完才放行，第二個 chunk 一定在 bump 之後到達 admit
     r.host.generations.bump(turn_id)
+    speak.release.set()
     r.wait_for(lambda: bool(r.events(turn_id, ("output.rejected",))), what="output.rejected")
     sink = r.inner_sinks[0]
     r.wait_terminal(turn_id)

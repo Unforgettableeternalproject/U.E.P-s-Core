@@ -3190,3 +3190,15 @@
 
 ---
 
+### fix: 修正兩個間歇失敗測試的根因. 10/30
+
+> Date: Fri, 30 Oct 2026 18:56:21 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `b0b02234b44e381f3e0e1f60dd65f5fdf9c76519`
+
+---
+

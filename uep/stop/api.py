@@ -26,6 +26,7 @@ PATH_STOP = "/v1/global-stop"
 PATH_RELEASE = "/v1/global-stop/release"
 PATH_RECOVERY = "/v1/presence/resolve-recovery"
 _MAX_BODY = 4096
+_MAX_DRAIN = 1 << 20  # 超限本文最多讀掉並丟棄的量；再大的直接斷線
 _CONN_TIMEOUT = 5.0
 _LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -53,11 +54,30 @@ def _make_handler(service: GlobalStop) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
+        def _drain(self, length: int) -> None:
+            """回 400 前先讀掉（丟棄）尚未讀的本文。
+
+            伺服端帶著未讀資料關閉連線時，Windows 會送 RST，慢一步才送本文的 client 會在讀到回應前
+            收到連線中止（WinError 10053），4xx 變成不穩定的連線錯誤。超過上限的本文不讀，直接斷線。
+            """
+            if length > _MAX_DRAIN:
+                return
+            remaining = length
+            try:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 65536))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except OSError:
+                pass  # 讀取逾時或對端已斷：照常回覆
+
         def _body(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length") or 0)
             if length <= 0:
                 return {}
             if length > _MAX_BODY:
+                self._drain(length)
                 raise ValueError("請求本文過大")
             parsed = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(parsed, dict):

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
@@ -281,6 +283,22 @@ def test_api_rejects_oversized_body(api):
     _stack, server = api
     status, _ = http("POST", server.url + PATH_STOP, body={"reason": "x" * 10000})
     assert status == 400
+
+
+def test_api_oversized_body_gets_400_even_when_client_sends_body_late(api):
+    """伺服端回 400 時本文還沒讀完會造成 RST（Windows WinError 10053）；超限本文須先讀掉再回覆。"""
+    _stack, server = api
+    body = json.dumps({"reason": "x" * 10000}).encode()
+    head = (
+        f"POST {PATH_STOP} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+    ).encode()
+    with socket.create_connection(("127.0.0.1", server.port), timeout=5) as sock:
+        sock.sendall(head)
+        time.sleep(0.1)  # 讓伺服端先處理完標頭；client 較慢才送本文
+        sock.sendall(body)
+        reply = sock.recv(4096)
+    assert reply.startswith(b"HTTP/1.0 400")
 
 
 def test_cli_stop_and_release_use_env_token(api, session_factory, monkeypatch, capsys):

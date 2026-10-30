@@ -330,6 +330,19 @@ class MemoryContext:
 
 `to_text()` 方法將記憶格式化為 `<UNTRUSTED_MEMORY_DATA>` JSON 信封，包含完整 `user_input` 和 `agent_response`，防止 prompt injection。
 
+### 共享檢索（場域共享投影）與指名模式
+
+`MemoryEngine.retrieve_shared(query, scope_id=, viewer_uid=, ...)` 對場域共享 namespace（`scope-g<guild_id>`）檢索其他成員的概念摘要投影（`retrieval/shared.py`），只輸出去名化的 `shareable_summary`；撤回索引、可見度、sensitivity 過濾在 `ScopeShareLayer.search_projections` 內，索引損毀一律 fail-closed 回空。一般模式：排除 viewer 自己、相似度 >= 0.45、最多 `SHARED_MAX_ITEMS`（3）則。
+
+**指名模式（D85）**：摘要刻意去名化，「你認識雅烈嗎？他最近在玩什麼」這類問句向量比對不到特定成員。對話 LLM 呼叫 `member_recall(member)`，由宿主（bot／ES）把名字解析成 uid，再以 `owner_uid=` 傳入（結構化篩選，不是文字比對）：
+
+- 只回該 uid 的可見投影（`search_projections(owner=...)`，疊加在撤回／sensitivity 檢查之後），最多 3 則，依相似度排序。
+- 相似度門檻改用 `OWNER_RECALL_MIN_SIMILARITY`（0.1，忽略一般 `min_similarity`）：已被 uid 限縮，門檻只擋明顯反向者。
+- `viewer_uid == owner_uid` 回空（本人的事走自己的 retrieve）；`owner_uid` 為空白字串回空，不退化為一般檢索。
+- `query` 可為空字串：不做向量比對，依投影 `learned_at` 由新到舊取前 3 則。
+- 一般檢索與指名模式皆回傳 `ctx.ids`，回覆後傳給 `store_episode(shared_context_ids=..., shared_scope_id=...)` 登記消費紀錄，撤回級聯照舊。
+- 觀測 log：`[retrieve_shared] scope=... owner=... items=...`，指名模式 `owner` 只記 uid 末四碼（`*1234`），一般模式為 `-`。
+
 ---
 
 ## 7. 神經化學調控：NeurochemState

@@ -164,6 +164,148 @@ class TestRetrieveShared:
         assert got.items == [] and got.degraded_reason == "embedding_unavailable"
 
 
+
+# ━━━ 指名成員查詢（D85）━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class TestOwnerRecall:
+    @staticmethod
+    def recall(scope_engine, viewer="1002", owner="1001", query=SUMMARY, **kw) -> SharedContext:
+        return scope_engine.retrieve_shared(
+            query, scope_id=GUILD42, viewer_uid=viewer, owner_uid=owner, **kw,
+        )
+
+    def test_returns_only_named_member(self, root, layer, scope_engine):
+        alice = make_owner(root, layer, "1001")
+        bob_owner = make_owner(root, layer, "1003")
+        _, _, pa = share_one(alice, name="甲")
+        _, _, pb = share_one(bob_owner, name="乙")
+        got = self.recall(scope_engine, owner="1001")
+        assert got.ids == [pa]
+        assert {it.owner_uid for it in got.items} == {"1001"}
+        # 不回其他成員
+        got = self.recall(scope_engine, owner="1003")
+        assert got.ids == [pb]
+
+    def test_owner_mode_uses_relaxed_floor_not_general_floor(self, root, layer, scope_engine, monkeypatch):
+        """指名模式改用 OWNER_RECALL_MIN_SIMILARITY：一般檢索被 0.45 擋掉的問句，指名模式仍取回。
+
+        conftest 的 hash embedding 對任意兩段文字的相似度都是 ~N(0, 0.044) 的雜訊，無法表達語意，
+        因此把常數壓到 -1 以驗證「指名模式不吃一般門檻」；常數本身的合理範圍另外斷言。
+        """
+        from echo_memory.retrieval import shared as shared_mod
+
+        assert 0.0 <= shared_mod.OWNER_RECALL_MIN_SIMILARITY <= 0.2
+        alice = make_owner(root, layer, "1001")
+        _, _, pid = share_one(alice)
+        q = "他最近在玩什麼"
+        assert view(scope_engine, query=q).items == []
+        assert self.recall(scope_engine, query=q, min_similarity=0.99).items == []
+        monkeypatch.setattr(shared_mod, "OWNER_RECALL_MIN_SIMILARITY", -1.0)
+        assert self.recall(scope_engine, query=q, min_similarity=0.99).ids == [pid]
+
+    def test_owner_not_crowded_out_by_other_members(self, root, layer, scope_engine):
+        for i in range(6):
+            share_one(make_owner(root, layer, f"30{i}"), text=f"我喜歡爵士樂{i}", name=f"概念{i}")
+        target = make_owner(root, layer, "1001")
+        _, _, pid = share_one(target, text="我最近在玩一款新遊戲", name="新遊戲")
+        assert self.recall(scope_engine, query=SUMMARY).ids == [pid]
+
+    def test_unknown_owner_returns_empty(self, root, layer, scope_engine):
+        share_one(make_owner(root, layer, "1001"))
+        got = self.recall(scope_engine, owner="9999")
+        assert got.items == [] and not got.degraded
+
+    def test_revoked_projection_not_returned(self, root, layer, scope_engine):
+        alice = make_owner(root, layer, "1001")
+        _, _, pid = share_one(alice)
+        assert self.recall(scope_engine).ids == [pid]
+        layer.revoke(GUILD42, [pid], owner_uid="1001", reason_code="user_restrict")
+        assert self.recall(scope_engine).items == []
+        assert self.recall(scope_engine, query="").items == []
+
+    def test_sensitive_projection_not_returned(self, root, layer, scope_engine):
+        alice = make_owner(root, layer, "1001")
+        share_one(alice)
+        sem = layer._semantic("scope-g42")
+        for concept in layer._projection_concepts(sem):
+            concept.metadata["sensitivity"] = "sensitive"
+        assert self.recall(scope_engine).items == []
+        assert self.recall(scope_engine, query="").items == []
+
+    def test_viewer_equals_owner_returns_empty(self, root, layer, scope_engine):
+        alice = make_owner(root, layer, "1001")
+        share_one(alice)
+        got = self.recall(scope_engine, viewer="1001", owner="1001")
+        assert got.items == [] and not got.degraded
+        assert self.recall(scope_engine, viewer="1001", owner="1001", query="").items == []
+
+    def test_cross_scope_refused(self, root, layer, scope_engine):
+        share_one(make_owner(root, layer, "1001"))
+        other = MemoryEngine(storage_path=root, namespace_id="scope-g43")
+        other.attach_share_layer(layer)
+        got = other.retrieve_shared(
+            SUMMARY, scope_id=GUILD42, viewer_uid="1002", owner_uid="1001",
+        )
+        assert got.items == [] and got.degraded_reason == "scope_mismatch"
+        got = scope_engine.retrieve_shared(
+            SUMMARY, scope_id="guild:43", viewer_uid="1002", owner_uid="1001",
+        )
+        assert got.items == [] and got.degraded_reason == "scope_mismatch"
+        got = scope_engine.retrieve_shared(
+            SUMMARY, scope_id="whatever", viewer_uid="1002", owner_uid="1001",
+        )
+        assert got.degraded_reason == "invalid_scope"
+
+    def test_empty_query_returns_newest_first_capped_at_three(self, root, layer, scope_engine):
+        alice = make_owner(root, layer, "1001")
+        pids = [
+            share_one(alice, text=f"我喜歡爵士樂{i}", name=f"概念{i}")[2] for i in range(5)
+        ]
+        make_owner_other = make_owner(root, layer, "1003")
+        share_one(make_owner_other, name="別人")
+        got = self.recall(scope_engine, query="")
+        assert len(got.items) == 3
+        assert {it.owner_uid for it in got.items} == {"1001"}
+        assert got.ids == list(reversed(pids))[:3]
+        # 空白字串同樣視為空 query
+        assert self.recall(scope_engine, query="   ").ids == got.ids
+
+    def test_empty_query_without_owner_still_empty(self, root, layer, scope_engine):
+        share_one(make_owner(root, layer, "1001"))
+        assert view(scope_engine, query="").items == []
+
+    def test_blank_owner_uid_does_not_fall_back_to_general(self, root, layer, scope_engine):
+        share_one(make_owner(root, layer, "1001"))
+        assert self.recall(scope_engine, owner="  ").items == []
+
+    def test_capped_at_three_items(self, root, layer, scope_engine):
+        alice = make_owner(root, layer, "1001")
+        for i in range(5):
+            share_one(alice, text=f"我喜歡爵士樂{i}", name=f"概念{i}")
+        got = self.recall(scope_engine, top_k=10)
+        assert len(got.items) == 3
+
+    def test_consumption_is_recorded(self, root, layer, scope_engine):
+        alice = make_owner(root, layer, "1001")
+        _, _, pid = share_one(alice)
+        bob = MemoryEngine(storage_path=root, namespace_id="1002")
+        bob.attach_share_layer(layer)
+        got = self.recall(scope_engine)
+        store_shared_turn(bob, got.ids, scope=GUILD42)
+        assert layer.consumers_of(GUILD42, pid) == {"1002"}
+
+    def test_log_marks_owner_mode_without_text(self, root, layer, scope_engine, caplog):
+        share_one(make_owner(root, layer, "1001"))
+        with caplog.at_level("INFO", logger="echo_memory.retrieval.shared"):
+            view(scope_engine)
+            self.recall(scope_engine, owner="1234567001")
+        lines = [r.getMessage() for r in caplog.records if "[retrieve_shared]" in r.getMessage()]
+        assert "owner=-" in lines[0]
+        assert "owner=*7001" in lines[1] and "1234567001" not in lines[1]
+        assert SUMMARY not in lines[1]
+
+
 # ━━━ prompt 區塊 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 

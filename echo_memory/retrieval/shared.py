@@ -38,6 +38,11 @@ logger = logging.getLogger("echo_memory.retrieval.shared")
 PRESENT_OWNER_BONUS = 0.1
 # 向層要的候選池大小（排序加成後再截斷）
 _CANDIDATE_POOL = 20
+# 指名成員查詢（owner_uid）的相似度門檻。
+# 理由：摘要刻意去名化，「他最近在玩什麼」這類問句與摘要的語意相似度天生偏低；
+# 指名模式已由 owner_uid 結構化限縮到單一成員且上限 SHARED_MAX_ITEMS 則，
+# 門檻不必再承擔「過濾無關內容」的責任（排序仍依相似度），只擋掉明顯反向的結果。
+OWNER_RECALL_MIN_SIMILARITY = 0.1
 
 
 def _degraded(scope_id: str, reason: str) -> SharedContext:
@@ -48,14 +53,21 @@ def _clean_uids(values: Iterable[Any] | None) -> set[str]:
     return {str(v).strip() for v in (values or ()) if str(v).strip()}
 
 
+def _owner_tag(owner_uid: Any) -> str:
+    """log 用：指名模式只記 uid 末四碼，一般模式記 '-'。"""
+    owner = str(owner_uid or "").strip()
+    return f"*{owner[-4:]}" if owner else "-"
+
+
 def retrieve_shared_context(**kwargs: Any) -> SharedContext:
     """檢索共享摘要並記一行觀測 log（items 數、degraded 原因、耗時）。參數同 ``_retrieve_shared_context``。"""
     started = time.monotonic()
     ctx = _retrieve_shared_context(**kwargs)
     elapsed_ms = (time.monotonic() - started) * 1000
     logger.info(
-        "[retrieve_shared] scope=%s items=%d degraded=%s reason=%s elapsed_ms=%.0f",
-        ctx.scope_id, len(ctx.items), ctx.degraded, ctx.degraded_reason or "-", elapsed_ms,
+        "[retrieve_shared] scope=%s owner=%s items=%d degraded=%s reason=%s elapsed_ms=%.0f",
+        ctx.scope_id, _owner_tag(kwargs.get("owner_uid")), len(ctx.items),
+        ctx.degraded, ctx.degraded_reason or "-", elapsed_ms,
     )
     return ctx
 
@@ -72,6 +84,7 @@ def _retrieve_shared_context(
     top_k: int = SHARED_MAX_ITEMS,
     min_similarity: float = 0.45,
     summary_max_chars: int = 120,
+    owner_uid: str | None = None,
 ) -> SharedContext:
     """檢索共享摘要。任何前提不成立都回傳空的 SharedContext（degraded 標記原因），不拋例外。
 
@@ -79,6 +92,9 @@ def _retrieve_shared_context(
         layer: ScopeShareLayer（需 is_healthy／search_projections）。
         embed_query: ``(text) -> list[float]``，失敗回空 list。
         engine_namespace_id: 呼叫端 engine 的 namespace id（必須是 scope_id 對應的共享 namespace）。
+        owner_uid: 指名成員查詢（宿主把名字解析成 uid 後傳入，結構化篩選）。給定時只回該擁有者的
+            投影、門檻改用 ``OWNER_RECALL_MIN_SIMILARITY``（忽略 min_similarity）；viewer 等於
+            owner_uid 回空；query 可為空字串，改依投影 learned_at 由新到舊取前幾則。
     """
     if parse_guild_scope(scope_id) is None:
         return _degraded(str(scope_id), "invalid_scope")
@@ -88,7 +104,12 @@ def _retrieve_shared_context(
     viewer = str(viewer_uid or "").strip()
     if not viewer:
         return _degraded(scope_id, "missing_viewer")
-    if not isinstance(query, str) or not query.strip():
+    owner_filter = str(owner_uid).strip() if owner_uid is not None else None
+    if owner_filter is not None and (not owner_filter or owner_filter == viewer):
+        # 指名但 uid 為空（解析失敗）不退化成一般檢索；本人的事走自己的 retrieve
+        return SharedContext(scope_id=scope_id)
+    query_empty = not isinstance(query, str) or not query.strip()
+    if query_empty and owner_filter is None:
         return SharedContext(scope_id=scope_id)
     try:
         from echo_memory.config import get_config
@@ -97,20 +118,31 @@ def _retrieve_shared_context(
             return _degraded(scope_id, "sharing_disabled")
         if not layer.is_healthy(scope_id):
             return _degraded(scope_id, "index_unhealthy")
-        vec = embed_query(query)
-        if not vec:
-            return _degraded(scope_id, "embedding_unavailable")
         limit = max(0, min(int(top_k), SHARED_MAX_ITEMS))
         if limit == 0:
             return SharedContext(scope_id=scope_id)
-        views = layer.search_projections(
-            scope_id,
-            vec,
-            exclude_owner=viewer,
-            top_k=_CANDIDATE_POOL,
-            min_similarity=float(min_similarity),
-        )
-        if not views:
+        if query_empty:
+            # 指名 + 空 query：不做向量比對，依 learned_at 由新到舊
+            views = sorted(
+                layer.list_projections(scope_id, owner_uid=owner_filter),
+                key=lambda v: str(getattr(v, "learned_at", "") or ""),
+                reverse=True,
+            )
+        else:
+            vec = embed_query(query)
+            if not vec:
+                return _degraded(scope_id, "embedding_unavailable")
+            if owner_filter is not None:
+                views = layer.search_projections(
+                    scope_id, vec, exclude_owner=viewer, owner=owner_filter,
+                    top_k=_CANDIDATE_POOL, min_similarity=OWNER_RECALL_MIN_SIMILARITY,
+                )
+            else:
+                views = layer.search_projections(
+                    scope_id, vec, exclude_owner=viewer,
+                    top_k=_CANDIDATE_POOL, min_similarity=float(min_similarity),
+                )
+        if not views and not query_empty:
             mismatch_fn = getattr(layer, "query_dimension_mismatch", None)
             mismatch = mismatch_fn(scope_id, vec) if callable(mismatch_fn) else None
             if mismatch is not None:
@@ -132,6 +164,8 @@ def _retrieve_shared_context(
             continue
         if owner == viewer:
             continue
+        if owner_filter is not None and owner != owner_filter:
+            continue
         if getattr(v, "sensitivity", "none") not in SHAREABLE_SENSITIVITIES:
             continue
         seen.add(pid)
@@ -148,5 +182,6 @@ def _retrieve_shared_context(
             owner_present=in_present,
         )
         ranked.append((sim + (PRESENT_OWNER_BONUS if in_present else 0.0), item))
-    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    if not query_empty:  # 空 query 保持 learned_at 新到舊，不以相似度重排
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
     return SharedContext(scope_id=scope_id, items=[it for _, it in ranked[:limit]])

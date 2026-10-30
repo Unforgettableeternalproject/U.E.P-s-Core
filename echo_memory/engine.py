@@ -1375,8 +1375,13 @@ class MemoryEngine:
         present_uids: Iterable[Any] = (),
         top_k: int | None = None,
         min_similarity: float | None = None,
+        owner_uid: str | None = None,
     ) -> SharedContext:
         """檢索場域共享摘要（只給概念摘要，不含任何逐字證據）。
+
+        ``owner_uid`` 為指名成員查詢（D85）：宿主把名字解析成 uid 後傳入，只回該成員的投影
+        （門檻 OWNER_RECALL_MIN_SIMILARITY、最多 3 則；query 可為空字串，改依新近度）。
+        viewer 等於 owner_uid 回空。
 
         呼叫對象是「共享 engine」（namespace 必須是 scope_id 對應的 ``scope-g<guild_id>``），
         不是使用者 engine；宿主以 ``registry.get("scope-g<id>")`` 取得。DM／無 scope_id
@@ -1406,6 +1411,7 @@ class MemoryEngine:
                 cfg.sharing_retrieve_min_similarity if min_similarity is None else min_similarity
             ),
             summary_max_chars=cfg.sharing_summary_max_chars,
+            owner_uid=owner_uid,
         )
 
     # ── 撤回（擁有者端）──────────────────────────────────────────

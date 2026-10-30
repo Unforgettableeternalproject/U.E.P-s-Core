@@ -51,6 +51,8 @@ logger = logging.getLogger("echo_memory.storage.share_layer")
 REVOCATIONS_FILENAME = "revocations.jsonl"
 AUDIT_FILENAME = "share_audit_log.jsonl"
 CONSUMPTIONS_FILENAME = "consumptions.jsonl"
+# 指名查詢（owner）模式的向量候選池下限：擁有者的投影可能排在其他成員之後
+_OWNER_POOL = 500
 CASCADE_PENDING_FILENAME = "cascade_pending.json"
 SEMANTIC_DIRNAME = "semantic"
 
@@ -922,10 +924,15 @@ class ScopeShareLayer:
         query_embedding: list[float],
         *,
         exclude_owner: str | None = None,
+        owner: str | None = None,
         top_k: int = 3,
         min_similarity: float = 0.45,
     ) -> list[ProjectionView]:
-        """向量搜尋可見投影。撤回索引異常、scope 無效、無向量 -> 回空（fail-closed）。"""
+        """向量搜尋可見投影。撤回索引異常、scope 無效、無向量 -> 回空（fail-closed）。
+
+        ``owner`` 給定時只回該擁有者的可見投影（結構化 uid 篩選，非文字比對），
+        篩選疊加在撤回／可見度／sensitivity 檢查之後；與 ``exclude_owner`` 相同時回空。
+        """
         try:
             scope_id, ns = normalize_scope(scope)
         except ValueError:
@@ -937,7 +944,11 @@ class ScopeShareLayer:
         if not (ns_path / SEMANTIC_DIRNAME / "concepts.json").exists():
             return []
         sem = self._semantic(ns)
+        if owner is not None and exclude_owner is not None and str(owner) == str(exclude_owner):
+            return []
         pool = max(top_k * 4, 20)
+        if owner is not None:
+            pool = max(pool, _OWNER_POOL)
         out: list[ProjectionView] = []
         for concept, sim in sem.search_by_vector(
             list(query_embedding), top_k=pool, min_similarity=min_similarity,
@@ -945,6 +956,8 @@ class ScopeShareLayer:
             if not self._visible(concept, idx):
                 continue
             if exclude_owner is not None and concept.metadata.get("owner_uid") == str(exclude_owner):
+                continue
+            if owner is not None and concept.metadata.get("owner_uid") != str(owner):
                 continue
             out.append(self._view(concept, scope_id, similarity=float(sim)))
             if len(out) >= top_k:

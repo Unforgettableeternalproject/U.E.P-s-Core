@@ -163,6 +163,19 @@ class TestDegradation:
         assert outcome.status == "insufficient"
         assert concept.evidence_review["corroboration_class"] == ""
 
+    @pytest.mark.parametrize("misplaced", ["general", "identity"])
+    def test_class_misplaced_into_claim_kind_not_held(self, engine, gate, misplaced):
+        # D88 回填實測：LLM 把佐證類別填進 claim_kind 而省略類別欄 → 採用為類別，claim_kind 退回 fact
+        _, outcome, concept = run_review(engine, gate, cls=OMIT, claim_kind=misplaced)
+        assert outcome.outcome == "reviewed"
+        assert outcome.status == "not_required"
+        assert concept.evidence_review["claim_kind"] == "fact"
+
+    def test_misplaced_class_does_not_override_explicit_class(self, engine, gate):
+        _, outcome, _ = run_review(engine, gate, cls="self_fact", claim_kind="general")
+        assert outcome.outcome == "reviewed"
+        assert outcome.status != "not_required"
+
     def test_agent_only_never_not_required(self, engine, gate):
         ep = agent_ep(engine, "你可能喜歡聊遊戲")
         cid = make_concept(engine, gate, "概念乙", [ep], support_source="agent_only")

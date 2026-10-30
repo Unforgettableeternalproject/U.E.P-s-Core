@@ -630,10 +630,17 @@ class EvidenceReviewer:
         if llm_status not in REVIEWED_STATUSES:
             return _Decision(held_reason=f"llm_invalid_status: {llm_status!r}")
         claim_kind = parsed.get("claim_kind")
-        if claim_kind not in CLAIM_KINDS:
-            return _Decision(held_reason=f"llm_invalid_claim_kind: {claim_kind!r}")
-
         corro_class = parsed.get("corroboration_class")
+        if claim_kind not in CLAIM_KINDS:
+            # LLM 偶爾把佐證類別填進 claim_kind（欄位錯置，非內容判斷）：
+            # 類別欄沒給就採用它，claim_kind 退回 fact，不因此 hold
+            if claim_kind in CORROBORATION_CLASSES:
+                if corro_class not in CORROBORATION_CLASSES:
+                    corro_class = claim_kind
+                claim_kind = "fact"
+            else:
+                return _Decision(held_reason=f"llm_invalid_claim_kind: {claim_kind!r}")
+
         if corro_class not in CORROBORATION_CLASSES:
             corro_class = ""  # 缺漏或無效＝未分類，照 self_fact 的現行流程，不 hold
 

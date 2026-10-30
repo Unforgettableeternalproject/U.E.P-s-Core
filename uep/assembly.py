@@ -51,6 +51,7 @@ from uep.endpoint.service import EndpointService
 from uep.events.bus import EventBus
 from uep.events.payload_hash import MIN_KEY_BYTES
 from uep.events.publisher import EventPublisher
+from uep.memory.host import MemoryHost
 from uep.output.manager import DeliveryManager
 from uep.presence.epoch import HostEpochStore
 from uep.presence.gate import (
@@ -141,6 +142,7 @@ class CoreAssembly:
     relay_starters: tuple[Callable[[], None], ...]
     start_log: list[str] = field(default_factory=list)  # 啟動順序紀錄（測試與診斷用）
     started: bool = False
+    memory: MemoryHost | None = None  # P3-M：可選；啟動於 presence／Bus／維護迴圈之後、relay 之前
 
     def start(self) -> None:
         """依上述順序啟動；冪等。失敗時關閉已綁定的入口（stop API、endpoint socket）、訂閱與 Bus 後上拋。"""
@@ -171,6 +173,9 @@ class CoreAssembly:
         if self.maintenance is not None:
             self.maintenance.start()
             self.start_log.append("maintenance.start")
+        if self.memory is not None:
+            self.memory.start()  # 記憶 Host 在 Presence／Bus 之後（事件才有地方落）；ES Host（S3）將在它之後
+            self.start_log.append("memory.start")
         for starter in self.relay_starters:
             starter()  # 此時 presence 已啟動：relay 送出的輸出才會受 Gate 判定
         if self.relay_starters:
@@ -183,7 +188,12 @@ class CoreAssembly:
         self.started = True
 
     def _close_inputs(self) -> None:
-        """關閉入口、訂閱與 Bus（不寫 DB）；可重複呼叫。"""
+        """關閉入口、訂閱與 Bus（不寫 DB）；可重複呼叫。記憶 Host 最先停（它的 sink 還要經 Bus 發布）。"""
+        if self.memory is not None:
+            try:
+                self.memory.stop()
+            except Exception:
+                logger.exception("MemoryHost 停止失敗")
         if self.stop_api is not None:
             self.stop_api.stop()
         if self.endpoint_server is not None:
@@ -263,6 +273,7 @@ def assemble_core(
     authorized_proposers: Mapping[Axis, frozenset[str]] | None = None,
     maintenance_interval: float | None = DEFAULT_MAINTENANCE_INTERVAL,
     strict: bool = False,
+    memory: MemoryHost | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -361,5 +372,5 @@ def assemble_core(
         persona_id=persona_id, bus=bus, publisher=publisher, control=control, presence=presence, gate=gate,
         delivery=delivery, tasks=tasks, state=state, stop=stop, bridge=bridge, maintenance=maintenance,
         stop_api=api,
-        endpoint_server=endpoint_server, relay_starters=tuple(relay_starters),
+        endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory,
     )

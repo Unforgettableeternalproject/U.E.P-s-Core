@@ -29,7 +29,7 @@ import logging
 import re
 import threading
 from collections import Counter, OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,7 +46,7 @@ from uep.echo.endpoint import DeferredCoreApi, EchoEndpoint, StopNotice
 from uep.echo.loop import EsLoop
 from uep.echo.memory import GuildRoster, make_memory_resolver
 from uep.echo.outcomes import facts_from_outcome
-from uep.echo.policy import HostPolicySource
+from uep.echo.policy import CoreYieldPolicy, HostPolicySource
 from uep.echo.services import EchoServices
 from uep.echo.sink import AdmittingSink, SentenceEvidence
 from uep.echo.worker import CoreWorker
@@ -58,7 +58,14 @@ from uep.memory.protocol import MemoryPort
 from uep.output.delivery import DeliveryEvidence
 from uep.output.delivery import DeliveryStatus as DS
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
+from uep.turn.aggregator import (
+    ModeAwareAggregator,
+    PassThroughAggregator,
+    TurnAggregator,
+)
 from uep.turn.context import ContextRegistrar
+from uep.turn.decision_config import DecisionConfig
+from uep.turn.engagement import ChannelMode
 from uep.turn.generations import TurnGenerations
 from uep.turn.models import (
     CoreTicket,
@@ -71,10 +78,13 @@ from uep.turn.orchestrator import (
     ACTOR_ECHO,
     REJECTION_REASONS,
     SOURCE_ECHO,
+    ShadowRecord,
     TurnOrchestrator,
     attempt_label,
 )
-from uep.turn.proposer import TurnProposer
+from uep.turn.proposer import TickingProposer, TurnProposer
+from uep.turn.speech_filter import PassMarkerFilter
+from uep.turn.wake import WakeDetector
 
 logger = logging.getLogger("uep.echo.host")
 
@@ -117,6 +127,10 @@ class EchoPipelineHost:
         memory: MemoryPort | None = None,
         roster: GuildRoster | None = None,
         proposer: TurnProposer | None = None,
+        aggregator: TurnAggregator | None = None,
+        shadow_proposers: Sequence[TurnProposer] = (),
+        on_shadow: Callable[[ShadowRecord], None] | None = None,
+        decision: DecisionConfig | None = None,
         input_stage: Any = None,
         tracer: LatencyTracer | None = None,
         generations: TurnGenerations | None = None,
@@ -144,7 +158,9 @@ class EchoPipelineHost:
         self._input_stage = input_stage
         self.tracer = tracer or LatencyTracer()
         self.generations = generations or TurnGenerations()
-        self.policy = policy_source or HostPolicySource(session.platform)
+        self._decision = decision or DecisionConfig()
+        self.policy = policy_source or HostPolicySource(session.platform, listener=self._decision.listener)
+        self._yield_policy = CoreYieldPolicy(self.policy)
         self._profile_provider = profile_provider
         self._prewarm_prompt = prewarm_prompt
         self._stop_timeout_s = stop_timeout_s
@@ -154,10 +170,19 @@ class EchoPipelineHost:
         )
         if endpoint is None:
             self.endpoint.set_on_stop(self._on_endpoint_stop)
+        wake = getattr(proposer, "wake", None)
         self.orchestrator = TurnOrchestrator(
             publisher, self.generations, auth_provider=self.endpoint.lease_auth, persona_id=persona_id,
-            proposer=proposer, identity=identity, snapshot_version=lambda: self.policy.version,
+            proposer=proposer, aggregator=aggregator, shadow_proposers=shadow_proposers, on_shadow=on_shadow,
+            wake=wake if isinstance(wake, WakeDetector) else WakeDetector(
+                self._decision.gate, self._decision.bot_identity
+            ),
+            participants=self._participant_count, decision=self._decision,
+            identity=identity, snapshot_version=lambda: self.policy.version,
         )
+        self._wire_decision_slot()
+        self._tick_thread: threading.Thread | None = None
+        self._tick_stop = threading.Event()
         self.run_id = self.orchestrator.run_id
         self._es = EsLoop()
         self._worker = CoreWorker()
@@ -180,6 +205,51 @@ class EchoPipelineHost:
         self.discarded_by_turn: Counter[str] = Counter()
         if memory is not None and hasattr(think, "memory_resolver"):
             think.memory_resolver = make_memory_resolver(memory)
+
+    # ---- 決策插槽接線 ----
+
+    def _participant_count(self, ctx: SessionContext) -> int | None:
+        """在場人數（含說話者）：只有有 guild 的 session 才知道；未知回 None（決策預設視為單人）。"""
+        if ctx.guild_id is None:
+            return None
+        return len(self.roster.present_uids(ctx.guild_id))
+
+    def _wire_decision_slot(self) -> None:
+        """把 proposer 的頻道模式變化接到政策快照與 aggregator（等待門檻），喚醒判斷接到 aggregator 的 urgent。"""
+        proposer = self.orchestrator.proposer
+        aggregator = self.orchestrator.aggregator
+        add_listener = getattr(proposer, "add_mode_listener", None)
+        if callable(add_listener):
+            add_listener(self._on_channel_mode)
+            initial = getattr(proposer, "channel_mode", None)
+            if isinstance(initial, ChannelMode):
+                self._on_channel_mode(initial)
+        wake = getattr(proposer, "wake", None)
+        if isinstance(aggregator, ModeAwareAggregator) and isinstance(wake, WakeDetector):
+            aggregator.set_urgent_predicate(wake.is_called)
+
+    def _on_channel_mode(self, mode: ChannelMode) -> None:
+        """頻道模式翻轉必推新版快照（讓位只在主動模式生效）；aggregator 主動模式改用短等待。"""
+        self.policy.publish_channel_mode(mode)
+        aggregator = self.orchestrator.aggregator
+        if isinstance(aggregator, ModeAwareAggregator):
+            aggregator.set_fast(mode is ChannelMode.ACTIVE)
+
+    def _sync_participants(self, ctx: SessionContext) -> None:
+        setter = getattr(self.orchestrator.proposer, "set_participant_count", None)
+        count = self._participant_count(ctx)
+        if callable(setter) and count is not None:
+            try:
+                setter(count)
+            except Exception:
+                logger.exception("proposer.set_participant_count 失敗")
+
+    @property
+    def needs_tick(self) -> bool:
+        """是否需要週期性 tick：aggregator 有等待，或 proposer 會插話。"""
+        return isinstance(self.orchestrator.proposer, TickingProposer) or not isinstance(
+            self.orchestrator.aggregator, PassThroughAggregator
+        )
 
     # ---- 組裝 ----
 
@@ -240,6 +310,10 @@ class EchoPipelineHost:
                 self._memory.set_session(self._session.segment_id)  # 記憶 episode 標記與 exclude 自我回聲用
             self._es.run(self._startup(), timeout=60.0)
             self._intake_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uep-echo-intake")
+            if self.needs_tick:
+                self._tick_stop.clear()
+                self._tick_thread = threading.Thread(target=self._tick_loop, name="uep-echo-tick", daemon=True)
+                self._tick_thread.start()
             self.endpoint.set_on_stop(self._on_endpoint_stop)
             self._control_sub = self.endpoint.attach_control(services.control)
             self.endpoint.start()
@@ -271,7 +345,7 @@ class EchoPipelineHost:
             await prewarm(self._prewarm_prompt)
         coordinator = TurnCoordinator(
             self.think, self.speak, tracer=self.tracer, policy_source=self.policy,
-            on_turn_ended=self._on_turn_ended,
+            yield_policy=self._yield_policy, on_turn_ended=self._on_turn_ended,
         )
         coordinator.bind_loop(asyncio.get_running_loop())  # 首輪之前的跨執行緒取消與語音事件才不會遺失
         self.coordinator = coordinator
@@ -290,6 +364,10 @@ class EchoPipelineHost:
         # 在 _intake_lock 內設 closed：等進行中的 on_utterance（已拿鎖者）結束，且其 _start_turn 已排進 loop
         with self._intake_lock:
             self._closed = True
+        self._tick_stop.set()
+        tick_thread, self._tick_thread = self._tick_thread, None
+        if tick_thread is not None and tick_thread is not threading.current_thread():
+            tick_thread.join(timeout=self._stop_timeout_s)
         try:
             if self._es.running:
                 self._es.run(self._shutdown_es(), timeout=self._stop_timeout_s)
@@ -315,6 +393,7 @@ class EchoPipelineHost:
         if self._intake_pool is not None:
             self._intake_pool.shutdown(wait=False, cancel_futures=True)
             self._intake_pool = None
+        self.orchestrator.close()
         self._es.stop()
         self._started = False
 
@@ -350,13 +429,56 @@ class EchoPipelineHost:
             if self._switching:
                 return IntakeResult(None, "session_switching")  # 不排隊：呼叫端自行重送
             result = self.orchestrator.on_utterance(self._session, fact)
-            ticket = result.ticket
-            if ticket is not None:
-                try:
-                    self._es.call_soon(self._start_turn, ticket, fact)
-                except RuntimeError:
-                    self._end_unsubmitted(ticket, "shutdown")
+            if result.yield_for is not None:
+                # 先讓舊的輪讓位、再交出這次完成的 turn：順序顛倒會把剛簽的新輪也作廢（bot 也是先讓位再餵 middleware）
+                self._yield_speaker(result.yield_for)
+            self._dispatch_results(result.all_results(), fact)
         return result
+
+    def submit_tick(self) -> list[IntakeResult]:
+        """週期性決策（aggregator 逾時、被動模式插話）。任何非 ES-loop 執行緒；會寫 DB，不可在 ES loop 上呼叫。"""
+        if self._es.in_loop_thread():
+            raise EchoHostError("submit_tick 會寫 DB，不可在 ES loop 執行緒上呼叫")
+        with self._intake_lock:
+            if self._closed or not self._started or self._switching:
+                return []
+            results = self.orchestrator.tick()
+            self._dispatch_results(results, None)
+        return results
+
+    def _dispatch_results(self, results: Sequence[IntakeResult], fallback: UtteranceFact | None) -> None:
+        for item in results:
+            ticket = item.ticket
+            fact = item.fact or fallback
+            if ticket is None or fact is None:
+                continue
+            try:
+                self._es.call_soon(self._start_turn, ticket, fact)
+            except RuntimeError:
+                self._end_unsubmitted(ticket, "shutdown")
+
+    def _yield_speaker(self, speaker_ref: str) -> None:
+        """對方又講了新內容（``listener_new_segment``）：他尚未開播的輪讓位；已開播的輪由 coordinator 拒絕。"""
+        try:
+            self._es.call_soon(self._yield_speaker_on_loop, speaker_ref)
+        except RuntimeError:
+            return
+
+    def _yield_speaker_on_loop(self, speaker_ref: str) -> None:
+        coordinator = self.coordinator
+        if coordinator is None:
+            return
+        for view in coordinator.live_turns():
+            if view.owner_id == speaker_ref and not view.audio_started and not view.behind_playing:
+                coordinator.void(view.turn_id, "listener_new_segment")
+
+    def _tick_loop(self) -> None:
+        interval = max(0.05, self._decision.tick_interval_s)
+        while not self._tick_stop.wait(interval):
+            try:
+                self.submit_tick()
+            except Exception:
+                logger.exception("週期性決策失敗")
 
     def _start_turn(self, ticket: CoreTicket, fact: UtteranceFact) -> None:
         """ES loop 上：建 TurnRequest 並 submit（立即返回）。"""
@@ -413,6 +535,7 @@ class EchoPipelineHost:
             sink_factory=functools.partial(self._make_sink, ticket),
             barge_users={ticket.speaker_ref}, on_think_start=functools.partial(self._on_think_start, ticket),
             on_generation_done=functools.partial(self._on_generation_done, ticket),
+            text_filter=PassMarkerFilter(),
             meta={"core_turn_id": ticket.turn_id},
         )
 
@@ -440,6 +563,8 @@ class EchoPipelineHost:
         coordinator = self.coordinator
         if coordinator is None or self._closed or not self.presence_active:
             return
+        if not coordinator.live_turns():
+            self._yield_policy.on_voiced(ev, [])  # 沒有進行中的輪：coordinator 不會呼叫策略，補餵讓累積不中斷
         coordinator.on_voice_event(ev)
 
     async def _consume_input(self) -> None:
@@ -530,6 +655,8 @@ class EchoPipelineHost:
         if self._busy():
             raise SessionBusyError("仍有進行中的輪，不可切換 audience")
         changed = old.audience_scope != ctx.audience_scope or old.conversation_id != ctx.conversation_id
+        if changed:
+            self.orchestrator.clear_aggregation()  # 舊 audience 的待合併文字不得併進新 session
         reset = getattr(self.think, "reset_context", None)
         if changed and reset is not None:
             try:
@@ -576,6 +703,7 @@ class EchoPipelineHost:
             else:
                 # roster 以平台 uid 為鍵（不含前綴）：平台前綴與 session 不符就不更新，避免跨平台同 uid 碰撞
                 self.metrics["echo.participant_platform_mismatch"] += 1
+        self._sync_participants(ctx)  # 人數影響耦合度與主動／被動，先於快照推送（模式翻轉會另推一版）
         self.policy.publish()  # 參與者變動時推送新版快照
         draft = EventDraft(
             event_type=event_type, conversation_id=ctx.conversation_id, segment_id=ctx.segment_id,

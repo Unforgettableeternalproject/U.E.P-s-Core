@@ -47,4 +47,5 @@ def facts_from_outcome(outcome: TurnOutcome) -> TurnEndFacts:
         generated_len=len(outcome.generated_text or ""),
         spoken_text=(outcome.spoken_text or "") if outcome.spoken_known else "",
         attempt_no=outcome.attempt_id, snapshot_version=outcome.snapshot_version,
+        barge_in=bool(outcome.barge_in),
     )

@@ -357,6 +357,7 @@ class MemoryContext:
 - `viewer_uid == owner_uid` 回空（本人的事走自己的 retrieve）；`owner_uid` 為空白字串回空，不退化為一般檢索。
 - `query` 可為空字串：不做向量比對，依投影 `learned_at` 由新到舊取前 3 則。
 - 一般檢索與指名模式皆回傳 `ctx.ids`，回覆後傳給 `store_episode(shared_context_ids=..., shared_scope_id=...)` 登記消費紀錄，撤回級聯照舊。
+- T-11b 修正：活動可在指名查詢時說出，但仍不進投影。`retrieve_shared(owner_uid=X)` 經 `set_engine_resolver` 取 X 的使用者 engine，呼叫 `activity_profile(top_n=3)`，結果放 `SharedContext.activity_items`（name、last_played、total_minutes、play_count），`to_text` 在本人段後、旁證段前渲染單獨一行「〈X〉最近在玩：…」（不以「- 」開頭，不計入 ids）。無 resolver／找不到 engine／X 已退出活動（回空）／X 對 D87 整體退出（`opt_out_about_me`）／viewer 即 X／一般檢索一律不附；讀取例外只記 warning。分享摘要 prompt 同步改為保留遊戲、作品、話題等公開專有名詞，只去人名與私密細節；既有投影可用 `scripts/backfill_d87.py --rejudge-all` 重寫。
 - 觀測 log：`[retrieve_shared] scope=... owner=... items=...`，指名模式 `owner` 只記 uid 末四碼（`*1234`），一般模式為 `-`。
 
 **關於成員（D87）**：任何人都可以問其他人的事——公開資訊一律可以說，只有本人標為敏感、或系統判定為敏感時才擋。指名模式因此回兩段：

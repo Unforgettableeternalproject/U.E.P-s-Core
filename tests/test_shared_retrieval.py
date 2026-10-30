@@ -7,7 +7,7 @@ tests/test_shared_retrieval.py - M10 包 C：共享檢索、生命週期 hook、
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -1145,3 +1145,146 @@ class TestAttachWarnsWithoutResolver:
         with caplog.at_level(logging.WARNING, logger="echo_memory.engine"):
             engine.attach_share_layer(make_layer(root, owner_digest_resolver=make_owner_digest_resolver(lambda u: engine)))
         assert not any("owner_digest_resolver" in r.getMessage() for r in caplog.records)
+
+
+# ━━━ 指名查詢附遊玩摘要（T-11b 修正）━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class _FakeUserEngine:
+    def __init__(self, items=None, boom=False):
+        self.items = items if items is not None else []
+        self.boom = boom
+        self.calls: list[int] = []
+
+    def activity_profile(self, top_n: int = 3, **_kw):
+        self.calls.append(top_n)
+        if self.boom:
+            raise RuntimeError("activity down")
+        return list(self.items)
+
+
+_GAMES = [
+    {"name": "Deadlock", "last_played": "2026-10-29T10:00:00+00:00", "total_minutes": 600.0, "play_count": 5},
+    {"name": "Hades", "last_played": "2026-10-01T10:00:00+00:00", "total_minutes": 90.0, "play_count": 2},
+]
+
+
+class TestOwnerActivity:
+    @staticmethod
+    def recall(scope_engine, viewer="1002", owner="1001", **kw) -> SharedContext:
+        return scope_engine.retrieve_shared(
+            SUMMARY, scope_id=GUILD42, viewer_uid=viewer, owner_uid=owner, **kw,
+        )
+
+    @pytest.fixture
+    def shared(self, root, layer, scope_engine):
+        alice = make_owner(root, layer, "1001")
+        _, _, pid = share_one(alice)
+        return scope_engine, pid
+
+    def test_activity_attached_and_rendered_on_one_non_item_line(self, shared):
+        eng, pid = shared
+        fake = _FakeUserEngine(_GAMES)
+        eng.set_engine_resolver(lambda uid: fake if uid == "1001" else None)
+        got = self.recall(eng)
+        assert fake.calls == [3]
+        assert [a["name"] for a in got.activity_items] == ["Deadlock", "Hades"]
+        assert got.ids == [pid]
+        text = got.to_text(lambda uid: "小愛")
+        act = [ln for ln in text.splitlines() if "最近在玩" in ln]
+        assert len(act) == 1 and not act[0].startswith("- ")
+        assert act[0] == "〈小愛〉最近在玩：Deadlock（最近 10/29，累計約 10.0 小時）、Hades（最近 10/1，累計約 1.5 小時）"
+        # 位置：本人段之後
+        lines = text.splitlines()
+        assert lines.index(act[0]) > max(i for i, ln in enumerate(lines) if ln.startswith("- "))
+
+    def test_dash_lines_equal_items_count(self):
+        ctx = SharedContext(
+            scope_id=GUILD42,
+            items=[
+                SharedItem("p1", "1001", "摘要一"),
+                SharedItem("p2", "1003", "摘要二", relation="about", about_uid="1001"),
+            ],
+            activity_items=list(_GAMES), activity_owner_uid="1001",
+        )
+        text = ctx.to_text(lambda uid: "小愛")
+        lines = text.splitlines()
+        assert sum(1 for ln in lines if ln.startswith("- ")) == len(ctx.items) == 2
+        # 在本人段之後、旁證段之前
+        i_act = next(i for i, ln in enumerate(lines) if "最近在玩" in ln)
+        assert lines[i_act - 1].startswith("- ") and lines[i_act + 1].startswith("- ")
+        assert "提到" in lines[i_act + 1]
+
+    def test_viewer_is_owner_no_activity(self, shared):
+        eng, _ = shared
+        fake = _FakeUserEngine(_GAMES)
+        eng.set_engine_resolver(lambda uid: fake)
+        got = self.recall(eng, viewer="1001", owner="1001")
+        assert got.activity_items == [] and fake.calls == []
+
+    def test_no_resolver_no_activity(self, shared):
+        eng, pid = shared
+        got = self.recall(eng)
+        assert got.activity_items == [] and got.ids == [pid]
+
+    def test_resolver_cannot_find_engine(self, shared):
+        eng, _ = shared
+        eng.set_engine_resolver(lambda uid: None)
+        assert self.recall(eng).activity_items == []
+
+    def test_activity_opted_out_returns_empty(self, shared):
+        eng, _ = shared
+        eng.set_engine_resolver(lambda uid: _FakeUserEngine([]))
+        assert self.recall(eng).activity_items == []
+
+    def test_about_opt_out_blocks_activity(self, shared):
+        eng, pid = shared
+        fake = _FakeUserEngine(_GAMES)
+        eng.set_engine_resolver(lambda uid: fake)
+        assert eng.opt_out_about_me(GUILD42, "1001", True)["ok"]
+        got = self.recall(eng)
+        assert got.activity_items == [] and fake.calls == []
+        assert "最近在玩" not in got.to_text()
+        assert got.ids == [pid]
+        eng.opt_out_about_me(GUILD42, "1001", False)
+        assert self.recall(eng).activity_items
+
+    def test_exception_keeps_other_sections(self, shared, caplog):
+        eng, pid = shared
+        eng.set_engine_resolver(lambda uid: _FakeUserEngine(boom=True))
+        with caplog.at_level("WARNING", logger="echo_memory.retrieval.shared"):
+            got = self.recall(eng)
+        assert got.activity_items == [] and got.ids == [pid]
+        assert any("遊玩摘要" in r.message for r in caplog.records)
+        eng.set_engine_resolver(lambda uid: (_ for _ in ()).throw(RuntimeError("x")))
+        assert self.recall(eng).ids == [pid]
+
+    def test_general_retrieval_has_no_activity(self, shared):
+        eng, pid = shared
+        fake = _FakeUserEngine(_GAMES)
+        eng.set_engine_resolver(lambda uid: fake)
+        got = view(eng, viewer="1002")
+        assert got.ids == [pid] and got.activity_items == [] and fake.calls == []
+
+    def test_ids_and_items_unchanged_by_activity(self, shared):
+        eng, pid = shared
+        base = self.recall(eng)
+        eng.set_engine_resolver(lambda uid: _FakeUserEngine(_GAMES))
+        got = self.recall(eng)
+        assert got.ids == base.ids == [pid]
+        assert [it.summary for it in got.owner_items] == [it.summary for it in base.owner_items]
+        assert got.about_items == base.about_items
+
+    def test_real_engine_activity_profile_is_used(self, shared, root):
+        eng, pid = shared
+        user = MemoryEngine(storage_path=root, namespace_id="1001")
+        start = datetime(2026, 10, 29, 10, 0, tzinfo=timezone.utc)
+        user.record_observation(
+            kind="game_activity", subject="Deadlock",
+            started_at=start, ended_at=start + timedelta(hours=2),
+        )
+        eng.set_engine_resolver(lambda uid: user)
+        got = self.recall(eng)
+        assert [a["name"] for a in got.activity_items] == ["Deadlock"]
+        assert got.activity_items[0]["total_minutes"] == 120.0
+        assert got.ids == [pid]

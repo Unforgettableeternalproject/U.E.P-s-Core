@@ -1438,7 +1438,18 @@ class MemoryEngine:
             ),
             summary_max_chars=cfg.sharing_summary_max_chars,
             owner_uid=owner_uid,
+            activity_fn=self._activity_for_uid,
         )
+
+    def _activity_for_uid(self, uid: str) -> list[dict[str, Any]]:
+        """指名查詢用：經 engine_resolver 取該成員 engine 的遊玩摘要（top 3）；找不到回空。"""
+        resolver = self._engine_resolver
+        if not callable(resolver):
+            return []
+        target = resolver(uid)
+        if target is None:
+            return []
+        return list(target.activity_profile(top_n=3))
 
     # ── 關於成員（D87）：名冊注入與當事人的撤回／糾正權 ──────────────────
 

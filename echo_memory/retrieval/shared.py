@@ -89,6 +89,7 @@ def _retrieve_shared_context(
     min_similarity: float = 0.45,
     summary_max_chars: int = 120,
     owner_uid: str | None = None,
+    activity_fn: Any = None,
 ) -> SharedContext:
     """檢索共享摘要。任何前提不成立都回傳空的 SharedContext（degraded 標記原因），不拋例外。
 
@@ -236,4 +237,17 @@ def _retrieve_shared_context(
             relation="about",
             about_uid=owner_filter,
         ))
-    return SharedContext(scope_id=scope_id, items=items)
+    activity_items: list[dict] = []
+    if owner_filter is not None and callable(activity_fn):
+        # 活動只在指名查詢時讀取；當事人整體退出（含索引異常 fail-closed）即不附
+        try:
+            if not layer.is_about_opted_out(scope_id, owner_filter):
+                activity_items = [dict(a) for a in (activity_fn(owner_filter) or [])]
+        except Exception as e:  # noqa: BLE001 - 活動失敗不影響本人段與旁證段
+            logger.warning("[retrieve_shared] 遊玩摘要讀取失敗（不附活動）: %s", e)
+            activity_items = []
+    return SharedContext(
+        scope_id=scope_id, items=items,
+        activity_items=activity_items,
+        activity_owner_uid=(owner_filter or "") if activity_items else "",
+    )

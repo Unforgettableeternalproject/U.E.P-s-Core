@@ -386,6 +386,9 @@ class SharedContext:
     items: list[SharedItem] = field(default_factory=list)
     degraded: bool = False
     degraded_reason: str = ""
+    # 指名查詢時附帶的遊玩摘要（name、last_played、total_minutes、play_count）；不進 ids
+    activity_items: list[dict] = field(default_factory=list)
+    activity_owner_uid: str = ""
 
     @property
     def ids(self) -> list[str]:
@@ -403,7 +406,29 @@ class SharedContext:
         return [it for it in self.items if it.relation == "about"]
 
     def is_empty(self) -> bool:
-        return not self.items
+        return not self.items and not self.activity_items
+
+    def _activity_line(self, name: str) -> str:
+        """遊玩摘要單行；不以「- 」開頭，避免被 ES 截斷邏輯當成 item 行計數。"""
+        parts: list[str] = []
+        for a in self.activity_items[:3]:
+            game = _one_line(str(a.get("name", "")), _SHARED_NAME_MAX_CHARS)
+            if not game:
+                continue
+            detail: list[str] = []
+            lp = str(a.get("last_played", "") or "")
+            if len(lp) >= 10 and lp[5:7].isdigit() and lp[8:10].isdigit():
+                detail.append(f"最近 {int(lp[5:7])}/{int(lp[8:10])}")
+            try:
+                hours = float(a.get("total_minutes", 0) or 0) / 60.0
+            except (TypeError, ValueError):
+                hours = 0.0
+            if hours > 0:
+                detail.append(f"累計約 {hours:.1f} 小時")
+            parts.append(f"{game}（{'，'.join(detail)}）" if detail else game)
+        if not parts:
+            return ""
+        return f"〈{name}〉最近在玩：" + "、".join(parts)
 
     def to_text(self, display_name: Callable[[str], str] | None = None) -> str:
         """渲染共享區塊；沒有項目回傳空字串（呼叫端不必判斷）。
@@ -411,7 +436,7 @@ class SharedContext:
         display_name: uid -> 顯示名稱（宿主解析，改名自動跟隨）；缺省用「成員 <uid>」。
         名稱與摘要都視為不可信資料：單行化、截斷、移除區塊結尾標記。
         """
-        if not self.items:
+        if not self.items and not self.activity_items:
             return ""
         lines = [f"<{SHARED_BLOCK_TAG}>", SHARED_BLOCK_NOTE, SHARED_BLOCK_HEADER]
 
@@ -428,6 +453,10 @@ class SharedContext:
             summary = _one_line(it.summary, SHARED_SUMMARY_MAX_CHARS)
             label = f"（{it.support_label}）" if it.support_label else ""
             lines.append(f"- {_name(it.owner_uid)} 在本伺服器提過：{summary}{label}")
+        if self.activity_items and self.activity_owner_uid:
+            act = self._activity_line(_name(self.activity_owner_uid))
+            if act:
+                lines.append(act)
         for it in self.about_items[:SHARED_MAX_ITEMS]:
             summary = _one_line(it.summary, SHARED_SUMMARY_MAX_CHARS)
             label = f"（{it.support_label}）" if it.support_label else ""

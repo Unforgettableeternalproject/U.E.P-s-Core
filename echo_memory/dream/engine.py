@@ -687,7 +687,7 @@ class DreamEngine:
                     started_at=datetime.now(timezone.utc).isoformat(),
                     triggered_by=triggered_by,
                 )
-                report.error = "夢境週期已在執行中，跳過本次觸發"
+                report.skipped_reason = "already_running"  # 並行觸發＝跳過，不是錯誤
                 report.finished_at = report.started_at
                 self._notify_listener(report)
                 return report

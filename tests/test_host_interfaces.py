@@ -393,6 +393,20 @@ def test_listener_exception_is_swallowed(engine, caplog):
     assert any("listener" in r.getMessage() for r in caplog.records)
 
 
+def test_listener_concurrent_dream_is_skipped_already_running(engine):
+    engine.ensure_initialized()
+    de = engine._ensure_dream_engine()
+    reports = _collect(engine)
+    de._is_dreaming = True  # 模擬本行程已有 dream 在執行
+    try:
+        result = engine.dream(triggered_by="idle")
+    finally:
+        de._is_dreaming = False
+    assert result["skipped_reason"] == "already_running" and result["error"] is None
+    assert len(reports) == 1
+    assert reports[0]["status"] == "skipped" and reports[0]["error"] is None
+
+
 def test_listener_none_cancels(engine):
     reports = _collect(engine)
     engine.set_dream_listener(None)

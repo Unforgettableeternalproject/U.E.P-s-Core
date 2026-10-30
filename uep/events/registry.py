@@ -83,6 +83,33 @@ DEFAULT_EVENT_SPECS["state.changed"] = EventSpec(_D, payload_keys=_STATE_KEYS)
 DEFAULT_EVENT_SPECS["core.global_stop_engaged"] = EventSpec(_D, Priority.URGENT)
 DEFAULT_EVENT_SPECS["core.global_stop_released"] = EventSpec(_D)
 
+# P3 新增 kind（P3接入方案 §2.2、D81）。私人 scope 的 payload 只收下列鍵，`summary` 等自由文字不在內（D78）
+_MEMORY_KEYS = frozenset({"evidence_refs", "derived_from", "weight", "privacy_scope", "schema_version"})
+MEMORY_EVENT_TYPES: tuple[str, ...] = tuple(
+    f"memory.{kind}" for kind in (
+        "dream_completed", "reflection_completed", "hypothesis_supported", "hypothesis_contradicted",
+        "contradiction_found", "episode_flagged", "self_observation_proposed",
+    )
+)
+for _t in MEMORY_EVENT_TYPES:
+    DEFAULT_EVENT_SPECS[_t] = EventSpec(_D, payload_keys=_MEMORY_KEYS)
+# expires_at 對映信封欄位、summary 轉入可刪 payload_ref blob，兩者都不在白名單
+DEFAULT_EVENT_SPECS["proactive.trigger_observed"] = EventSpec(
+    _D,
+    payload_keys=frozenset({
+        "trigger_kind", "dedupe_key", "source_idempotency_keys", "evidence_refs", "memory_weight",
+        "confidence", "privacy_scope", "schema_version",
+    }),
+)
+# 不新增 turn.cancelled kind：以 payload.reason_code 區分取消原因
+DEFAULT_EVENT_SPECS["turn.attempt_started"] = EventSpec(_D, payload_keys=frozenset({"attempt_id", "reason_code"}))
+DEFAULT_EVENT_SPECS["turn.skipped"] = EventSpec(
+    _D, payload_keys=frozenset({"reason_code", "reply_mode", "proposal_ref"})
+)
+_PARTICIPANT_KEYS = frozenset({"speaker_ref", "role"})
+DEFAULT_EVENT_SPECS["conversation.participant_joined"] = EventSpec(_D, payload_keys=_PARTICIPANT_KEYS)
+DEFAULT_EVENT_SPECS["conversation.participant_left"] = EventSpec(_D, payload_keys=_PARTICIPANT_KEYS)
+
 
 class EventRegistry:
     """event_type -> EventSpec；可在測試或後續契約擴充。"""

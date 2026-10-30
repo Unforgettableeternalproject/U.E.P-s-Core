@@ -12,6 +12,7 @@
 - Output Gate（選用，CC-4 P-8／O-5）：送出前檢查授權六元組。於 ``generated`` 被拒記 ``rejected``；
   已越過 generated（audio 已合成、或 claim 後送出前再檢查）被拒則記 ``cancelled``，
   兩者皆不送出、不重送、不遞補到其他 endpoint；failure.code 為 Gate 結果碼。未注入 Gate 時不檢查。
+- ``report_evidence``（O-16）：Adapter 於 send 返回後非同步回報證據，沿用同一套單向推進與「證據只升不降」規則。
 - I/O 不在交易內進行；每個狀態推進各自一個短交易。
 - ``crash_hook(point)`` 與 TaskManager 同形，供測試在指定點拋 SimulatedCrash：
   ``delivery.after_prepare``、``delivery.after_claim``、``delivery.after_send``（send 後、commit 前）。
@@ -21,6 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -29,9 +31,12 @@ from uep.adapters.output import OutputAdapter, SendFailed, SendResponseLost, Sen
 from uep.contracts.presence import GateDecision
 from uep.ids import new_id
 from uep.output.delivery import (
+    _PRE_SEND,
     TERMINAL,
     DeliveryEvidence,
     DeliveryRecord,
+    IllegalDeliveryTransition,
+    evidence_rank,
     path_for,
 )
 from uep.output.delivery import DeliveryStatus as S
@@ -189,26 +194,69 @@ class DeliveryManager:
             current = load_delivery(s, delivery_id)
             if current is None or current.status in TERMINAL:
                 return current  # type: ignore[return-value]
-            path = path_for(current.kind)
-            steps = [S.SENT]
-            if result.evidence in _STRONG:
-                steps.append(S.ACCEPTED)
-                if self._is_complete(current, result):
-                    steps.append(S.RENDERED_PLAYED)
-            rec = current
-            for step in steps:
-                if rec.status is not S.UNKNOWN and path.index(rec.status) >= path.index(step):
-                    continue  # 重放：該階段已達成
-                kwargs: dict = {"evidence": result.evidence}
-                if step is S.SENT:
-                    kwargs.update(sent_at=datetime.now(UTC), reported_at=result.reported_at)
-                if step is S.RENDERED_PLAYED or (step is S.ACCEPTED and result.played_range):
-                    kwargs["played_range"] = result.played_range
-                rec = advance_delivery(s, delivery_id, step, **kwargs)
-            return rec
+            return self._push_evidence(s, current, result.evidence, result.played_range, result.reported_at)
+
+    def report_evidence(
+        self,
+        delivery_id: str,
+        evidence: DeliveryEvidence,
+        played_range: dict[str, Any] | None = None,
+        *,
+        reported_at: datetime | None = None,
+    ) -> DeliveryRecord:
+        """Adapter 在 send 返回後非同步回報證據（CC-5 O-16）；回傳推進後的紀錄。
+
+        - 單向推進：沿用 O-1／O-2／O-12 的路徑與證據門檻，不跳級、不倒退；
+          重複回報同證據冪等（no-op）；已終態者晚到證據不改狀態（回傳現況）。
+        - 證據只升不降：低於已記錄證據、或證據為 unknown 一律拒絕（IllegalDeliveryTransition）。
+        - 尚未送出（generated／synthesized／enqueued）不得先有證據，拒絕；delivery 不存在拋 LookupError。
+        - 只有 played_range 標示 complete（文字類且未提供 range 者除外）才推到 rendered_played（INV-05）。
+        """
+        if evidence is DeliveryEvidence.UNKNOWN:
+            raise IllegalDeliveryTransition("report_evidence 不接受 unknown 證據（證據只升不降）")
+        with self._sf.begin() as s:
+            current = load_delivery(s, delivery_id)
+            if current is None:
+                raise LookupError(f"找不到 delivery：{delivery_id}")
+            if current.status in TERMINAL:
+                return current  # 晚到證據不改狀態
+            if current.status in _PRE_SEND:
+                raise IllegalDeliveryTransition(f"尚未送出（{current.status.value}）不得回報證據")
+            if evidence_rank(evidence) < evidence_rank(current.delivery_evidence):
+                raise IllegalDeliveryTransition(
+                    f"證據只升不降：{current.delivery_evidence.value} -> {evidence.value}"
+                )
+            return self._push_evidence(s, current, evidence, played_range, reported_at)
+
+    def _push_evidence(
+        self,
+        s: Session,
+        current: DeliveryRecord,
+        evidence: DeliveryEvidence,
+        played_range: dict[str, Any] | None,
+        reported_at: datetime | None,
+    ) -> DeliveryRecord:
+        """於交易內依證據逐級推進（sent -> accepted -> rendered_played）；已達成的階段略過。"""
+        path = path_for(current.kind)
+        steps = [S.SENT]
+        if evidence in _STRONG:
+            steps.append(S.ACCEPTED)
+            if self._is_complete(current, played_range):
+                steps.append(S.RENDERED_PLAYED)
+        rec = current
+        for step in steps:
+            if rec.status is not S.UNKNOWN and path.index(rec.status) >= path.index(step):
+                continue  # 重放：該階段已達成
+            kwargs: dict = {"evidence": evidence}
+            if step is S.SENT:
+                kwargs.update(sent_at=datetime.now(UTC), reported_at=reported_at)
+            if step is S.RENDERED_PLAYED or (step is S.ACCEPTED and played_range):
+                kwargs["played_range"] = played_range
+            rec = advance_delivery(s, current.delivery_id, step, **kwargs)
+        return rec
 
     @staticmethod
-    def _is_complete(current: DeliveryRecord, result: SendResult) -> bool:
-        if result.played_range is not None:
-            return result.played_range.get("complete") is True
+    def _is_complete(current: DeliveryRecord, played_range: dict[str, Any] | None) -> bool:
+        if played_range is not None:
+            return played_range.get("complete") is True
         return current.kind.value != "audio_stream"  # 文字類無播放範圍；音訊必須有 complete

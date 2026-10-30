@@ -165,3 +165,80 @@ def test_audio_must_be_synthesized_before_dispatch(session_factory):
         mgr.dispatch(intent)  # generated -> enqueued 不得略過 synthesized
     mgr.mark_synthesized(rec.delivery_id)
     assert mgr.dispatch(intent).status is S.RENDERED_PLAYED
+
+
+# ---- O-16：report_evidence（非同步證據回報）----
+
+def _sent_only(session_factory, kind="audio_stream"):
+    mgr, _ = _mgr(session_factory, default_mode="transport_only")
+    extra = {"content_format": {"sample_rate": 24000, "channels": 1, "codec": "pcm"}} if kind == "audio_stream" else {}
+    intent = make_intent(kind=kind, **extra)
+    if kind == "audio_stream":
+        mgr.mark_synthesized(mgr.prepare(intent).delivery_id)
+    return mgr, mgr.dispatch(intent)
+
+
+_PARTIAL = {"from_sample": 0, "to_sample": 100, "complete": False}
+_FULL = {"from_sample": 0, "to_sample": 200, "complete": True}
+
+
+def test_report_evidence_advances_sent_to_accepted_then_played(session_factory):
+    mgr, rec = _sent_only(session_factory)
+    assert rec.status is S.SENT and rec.delivery_evidence is E.TRANSPORT_SENT
+    partial = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _PARTIAL)
+    assert partial.status is S.ACCEPTED and partial.delivery_evidence is E.LOCAL_PLAYBACK  # INV-05
+    done = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _FULL)
+    assert done.status is S.RENDERED_PLAYED and done.played_range["to_sample"] == 200
+
+
+def test_report_evidence_audio_without_range_stops_at_accepted(session_factory):
+    mgr, rec = _sent_only(session_factory)
+    assert mgr.report_evidence(rec.delivery_id, E.REMOTE_RENDER).status is S.ACCEPTED
+
+
+def test_report_evidence_text_without_range_reaches_played(session_factory):
+    mgr, rec = _sent_only(session_factory, kind="text")
+    assert mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK).status is S.RENDERED_PLAYED
+
+
+def test_report_evidence_is_idempotent_and_evidence_never_downgrades(session_factory):
+    mgr, rec = _sent_only(session_factory)
+    first = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _PARTIAL)
+    again = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _PARTIAL)
+    assert again.status is first.status is S.ACCEPTED
+    with pytest.raises(IllegalDeliveryTransition):
+        mgr.report_evidence(rec.delivery_id, E.TRANSPORT_SENT)  # 證據只升不降
+    with pytest.raises(IllegalDeliveryTransition):
+        mgr.report_evidence(rec.delivery_id, E.UNKNOWN)
+
+
+def test_report_transport_sent_alone_never_reaches_accepted(session_factory):
+    mgr, rec = _sent_only(session_factory)
+    assert mgr.report_evidence(rec.delivery_id, E.TRANSPORT_SENT).status is S.SENT  # VC-5-2
+
+
+def test_report_evidence_rejected_before_send(session_factory):
+    mgr, _ = _mgr(session_factory)
+    rec = mgr.prepare(make_intent())
+    with pytest.raises(IllegalDeliveryTransition):
+        mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK)
+
+
+def test_late_evidence_after_terminal_does_not_change_state(session_factory):
+    mgr, _ = _mgr(session_factory, default_mode="fail")
+    rec = mgr.dispatch(make_intent())
+    assert rec.status is S.FAILED
+    assert mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK).status is S.FAILED
+
+
+def test_report_evidence_unknown_delivery_raises(session_factory):
+    mgr, _ = _mgr(session_factory)
+    with pytest.raises(LookupError):
+        mgr.report_evidence("dlv_nope", E.LOCAL_PLAYBACK)
+
+
+def test_report_evidence_resolves_unknown_to_sent_path(session_factory):
+    mgr, _ = _mgr(session_factory, default_mode="lose_ack")
+    rec = mgr.dispatch(make_intent())
+    assert rec.status is S.UNKNOWN
+    assert mgr.report_evidence(rec.delivery_id, E.TRANSPORT_SENT).status is S.SENT

@@ -1,0 +1,147 @@
+{
+  "memory": [
+    {
+      "event_type": "memory.contradiction_found",
+      "payload": {
+        "evidence_refs": [
+          "ep_1",
+          "ep_2"
+        ],
+        "derived_from": [
+          "c_1"
+        ],
+        "weight": 0.7,
+        "privacy_scope": "private",
+        "schema_version": 1
+      },
+      "idempotency_key": "mem:contradiction_found:1e0384bc6f5f4cecd624abca",
+      "scope_ref": "scope_private_owner"
+    },
+    {
+      "event_type": "memory.dream_completed",
+      "payload": {
+        "evidence_refs": [
+          "ep_1",
+          "ep_2"
+        ],
+        "derived_from": [
+          "c_1"
+        ],
+        "weight": 0.7,
+        "privacy_scope": "private",
+        "schema_version": 1
+      },
+      "idempotency_key": "mem:dream_completed:f65484b11152df8b253e75ec",
+      "scope_ref": "scope_private_owner"
+    },
+    {
+      "event_type": "memory.episode_flagged",
+      "payload": {
+        "evidence_refs": [
+          "ep_1",
+          "ep_2"
+        ],
+        "derived_from": [
+          "c_1"
+        ],
+        "weight": 0.7,
+        "privacy_scope": "private",
+        "schema_version": 1
+      },
+      "idempotency_key": "mem:episode_flagged:f3a065774f6de9dcb13c3ce7",
+      "scope_ref": "scope_private_owner"
+    },
+    {
+      "event_type": "memory.hypothesis_contradicted",
+      "payload": {
+        "evidence_refs": [
+          "ep_1",
+          "ep_2"
+        ],
+        "derived_from": [
+          "c_1"
+        ],
+        "weight": 0.7,
+        "privacy_scope": "private",
+        "schema_version": 1
+      },
+      "idempotency_key": "mem:hypothesis_contradicted:58f758f00c846ecfa3d65b7c",
+      "scope_ref": "scope_private_owner"
+    },
+    {
+      "event_type": "memory.hypothesis_supported",
+      "payload": {
+        "evidence_refs": [
+          "ep_1",
+          "ep_2"
+        ],
+        "derived_from": [
+          "c_1"
+        ],
+        "weight": 0.7,
+        "privacy_scope": "private",
+        "schema_version": 1
+      },
+      "idempotency_key": "mem:hypothesis_supported:4f17e5eedcb9cf5425d6aa36",
+      "scope_ref": "scope_private_owner"
+    },
+    {
+      "event_type": "memory.reflection_completed",
+      "payload": {
+        "evidence_refs": [
+          "ep_1",
+          "ep_2"
+        ],
+        "derived_from": [
+          "c_1"
+        ],
+        "weight": 0.7,
+        "privacy_scope": "private",
+        "schema_version": 1
+      },
+      "idempotency_key": "mem:reflection_completed:0b7090282ba1ab1ba316978f",
+      "scope_ref": "scope_private_owner"
+    },
+    {
+      "event_type": "memory.self_observation_proposed",
+      "payload": {
+        "evidence_refs": [
+          "ep_1",
+          "ep_2"
+        ],
+        "derived_from": [
+          "c_1"
+        ],
+        "weight": 0.7,
+        "privacy_scope": "private",
+        "schema_version": 1
+      },
+      "idempotency_key": "mem:self_observation_proposed:80113c57eaa0730d12ecbbfc",
+      "scope_ref": "scope_private_owner"
+    }
+  ],
+  "candidate": [
+    {
+      "event_type": "proactive.trigger_observed",
+      "payload": {
+        "trigger_kind": "memory_hypothesis_supported",
+        "dedupe_key": "dk1",
+        "source_idempotency_keys": [
+          "mem:hypothesis_supported:abc"
+        ],
+        "evidence_refs": [
+          "ep_1",
+          "ep_2"
+        ],
+        "memory_weight": 0.6,
+        "confidence": 0.8,
+        "privacy_scope": "private",
+        "expires_at": "2026-11-05T00:00:00+00:00",
+        "summary": "使用者最近常提到想換工作",
+        "schema_version": 1
+      },
+      "idempotency_key": "memc:hypothesis_supported:d3d07f09ed6d56509da20bae",
+      "scope_ref": "scope_private_owner"
+    }
+  ]
+}

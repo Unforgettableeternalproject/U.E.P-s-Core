@@ -70,6 +70,10 @@ class MemoryEventEmitter:
     def set_sink(self, sink: CandidateSink | None) -> None:
         self._sink = sink
 
+    def set_enabled_fn(self, fn: Callable[[], bool] | None) -> None:
+        """宿主注入的開關：設定後取代全域 self_model_events_enabled 判斷；None 還原為全域設定。"""
+        self._enabled_fn = fn or _default_enabled
+
     def drain(self, timeout: float = 2.0) -> bool:
         """等所有在途投遞結束（僅供測試／關閉時使用；hook 路徑不呼叫）。回傳是否已清空。"""
         import time

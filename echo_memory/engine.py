@@ -110,6 +110,7 @@ class MemoryEngine:
         namespace_id: str = "local-default",
         embedding_backend: str = "sentence-transformers",
         ollama_base_url: str = "http://localhost:11434",
+        event_emitter_enabled_fn: Callable[[], bool] | None = None,
     ):
         """
         初始化記憶引擎。
@@ -124,6 +125,8 @@ class MemoryEngine:
                     若為 None，Dream Engine 的蒸餾和重播步驟會優雅跳過。
             embedding_backend: "ollama" 或 "sentence-transformers"
             ollama_base_url: Ollama server URL（僅 backend=ollama 時使用）
+            event_emitter_enabled_fn: 宿主注入的 memory.* 事件開關；提供時取代全域
+                self_model_events_enabled 判斷（仍需 sink，且共享 namespace 不發）
         """
         self.namespace_id = normalize_namespace_id(namespace_id)
         self.storage_root = Path(storage_path)
@@ -170,7 +173,13 @@ class MemoryEngine:
         self._gate_lock = threading.Lock()
         # M6：對 Core 的事件發射器（預設無 sink、開關關閉＝不發任何事件）
         from echo_memory.affect.event_emitter import MemoryEventEmitter
-        self._event_emitter = MemoryEventEmitter(self.namespace_id)
+        self._event_emitter = MemoryEventEmitter(
+            self.namespace_id, enabled_fn=event_emitter_enabled_fn,
+        )
+        self._closed = False  # close() 之後拒絕 store／retrieve 等入口
+        self._close_lock = threading.Lock()
+        self._dream_overrides: dict[str, Any] = {}  # configure_dream 的 per-engine 覆寫
+        self._dream_listener: Callable[[dict[str, Any]], None] | None = None
         self._entity_store = None
         self._entity_extractor = None
         self._evidence = None
@@ -227,9 +236,19 @@ class MemoryEngine:
         """M6：注入 Core 的接收端（預設 None＝不發）。是否真的發出仍受 self_model_events_enabled 控制。"""
         self._event_emitter.set_sink(sink)
 
-    def set_concept_inhibitor(self, inhibitor) -> None:
-        """注入 Gate（ConceptInhibitor），並註冊概念變更 callback（共享投影失效時撤回）。"""
+    def set_concept_inhibitor(self, inhibitor, *, opt_out: bool | None = None) -> None:
+        """注入 Gate（ConceptInhibitor），並註冊概念變更 callback（共享投影失效時撤回）。
+
+        inhibitor 為 None 時的語意由 opt_out 決定：
+        - opt_out=None（預設）或 True：刻意無 Gate，之後不再自動建立預設 ConceptInhibitor。
+        - opt_out=False：只清掉目前的 Gate，下次 ensure_initialized 仍會自動建立預設 Gate。
+        inhibitor 不為 None 時 opt_out 不影響結果。
+        """
         self._concept_inhibitor = inhibitor
+        if inhibitor is None and opt_out is False:
+            with self._gate_lock:
+                self._gate_opt_out = False
+                self._default_gate_checked = False
 
     def _ensure_default_gate(self) -> None:
         """宿主未注入 Gate 時，建立預設 ConceptInhibitor 並走與 set_concept_inhibitor 相同的注入路徑。
@@ -296,7 +315,10 @@ class MemoryEngine:
         （載入索引、建構各層記憶）。已建立者為 O(1) 快速返回。引擎內所有會取
         storage_lock 的公開入口都會先呼叫它，確保不在持 storage_lock 時冷建構元件；
         宿主若自行 `with storage_lock(...)` 再存取引擎，須先呼叫本方法。
+        close() 之後呼叫會拋 RuntimeError（store／retrieve 等入口都經過這裡）。
         """
+        if self._closed:
+            raise RuntimeError("MemoryEngine 已關閉（close() 之後不可再使用）")
         _ = (
             self.episodic, self.semantic, self.working, self.procedural,
             self.entity_store, self.entity_extractor, self.evidence,
@@ -1854,6 +1876,152 @@ class MemoryEngine:
             "privacy_ledger": getattr(self._concept_inhibitor, "privacy_ledger", None),
         }
 
+    # ── Dream 設定覆寫／通知／關閉（宿主整合介面）──────────────────────────
+
+    _DREAM_OVERRIDE_TYPES: dict[str, type] = {
+        "dream_enabled": bool,
+        "dream_idle_minutes": int,
+        "dream_cron": str,
+        "dream_enable_idle": bool,
+        "dream_enable_cron": bool,
+        "dream_lease_ttl_seconds": float,
+        "dream_cron_window_seconds": float,
+        "dream_min_pending": int,
+        "dream_daydream_pending": int,
+        "dream_cron_require_pending": bool,
+    }
+
+    def configure_dream(self, **overrides: Any) -> dict[str, Any]:
+        """per-engine 覆寫 Dream 設定；沒給的鍵沿用全域 config（env DREAM_*）。
+
+        鍵為 config 的 DREAM_* 欄位名（dream_enabled、dream_idle_minutes、dream_cron、
+        dream_enable_idle、dream_enable_cron、dream_lease_ttl_seconds、
+        dream_cron_window_seconds、dream_min_pending、dream_daydream_pending、
+        dream_cron_require_pending），也接受省略 ``dream_`` 前綴的簡寫（如 ``enable_idle``）。
+        值為 None 代表撤回該鍵的覆寫。不認得的鍵拋 ValueError（整批不套用）。
+
+        時機：須在 DreamEngine 建立之前呼叫（它在第一次 start_dream_scheduler／dream／
+        dream_readiness 時建立，之後設定已固化）。太晚呼叫時不套用、記 warning，並回傳
+        {"applied": False, ...}；close() 之後呼叫拋 RuntimeError。
+
+        Returns:
+            {"applied": bool, "overrides": 目前生效的覆寫（鍵為完整欄位名）}
+        """
+        if self._closed:
+            raise RuntimeError("MemoryEngine 已關閉（close() 之後不可再使用）")
+        normalized: dict[str, Any] = {}
+        for key, value in overrides.items():
+            full = key if key in self._DREAM_OVERRIDE_TYPES else f"dream_{key}"
+            if full not in self._DREAM_OVERRIDE_TYPES:
+                raise ValueError(f"configure_dream 不認得的鍵: {key!r}")
+            if value is not None:
+                typ = self._DREAM_OVERRIDE_TYPES[full]
+                if typ is bool and not isinstance(value, bool):
+                    raise ValueError(f"{key} 需為 bool，收到 {value!r}")
+                try:
+                    value = typ(value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{key} 的值無效: {value!r}") from exc
+            normalized[full] = value
+        with self._dream_lock:
+            if self._dream_engine is not None:
+                logger.warning(
+                    "[MemoryEngine] configure_dream 太晚呼叫（DreamEngine 已建立），覆寫未套用"
+                )
+                return {"applied": False, "overrides": dict(self._dream_overrides)}
+            for full, value in normalized.items():
+                if value is None:
+                    self._dream_overrides.pop(full, None)
+                else:
+                    self._dream_overrides[full] = value
+            return {"applied": True, "overrides": dict(self._dream_overrides)}
+
+    def _dream_config(self) -> Any:
+        """全域 config 疊上 per-engine 的 Dream 覆寫（唯讀檢視，不改動全域 config）。"""
+        from echo_memory.config import get_config
+
+        overrides = dict(self._dream_overrides)
+        base = get_config()
+        if not overrides:
+            return base
+
+        class _View:
+            def __getattr__(self, name: str) -> Any:
+                if name in overrides:
+                    return overrides[name]
+                return getattr(base, name)
+
+        return _View()
+
+    def set_dream_listener(self, fn: Callable[[dict[str, Any]], None] | None) -> None:
+        """註冊 Dream 週期結束通知；None 取消。
+
+        每次 dream_now 結束（排程與手動觸發）呼叫一次，含 skipped、error、成功。報告 dict：
+        triggered_by、started_at／finished_at（UTC ISO 8601 字串）、skipped_reason、error、
+        status（"completed"／"skipped"／"error"）。在觸發 dream 的執行緒上同步呼叫，
+        listener 拋出的例外會被吞掉並記 log。
+        """
+        self._dream_listener = fn
+
+    def _emit_dream_report(self, report: dict[str, Any]) -> None:
+        listener = self._dream_listener
+        if listener is not None:
+            listener(report)
+
+    def close(self, timeout: float = 5.0) -> None:
+        """關閉引擎並釋放資源（冪等；第二次起不動作）。
+
+        順序：停 Dream 排程並等進行中的週期結束（至多 timeout 秒）→ 排空事件投遞 →
+        對已建立的各 store 存檔 → 存 neurochem。各步驟失敗只記 log，不中斷後續。
+        跨行程租約由 dream_now 在週期結束時釋放；檔案鎖都是短臨界區，無常駐持有。
+        close 之後 store／retrieve／dream 等入口（ensure_initialized）與 start_dream_scheduler
+        一律拋 RuntimeError；stop_dream_scheduler 與 close 本身仍可安全呼叫。
+        不包含宿主自行建立的元件（如 Entry.py 的 ConceptExtractor，須由宿主 shutdown）。
+        """
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True  # 先擋新入口，再收尾
+        steps: list[tuple[str, Callable[[], Any]]] = [
+            ("停止 Dream 排程", self.stop_dream_scheduler),
+            ("等待 Dream 週期結束", lambda: self._wait_dream_idle(timeout)),
+            ("排空事件投遞", lambda: self._event_emitter.drain(timeout)),
+            ("儲存各 store", self._save_stores_on_close),
+            ("儲存 neurochem", self._save_neurochem),
+        ]
+        for label, step in steps:
+            try:
+                step()
+            except Exception as exc:  # noqa: BLE001 - 收尾盡力而為
+                logger.warning(f"[MemoryEngine] close：{label}失敗: {exc}")
+        logger.info(f"[MemoryEngine] 已關閉 namespace={self.namespace_id}")
+
+    def _wait_dream_idle(self, timeout: float) -> None:
+        dream_engine = self._dream_engine
+        if dream_engine is None:
+            return
+        deadline = time.monotonic() + timeout
+        while dream_engine.is_dreaming() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if dream_engine.is_dreaming():
+            logger.warning("[MemoryEngine] close：Dream 週期逾時仍在執行，不再等待")
+
+    def _save_stores_on_close(self) -> None:
+        """只對已建立的 store 存檔（不為了關閉而冷建構）。"""
+        if self._episodic is not None:
+            try:
+                self._episodic.graph.retry_save_if_dirty()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[MemoryEngine] close：圖譜補存失敗: {exc}")
+            self._episodic._save()
+        if self._semantic is not None:
+            with self._semantic._lock:
+                self._semantic._save()
+        if self._procedural is not None:
+            self._procedural._save()
+        if self._entity_store is not None:
+            self._entity_store._save()
+
     def _note_interaction(self) -> None:
         """記錄互動時間；DreamEngine 已建立時同步重置其閒置計時（未建立時僅自記，成本極低）。"""
         now = datetime.now(timezone.utc)
@@ -1868,11 +2036,10 @@ class MemoryEngine:
             return self._dream_engine
         with self._dream_lock:
             if self._dream_engine is None:
-                from echo_memory.config import get_config
                 from echo_memory.dream.engine import DreamEngine
                 from echo_memory.storage.locking import FileLease
 
-                config = get_config()
+                config = self._dream_config()
                 engine = DreamEngine(
                     graph=self.episodic.graph,
                     episodic=self.episodic,
@@ -1899,6 +2066,7 @@ class MemoryEngine:
                     event_emitter=self._event_emitter,
                     **self._dream_sharing_kwargs(config),
                 )
+                engine.set_listener(self._emit_dream_report)
                 if self._last_interaction is not None:
                     engine.notify_interaction(self._last_interaction)
                 self._dream_engine = engine
@@ -1911,9 +2079,14 @@ class MemoryEngine:
         宿主須在 set_concept_inhibitor／set_llm_fn 注入完成後明確呼叫；
         dream() 不會隱式啟動排程。回傳 {"started": bool, "reason": str}。
         """
-        from echo_memory.config import get_config
+        from echo_memory.schemas.sharing import is_scope_namespace_id
 
-        config = get_config()
+        if self._closed:
+            raise RuntimeError("MemoryEngine 已關閉（close() 之後不可再使用）")
+        if is_scope_namespace_id(self.namespace_id):
+            # 共享 namespace 不做夢（沒有 Self Model／假說，也不該有自己的離線鞏固）
+            return {"started": False, "reason": "scope_namespace"}
+        config = self._dream_config()
         if not config.dream_enabled:
             logger.info("[MemoryEngine] Dream 已停用（dream_enabled=False），不啟動排程")
             return {"started": False, "reason": "disabled"}

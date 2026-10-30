@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -393,6 +394,8 @@ class DreamEngine:
         self.event_emitter = event_emitter
         if contradiction_detector is not None:
             contradiction_detector.event_emitter = event_emitter
+        # 宿主的週期結束通知（fn(report: dict)）；None＝不通知
+        self._listener: Callable[[dict[str, Any]], None] | None = None
 
         # 程序提取（需要 procedural + episodic）
         self._procedure_extractor = None
@@ -493,6 +496,33 @@ class DreamEngine:
         logger.info("[DreamEngine] 排程器已啟動")
         return True
 
+    def set_listener(self, listener: Callable[[dict[str, Any]], None] | None) -> None:
+        """註冊週期結束通知：每次 dream_now 結束呼叫一次（含 skipped、error）。"""
+        self._listener = listener
+
+    def _notify_listener(self, report: DreamReport) -> None:
+        """把 DreamReport 轉成精簡 dict 通知宿主；listener 的任何例外都吞掉，不影響夢境。"""
+        listener = self._listener
+        if listener is None:
+            return
+        if report.skipped_reason:
+            status = "skipped"
+        elif report.error:
+            status = "error"
+        else:
+            status = "completed"
+        try:
+            listener({
+                "triggered_by": report.triggered_by,
+                "started_at": report.started_at,
+                "finished_at": report.finished_at,
+                "skipped_reason": report.skipped_reason,
+                "error": report.error,
+                "status": status,
+            })
+        except Exception as exc:  # noqa: BLE001 - listener 失敗不得影響 dream
+            logger.warning(f"[DreamEngine] dream listener 拋出例外（已忽略）: {exc}")
+
     def stop(self):
         """關閉排程器"""
         if self._scheduler is not None and self._scheduler.running:
@@ -537,6 +567,7 @@ class DreamEngine:
         now = now or datetime.now(timezone.utc)
         pending = self.pending_count()
         return {
+            "lease": self.lease_state(),
             "pending": pending,
             "salience_threshold": KnowledgeDistillation.MIN_SALIENCE_THRESHOLD,
             "min_pending": self.min_pending,
@@ -546,6 +577,34 @@ class DreamEngine:
             "idle_threshold_seconds": self.idle_minutes * 60,
             "is_dreaming": self._is_dreaming,
         }
+
+    def lease_state(self) -> dict[str, Any]:
+        """跨行程租約的唯讀狀態：{held_by_other, holder_pid, expires_at}。
+
+        held_by_other 只在「他人持有且未逾期」時為 True；本實例自己持有、無租約或租約檔
+        無法讀取時為 False。不取得、不續租、不改寫租約。
+        """
+        out: dict[str, Any] = {"held_by_other": False, "holder_pid": None, "expires_at": None}
+        if self._lease is None:
+            return out
+        try:
+            state = self._lease.read_state()
+        except Exception as exc:  # noqa: BLE001 - 唯讀查詢失敗不得影響 readiness
+            logger.warning(f"[DreamEngine] 讀取租約狀態失敗: {exc}")
+            return out
+        holder = state.get("holder_token")
+        if not holder:
+            return out
+        try:
+            expires_at = float(state.get("expires_at") or 0.0)
+        except (TypeError, ValueError):
+            expires_at = 0.0
+        if expires_at <= time.time():
+            return out  # 已逾期＝無人持有
+        out["holder_pid"] = state.get("holder_pid")
+        out["expires_at"] = expires_at
+        out["held_by_other"] = holder != self._lease.token
+        return out
 
     def scheduler_tick(self, now: datetime | None = None) -> str | None:
         """判斷一次是否該做夢並執行（定期 job 與日後共用排程器輪詢各 engine 的入口）。
@@ -624,8 +683,13 @@ class DreamEngine:
         with self._lock:
             if self._is_dreaming:
                 # 防止並發執行
-                report = DreamReport()
+                report = DreamReport(
+                    started_at=datetime.now(timezone.utc).isoformat(),
+                    triggered_by=triggered_by,
+                )
                 report.error = "夢境週期已在執行中，跳過本次觸發"
+                report.finished_at = report.started_at
+                self._notify_listener(report)
                 return report
             self._is_dreaming = True
 
@@ -649,6 +713,7 @@ class DreamEngine:
                 with self._lock:
                     self._is_dreaming = False
                 logger.info(f"[DreamEngine] 跳過夢境週期 [{triggered_by}]: {reason}")
+                self._notify_listener(report)
                 return report
             lease_held = True
 
@@ -880,6 +945,7 @@ class DreamEngine:
                     except Exception as exc:
                         logger.warning(f"[DreamEngine] 釋放 Dream 租約失敗（第 {attempt} 次）: {exc}")
 
+        self._notify_listener(report)
         return report
 
     def _renew_lease(self, held: bool, after_stage: str) -> None:

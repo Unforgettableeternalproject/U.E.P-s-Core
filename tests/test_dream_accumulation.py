@@ -264,6 +264,7 @@ def test_dream_readiness_shape_and_suggestions(engine):
     assert set(r) == {
         "pending", "salience_threshold", "min_pending", "daydream_pending",
         "suggested_trigger", "idle_seconds", "idle_threshold_seconds", "is_dreaming",
+        "lease",
     }
     assert r["pending"] == 6
     assert r["salience_threshold"] == KnowledgeDistillation.MIN_SALIENCE_THRESHOLD

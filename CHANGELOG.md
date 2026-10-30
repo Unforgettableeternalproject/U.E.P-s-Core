@@ -3154,3 +3154,15 @@
 
 ---
 
+### test: P3 S5 決策插槽驗收，bot 案例資料表與整合測試. 10/30
+
+> Date: Fri, 30 Oct 2026 17:54:14 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5f1ed30c01dff94358e8b330ee41e43db63b6b88`
+
+---
+

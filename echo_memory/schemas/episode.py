@@ -28,6 +28,8 @@ class Episode:
         da_weight: 虛擬多巴胺強度
         ht_weight: 虛擬血清素強度
         is_dreamed: 是否已在夢境中重播
+        dream_scanned_at: 最近一次被 dream 週期評估（重播或判定未達門檻）的時間；None＝從未評估。
+            與 is_dreamed 獨立：不影響蒸餾候選，僅供重播輪替與遺忘判斷使用。
         metadata: 額外元數據
         evidence_ids: 此 Episode 的 EvidenceUnit id（證據存放在獨立的 append-only store）。
             空清單代表舊資料尚未遷移；讀取端應以 legacy_unknown 看待。
@@ -52,6 +54,7 @@ class Episode:
 
     # 狀態標記
     is_dreamed: bool = False
+    dream_scanned_at: datetime | None = None
 
     # 擴展資訊
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -80,6 +83,9 @@ class Episode:
             "da_weight": self.da_weight,
             "ht_weight": self.ht_weight,
             "is_dreamed": self.is_dreamed,
+            "dream_scanned_at": (
+                self.dream_scanned_at.isoformat() if self.dream_scanned_at else None
+            ),
             "metadata": self.metadata,
             "evidence_ids": list(self.evidence_ids),
             "episode_kind": self.episode_kind,
@@ -91,6 +97,11 @@ class Episode:
         data = data.copy()
         if "timestamp" in data and isinstance(data["timestamp"], str):
             data["timestamp"] = datetime.fromisoformat(data["timestamp"])
+        # 舊資料沒有此欄位視為 None
+        scanned = data.get("dream_scanned_at")
+        data["dream_scanned_at"] = (
+            datetime.fromisoformat(scanned) if isinstance(scanned, str) and scanned else None
+        )
         return cls(**data)
 
     @property

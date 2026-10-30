@@ -654,6 +654,15 @@ class DreamEngine:
 
         cycle_started = False  # 已寫 cycle_start 才在 finally 補 cycle_end
         marked_count = 0
+        # 週期開始前已存在、未達重播門檻且從未評估的 episode（週期完成後標記 dream_scanned_at）
+        below_threshold_ids: list[str] = []
+        if self._episodic_ref is not None:
+            try:
+                below_threshold_ids = self._episodic_ref.unscanned_ids_below(
+                    LiDERReplay.MIN_SALIENCE_THRESHOLD
+                )
+            except Exception as e:  # noqa: BLE001 - 取不到只少標記，不影響夢境週期
+                logger.warning(f"[DreamEngine] 取得未評估 episode 失敗: {e}")
         try:
             logger.info(f"[DreamEngine] 開始夢境週期 [{triggered_by}]")
 
@@ -806,6 +815,25 @@ class DreamEngine:
                 logger.info(
                     f"[DreamEngine] 統一標記 {len(dreamed_ids)} 個 Episode 為 is_dreamed"
                 )
+
+            # ── 標記 dream_scanned_at（與 is_dreamed 獨立）──────────────
+            # 表示「dream 週期評估過」：replay 處理過的、以及週期開始前就存在且未達 replay
+            # 門檻的 episode。不影響蒸餾候選（蒸餾只看 is_dreamed）；供 replay 輪替與遺忘判斷使用。
+            if self._episodic_ref is not None:
+                try:
+                    scanned_at = datetime.now(timezone.utc)
+                    replayed_ids = (
+                        list(report.replay._replayed_episode_ids) if report.replay else []
+                    )
+                    with self._guard():
+                        if replayed_ids:
+                            self._episodic_ref.mark_as_scanned(replayed_ids, at=scanned_at)
+                        if below_threshold_ids:
+                            self._episodic_ref.mark_as_scanned(
+                                below_threshold_ids, at=scanned_at, overwrite=False
+                            )
+                except Exception as e:  # noqa: BLE001 - 標記失敗只影響輪替，不讓週期失敗
+                    logger.warning(f"[DreamEngine] 標記 dream_scanned_at 失敗: {e}")
 
             # 重置閒置計時器（防止立即重複觸發）
             self.notify_interaction()

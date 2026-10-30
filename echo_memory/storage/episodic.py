@@ -18,6 +18,7 @@ import logging
 import os
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -355,6 +356,60 @@ class EpisodicMemory:
                 self._save_unlocked()
                 logger.debug(
                     f"[EpisodicMemory] 標記 {marked}/{len(episode_ids)} 個 Episode 為 is_dreamed"
+                )
+
+            return marked
+
+    def unscanned_ids_below(self, max_salience: float) -> list[str]:
+        """
+        取得從未被 dream 週期評估、未 is_dreamed 且 salience_score < max_salience 的 Episode ID。
+
+        只在 _mem_lock 內掃記憶體字典，不取 storage_lock、不碰磁碟。
+        """
+        with self._mem_lock:
+            return [
+                ep.id for ep in self._episodes.values()
+                if not ep.is_dreamed
+                and ep.dream_scanned_at is None
+                and ep.salience_score < max_salience
+            ]
+
+    def mark_as_scanned(
+        self,
+        episode_ids: list[str],
+        at: datetime | None = None,
+        overwrite: bool = True,
+    ) -> int:
+        """
+        將指定的 Episode 標記為 dream 週期已評估（寫入 dream_scanned_at）並持久化。
+
+        不改動 is_dreamed，因此不影響蒸餾候選。
+
+        Args:
+            episode_ids: 要標記的 Episode ID 列表
+            at: 評估時間（預設現在，UTC）
+            overwrite: False 時只標記尚無 dream_scanned_at 的 Episode
+
+        Returns:
+            實際標記的數量（排除不存在的 ID）
+        """
+        if not episode_ids:
+            return 0
+        stamp = at or datetime.now(timezone.utc)
+        with storage_lock(self.lock_path):
+            self._load(reset=True)
+            marked = 0
+            with self._mem_lock:
+                for ep_id in episode_ids:
+                    ep = self._episodes.get(ep_id)
+                    if ep is not None and (overwrite or ep.dream_scanned_at is None):
+                        ep.dream_scanned_at = stamp
+                        marked += 1
+
+            if marked > 0:
+                self._save_unlocked()
+                logger.debug(
+                    f"[EpisodicMemory] 標記 {marked}/{len(episode_ids)} 個 Episode 為 dream_scanned"
                 )
 
             return marked

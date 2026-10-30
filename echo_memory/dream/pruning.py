@@ -347,7 +347,8 @@ class GraphPruning:
         """
         歸檔低價值節點（對齊 OpenSoul _archive_stale_nodes）。
 
-        條件：salience < 0.2 且 is_dreamed=True 且建立超過 30 天。
+        條件：graph 節點 salience < 0.2 且建立超過 30 天（不依賴 is_dreamed／dream_scanned_at；
+        節點上沒有這兩個欄位，低 salience 的遺忘不需等待 dream 標記）。
         標記 archived=True，不物理刪除。
         EcphoryRetrieval 的 expand_neighbors 應跳過 archived 節點。
 

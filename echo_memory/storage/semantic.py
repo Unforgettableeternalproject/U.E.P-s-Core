@@ -475,6 +475,36 @@ class SemanticMemory:
         )
         return results
 
+    def similarities_for(
+        self, concept_ids: Iterable[str], query_embedding: list[float],
+    ) -> dict[str, float]:
+        """指定概念與查詢向量的 cosine（唯讀）：不套 retrieval_weight、不遞增 access_count。
+
+        維度不符、查詢向量為零、概念無向量時該筆不出現在結果。供指名查詢先篩候選、再排序，
+        避免為了排序而動到不相干概念的存取計數。
+        """
+        query_vec = self._normalize_vector(query_embedding)
+        if not np.any(query_vec):
+            return {}
+        out: dict[str, float] = {}
+        with self._mem:
+            if self._embeddings is None or self._embeddings.shape[1] != query_vec.shape[0]:
+                return {}
+            for cid in concept_ids:
+                idx = self._id_to_index.get(cid)
+                if idx is None:
+                    continue
+                out[cid] = float(np.dot(self._embeddings[idx], query_vec))
+        return out
+
+    def record_access(self, concept_ids: Iterable[str]) -> None:
+        """對最終被召回的概念計一次存取（語意同 search_by_vector 的召回計數）。"""
+        with self._mem:
+            for cid in concept_ids:
+                concept = self._concepts_by_id.get(cid)
+                if concept is not None:
+                    concept.access_count += 1
+
     def find_similar_concepts(
         self,
         query_embedding: list[float],

@@ -51,8 +51,6 @@ logger = logging.getLogger("echo_memory.storage.share_layer")
 REVOCATIONS_FILENAME = "revocations.jsonl"
 AUDIT_FILENAME = "share_audit_log.jsonl"
 CONSUMPTIONS_FILENAME = "consumptions.jsonl"
-# 指名查詢（owner）模式的向量候選池下限：擁有者的投影可能排在其他成員之後
-_OWNER_POOL = 500
 CASCADE_PENDING_FILENAME = "cascade_pending.json"
 SEMANTIC_DIRNAME = "semantic"
 
@@ -948,7 +946,10 @@ class ScopeShareLayer:
             return []
         pool = max(top_k * 4, 20)
         if owner is not None:
-            pool = max(pool, _OWNER_POOL)
+            return self._search_owner_projections(
+                sem, idx, scope_id, query_embedding, str(owner),
+                top_k=top_k, min_similarity=min_similarity,
+            )
         out: list[ProjectionView] = []
         for concept, sim in sem.search_by_vector(
             list(query_embedding), top_k=pool, min_similarity=min_similarity,
@@ -957,12 +958,31 @@ class ScopeShareLayer:
                 continue
             if exclude_owner is not None and concept.metadata.get("owner_uid") == str(exclude_owner):
                 continue
-            if owner is not None and concept.metadata.get("owner_uid") != str(owner):
-                continue
             out.append(self._view(concept, scope_id, similarity=float(sim)))
             if len(out) >= top_k:
                 break
         return out
+
+    def _search_owner_projections(
+        self, sem: Any, idx: _Index, scope_id: str, query_embedding: list[float], owner: str,
+        *, top_k: int, min_similarity: float,
+    ) -> list[ProjectionView]:
+        """指名模式：先以 owner_uid 結構化篩出該成員的可見投影，再只對它們算 cosine 排序。
+
+        不走 search_by_vector（它會替整個候選池遞增 access_count，扭曲他人投影的 Frequency 權重）；
+        只有最終回傳的投影才計一次存取。
+        """
+        mine = [
+            c for c in self._projection_concepts(sem)
+            if self._visible(c, idx) and (c.metadata or {}).get("owner_uid") == owner
+        ]
+        sims = sem.similarities_for([c.id for c in mine], query_embedding)
+        ranked = sorted(
+            ((c, sims[c.id]) for c in mine if c.id in sims and sims[c.id] >= min_similarity),
+            key=lambda pair: pair[1], reverse=True,
+        )[:top_k]
+        sem.record_access([c.id for c, _ in ranked])
+        return [self._view(c, scope_id, similarity=float(sim)) for c, sim in ranked]
 
     def query_dimension_mismatch(self, scope: Any, query_embedding: list[float]) -> tuple[int, int] | None:
         """scope 的概念向量維度與查詢向量不符時回傳 (資料維度, 查詢維度)，否則 None（供 retrieve_shared 標 degraded）。"""

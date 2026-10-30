@@ -211,6 +211,27 @@ class TestOwnerRecall:
         _, _, pid = share_one(target, text="我最近在玩一款新遊戲", name="新遊戲")
         assert self.recall(scope_engine, query=SUMMARY).ids == [pid]
 
+    def test_does_not_bump_access_count_of_other_members(self, root, layer, scope_engine):
+        """指名查詢只替最終回傳的投影計存取，不動其他成員投影的 access_count。"""
+        for i in range(4):
+            share_one(make_owner(root, layer, f"30{i}"), text=f"我喜歡爵士樂{i}", name=f"概念{i}")
+        target = make_owner(root, layer, "1001")
+        _, _, pid = share_one(target, name="新遊戲")
+        sem = layer._semantic("scope-g42")
+
+        def counts() -> dict[str, int]:
+            return {
+                (c.metadata or {}).get("projection_id"): c.access_count
+                for c in layer._projection_concepts(sem)
+            }
+
+        before = counts()
+        for query in (SUMMARY, "他最近在玩什麼", ""):
+            assert self.recall(scope_engine, query=query).ids in ([pid], [])
+        after = counts()
+        assert {k: v for k, v in after.items() if k != pid} == {k: v for k, v in before.items() if k != pid}
+        assert after[pid] == before[pid] + 1  # 只有 SUMMARY 那次命中；空 query 走列表不計向量召回
+
     def test_unknown_owner_returns_empty(self, root, layer, scope_engine):
         share_one(make_owner(root, layer, "1001"))
         got = self.recall(scope_engine, owner="9999")

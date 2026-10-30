@@ -40,7 +40,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from echo_stream.contracts.cancellation import CancellationToken
-from echo_stream.contracts.output import CommitMode, TurnRequest, TurnTicket
+from echo_stream.contracts.output import (
+    CommitMode,
+    OutcomeStatus,
+    TurnRequest,
+    TurnTicket,
+)
 from echo_stream.contracts.stages import AudioSink
 from echo_stream.contracts.types import Utterance
 from echo_stream.core.coordinator import TurnCoordinator
@@ -51,6 +56,7 @@ from uep.echo.config import EchoOutputConfig
 from uep.echo.endpoint import DeferredCoreApi, EchoEndpoint, StopNotice
 from uep.echo.loop import EsLoop
 from uep.echo.memory import GuildRoster, make_memory_resolver
+from uep.echo.metrics import Metrics
 from uep.echo.outcomes import facts_from_outcome
 from uep.echo.policy import CoreYieldPolicy, HostPolicySource
 from uep.echo.services import EchoServices
@@ -84,7 +90,6 @@ from uep.turn.models import (
 )
 from uep.turn.orchestrator import (
     ACTOR_ECHO,
-    REJECTION_REASONS,
     RETRACT_REASONS,
     SOURCE_ECHO,
     ShadowRecord,
@@ -233,9 +238,10 @@ class EchoPipelineHost:
         self._input_failed = False
         self._closed = False  # 宿主生命週期：停止開始後不再簽新 ticket（aclose 後的 submit 由 ES 回 VOIDED）
         self.lease_result: AcquireResult | None = None
-        self.metrics: Counter[str] = Counter()
+        self.metrics: Metrics = Metrics()
         self.discarded_by_turn: Counter[str] = Counter()
         self._retract_tasks: set[asyncio.Future[Any]] = set()  # 只在 ES loop 執行緒上存取
+        self._pollers: set[asyncio.Future[Any]] = set()  # 播放進度輪詢任務（只在 ES loop 上存取）
         self.dispatch_ms_max = 0.0  # D73：一句從首 chunk 寫入到 dispatch 完成的最大耗時（毫秒）
         self._tool_seq: Counter[str] = Counter()  # turn_id -> 已補記的工具呼叫數（冪等鍵；只在工作緒上存取）
         self.tool_executor: CoreToolExecutor | None = None
@@ -244,7 +250,8 @@ class EchoPipelineHost:
         if memory is not None and hasattr(think, "tool_executor") and hasattr(think, "tools"):
             # D79：ES 內建記憶工具由 Host 白名單放行，一律經 Access Layer（retrieve 的 memory_resolver 同理）
             self.tool_executor = CoreToolExecutor(
-                memory, self.roster, on_action=self._record_tool_action, metrics=self.metrics
+                memory, self.roster, on_action=self._record_tool_action, metrics=self.metrics,
+                audience_ok=self._audience_allowed,
             )
             think.tool_executor = self.tool_executor
             self._refresh_tools()
@@ -263,6 +270,18 @@ class EchoPipelineHost:
             if allowed is None or scope_rank(ctx.audience_scope) > scope_rank(allowed):
                 return "audience_not_allowed"
         return None
+
+    def _audience_allowed(self, audience: str) -> bool:
+        """Gate 目前的 presence audience 是否仍允許 ``audience``（只讀記憶體；沒有 provider = 不限制）。"""
+        services = self._services
+        provider = services.presence_audience if services is not None else None
+        if not callable(provider):
+            return True
+        allowed = provider()
+        try:
+            return allowed is not None and scope_rank(audience) <= scope_rank(allowed)
+        except ValueError:
+            return False
 
     def _participant_count(self, ctx: SessionContext) -> int | None:
         """在場人數（含說話者）：只有有 guild 的 session 才知道；未知回 None（決策預設視為單人）。"""
@@ -467,6 +486,8 @@ class EchoPipelineHost:
                 logger.exception("輸入 stage 關閉失敗")
         if self.coordinator is not None:
             await self.coordinator.aclose()  # cancel_all(shutdown) + join；commit 都在這裡完成
+        for poller in list(self._pollers):
+            poller.cancel()
         pending = list(self._retract_tasks)
         if pending:
             await asyncio.wait(pending, timeout=self._stop_timeout_s)  # 撤回歷史要在 stage 關閉之前做完
@@ -502,7 +523,7 @@ class EchoPipelineHost:
             raise EchoHostError("submit_tick 會寫 DB，不可在 ES loop 執行緒上呼叫")
         # tick 不可長時間占住 intake 鎖（utterance 的決策不該被它擋住）：拿不到就略過這一次，下一個 tick 再來
         if not self._intake_lock.acquire(timeout=0.05):
-            self.metrics["echo.tick_skipped_contended"] += 1
+            self.metrics.inc("echo.tick_skipped_contended")
             return []
         try:
             if self._closed or not self._started or self._switching:
@@ -566,6 +587,11 @@ class EchoPipelineHost:
             if self._live.pop(ticket.turn_id, None) is runtime:
                 self._end_unsubmitted(ticket, "upstream_error")
             return
+        late = self.orchestrator.cancel_reason_of(ticket.turn_id)
+        if late is not None:
+            # submit 的空窗裡 Core 已登記取消（撤銷、全域停止）：端點的通知找不到這一輪，這裡補一次，
+            # 確保 ES 的原因碼正確、也不白跑生成
+            self._cancel_in_es(ticket.turn_id, late)
 
     def _build_request(
         self, ticket: CoreTicket, fact: UtteranceFact, runtime: _TurnRuntime | None = None
@@ -631,7 +657,7 @@ class EchoPipelineHost:
         if self._input_stage is None:
             return False
         if self._closed or not self.presence_active:
-            self.metrics["echo.feed_dropped_absent"] += 1
+            self.metrics.inc("echo.feed_dropped_absent")
             return False
         self._input_stage.feed(speaker_ref, pcm, ts)
         return True
@@ -664,14 +690,14 @@ class EchoPipelineHost:
                 raise
             except Exception:
                 logger.exception("輸入 stage 的 utterance 流中斷")
-                self.metrics["echo.input_failures"] += 1
+                self.metrics.inc("echo.input_failures")
                 self._enqueue(functools.partial(self._publish_health, "degraded"), "health_degraded")
                 if restarts >= _INPUT_RESTARTS or self._closed:
                     self._input_failed = True  # 不能重啟：started 反映真實狀態
                     self._enqueue(functools.partial(self._publish_health, "unavailable"), "health_unavailable")
                     return
                 restarts += 1
-                self.metrics["echo.input_restarts"] += 1
+                self.metrics.inc("echo.input_restarts")
 
     def _publish_health(self, status: str) -> None:
         try:
@@ -792,7 +818,7 @@ class EchoPipelineHost:
         不要讓切換之後的 guild 套到舊事件上。"""
         ctx = session or self._session
         if not _SPEAKER_REF.fullmatch(speaker_ref or "") or not _ROLE.fullmatch(role or ""):
-            self.metrics["echo.invalid_participant"] += 1
+            self.metrics.inc("echo.invalid_participant")
             return
         platform, _, uid = speaker_ref.partition(":")
         if ctx.guild_id is not None:
@@ -800,7 +826,7 @@ class EchoPipelineHost:
                 (self.roster.join if joined else self.roster.leave)(ctx.guild_id, uid)
             else:
                 # roster 以平台 uid 為鍵（不含前綴）：平台前綴與 session 不符就不更新，避免跨平台同 uid 碰撞
-                self.metrics["echo.participant_platform_mismatch"] += 1
+                self.metrics.inc("echo.participant_platform_mismatch")
         if not joined:
             self.orchestrator.on_participant_left(speaker_ref)  # 離場者留在 buffer 的文字不再被決策使用
         self._sync_participants(ctx)  # 人數影響耦合度與主動／被動，先於快照推送（模式翻轉會另推一版）
@@ -836,7 +862,30 @@ class EchoPipelineHost:
         self._wrappers.setdefault(ticket.turn_id, []).append(wrapper)
         while len(self._wrappers) > 64:
             self._wrappers.popitem(last=False)
+        self._start_poller(wrapper)
         return wrapper  # type: ignore[return-value]
+
+    def _start_poller(self, wrapper: AdmittingSink) -> None:
+        """ES loop 上：輕量輪詢播放進度（間隔為設定值）；TTS 比播放快時沒有後續 write 可觸發。"""
+        interval = self.output.progress_poll_interval_s
+        if interval <= 0:
+            return
+        try:
+            task = asyncio.ensure_future(self._poll_progress(wrapper, interval))
+        except RuntimeError:
+            return
+        self._pollers.add(task)
+        task.add_done_callback(self._pollers.discard)
+
+    async def _poll_progress(self, wrapper: AdmittingSink, interval: float) -> None:
+        try:
+            while not wrapper.stopped and not wrapper.progress_done and wrapper.turn_id in self._live:
+                await asyncio.sleep(interval)
+                wrapper.check_progress()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("播放進度輪詢失敗")
 
     def _admit(self, ticket: CoreTicket) -> GateDecision:
         """第二次接納（本地、只讀記憶體）：Lease 與 TTL 由端點判斷，再比對 turn_generation。"""
@@ -859,6 +908,9 @@ class EchoPipelineHost:
         # 提議在 ES 真的開始 think 時才算被採用：回饋 proposer（dropped_busy、void、讓位的輪不會走到這裡）
         self._enqueue(functools.partial(self.orchestrator.on_think_started, ticket.turn_id), "think_started")
         if attempt_id >= 2:
+            runtime = self._live.get(ticket.turn_id)
+            if runtime is not None:
+                runtime.tool_context.pop("member_recall_ids", None)  # 丟棄舊回覆：它看到的投影不再算數
             self._enqueue(
                 functools.partial(self.orchestrator.on_attempt_started, ticket.turn_id, attempt_id, "regen"),
                 "attempt_started",
@@ -898,7 +950,7 @@ class EchoPipelineHost:
         self._refuse_turn(ticket.turn_id, "admission_rejected")
 
     def _on_discard(self, wrapper: AdmittingSink) -> None:
-        self.metrics["echo.discarded_chunks"] += 1
+        self.metrics.inc("echo.discarded_chunks")
         self.discarded_by_turn[wrapper.turn_id] += 1
 
     def _on_turn_ended(self, outcome: Any) -> None:
@@ -911,14 +963,14 @@ class EchoPipelineHost:
             # D5：被拒、撤銷、停止的輪一律整輪撤出歷史；ES 沒有確認已撤回（認領落在 commit 之後、撤回失敗、
             # 或 outcome 不是這次的宿主取消）就自行補一次，失敗要看得到
             if facts.history_retract_error:
-                self.metrics["echo.history_retract_error"] += 1
+                self.metrics.inc("echo.history_retract_error")
                 logger.warning("ES 回報撤回歷史失敗：%s", facts.history_retract_error.split(":", 1)[0])
             if facts.history_retracted is not True:
                 self._start_retract(outcome.turn_id)
         evidence: list[tuple[AdmittingSink, list[SentenceEvidence]]] = []
         for wrapper in runtime.wrappers:
             try:
-                evidence.append((wrapper, wrapper.collect_evidence()))
+                evidence.append((wrapper, wrapper.collect_evidence(finished=outcome.status is OutcomeStatus.COMPLETED)))
             except Exception:
                 logger.exception("計算播放範圍失敗")
         self._enqueue(
@@ -949,25 +1001,19 @@ class EchoPipelineHost:
         except Exception:
             # fail-closed：dispatch 任一步失敗就比照被拒處理，不能讓這一輪在沒有 delivery 紀錄下繼續出聲
             logger.exception("intent dispatch 失敗：%s#%s", intent.output_id, index)
-            self.metrics["echo.dispatch_errors"] += 1
-            self._refuse_turn_threadsafe(wrapper.turn_id, "dispatch_failed")
+            self.metrics.inc("echo.dispatch_errors")
+            self._refuse_turn(wrapper.turn_id, "dispatch_failed")  # 工作緒上直接取消（兩者都執行緒安全）
             return
         wrapper.delivery_ids[index] = record.delivery_id
         if started is not None:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.dispatch_ms_max = max(self.dispatch_ms_max, elapsed_ms)
             if elapsed_ms > self.output.dispatch_budget_ms:
-                self.metrics["echo.dispatch_over_budget"] += 1  # 只記錄，不丟棄也不降級（S6 量測後校正預算）
+                self.metrics.inc("echo.dispatch_over_budget")  # 只記錄，不丟棄也不降級（S6 量測後校正預算）
         if record.status in _DISPATCH_REFUSED:
             # Gate 或端點二次接納拒絕：delivery 已由 Manager 記為 rejected／cancelled
-            self.metrics["echo.dispatch_refused"] += 1
-            self._refuse_turn_threadsafe(wrapper.turn_id, "dispatch_refused")
-
-    def _refuse_turn_threadsafe(self, turn_id: str, reason: str) -> None:
-        try:
-            self._es.call_soon(self._refuse_turn, turn_id, reason)
-        except RuntimeError:
-            self.orchestrator.cancel_turn(turn_id, reason)  # ES loop 已停：至少讓 generation 前進
+            self.metrics.inc("echo.dispatch_refused")
+            self._refuse_turn(wrapper.turn_id, "dispatch_refused")
 
     def _refuse_turn(self, turn_id: str, reason: str) -> None:
         """輸出被拒、dispatch 失敗：Core 登記取消原因（generation 前進，終結事件為 turn.cancelled），
@@ -989,9 +1035,9 @@ class EchoPipelineHost:
             logger.warning("cancel_turn 參數不合法：%s", reason[:_REASON_CODE_MAX])
             claimed = False
         if claimed:
-            self.metrics["echo.cancel_turn_claimed"] += 1
+            self.metrics.inc("echo.cancel_turn_claimed")
             return True
-        self.metrics["echo.cancel_turn_missed"] += 1
+        self.metrics.inc("echo.cancel_turn_missed")
         logger.debug("cancel_turn 未認領（%s，%s）：改自行撤回歷史", turn_id, reason)
         self._schedule_retract(turn_id)
         return False
@@ -1000,7 +1046,7 @@ class EchoPipelineHost:
         try:
             self._es.call_soon(self._start_retract, turn_id)
         except RuntimeError:
-            self.metrics["echo.history_retract_skipped"] += 1  # ES loop 已停：沒有 think 可呼叫
+            self.metrics.inc("echo.history_retract_skipped")  # ES loop 已停：沒有 think 可呼叫
 
     def _start_retract(self, turn_id: str) -> None:
         """ES loop 上：排一個撤回任務（``think.retract`` 是 coroutine，冪等、重複呼叫無害）。"""
@@ -1011,15 +1057,15 @@ class EchoPipelineHost:
     async def _retract(self, turn_id: str) -> None:
         retract = getattr(self.think, "retract", None)
         if retract is None:
-            self.metrics["echo.history_retract_failed"] += 1
+            self.metrics.inc("echo.history_retract_failed")
             return
         try:
             ok = await retract(turn_id)
         except Exception as exc:  # noqa: BLE001 - 撤回失敗只記 metric 與例外類別，不影響回合
-            self.metrics["echo.history_retract_failed"] += 1
+            self.metrics.inc("echo.history_retract_failed")
             logger.warning("think.retract 失敗：%s", type(exc).__name__)
             return
-        self.metrics["echo.history_retracted" if ok is True else "echo.history_retract_failed"] += 1
+        self.metrics.inc("echo.history_retracted" if ok is True else "echo.history_retract_failed")
 
     def _publish_rejection(self, ticket: CoreTicket, wrapper: AdmittingSink, decision: GateDecision) -> None:
         a = ticket.auth
@@ -1044,7 +1090,8 @@ class EchoPipelineHost:
     ) -> None:
         for wrapper, items in evidence:
             self._report_evidence(wrapper, items)
-        rejected = self.orchestrator.cancel_reason_of(ticket.turn_id) in REJECTION_REASONS
+        # 被拒、撤銷、停止的輪不寫記憶（與整輪撤回歷史一致）
+        rejected = self.orchestrator.cancel_reason_of(ticket.turn_id) in RETRACT_REASONS
         self.orchestrator.on_turn_ended(ticket.turn_id, facts)
         self._tool_seq.pop(ticket.turn_id, None)
         if not rejected:
@@ -1103,7 +1150,8 @@ class EchoPipelineHost:
         if gen is None:
             known = set(targets)
             targets += [v.turn_id for v in coordinator.live_turns() if v.turn_id not in known]
-        for turn_id in targets:
+        # 由新到舊：排隊中的輪先被認領，隊首的輪取消後釋放 think 鎖時，後面的輪已是宿主取消，不會趁隙開始生成
+        for turn_id in reversed(targets):
             self._cancel_in_es(turn_id, notice.reason)
 
     # ---- D79：工具呼叫事後補記 ----
@@ -1115,7 +1163,7 @@ class EchoPipelineHost:
     def _publish_tool_action(self, turn_id: str, name: str, tool_class: str, status: str) -> None:
         ticket = self.orchestrator.ticket_of(turn_id)
         if ticket is None:
-            self.metrics["echo.tool_action_orphan"] += 1
+            self.metrics.inc("echo.tool_action_orphan")
             return
         self._tool_seq[turn_id] += 1
         draft = EventDraft(

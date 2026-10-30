@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 import threading
@@ -48,6 +49,28 @@ TOOL_CLASSES: Mapping[str, str] = {
     "deep_recall": "internal_read", "force_remember": "reversible_local", "member_recall": "internal_read",
 }
 MEMBER_RECALL = "member_recall"
+# 與 ES 的 MEMBER_RECALL_SCHEMA 對齊（echo_stream.adapters.memory_echo，e31eac0；不 import）。真 echo_memory 的工具宣告
+# 沒有 member_recall，所以由 Access Layer 自己提供 schema 並直接實作（不走通用 tool backend）。
+MEMBER_RECALL_SCHEMA: Mapping[str, Any] = {
+    "name": MEMBER_RECALL,
+    "description": (
+        "查詢同一個伺服器裡某位成員在共享記憶中可被看到的內容（例如使用者問「你認識某某嗎？"
+        "他最近在玩什麼？」）。member 填成員的名稱；query 可選，填想了解的主題，留空則取最近的內容。"
+        "只在使用者明確問到特定成員時呼叫；查不到只代表目前沒有可用的共享內容。"
+        "Look up what is shared about one named member of this server; call only when the "
+        "user asks about that member."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "member": {"type": "string", "description": "成員名稱（顯示名稱或暱稱）。"},
+            "query": {"type": "string", "description": "想了解的主題，可留空。"},
+        },
+        "required": ["member"],
+    },
+}
+_UNKNOWN_MEMBER_LABEL = "這位成員"
+_MEMBER_LABEL_MAX = 40
 
 
 class MemoryRuntime(Protocol):
@@ -73,6 +96,9 @@ class GuildMembership(Protocol):
     ``members`` 回傳該場域成員的平台使用者 id（與身分映射的 ``platform_uid`` 同一格式），
     ``present_uids`` 只會被裁成它的子集。
 
+    選用 ``display_name(guild_id, uid) -> str``（``GuildRoster`` 有）：共享脈絡渲染時把 uid 換成顯示名；沒有或查無
+    一律用泛稱，**不得把原始 uid 帶進 prompt**。
+
     成員集合的定義（Bernie 裁決）：由平台轉接器經 ``GuildRoster.set_members`` 提供。bot 的人員名單
     （PeopleStore／stt_people）裡的人預設視為伺服器成員，轉接器可交給 Core ``guild.members`` 與 PeopleStore 的聯集；
     Core 不自己讀 PeopleStore。``is_member``、``members``、``roster`` 都以這份集合為準。"""
@@ -83,7 +109,8 @@ class GuildMembership(Protocol):
 
 
 class MemoryToolBackend(Protocol):
-    """記憶工具（deep_recall／force_remember）的後端，由宿主依真 engine 的 llm_integration 實作；S2 不內建。"""
+    """記憶工具（deep_recall／force_remember）的後端，由宿主依真 engine 的 llm_integration 實作；S2 不內建。
+    ``member_recall`` 不在這裡：真 engine 的工具宣告沒有它，由 Access Layer 直接以 ``retrieve_shared`` 實作。"""
 
     def definitions(self) -> list[dict[str, Any]]: ...
 
@@ -289,7 +316,7 @@ class MemoryAccessLayer:
         result = self._runtime.call(namespace_id, work, timeout_s=timeout)
         degraded = bool(getattr(result, "degraded", False))
         return RetrieveResult(
-            text=_clip(result.to_text() or "", max_chars),
+            text=_clip(result.to_text(self._display_name_fn(guild_id)) or "", max_chars),
             memory_status=MemoryStatus.DEGRADED_NO_MEMORY if degraded else MemoryStatus.OK,
             degraded_reason=str(getattr(result, "degraded_reason", "") or "") if degraded else "",
             shared_ids=tuple(getattr(result, "ids", ()) or ()),
@@ -396,9 +423,17 @@ class MemoryAccessLayer:
             return ""
 
     def tool_definitions(self) -> list[dict[str, Any]]:
-        if self._tool_backend is None:
-            return []
-        return [d for d in self._tool_backend.definitions() if _tool_name(d) in TOOL_CLASSES]
+        """白名單內的工具宣告：後端提供的 deep_recall／force_remember，加上 Access Layer 自己的 member_recall
+        （需要成員資格 Port 才曝光；執行時仍逐次 fail-closed）。"""
+        defs: list[dict[str, Any]] = []
+        if self._tool_backend is not None:
+            defs = [
+                d for d in self._tool_backend.definitions()
+                if _tool_name(d) in TOOL_CLASSES and _tool_name(d) != MEMBER_RECALL
+            ]
+        if self._membership is not None:
+            defs.append({"type": "function", "function": dict(MEMBER_RECALL_SCHEMA)})
+        return defs
 
     def execute_tool(
         self, name: str, args: Mapping[str, Any], *, actor_id: str | None, audience: str,
@@ -406,13 +441,16 @@ class MemoryAccessLayer:
     ) -> dict[str, Any]:
         """白名單再擋一次；audience 不能看就拒絕。失敗結果帶 ``code``（denied／timeout／failed）供稽核，成功結果不變。
 
-        ``deep_recall``／``force_remember`` 碰 owner 私人範圍；``member_recall`` 碰共享層（場域成員記憶），
-        只認 ``context`` 內 Core 寫入的 ``guild_id``／``member_uid``（已由轉接層用 roster 解析）／``present_uids``，
-        LLM 給的 ``args`` 不能指定範圍；檢查沿用 ``_admit``（audience、成員資格 fail-closed）。"""
-        if self._tool_backend is None or name not in TOOL_CLASSES:
+        ``deep_recall``／``force_remember`` 碰 owner 私人範圍，引數依後端宣告的 schema 白名單過濾；``member_recall``
+        碰共享層（場域成員記憶），由這裡直接以 ``retrieve_shared(owner_uid=...)`` 實作，只認 ``context`` 內 Core 寫入的
+        ``guild_id``／``member_uid``（已由轉接層用 roster 解析）／``present_uids``，LLM 給的 ``args`` 不能指定範圍；
+        檢查沿用 ``_admit``（audience、成員資格 fail-closed）。"""
+        if name not in TOOL_CLASSES:
             return _tool_denied(name)
         if name == MEMBER_RECALL:
             return self._execute_member_recall(args, actor_id, audience, session_id, context)
+        if self._tool_backend is None:
+            return _tool_denied(name)
         ident = self._identity.resolve_actor(actor_id)
         if ident.owner_id is None:
             return _tool_denied(name)
@@ -424,7 +462,22 @@ class MemoryAccessLayer:
         namespace_id = self._runtime.namespace_for_owner(ident.owner_id)
         if namespace_id is None:
             return _tool_denied(name)
-        return self._run_tool(namespace_id, name, args, self._current_session(session_id))
+        return self._run_tool(namespace_id, name, self._allowed_args(name, args), self._current_session(session_id))
+
+    def _allowed_args(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        """依後端宣告的 schema（``parameters.properties``）過濾 LLM 給的引數；沒有宣告任何參數就一個都不傳。"""
+        backend = self._tool_backend
+        props: Mapping[str, Any] = {}
+        if backend is not None:
+            for d in backend.definitions():
+                if _tool_name(d) != name:
+                    continue
+                fn = d.get("function") if isinstance(d.get("function"), Mapping) else d
+                params = fn.get("parameters") if isinstance(fn, Mapping) else None
+                declared = params.get("properties") if isinstance(params, Mapping) else None
+                props = declared if isinstance(declared, Mapping) else {}
+                break
+        return {k: v for k, v in args.items() if k in props}
 
     def _run_tool(self, namespace_id: str, name: str, args: Mapping[str, Any], sid: str) -> dict[str, Any]:
         backend = self._tool_backend
@@ -439,6 +492,22 @@ class MemoryAccessLayer:
         except Exception as exc:  # noqa: BLE001 - 對外降級；只記例外類別，不記內容
             logger.warning("記憶工具執行失敗：%s %s", name, type(exc).__name__)
             return {"success": False, "result": "tool failed", "code": "failed"}
+
+    def _display_name_fn(self, guild_id: str) -> Callable[[str], str]:
+        """uid -> 顯示名；查無或沒有名冊來源一律回泛稱（原始 uid 不得進 prompt）。"""
+        source = getattr(self._membership, "display_name", None)
+
+        def resolve(uid: str) -> str:
+            if callable(source):
+                try:
+                    label = " ".join(str(source(guild_id, str(uid)) or "").split())
+                except Exception:  # noqa: BLE001 - 名稱只是顯示
+                    label = ""
+                if label:
+                    return label[:_MEMBER_LABEL_MAX]
+            return _UNKNOWN_MEMBER_LABEL
+
+        return resolve
 
     def _execute_member_recall(
         self, args: Mapping[str, Any], actor_id: str | None, audience: str, session_id: str | None,
@@ -456,12 +525,57 @@ class MemoryAccessLayer:
         members = {str(m) for m in self._membership.members(guild_id)}
         if member_uid not in members:
             return _tool_denied(MEMBER_RECALL)  # 目標不是這個場域的成員：不碰 engine
-        present = [str(u) for u in (ctx.get("present_uids") or ()) if str(u) in members]
-        call_args = {
-            "query": str(args.get("query") or "").strip(), "member_uid": member_uid,
-            "viewer_uid": ident.platform_uid or "", "present_uids": present, "scope_id": f"guild:{guild_id}",
-        }
-        return self._run_tool(namespace_id, MEMBER_RECALL, call_args, self._current_session(session_id))
+        present = tuple(str(u) for u in (ctx.get("present_uids") or ()) if str(u) in members)
+        viewer = ident.platform_uid or ""
+        query = str(args.get("query") or "").strip()
+        display_name = self._display_name_fn(guild_id)
+        label = display_name(member_uid)
+
+        def work(engine: MemoryEngineLike) -> dict[str, Any]:
+            fn = getattr(engine, "retrieve_shared", None)
+            if fn is None:
+                return {"success": False, "result": "tool failed", "code": "failed"}
+            if not _declares_param(fn, "owner_uid"):
+                # 簽名保險：engine 不認得 owner_uid 時回空，不可退化成不篩選的全體查詢（會撈出別人的投影）
+                self._metrics.inc("memory.member_recall.no_owner_uid")
+                return {"success": True, "result": _member_empty(label)}
+            result = fn(
+                query, scope_id=f"guild:{guild_id}", viewer_uid=viewer, present_uids=present, owner_uid=member_uid,
+            )
+            if bool(getattr(result, "degraded", False)):
+                return {"success": False, "result": "目前無法查詢這位成員的共享內容。", "code": "failed"}
+            text = result.to_text(display_name) or ""
+            if not text:
+                return {"success": True, "result": _member_empty(label)}
+            return {
+                "success": True,
+                "result": f"以下是「{label}」（本伺服器成員）在伺服器裡提過、可分享的內容：\n{text}",
+                "shared_ids": [str(i) for i in (getattr(result, "ids", ()) or ())],
+            }
+
+        try:
+            return dict(self._runtime.call(namespace_id, work, timeout_s=self._store_timeout_s))
+        except TimeoutError:
+            self._metrics.inc("memory.tool.timeout")
+            return {"success": False, "result": "tool timeout", "code": "timeout"}
+        except Exception as exc:  # noqa: BLE001 - 對外降級；只記例外類別，不記內容
+            logger.warning("member_recall 執行失敗：%s", type(exc).__name__)
+            return {"success": False, "result": "tool failed", "code": "failed"}
+
+
+def _declares_param(fn: Any, name: str) -> bool:
+    """``fn`` 的簽名是否明確宣告名為 ``name`` 的參數；只有 ``**kwargs`` 或簽名讀不到都算否（與 ES 同規則）。"""
+    try:
+        param = inspect.signature(fn).parameters.get(name)
+    except (TypeError, ValueError):
+        return False
+    return param is not None and param.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY,
+    )
+
+
+def _member_empty(label: str) -> str:
+    return f"「{label}」是本伺服器成員，但目前沒有可分享的內容。"
 
 
 def _tool_denied(name: str) -> dict[str, Any]:

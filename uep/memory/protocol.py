@@ -45,7 +45,7 @@ class MemoryEngineLike(Protocol):
 
     def retrieve_shared(
         self, query: str, *, scope_id: str, viewer_uid: str, present_uids: Sequence[Any] = (),
-        top_k: int | None = None, min_similarity: float | None = None,
+        top_k: int | None = None, min_similarity: float | None = None, owner_uid: str | None = None,
     ) -> Any: ...
 
     def store_episode(

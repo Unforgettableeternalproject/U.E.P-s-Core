@@ -10,6 +10,8 @@ executor，讓工具呼叫一律經 Core 的 Access Layer（audience／ACL 過�
 - ``member_recall`` 的名稱解析用 ``GuildRoster``（顯示名與別名由平台轉接器提供）；解析不到或不只一位符合，
   不碰 engine、請模型先向使用者確認。LLM 實際看到的投影 id 寫回 ``tool_context["member_recall_ids"]``，
   回覆後由宿主併入 ``shared_context_ids``。
+- 呼叫當下重取在場名單（``roster.present_uids``，不信 ``tool_context`` 建立時的快照），並再比對一次 Gate 目前的
+  presence audience（``audience_ok``）；任一不成立就拒絕。
 - 阻塞的 Access Layer 呼叫丟到 executor 執行，不卡 ES 的 loop。
 - 執行後交給 ``on_action(turn_id, name, tool_class, status)`` 事後補記 ``action.*`` 事件（payload 只有分類與結果碼，
   不放引數與結果原文）；被拒絕與解析不到成員的呼叫不補記（沒有任何動作發生），只計數。
@@ -18,12 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import Executor
 from typing import Any
 
 from uep.echo.memory import GuildRoster
+from uep.echo.metrics import Metrics
 from uep.memory.access import MEMBER_RECALL, TOOL_CLASSES
 from uep.memory.protocol import MemoryPort
 
@@ -45,14 +47,15 @@ class CoreToolExecutor:
     def __init__(
         self, memory: MemoryPort, roster: GuildRoster, *, on_action: ActionRecorder | None = None,
         executor: Executor | None = None, max_chars: int = DEFAULT_TOOL_MAX_CHARS,
-        metrics: Counter[str] | None = None,
+        metrics: Metrics | None = None, audience_ok: Callable[[str], bool] | None = None,
     ) -> None:
         self._memory = memory
         self._roster = roster
         self._on_action = on_action
         self._executor = executor
         self._max_chars = max_chars
-        self.metrics: Counter[str] = metrics if metrics is not None else Counter()
+        self._audience_ok = audience_ok
+        self.metrics: Metrics = metrics if metrics is not None else Metrics()
 
     async def __call__(
         self, name: str, args: Mapping[str, Any], *, context: dict[str, Any] | None = None
@@ -61,9 +64,9 @@ class CoreToolExecutor:
         code = outcome.pop("code", None) if isinstance(outcome, dict) else None
         status = self._status(outcome, code)
         if status in ("denied", "not_found"):
-            self.metrics[f"echo.tool.{status}"] += 1  # 沒有任何動作發生：只計數、不補記 action 事件
+            self.metrics.inc(f"echo.tool.{status}")  # 沒有任何動作發生：只計數、不補記 action 事件
         else:
-            self.metrics[f"echo.tool.{status}"] += 1
+            self.metrics.inc(f"echo.tool.{status}")
             turn_id = context.get("ticket_ref") if isinstance(context, dict) else None
             if self._on_action is not None and isinstance(turn_id, str):
                 try:
@@ -90,6 +93,8 @@ class CoreToolExecutor:
         actor_id, audience = context.get("actor_id"), context.get("audience")
         if not isinstance(audience, str) or not audience:
             return _denied(name)
+        if self._audience_ok is not None and not self._audience_ok(audience):
+            return _denied(name)  # Gate 目前允許的 audience 已收窄（例如撤銷、切換）：不依 context 的舊值放行
         session_id = context.get("segment_id")
         call_context: dict[str, Any] | None = None
         if name == MEMBER_RECALL:
@@ -101,7 +106,7 @@ class CoreToolExecutor:
             if uid is None:
                 return {"success": True, "result": MEMBER_NOT_FOUND, "code": "not_found"}
             call_context = {
-                "guild_id": guild_id, "member_uid": uid, "present_uids": list(context.get("present_uids") or ()),
+                "guild_id": guild_id, "member_uid": uid, "present_uids": self._roster.present_uids(guild_id),
             }
         loop = asyncio.get_running_loop()
         try:

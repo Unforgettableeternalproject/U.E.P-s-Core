@@ -11,6 +11,8 @@
 - ``dispatch_budget_ms``（D73 (A) 暫定值，S6 量測後校正）：一句從第一個 chunk 寫入 sink，到該句 intent 完成
   ``DeliveryManager.dispatch`` 的增量上限。dispatch 在工作緒進行、不擋 ES 的音訊路徑，超出只記 metric
   （``echo.dispatch_over_budget``）與最大值，不丟棄、不降級。
+- ``progress_poll_interval_s``：播放進度在 ES loop 上的輕量輪詢間隔（秒）。TTS 比播放快時（所有 chunk 一次寫完）
+  沒有後續 ``write`` 可觸發進度回報，靠輪詢讓已播畢的句子即時升證據（V08）。0 = 不輪詢（只在 write 與輪結束時回報）。
 """
 from __future__ import annotations
 
@@ -25,9 +27,12 @@ class EchoOutputConfig:
     commit_mode: str = "settled"
     history_spoken_only: bool = False
     dispatch_budget_ms: float = DEFAULT_DISPATCH_BUDGET_MS
+    progress_poll_interval_s: float = 0.25
 
     def __post_init__(self) -> None:
         if self.commit_mode not in COMMIT_MODES:
             raise ValueError(f"commit_mode 必須是 {COMMIT_MODES} 之一：{self.commit_mode!r}")
         if self.dispatch_budget_ms < 0:
             raise ValueError("dispatch_budget_ms 不可為負")
+        if self.progress_poll_interval_s < 0:
+            raise ValueError("progress_poll_interval_s 不可為負")

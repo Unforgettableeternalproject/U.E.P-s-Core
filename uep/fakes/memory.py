@@ -40,15 +40,34 @@ class FakeMemoryContext:
         return "\n".join(self.texts)
 
 
+@dataclass(frozen=True)
+class FakeSharedItem:
+    """共享投影：``owner`` 為投影擁有者 uid，``about`` 為被提到的成員 uid（旁證）。"""
+
+    owner: str
+    text: str
+    id: str
+    about: str | None = None
+
+
 class FakeSharedContext:
-    def __init__(self, texts: Sequence[str], ids: Sequence[str] = ()) -> None:
+    def __init__(
+        self, texts: Sequence[str], ids: Sequence[str] = (), items: Sequence[FakeSharedItem] = ()
+    ) -> None:
         self._texts = list(texts)
-        self.ids = list(ids)
+        self._items = list(items)
+        self.ids = list(ids) + [i.id for i in self._items]
         self.degraded = False
         self.degraded_reason = ""
 
     def to_text(self, display_name: Callable[[str], str] | None = None) -> str:
-        return "\n".join(self._texts)
+        """沒給 ``display_name`` 時刻意輸出原始 uid：呼叫端漏傳解析器的洩漏會被測試抓到。"""
+        name = display_name or (lambda uid: uid)
+        lines = list(self._texts)
+        for item in self._items:
+            who = name(item.owner)
+            lines.append(f"- {who}：{item.text}" if item.about is None else f"- {who} 提到 {name(item.about)}：{item.text}")
+        return chr(10).join(lines)
 
 
 class FakeEventEmitter:
@@ -75,6 +94,7 @@ class FakeMemoryEngine:
         self.call_log = call_log if call_log is not None else []
         self.episodes: list[str] = []
         self.shared_summaries: list[str] = []
+        self.shared_items: list[FakeSharedItem] = []
         self.stored: dict[str, str] = {}  # idempotency_key -> episode_id
         self.store_calls = 0
         self.retrieve_calls: list[dict[str, Any]] = []
@@ -149,14 +169,23 @@ class FakeMemoryEngine:
 
     def retrieve_shared(
         self, query: str, *, scope_id: str, viewer_uid: str, present_uids: Sequence[Any] = (),
-        top_k: int | None = None, min_similarity: float | None = None,
+        top_k: int | None = None, min_similarity: float | None = None, owner_uid: str | None = None,
     ) -> FakeSharedContext:
+        """照真 engine 簽名：``owner_uid`` 為指名成員查詢（本人段加旁證段）；viewer 等於 owner 回空；
+        沒給 owner_uid 時回一般檢索（排除檢視者自己的投影）。"""
         self._log("retrieve_shared", scope_id)
         self.shared_calls.append({
             "query": query, "scope_id": scope_id, "viewer_uid": viewer_uid, "present_uids": tuple(present_uids),
+            "owner_uid": owner_uid,
         })
+        if owner_uid is not None:
+            if viewer_uid == owner_uid:
+                return FakeSharedContext([], [])
+            return FakeSharedContext(
+                [], [], [i for i in self.shared_items if i.owner == owner_uid or i.about == owner_uid]
+            )
         ids = [f"proj_{i}" for i, _ in enumerate(self.shared_summaries)]
-        return FakeSharedContext(self.shared_summaries, ids=ids)
+        return FakeSharedContext(self.shared_summaries, ids, [i for i in self.shared_items if i.owner != viewer_uid])
 
     def store_episode(
         self, user_input: str, agent_response: str, session_id: str, content_summary: str | None = None,

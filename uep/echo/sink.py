@@ -11,9 +11,10 @@
   （``getattr`` 預設值語意不變）。刻意不透傳 ``reset``：包裝帶有每輪狀態，每輪必須新建。
 - ``collect_evidence`` 依內層 ``played_duration_s`` 與各句累積區間算出逐句已播範圍；呼叫時機是 coordinator
   確認停止／播完之後（``on_turn_ended``），內層的實播量此時已凍結。
-- 播放進度（S4、O-16）：宣告 ``playback_confirmed`` 的內層，每次 ``write`` 之後檢查「後面已有新句子開始、
-  且實播量已越過句尾」的句子，經 ``on_progress`` 即時回報完整播畢（不必等整輪結束）。最後一句與被截斷的句子只在
-  ``collect_evidence`` 回報。只有 ``transport_sent`` 證據的內層（如 Discord）永遠不產生進度回報。
+- 播放進度（S4、O-16）：宣告 ``playback_confirmed`` 的內層，每次 ``write`` 之後與宿主輪詢時（``check_progress``）
+  檢查「句尾已確定（後面已有新句子開始，或該句帶 ``is_last``）、且實播量已越過句尾」的句子，經 ``on_progress`` 即時
+  回報完整播畢（不必等整輪結束）。被截斷的句子只在 ``collect_evidence`` 回報。只有 ``transport_sent`` 證據的內層
+  （如 Discord）永遠不產生進度回報。
 """
 from __future__ import annotations
 
@@ -77,6 +78,7 @@ class AdmittingSink:
         self._on_reject = on_reject
         self._on_discard = on_discard
         self._on_progress = on_progress
+        self._final_index: int | None = None  # 帶 is_last 的句子：句尾確定，之後不會再有 chunk
         self._progressed: set[int] = set()  # 已即時回報完整播畢的句子（collect_evidence 不再重複）
         self._lock = threading.Lock()
         self._stopped = False
@@ -155,6 +157,8 @@ class AdmittingSink:
         new_sentence = index not in self._spans
         if new_sentence:
             self._spans[index] = [self._written_s, 0.0, float(chunk.sample_rate)]
+        if getattr(chunk, "is_last", False):
+            self._final_index = index
         self._spans[index][1] += chunk.duration_s
         self._written_s += chunk.duration_s
         if new_sentence:
@@ -165,9 +169,18 @@ class AdmittingSink:
 
     # ---- 證據 ----
 
+    @property
+    def progress_done(self) -> bool:
+        """所有句子都已即時回報完整播畢（輪詢可以停了）。"""
+        return self._final_index is not None and all(i in self._progressed for i in self._spans)
+
+    def check_progress(self) -> None:
+        """宿主輪詢用（ES loop 上）：TTS 比播放快、沒有後續 write 時也能即時回報。"""
+        self._progress()
+
     def _progress(self) -> None:
-        """即時回報：後面已有新句子開始、實播量越過句尾的句子 = 確定完整播畢。"""
-        if self._on_progress is None or len(self._spans) < 2:
+        """即時回報：句尾已確定、實播量越過句尾的句子 = 確定完整播畢。"""
+        if self._on_progress is None or not self._spans or self._stopped:
             return
         if sink_played_evidence(self._inner) is not PlayedEvidence.PLAYBACK_CONFIRMED:
             return
@@ -179,7 +192,8 @@ class AdmittingSink:
         latest = max(self._spans)
         done: list[SentenceEvidence] = []
         for index, (start, duration, rate) in sorted(self._spans.items()):
-            if index >= latest or index in self._progressed or played < start + duration - _COMPLETE_EPSILON_S:
+            sealed = index < latest or index == self._final_index
+            if not sealed or index in self._progressed or played < start + duration - _COMPLETE_EPSILON_S:
                 continue
             self._progressed.add(index)
             done.append(SentenceEvidence(index, True, duration, duration, True, int(rate)))
@@ -189,8 +203,12 @@ class AdmittingSink:
             except Exception:
                 logger.exception("播放進度回報失敗")
 
-    def collect_evidence(self) -> list[SentenceEvidence]:
+    def collect_evidence(self, *, finished: bool = False) -> list[SentenceEvidence]:
+        """``finished=True``：ES 回報這一輪播到最後（COMPLETED，不是被截斷）。drain 的計時器可能比實際早醒幾毫秒，
+        ``played_duration_s`` 因此略小於寫入量；這時信任 ES 的結論，把已寫入的句子都視為完整播畢。"""
         played = float(self._inner.played_duration_s or 0.0)
+        if finished:
+            played = max(played, self._written_s)
         confirmed = sink_played_evidence(self._inner) is PlayedEvidence.PLAYBACK_CONFIRMED
         result: list[SentenceEvidence] = []
         for index, (start, duration, rate) in sorted(self._spans.items()):

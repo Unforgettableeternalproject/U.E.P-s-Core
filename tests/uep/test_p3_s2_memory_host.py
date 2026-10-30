@@ -294,6 +294,7 @@ def test_group_audience_gets_shared_summary_but_not_private(host_pair):
     # viewer_uid 來自身分映射，不是呼叫端傳的字串
     assert factory.engines[SCOPE_NS].shared_calls[0] == {
         "query": "私人的小秘密", "scope_id": "guild:123", "viewer_uid": "111", "present_uids": (),
+        "owner_uid": None,  # 一般檢索不帶 owner_uid
     }
     assert host.access.profile(actor_id="actor_a", audience=PRIVATE) == "喜歡貓"
 
@@ -384,7 +385,8 @@ def test_memory_tools_are_whitelisted_and_gated(tmp_path):
     host, _ = make_host(tmp_path, tool_backend=Backend())
     host.start()
     try:
-        assert [d["function"]["name"] for d in host.access.tool_definitions()] == ["deep_recall"]
+        # member_recall 由 Access Layer 自己提供 schema（有成員資格 Port 才曝光）；trigger_dream 不在白名單
+        assert [d["function"]["name"] for d in host.access.tool_definitions()] == ["deep_recall", "member_recall"]
         host.access.set_session("seg_1")
         ok = host.access.execute_tool("deep_recall", {}, actor_id="actor_a", audience=PRIVATE)
         assert ok == {"success": True, "result": "deep_recall:seg_1"}

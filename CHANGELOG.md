@@ -3238,3 +3238,15 @@
 
 ---
 
+### fix: P3 S4 審查修正，member_recall 直接實作與撤回路徑補強. 10/30
+
+> Date: Fri, 30 Oct 2026 20:20:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `bd6ef4336e6a9c1bfb6bcf93ff7a63bf5ab1a7a1`
+
+---
+

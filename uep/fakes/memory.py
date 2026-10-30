@@ -52,12 +52,13 @@ class FakeSharedContext:
 
 
 class FakeEventEmitter:
-    def __init__(self) -> None:
+    def __init__(self, engine: Any = None) -> None:
         self.drained: list[float] = []
+        self._engine = engine
 
     def drain(self, timeout: float = 2.0) -> bool:
         self.drained.append(timeout)
-        return True
+        return True if self._engine is None else self._engine.drain_ok
 
 
 class FakeMemoryEngine:
@@ -81,10 +82,13 @@ class FakeMemoryEngine:
         self.scheduler_result: dict[str, Any] = {"started": True, "reason": "started"}
         self.dream_result: dict[str, Any] = {"triggered_by": "manual", "error": None, "skipped_reason": None}
         self.retrieve_delay_s = 0.0
+        self.store_delay_s = 0.0
+        self.fail_on: set[str] = set()  # 這些方法呼叫時拋 RuntimeError（注入啟動失敗用）
+        self.drain_ok = True
         self.degraded = False
         self.sink: Any = None
         self.inhibitor: Any = "unset"
-        self.event_emitter = FakeEventEmitter()
+        self.event_emitter = FakeEventEmitter(self)
         self.profile_text = ""
         self.closed = False
         if with_close:
@@ -92,6 +96,8 @@ class FakeMemoryEngine:
 
     def _log(self, name: str, arg: Any = None) -> None:
         self.call_log.append((self.namespace_id, name, arg))
+        if name in self.fail_on:
+            raise RuntimeError(f"注入的失敗：{name}")
 
     # ---- 注入 ----
 
@@ -146,7 +152,9 @@ class FakeMemoryEngine:
         top_k: int | None = None, min_similarity: float | None = None,
     ) -> FakeSharedContext:
         self._log("retrieve_shared", scope_id)
-        self.shared_calls.append({"query": query, "scope_id": scope_id, "viewer_uid": viewer_uid})
+        self.shared_calls.append({
+            "query": query, "scope_id": scope_id, "viewer_uid": viewer_uid, "present_uids": tuple(present_uids),
+        })
         ids = [f"proj_{i}" for i, _ in enumerate(self.shared_summaries)]
         return FakeSharedContext(self.shared_summaries, ids=ids)
 
@@ -159,6 +167,8 @@ class FakeMemoryEngine:
     ) -> str:
         self._log("store_episode", idempotency_key)
         self.store_calls += 1
+        if self.store_delay_s:
+            time.sleep(self.store_delay_s)
         if idempotency_key is not None and idempotency_key in self.stored:
             return self.stored[idempotency_key]  # 同 key 回原 episode_id，不重寫
         episode_id = f"ep{len(self.episodes) + 1:04d}"
@@ -179,6 +189,19 @@ class FakeMemoryEngine:
     def emit(self, draft: FakeDraft) -> None:
         assert self.sink is not None, "尚未注入 sink"
         self.sink.emit(draft)
+
+
+class FakeGuildMembership:
+    """``GuildMembership`` 的替身：``{guild_id: {actor_id: platform_uid}}``。"""
+
+    def __init__(self, guilds: dict[str, dict[str, str]]) -> None:
+        self._guilds = guilds
+
+    def is_member(self, guild_id: str, actor_id: str) -> bool:
+        return actor_id in self._guilds.get(guild_id, {})
+
+    def members(self, guild_id: str) -> list[str]:
+        return list(self._guilds.get(guild_id, {}).values())
 
 
 class FakeEngineFactory:

@@ -1,11 +1,14 @@
 """MemoryHost（P3接入方案 §3.1）：Core 內唯一建立記憶 engine 的地方。
 
-啟動順序（宿主契約，由測試固定）：建 engine -> ``set_llm_fn`` -> （有 inhibitor 才）``set_concept_inhibitor``
--> ``set_candidate_sink`` -> ``start_dream_scheduler()``。先注入再 start。
+啟動順序（宿主契約，由測試固定）：建 engine -> ``set_llm_fn`` -> （有才）``set_concept_inhibitor`` -> ``set_candidate_sink``
+-> ``start_dream_scheduler()``。先注入再 start。Gate（concept inhibitor）每個 engine 各一個（由 factory 產生）：
+真 engine 的 setter 會覆寫 ``inhibitor.event_emitter``，Gate 也綁單一 engine，共用會讓事件丟失或歸錯 owner。
 關閉：先 ``stop_dream_scheduler()``，再等在途事件投遞與排隊中的呼叫排空，最後（若 engine 有）``close()``。
 
-做夢（D75 (c)）：累積門檻由 echo_memory 內建排程驅動，Host 只負責啟停；``scope-g*`` 共享 namespace 一律不啟動排程。
-階段 X（D76）：Host 只管 Core 自己的 namespace 與資料目錄，啟動時核對與外部占用（bot per-user 目錄）不相交。
+做夢（D75 (c)）：累積門檻由 echo_memory 內建排程驅動，Host 只負責啟停，不自己觸發 dream；``scope-g*`` 共享
+namespace 一律不啟動排程。階段 X（D76）：Host 只管 Core 自己的 namespace 與資料目錄，啟動時核對與外部占用不相交。
+
+併發：每個 namespace 一個單工作緒 executor 加一把 engine 鎖，A namespace 卡住不影響 B。
 """
 from __future__ import annotations
 
@@ -24,6 +27,7 @@ from uep.events.publisher import EventPublisher
 from uep.memory.access import (
     DEFAULT_RETRIEVE_TIMEOUT_S,
     DEFAULT_STORE_TIMEOUT_S,
+    GuildMembership,
     MemoryAccessLayer,
     MemoryToolBackend,
 )
@@ -50,6 +54,7 @@ HEALTH_SOURCE = "core.health"  # State Coordinator 只投影這個來源的 heal
 HEALTH_REF = "memory"
 
 EngineFactory = Callable[[str, Path], MemoryEngineLike]
+InhibitorFactory = Callable[[str], Any]
 
 
 class MemoryHostError(RuntimeError):
@@ -58,17 +63,10 @@ class MemoryHostError(RuntimeError):
 
 @dataclass(frozen=True)
 class NamespaceSpec:
-    """Core 管理的一個 namespace。``owner_id`` 為 None 表示沒有 owner（共享層 ``scope-g*``）。"""
+    """Core 管理的一個 namespace。``owner_id`` 為 None 表示沒有 owner（只允許共享層 ``scope-g*``）。"""
 
     namespace_id: str
     owner_id: str | None = None
-
-
-@dataclass(frozen=True)
-class DreamOutcome:
-    status: str  # completed | skipped | failed
-    reason: str = ""
-    activity_id: str | None = None
 
 
 @dataclass
@@ -89,7 +87,8 @@ class MemoryHost:
         publisher: EventPublisher | None = None,
         session_factory: sessionmaker[Session] | None = None,
         llm_fn: Callable[[str], str] | None = None,
-        concept_inhibitor: Any = None,
+        concept_inhibitor_factory: InhibitorFactory | None = None,
+        guild_membership: GuildMembership | None = None,
         foreign_claims: Sequence[ForeignClaim] = (),
         enable_dream_scheduler: bool = True,
         persona_id: str = "uep",
@@ -104,7 +103,7 @@ class MemoryHost:
         self._identity = identity
         self._publisher = publisher
         self._llm_fn = llm_fn
-        self._inhibitor = concept_inhibitor
+        self._inhibitor_factory = concept_inhibitor_factory
         self._foreign = tuple(foreign_claims)
         self._enable_scheduler = enable_dream_scheduler
         self._drain_timeout_s = drain_timeout_s
@@ -114,17 +113,20 @@ class MemoryHost:
         )
         self._engines: dict[str, MemoryEngineLike] = {}
         self._locks: dict[str, threading.Lock] = {}
+        self._executors: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
         self._owner_ns: dict[str, str] = {}
-        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
-        self._manual_dreams: set[str] = set()
         self._state_lock = threading.Lock()
-        self._dream_lock = threading.Lock()  # 與 _state_lock 分開：sink 在 stop 排空期間仍要取它，不能互相等待
         self.started = False
         self.start_report = StartReport()
         self.access = MemoryAccessLayer(
             self, identity, publisher=publisher, metrics=self.metrics, tool_backend=tool_backend,
-            retrieve_timeout_s=retrieve_timeout_s, store_timeout_s=store_timeout_s,
+            guild_membership=guild_membership, retrieve_timeout_s=retrieve_timeout_s,
+            store_timeout_s=store_timeout_s,
         )
+
+    @property
+    def publisher(self) -> EventPublisher | None:
+        return self._publisher
 
     # ---- 設定核對 ----
 
@@ -132,7 +134,7 @@ class MemoryHost:
         return {spec.namespace_id: resolve_namespace_path(self._data_root, spec.namespace_id) for spec in self._specs}
 
     def _validate(self) -> None:
-        """拒絕：空設定、``local-default``（目錄即資料根，會與一切相交）、重複、owner 重複或不合規、階段 X 相交。"""
+        """拒絕：空設定、``local-default``（目錄即資料根）、重複、owner 重複或不合規、共享層帶 owner、階段 X 相交。"""
         if not self._specs:
             raise MemoryHostError("MemoryHost 沒有任何 namespace")
         seen: set[str] = set()
@@ -147,16 +149,19 @@ class MemoryHost:
             if ns != spec.namespace_id or ns in seen:
                 raise MemoryHostError(f"namespace 重複或未正規化：{spec.namespace_id!r}")
             seen.add(ns)
-            if spec.owner_id is not None:
-                try:
-                    validate_owner_id(spec.owner_id)
-                except ValueError as exc:
-                    raise MemoryHostError(str(exc)) from exc
-                if spec.owner_id in owners:
-                    raise MemoryHostError(f"owner 對應多個 namespace：{spec.owner_id!r}")
-                owners.add(spec.owner_id)
-            elif not is_scope_namespace_id(ns):
+            if is_scope_namespace_id(ns):
+                if spec.owner_id is not None:
+                    raise MemoryHostError(f"共享層 namespace 不得帶 owner_id：{ns!r}")
+                continue
+            if spec.owner_id is None:
                 raise MemoryHostError(f"非共享 namespace 必須指定 owner_id：{ns!r}")
+            try:
+                validate_owner_id(spec.owner_id)
+            except ValueError as exc:
+                raise MemoryHostError(str(exc)) from exc
+            if spec.owner_id in owners:
+                raise MemoryHostError(f"owner 對應多個 namespace：{spec.owner_id!r}")
+            owners.add(spec.owner_id)
         paths = self.namespace_paths()
         names = list(paths)
         for i, a in enumerate(names):
@@ -170,16 +175,18 @@ class MemoryHost:
     # ---- 生命週期 ----
 
     def start(self) -> StartReport:
-        """冪等。任何一步失敗就收掉已啟動的部分再拋出。"""
+        """冪等。任何一步失敗（含已建立但目錄不符的 engine）就收掉已建立的部分再拋出。"""
         with self._state_lock:
             if self.started:
                 return self.start_report
             self._validate()
-            self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="uep-memory")
+            if self._activity is not None:
+                self._safe("sweep_stale_activities", self._sweep_stale)
             report = StartReport()
+            inhibitors: set[int] = set()
             try:
                 for spec in self._specs:
-                    report.namespaces[spec.namespace_id] = self._start_namespace(spec)
+                    report.namespaces[spec.namespace_id] = self._start_namespace(spec, inhibitors)
             except BaseException:
                 self._stop_locked()
                 raise
@@ -188,23 +195,35 @@ class MemoryHost:
         self._publish_health("ready")
         return report
 
-    def _start_namespace(self, spec: NamespaceSpec) -> dict[str, Any]:
+    def _sweep_stale(self) -> None:
+        assert self._activity is not None
+        swept = self._activity.sweep_stale()
+        if swept:
+            logger.warning("清掃上次殘留的 maintenance Activity：%d 筆", swept)
+
+    def _start_namespace(self, spec: NamespaceSpec, inhibitors: set[int]) -> dict[str, Any]:
         ns = spec.namespace_id
         engine = self._engine_factory(ns, self._data_root)
+        # 先登記再核對：核對失敗時這個 engine 也在清理範圍內
+        self._engines[ns] = engine
+        self._locks[ns] = threading.Lock()
+        self._executors[ns] = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"uep-mem-{ns}")
         expected = resolve_namespace_path(self._data_root, ns)
         if Path(engine.storage_path).resolve() != expected.resolve():
             raise MemoryHostError(f"engine {ns!r} 的資料目錄 {engine.storage_path} 與預期 {expected} 不符")
-        self._engines[ns] = engine
-        self._locks[ns] = threading.Lock()
         if spec.owner_id is not None:
             self._owner_ns[spec.owner_id] = ns
         # 先注入、再 start
         engine.set_llm_fn(self._llm_fn)
-        if self._inhibitor is not None:
-            engine.set_concept_inhibitor(self._inhibitor)
+        if not is_scope_namespace_id(ns) and self._inhibitor_factory is not None:
+            inhibitor = self._inhibitor_factory(ns)
+            if inhibitor is None or id(inhibitor) in inhibitors:
+                raise MemoryHostError(f"concept inhibitor 必須每個 namespace 各一個新實例：{ns!r}")
+            inhibitors.add(id(inhibitor))
+            engine.set_concept_inhibitor(inhibitor)
         else:
-            # 不傳 None：真 engine 把 None 視為「刻意無 Gate」並停用預設 Gate（見 S2 介面清單 B-1）
-            logger.info("未提供 concept inhibitor：namespace=%s 使用記憶端預設 Gate", ns)
+            # 不傳 None：真 engine 把 None 視為「刻意無 Gate」並停用預設 Gate（見 S2 介面清單 B-1）；scope-g* 不注入
+            logger.info("namespace=%s 不注入 concept inhibitor（使用記憶端預設 Gate 或共享層不需要）", ns)
         if spec.owner_id is not None:
             engine.set_candidate_sink(self._make_sink(ns, spec.owner_id))
         if is_scope_namespace_id(ns):
@@ -212,8 +231,7 @@ class MemoryHost:
         if not self._enable_scheduler:
             return {"scheduler": {"started": False, "reason": "disabled_by_host"}}
         result = dict(engine.start_dream_scheduler())
-        reason = str(result.get("reason", ""))
-        if reason.startswith("error"):
+        if str(result.get("reason", "")).startswith("error"):
             self.metrics.inc("memory.dream.scheduler_error")
             logger.warning("做夢排程啟動失敗：namespace=%s", ns)
         return {"scheduler": result}
@@ -227,7 +245,9 @@ class MemoryHost:
         )
 
     def stop(self) -> None:
-        """冪等；每一步獨立容錯，避免一個 engine 卡住讓其他 engine 的排程沒停。"""
+        """冪等；每一步獨立容錯，避免一個 engine 卡住讓其他 engine 的排程沒停。先發 health 下線事件。"""
+        if self.started:
+            self._publish_health("unavailable")
         with self._state_lock:
             self._stop_locked()
 
@@ -236,16 +256,15 @@ class MemoryHost:
         for ns, engine in reversed(engines):
             self._safe(f"stop_dream_scheduler({ns})", engine.stop_dream_scheduler)
         for ns, engine in reversed(engines):
-            emitter = getattr(engine, "event_emitter", None)
-            drain = getattr(emitter, "drain", None)
+            drain = getattr(getattr(engine, "event_emitter", None), "drain", None)
             if drain is not None:
-                self._safe(f"drain({ns})", lambda d=drain: d(self._drain_timeout_s))
-        executor, self._executor = self._executor, None
-        if executor is not None:
+                self._safe(f"drain({ns})", lambda d=drain, n=ns: self._drain(d, n))
+        executors, self._executors = self._executors, {}
+        for ns, executor in executors.items():
             try:
                 executor.submit(lambda: None).result(timeout=self._drain_timeout_s)
-            except Exception:
-                logger.warning("等待記憶呼叫排空逾時，放棄尚未開始的呼叫", exc_info=True)
+            except Exception as exc:  # noqa: BLE001 - 逾時或已關閉都只記類別，仍要繼續關閉其他項目
+                logger.warning("等待記憶呼叫排空失敗（%s），放棄尚未開始的呼叫：%s", ns, type(exc).__name__)
             executor.shutdown(wait=False, cancel_futures=True)
         for ns, engine in reversed(engines):
             close = getattr(engine, "close", None)  # 真 engine 目前沒有 close（見介面清單 B-4）
@@ -256,12 +275,16 @@ class MemoryHost:
         self._owner_ns.clear()
         self.started = False
 
+    def _drain(self, drain: Callable[[float], Any], namespace_id: str) -> None:
+        if drain(self._drain_timeout_s) is False:
+            logger.warning("事件投遞排空逾時，仍有在途事件：namespace=%s", namespace_id)
+
     @staticmethod
     def _safe(label: str, fn: Callable[[], Any]) -> None:
         try:
             fn()
-        except Exception:
-            logger.exception("MemoryHost 關閉步驟失敗（已忽略）：%s", label)
+        except Exception as exc:  # noqa: BLE001 - 單一步驟失敗不得中斷其餘關閉／清掃；只記例外類別
+            logger.warning("MemoryHost 步驟失敗（已忽略）：%s %s", label, type(exc).__name__)
 
     # ---- Access Layer 用的能力（MemoryRuntime）----
 
@@ -289,11 +312,19 @@ class MemoryHost:
         except KeyError:
             raise MemoryHostError(f"未啟動或未知的 namespace：{namespace_id!r}") from None
 
-    def call(self, namespace_id: str, fn: Callable[[MemoryEngineLike], Any], *, timeout_s: float) -> Any:
-        """在 engine 鎖內、單工作緒 executor 上有界執行。逾時拋 ``TimeoutError``；
+    def call(
+        self,
+        namespace_id: str,
+        fn: Callable[[MemoryEngineLike], Any],
+        *,
+        timeout_s: float,
+        on_late: Callable[[Any], None] | None = None,
+    ) -> Any:
+        """在該 namespace 的 engine 鎖內、該 namespace 專屬的單工作緒 executor 上有界執行。
 
-        排隊期間已逾時的呼叫不會在拿到鎖後才執行（避免回報逾時之後才寫入）。"""
-        executor = self._executor
+        逾時拋 ``TimeoutError``；排隊期間已逾時的呼叫不會在拿到鎖後才執行。若呼叫逾時時已經在執行、之後才完成，
+        ``on_late(結果)`` 會在 executor 執行緒上被呼叫（例如補發 ``memory.record_created``）。"""
+        executor = self._executors.get(namespace_id)
         if not self.started or executor is None:
             raise MemoryHostError("MemoryHost 未啟動")
         engine, lock = self.engine(namespace_id), self.engine_lock(namespace_id)
@@ -310,75 +341,25 @@ class MemoryHost:
             return future.result(timeout=timeout_s)
         except concurrent.futures.TimeoutError:
             expired.set()
+            if on_late is not None:
+                future.add_done_callback(lambda f: self._deliver_late(f, on_late))
             future.cancel()
             raise TimeoutError(f"記憶呼叫逾時（{timeout_s}s）") from None
 
-    # ---- 做夢 ----
+    def _deliver_late(self, future: concurrent.futures.Future[Any], on_late: Callable[[Any], None]) -> None:
+        if future.cancelled() or future.exception() is not None:
+            return
+        self.metrics.inc("memory.call.late_completed")
+        self._safe("on_late", lambda: on_late(future.result()))
 
-    def run_dream(self, namespace_id: str, triggered_by: str = "manual") -> DreamOutcome:
-        """手動／休息時段觸發的 dream：前後以 maintenance Activity 包住。
-
-        - 租約被他行程持有（``skipped_reason``）-> skipped：``memory.dream.skipped_lease`` +1，不算錯誤、不發 health。
-        - ``error`` 或例外 -> failed：發 ``core.component_health_changed``（degraded）。
-        """
-        if is_scope_namespace_id(namespace_id):
-            return DreamOutcome("skipped", "scope_namespace")
-        engine, lock = self.engine(namespace_id), self.engine_lock(namespace_id)
-        with self._dream_lock:
-            self._manual_dreams.add(namespace_id)
-        activity_id = self._activity_begin(namespace_id, triggered_by)
-        try:
-            with lock:
-                result = dict(engine.dream(triggered_by))
-        except Exception as exc:
-            self.metrics.inc("memory.dream.failed")
-            self._activity_end(activity_id, "failed")
-            self._publish_health("degraded")
-            logger.exception("dream 失敗：namespace=%s", namespace_id)
-            return DreamOutcome("failed", type(exc).__name__, activity_id)
-        finally:
-            with self._dream_lock:
-                self._manual_dreams.discard(namespace_id)
-        skipped, error = result.get("skipped_reason"), result.get("error")
-        if skipped:
-            self.metrics.inc("memory.dream.skipped_lease")
-            self._activity_end(activity_id, "skipped_lease")
-            return DreamOutcome("skipped", str(skipped), activity_id)
-        if error:
-            self.metrics.inc("memory.dream.failed")
-            self._activity_end(activity_id, "failed")
-            self._publish_health("degraded")
-            return DreamOutcome("failed", "dream_error", activity_id)
-        self.metrics.inc(f"memory.dream.runs.{triggered_by}")
-        self._activity_end(activity_id, "completed")
-        return DreamOutcome("completed", "", activity_id)
+    # ---- 排程觸發的 dream 事後記錄 ----
 
     def _on_scheduled_dream_completed(self, namespace_id: str, _draft: Any) -> None:
-        """排程（內建 idle／cron／daydream）觸發的 dream 只能事後從 memory.dream_completed 得知，補一筆已結束的 Activity。
-        Host 手動 dream 進行中時由 ``run_dream`` 自己記，這裡略過避免重複。"""
-        with self._dream_lock:
-            if namespace_id in self._manual_dreams:
-                return
+        """排程（記憶端內建）觸發的 dream 只能事後從 ``memory.dream_completed`` 得知，補一筆已結束的 Activity。
+        前提：記憶端 emitter 已開啟（``SELF_MODEL_EVENTS_ENABLED``；B-2 的 set_enabled_fn 完成前預設關閉）。"""
         self.metrics.inc("memory.dream.runs.scheduler")
         if self._activity is not None:
             self._activity.record_finished(namespace_id, "scheduler", "completed")
-
-    def _activity_begin(self, namespace_id: str, triggered_by: str) -> str | None:
-        if self._activity is None:
-            return None
-        try:
-            return self._activity.begin(namespace_id, triggered_by)
-        except Exception:
-            logger.exception("dream Activity 建立失敗（不影響 dream）")
-            return None
-
-    def _activity_end(self, activity_id: str | None, outcome: str) -> None:
-        if self._activity is None or activity_id is None:
-            return
-        try:
-            self._activity.end(activity_id, outcome)
-        except Exception:
-            logger.exception("dream Activity 結束失敗（已忽略）")
 
     # ---- health／狀態 ----
 
@@ -390,8 +371,8 @@ class MemoryHost:
                 EventDraft(event_type="core.component_health_changed", payload={"ref_id": HEALTH_REF, "status": status}),
                 TrustedContext(source=HEALTH_SOURCE, actor_id="uep:memory", scope_ref="scope_private_core"),
             )
-        except Exception:
-            logger.exception("memory health 事件發布失敗（已忽略）")
+        except Exception as exc:  # noqa: BLE001 - health 事件失敗不得影響啟停；只記例外類別
+            logger.warning("memory health 事件發布失敗（已忽略）：%s", type(exc).__name__)
 
     def status(self) -> Mapping[str, Any]:
         """診斷用：各 namespace 的排程啟動結果與計數器（階段 Y 的 E1／E4 觀察資料）。"""

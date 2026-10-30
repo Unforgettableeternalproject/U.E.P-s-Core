@@ -300,6 +300,8 @@ def assemble_core(
         if value is ALLOW_ALL and not allow_gate_bypass:
             raise AssemblyError(f"Output Gate 的 {name} 為 ALLOW_ALL：須明確傳 allow_gate_bypass=True 才可組裝")
     assert bus is not None and publisher is not None and control is not None
+    if memory is not None and memory.publisher is not publisher:
+        raise AssemblyError("MemoryHost 必須與組裝層使用同一個 publisher（同一個 Bus）：否則記憶事件不會進同一條 journal／Bus")
     assert adapter is not None and executors is not None
     assert turn_generation_source is not None and presence_audience is not None
 

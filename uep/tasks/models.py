@@ -47,7 +47,10 @@ def _ts() -> Mapped[datetime]:
 
 
 class ActivityRow(Base):
-    """前景／背景活動的共同索引（§6.1a）。不是生命週期容器。"""
+    """前景／背景活動的共同索引（§6.1a）。不是生命週期容器。
+
+    寫入者只有 TaskManager；唯一例外是 ``uep.memory.activity.DreamActivityRecorder``（記憶做夢的 maintenance 紀錄）。
+    """
 
     __tablename__ = "activities"
     __table_args__ = (

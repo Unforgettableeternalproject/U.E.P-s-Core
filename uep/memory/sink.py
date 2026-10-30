@@ -54,8 +54,8 @@ def translate_draft(draft: Any, owner_id: str | None) -> tuple[EventDraft, Trust
     if not isinstance(key, str) or not key:
         raise TranslateError("no_idempotency_key")
     payload = dict(_field(draft, "payload") or {})
-    if payload.get("privacy_scope", "private") != "private":
-        raise TranslateError("privacy_scope", "只接受 private 範圍的記憶事件")
+    if payload.get("privacy_scope") != "private":  # 缺欄位也丟棄（fail-closed）
+        raise TranslateError("privacy_scope", "privacy_scope 缺失或不是 private")
     expires_at = payload.pop("expires_at", None)
     summary = payload.pop("summary", None)
     try:
@@ -101,15 +101,15 @@ class MemorySink:
             self._metrics.inc(f"memory.sink.dropped.{exc.code}")
             logger.warning("memory sink 丟棄草稿（%s）：namespace=%s", exc.code, self.namespace_id)
             return
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - 不合規草稿一律丟棄；只記例外類別
             self._metrics.inc("memory.sink.dropped.invalid")
-            logger.warning("memory sink 草稿不合規：namespace=%s", self.namespace_id, exc_info=True)
+            logger.warning("memory sink 草稿不合規：namespace=%s %s", self.namespace_id, type(exc).__name__)
             return
         try:
             recorded = self._publisher.publish(translated, trusted)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - emit 在記憶端執行緒上呼叫，絕不回拋
             self._metrics.inc("memory.sink.publish_failed")
-            logger.exception("memory sink 發布失敗（已忽略，記憶端不受影響）：%s", translated.event_type)
+            logger.warning("memory sink 發布失敗（已忽略）：%s %s", translated.event_type, type(exc).__name__)
             return
         if recorded.duplicate:
             self._metrics.inc("memory.sink.duplicate")
@@ -118,5 +118,5 @@ class MemorySink:
         if translated.event_type == "memory.dream_completed" and self._on_dream_completed is not None:
             try:
                 self._on_dream_completed(self.namespace_id, draft)
-            except Exception:
-                logger.exception("on_dream_completed 失敗（已忽略）")
+            except Exception as exc:  # noqa: BLE001 - 補記失敗不影響事件
+                logger.warning("on_dream_completed 失敗（已忽略）：%s", type(exc).__name__)

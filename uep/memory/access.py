@@ -13,7 +13,7 @@ import logging
 import re
 import threading
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any, Protocol
 
 from uep.context.snapshot import MemoryStatus, scope_admits
@@ -54,10 +54,24 @@ class MemoryRuntime(Protocol):
     def namespace_for_guild(self, guild_id: str) -> str | None: ...
 
     def call(
-        self, namespace_id: str, fn: Callable[[MemoryEngineLike], Any], *, timeout_s: float
+        self, namespace_id: str, fn: Callable[[MemoryEngineLike], Any], *, timeout_s: float,
+        on_late: Callable[[Any], None] | None = None,
     ) -> Any:
-        """在該 namespace 的 engine 鎖內、有界時間執行；逾時拋 ``TimeoutError``。"""
+        """在該 namespace 的 engine 鎖內、有界時間執行；逾時拋 ``TimeoutError``。
+        逾時時已在執行、之後才完成的呼叫，結果交給 ``on_late``。"""
         ...
+
+
+class GuildMembership(Protocol):
+    """場域（guild）成員資格 Port（fail-closed）：共享層讀取一律要求 viewer 為成員。
+
+    S3 必須提供實作（平台成員資格來源在 Adapter 側）；沒注入時所有 group scope 讀取一律拒絕。
+    ``members`` 回傳該場域成員的平台使用者 id（與身分映射的 ``platform_uid`` 同一格式），
+    ``present_uids`` 只會被裁成它的子集。"""
+
+    def is_member(self, guild_id: str, actor_id: str) -> bool: ...
+
+    def members(self, guild_id: str) -> Collection[str]: ...
 
 
 class MemoryToolBackend(Protocol):
@@ -83,6 +97,7 @@ class MemoryAccessLayer:
         publisher: EventPublisher | None = None,
         metrics: MemoryMetrics | None = None,
         tool_backend: MemoryToolBackend | None = None,
+        guild_membership: GuildMembership | None = None,
         retrieve_timeout_s: float = DEFAULT_RETRIEVE_TIMEOUT_S,
         store_timeout_s: float = DEFAULT_STORE_TIMEOUT_S,
     ) -> None:
@@ -91,6 +106,7 @@ class MemoryAccessLayer:
         self._publisher = publisher
         self._metrics = metrics or MemoryMetrics()
         self._tool_backend = tool_backend
+        self._membership = guild_membership
         self._retrieve_timeout_s = retrieve_timeout_s
         self._store_timeout_s = store_timeout_s
         self._session_id: str | None = None
@@ -152,9 +168,9 @@ class MemoryAccessLayer:
         except TimeoutError:
             self._metrics.inc("memory.retrieve.timeout")
             return RetrieveResult(text="", memory_status=MemoryStatus.TIMEOUT, degraded_reason="timeout")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 對外降級；只記例外類別，不記內容
             self._metrics.inc("memory.retrieve.unavailable")
-            logger.warning("記憶檢索失敗（回報 unavailable）：%s", type(exc).__name__, exc_info=True)
+            logger.warning("記憶檢索失敗（回報 unavailable）：%s", type(exc).__name__)
             return RetrieveResult(
                 text="", memory_status=MemoryStatus.UNAVAILABLE, degraded_reason=type(exc).__name__
             )
@@ -211,8 +227,12 @@ class MemoryAccessLayer:
             namespace_id = self._runtime.namespace_for_owner(ident.owner_id)
         else:
             assert guild_id is not None
-            if not ident.platform_uid:
+            if self._membership is None:
+                return _denied("no_membership")  # fail-closed：沒有成員資格 Port 就不讀共享層
+            if not ident.platform_uid or ident.actor_id is None:
                 return _denied("no_viewer")
+            if not self._membership.is_member(guild_id, ident.actor_id):
+                return _denied("not_member")
             namespace_id = self._runtime.namespace_for_guild(guild_id)
         if namespace_id is None:
             return _denied("no_engine")
@@ -247,10 +267,15 @@ class MemoryAccessLayer:
         present_uids: Sequence[Any], timeout: float, max_chars: int | None,
     ) -> RetrieveResult:
         viewer = ident.platform_uid or ""
+        assert self._membership is not None
+        members = {str(m) for m in self._membership.members(guild_id)}
+        present = tuple(u for u in present_uids if str(u) in members)  # 裁成成員子集；非成員不夾帶進共享層排序
+        if len(present) != len(tuple(present_uids)):
+            self._metrics.inc("memory.retrieve.present_clipped")
 
         def work(engine: MemoryEngineLike) -> Any:
             return engine.retrieve_shared(
-                query, scope_id=f"guild:{guild_id}", viewer_uid=viewer, present_uids=tuple(present_uids)
+                query, scope_id=f"guild:{guild_id}", viewer_uid=viewer, present_uids=present
             )
 
         result = self._runtime.call(namespace_id, work, timeout_s=timeout)
@@ -295,16 +320,21 @@ class MemoryAccessLayer:
                 idempotency_key=idempotency_key, **metadata,
             )
 
+        def late(episode_id: str) -> None:
+            # 呼叫端已回報逾時、但寫入之後才完成：補發 record_created（key 為 None 時重送可能產生重複 episode）
+            self._publish_record_created(namespace_id, owner_id, str(episode_id))
+
         try:
             episode_id = self._runtime.call(
-                namespace_id, work, timeout_s=self._store_timeout_s if timeout_s is None else timeout_s
+                namespace_id, work, timeout_s=self._store_timeout_s if timeout_s is None else timeout_s,
+                on_late=late,
             )
         except TimeoutError:
             self._metrics.inc("memory.store.timeout")
             return StoreResult(status="timeout", reason="timeout")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 對外降級；只記例外類別，不記內容
             self._metrics.inc("memory.store.failed")
-            logger.warning("記憶寫入失敗（不影響對話）：%s", type(exc).__name__, exc_info=True)
+            logger.warning("記憶寫入失敗（不影響對話）：%s", type(exc).__name__)
             return StoreResult(status="failed", reason=type(exc).__name__)
         self._metrics.inc("memory.store.stored")
         duplicate = self._publish_record_created(namespace_id, owner_id, str(episode_id))
@@ -326,9 +356,9 @@ class MemoryAccessLayer:
                     source=MEMORY_SOURCE, actor_id=MEMORY_ACTOR, scope_ref=owner_scope_ref(owner_id), external=True
                 ),
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - 事件失敗不影響寫入；只記例外類別
             self._metrics.inc("memory.store.event_failed")
-            logger.exception("memory.record_created 發布失敗（已忽略）")
+            logger.warning("memory.record_created 發布失敗（已忽略）：%s", type(exc).__name__)
             return None
         return recorded.duplicate
 
@@ -353,8 +383,8 @@ class MemoryAccessLayer:
                 namespace_id, lambda e: e.get_profile(max_chars=max_chars) or "",
                 timeout_s=self._retrieve_timeout_s,
             ))
-        except Exception as exc:
-            logger.warning("profile 讀取失敗（回空）：%s", type(exc).__name__, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - 對外降級；只記例外類別，不記內容
+            logger.warning("profile 讀取失敗（回空）：%s", type(exc).__name__)
             return ""
 
     def tool_definitions(self) -> list[dict[str, Any]]:
@@ -387,8 +417,8 @@ class MemoryAccessLayer:
             return dict(self._runtime.call(
                 namespace_id, lambda e: backend.execute(e, name, args, sid), timeout_s=self._store_timeout_s,
             ))
-        except Exception as exc:
-            logger.warning("記憶工具執行失敗：%s %s", name, type(exc).__name__, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - 對外降級；只記例外類別，不記內容
+            logger.warning("記憶工具執行失敗：%s %s", name, type(exc).__name__)
             return {"success": False, "result": "tool failed"}
 
 

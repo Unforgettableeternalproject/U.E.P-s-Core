@@ -3082,3 +3082,15 @@
 
 ---
 
+### fix: P3 S2 審查修正，Gate 分離、namespace 隔離與成員資格. 10/30
+
+> Date: Fri, 30 Oct 2026 13:56:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `90b43c8b8368ba58b5adadb3de01ae570a97d02e`
+
+---
+

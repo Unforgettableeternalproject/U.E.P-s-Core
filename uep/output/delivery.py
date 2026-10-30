@@ -154,6 +154,24 @@ class DeliveryRecord(BaseModel):
                 raise ValueError("failure.retryable 必須是布林")
         return self
 
+    def with_progress(self, played_range: dict[str, Any]) -> DeliveryRecord:
+        """狀態不變、只更新播放進度（O-16）：位置只能往前，倒退、同值或無法比較者回傳自身（no-op）。
+
+        只在 accepted 有意義（sent 尚無播放證據，終態不再變動）。位置以 ``to_sample`` 為準，
+        沒有時用 ``to_chunk``；新舊紀錄的位置鍵不一致無法比較時，保留舊值。``complete`` 不得由 true 倒退。
+        """
+        if self.status is not S.ACCEPTED:
+            return self
+        _check_range("played_range", played_range)
+        old = self.played_range
+        if old is not None:
+            key = next((k for k in ("to_sample", "to_chunk") if k in old and k in played_range), None)
+            if key is None or played_range[key] <= old[key]:
+                return self
+            if old.get("complete") is True and played_range.get("complete") is not True:
+                return self
+        return type(self).model_validate({**self.model_dump(), "played_range": played_range})
+
     def advance(
         self,
         to: DeliveryStatus,

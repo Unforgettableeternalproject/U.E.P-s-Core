@@ -136,3 +136,14 @@ def test_unregistered_kind_not_journaled(session_factory, publisher):
         publisher.publish(EventDraft(event_type="memory.unknown_kind", idempotency_key="k"), PRIVATE)
     with session_factory() as s:
         assert s.execute(text("SELECT count(*) FROM events")).scalar_one() == 0
+
+
+def test_new_kind_payload_keys_layer_on_defaults_without_summary_or_expires_at():
+    from uep.events.registry import DEFAULT_PAYLOAD_KEYS, MEMORY_EVENT_TYPES
+
+    for kind in NEW_KINDS:
+        keys = DEFAULT_REGISTRY.lookup(kind).payload_keys
+        assert DEFAULT_PAYLOAD_KEYS <= keys, kind  # 疊加而非取代
+        assert not {"summary", "expires_at"} & keys, kind
+    assert {"evidence_refs", "weight"} <= DEFAULT_REGISTRY.lookup(MEMORY_EVENT_TYPES[0]).payload_keys
+    assert {"trigger_kind", "memory_weight"} <= DEFAULT_REGISTRY.lookup("proactive.trigger_observed").payload_keys

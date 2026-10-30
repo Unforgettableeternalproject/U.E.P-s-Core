@@ -81,7 +81,9 @@ _PRESENCE_PROJECTED = (
 
 # 預設的轉換請求提議者（S-1：fail-closed，只有名單內的已認證提議者能提請求）
 DEFAULT_PROPOSERS: dict[Axis, frozenset[str]] = {
-    Axis.INTERACTION: frozenset({"core.nlp", "core.proactive", "core.workflow", "core.turn", "core.decision"}),
+    Axis.INTERACTION: frozenset({
+        "core.nlp", "core.proactive", "core.workflow", "core.turn", "core.decision",
+    }),
     Axis.BEHAVIOR: frozenset({"core.policy", "core.proactive"}),
 }
 

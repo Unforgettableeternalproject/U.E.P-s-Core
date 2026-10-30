@@ -126,8 +126,17 @@ def create_delivery(session: Session, record: DeliveryRecord) -> None:
     session.flush()
 
 
-def load_delivery(session: Session, delivery_id: str) -> DeliveryRecord | None:
-    row = session.get(DeliveryRow, delivery_id)
+def load_delivery(session: Session, delivery_id: str, *, lock: bool = False) -> DeliveryRecord | None:
+    """讀取交付紀錄；``lock=True`` 時以 FOR UPDATE（populate_existing）重新載入，並行回報據此序列化。"""
+    if lock:
+        row = session.execute(
+            select(DeliveryRow)
+            .where(DeliveryRow.delivery_id == delivery_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+    else:
+        row = session.get(DeliveryRow, delivery_id)
     return record_from_row(row) if row else None
 
 
@@ -161,6 +170,23 @@ def claim_delivery(
     row.claimed_at = now
     session.flush()
     return ClaimResult(record_from_row(row), won=True, reclaimed=reclaimed)
+
+
+def update_played_range(session: Session, delivery_id: str, played_range: dict[str, Any]) -> DeliveryRecord:
+    """在列鎖內更新播放進度（狀態不變）；位置只往前，倒退或同值為 no-op。"""
+    row = session.execute(
+        select(DeliveryRow)
+        .where(DeliveryRow.delivery_id == delivery_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    current = record_from_row(row)
+    updated = current.with_progress(played_range)
+    if updated is current:
+        return current
+    row.played_range = updated.played_range
+    session.flush()
+    return updated
 
 
 def advance_delivery(

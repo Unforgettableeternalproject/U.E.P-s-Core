@@ -242,3 +242,44 @@ def test_report_evidence_resolves_unknown_to_sent_path(session_factory):
     rec = mgr.dispatch(make_intent())
     assert rec.status is S.UNKNOWN
     assert mgr.report_evidence(rec.delivery_id, E.TRANSPORT_SENT).status is S.SENT
+
+
+def _rng(to, complete=False):
+    return {"from_sample": 0, "to_sample": to, "complete": complete}
+
+
+def test_report_evidence_progress_moves_forward_never_back_and_is_idempotent(session_factory):
+    mgr, rec = _sent_only(session_factory)
+    first = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _rng(100))
+    assert first.status is S.ACCEPTED and first.played_range["to_sample"] == 100
+    fwd = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _rng(150))
+    assert fwd.status is S.ACCEPTED and fwd.played_range["to_sample"] == 150  # 進度推進
+    back = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _rng(100))
+    assert back.played_range["to_sample"] == 150  # 倒退不更新
+    same = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _rng(150))
+    assert same.played_range["to_sample"] == 150 and same.status is S.ACCEPTED  # 同值冪等
+    done = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _rng(200, True))
+    assert done.status is S.RENDERED_PLAYED and done.played_range["to_sample"] == 200
+
+
+def test_unknown_with_strong_evidence_and_complete_range_reaches_played(session_factory):
+    mgr, _ = _mgr(session_factory, default_mode="lose_ack")
+    intent = make_intent(kind="audio_stream", content_format={"sample_rate": 24000, "channels": 1, "codec": "pcm"})
+    mgr.mark_synthesized(mgr.prepare(intent).delivery_id)
+    rec = mgr.dispatch(intent)
+    assert rec.status is S.UNKNOWN
+    done = mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK, _rng(200, True))  # 視同 O-6 found，不需 lookup
+    assert done.status is S.RENDERED_PLAYED and done.delivery_evidence is E.LOCAL_PLAYBACK
+
+
+def test_concurrent_report_evidence_serialized_without_exception(session_factory):
+    mgr, rec = _sent_only(session_factory, kind="text")
+    barrier = Barrier(4)
+
+    def report(_):
+        barrier.wait()
+        return mgr.report_evidence(rec.delivery_id, E.LOCAL_PLAYBACK)
+
+    with ThreadPoolExecutor(4) as pool:
+        results = list(pool.map(report, range(4)))  # 任一拋例外會在此上拋
+    assert all(r.status is S.RENDERED_PLAYED for r in results)

@@ -50,6 +50,7 @@ from uep.output.models import (
     load_intent,
     record_from_row,
     save_intent,
+    update_played_range,
 )
 from uep.presence.gate import OutputGate
 
@@ -110,8 +111,16 @@ class DeliveryManager:
         rejected = self._gate_check(intent, record)
         if rejected is not None:
             return rejected
-        with self._sf.begin() as s:
-            record = advance_delivery(s, record.delivery_id, S.ENQUEUED)
+        try:
+            with self._sf.begin() as s:
+                record = advance_delivery(s, record.delivery_id, S.ENQUEUED)
+        except IllegalDeliveryTransition:
+            # 並行：別的送出者在我們讀取後已推進到 sent 之後，回現況、不重送
+            with self._sf() as s:
+                latest = load_delivery(s, record.delivery_id)
+            if latest is None or latest.status in (S.GENERATED, S.SYNTHESIZED, S.ENQUEUED):
+                raise
+            return latest
         self._crash("delivery.after_prepare")
         with self._sf.begin() as s:
             claim = claim_delivery(s, record.delivery_id, new_id("req"), self._ttl)
@@ -191,7 +200,7 @@ class DeliveryManager:
         if result.evidence is DeliveryEvidence.UNKNOWN:
             return self._set_unknown(delivery_id)
         with self._sf.begin() as s:
-            current = load_delivery(s, delivery_id)
+            current = load_delivery(s, delivery_id, lock=True)
             if current is None or current.status in TERMINAL:
                 return current  # type: ignore[return-value]
             return self._push_evidence(s, current, result.evidence, result.played_range, result.reported_at)
@@ -207,7 +216,7 @@ class DeliveryManager:
         """Adapter 在 send 返回後非同步回報證據（CC-5 O-16）；回傳推進後的紀錄。
 
         - 單向推進：沿用 O-1／O-2／O-12 的路徑與證據門檻，不跳級、不倒退；
-          重複回報同證據冪等（no-op）；已終態者晚到證據不改狀態（回傳現況）。
+          重複回報同證據冪等（no-op）；accepted 狀態下 played_range 位置只往前更新，倒退或同值為 no-op；已終態者晚到證據不改狀態（回傳現況）。
         - 證據只升不降：低於已記錄證據、或證據為 unknown 一律拒絕（IllegalDeliveryTransition）。
         - 尚未送出（generated／synthesized／enqueued）不得先有證據，拒絕；delivery 不存在拋 LookupError。
         - 只有 played_range 標示 complete（文字類且未提供 range 者除外）才推到 rendered_played（INV-05）。
@@ -215,7 +224,7 @@ class DeliveryManager:
         if evidence is DeliveryEvidence.UNKNOWN:
             raise IllegalDeliveryTransition("report_evidence 不接受 unknown 證據（證據只升不降）")
         with self._sf.begin() as s:
-            current = load_delivery(s, delivery_id)
+            current = load_delivery(s, delivery_id, lock=True)  # 並行回報在此序列化
             if current is None:
                 raise LookupError(f"找不到 delivery：{delivery_id}")
             if current.status in TERMINAL:
@@ -253,6 +262,8 @@ class DeliveryManager:
             if step is S.RENDERED_PLAYED or (step is S.ACCEPTED and played_range):
                 kwargs["played_range"] = played_range
             rec = advance_delivery(s, current.delivery_id, step, **kwargs)
+        if played_range and rec.status is S.ACCEPTED:
+            rec = update_played_range(s, current.delivery_id, played_range)  # 進度推進：狀態不變、位置只往前
         return rec
 
     @staticmethod

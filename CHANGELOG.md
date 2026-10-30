@@ -3034,3 +3034,15 @@
 
 ---
 
+### fix: report_evidence 進度推進、鎖定讀取與白名單疊加. 10/30
+
+> Date: Fri, 30 Oct 2026 13:20:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `85f9ffaf06bf383667172835e8a9faf93f75642d`
+
+---
+

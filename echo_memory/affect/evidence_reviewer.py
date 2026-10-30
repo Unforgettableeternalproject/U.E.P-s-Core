@@ -10,7 +10,12 @@ EvidenceReviewer - 概念證據審核器（M4 包 B）
 
 學習程度（§8）：support_strength 以 source_type=user 的 unit 的學習權重 w
 做 noisy-OR 合成（同一 episode 取最大 w，不重複複利），達 SUPPORT_THRESHOLD 才可 supported；
-intention 類主張（意圖／計畫／承諾）自述最高 insufficient，需交叉佐證。
+intention 類主張（意圖／計畫／承諾）若屬 self_fact 自述最高 insufficient，需交叉佐證。
+
+佐證類別（corroboration_class，LLM 依語意判斷）：只有 self_fact（使用者講自己、且不容易驗證的
+相關事實，例如自稱的經歷、身分、能力）才套用上述佐證流程；identity（稱呼與自我識別）與
+general（一般內容）免佐證，狀態為 not_required。contradicted 永遠優先。未分類（舊資料、
+LLM 未給有效值）一律照 self_fact 處理。
 
 架構禁令（CLAUDE.md）：
   - 主張類型、範圍、是否支持全由 LLM 結構化輸出；程式只做欄位層級的結構護欄，
@@ -48,6 +53,8 @@ from echo_memory.schemas.evidence import (
 )
 from echo_memory.schemas.evidence_review import (
     CLAIM_KINDS,
+    CORROBORATION_CLASSES,
+    NOT_REQUIRED_CLASSES,
     REVIEWED_STATUSES,
     EvidenceReview,
     compute_basis_digest,
@@ -89,12 +96,17 @@ _REVIEW_PROMPT = """\
   intention＝意圖、計畫、承諾（尚未發生的事）。
 - 若 claim_kind 是 intention，且有其他證據交叉佐證（平台觀察、他人陳述、使用者事後陳述已完成），
   把那些證據 id 填入 corroborating_unit_ids；沒有就留空陣列。
+- corroboration_class：這個概念屬於哪一類（依語意與語氣判斷，不得依賴特定字詞）：
+  identity＝稱呼與自我識別（例如使用者希望被怎麼稱呼），本人說了就算；
+  general＝一般內容（談遊戲、作品、事件、話題、偏好、感受，以及意圖或計畫本身），沒有真假可驗證的問題；
+  self_fact＝使用者講到自己的相關事實，而且不容易驗證（自稱的經歷、身分、能力）。
+  意圖或計畫若同時宣稱了不易驗證的自身經歷、身分或能力，才算 self_fact。拿不準時填 self_fact。
 - cited_unit_ids 與 corroborating_unit_ids 只能填上面列出的 id。
 - scope：subject_ref 填這個主張是關於誰（自由文字），context 填適用情境或時間範圍（沒有就 null）。
 
 以純 JSON 回覆：
 {{"status": "supported|contradicted|insufficient", "claim_kind": "fact|preference|state|intention", \
-"cited_unit_ids": ["..."], "corroborating_unit_ids": ["..."], \
+"corroboration_class": "identity|general|self_fact", "cited_unit_ids": ["..."], "corroborating_unit_ids": ["..."], \
 "scope": {{"subject_ref": "...", "context": "..."}}, "reason": "..."}}"""
 
 
@@ -112,6 +124,8 @@ _SHARE_PROMPT = """你是記憶系統的分享審核員。下列「證據」都�
 - sensitivity：none＝客觀事實或公開資訊；personal＝一般個人偏好、習慣；
   sensitive＝健康、財務、感情、身分識別、位置、對他人的指控等不宜轉述的資訊。
 - claim_kind：fact＝客觀事實；preference＝偏好；state＝目前狀態；intention＝意圖、計畫、承諾。
+- corroboration_class：identity＝稱呼與自我識別；general＝一般內容（話題、作品、事件、偏好、感受、意圖或計畫本身）；
+  self_fact＝使用者講到自己的相關事實且不容易驗證（自稱的經歷、身分、能力）。拿不準時填 self_fact。
 - cited_unit_ids：支撐這個概念的證據 id，只能填上面列出的 id。
 - supports_summary_from_cited_only：shareable_summary 是否完全被 cited_unit_ids 的證據支撐（true／false）。
 - shareable_summary：第三人稱、去逐字、不含任何人的名字與私密細節，{max_chars} 字以內；
@@ -119,7 +133,7 @@ _SHARE_PROMPT = """你是記憶系統的分享審核員。下列「證據」都�
 - privacy_restrict_unit_ids：說話者表達了「不希望被轉述、別說出去」意圖的證據 id（沒有就留空陣列）。
 
 以純 JSON 回覆：
-{{"sensitivity": "none|personal|sensitive", "claim_kind": "fact|preference|state|intention", "cited_unit_ids": ["..."], "supports_summary_from_cited_only": true, "shareable_summary": "...", "privacy_restrict_unit_ids": ["..."], "reason": "..."}}"""
+{{"sensitivity": "none|personal|sensitive", "claim_kind": "fact|preference|state|intention", "corroboration_class": "identity|general|self_fact", "cited_unit_ids": ["..."], "supports_summary_from_cited_only": true, "shareable_summary": "...", "privacy_restrict_unit_ids": ["..."], "reason": "..."}}"""
 
 _PRIVACY_SCAN_PROMPT = """你是記憶系統的隱私意圖掃描員。下列是群組場合中使用者說的話。
 判斷哪些話的說話者表達了「不希望被轉述、別說出去」的意圖。依語意與語氣判斷，不得依賴特定字詞。
@@ -225,6 +239,7 @@ class SharingJudgement:
     privacy_restrict_unit_ids: list[str] = field(default_factory=list)
     review_status: str = "insufficient"
     support_strength: float = 0.0
+    corroboration_class: str = ""
 
 
 def aware(dt: datetime | None) -> datetime | None:
@@ -555,6 +570,10 @@ class EvidenceReviewer:
         if claim_kind not in CLAIM_KINDS:
             return _Decision(held_reason=f"llm_invalid_claim_kind: {claim_kind!r}")
 
+        corro_class = parsed.get("corroboration_class")
+        if corro_class not in CORROBORATION_CLASSES:
+            corro_class = ""  # 缺漏或無效＝未分類，照 self_fact 的現行流程，不 hold
+
         cited_raw = parsed.get("cited_unit_ids", [])
         corro_raw = parsed.get("corroborating_unit_ids", [])
         if not isinstance(cited_raw, list) or not isinstance(corro_raw, list):
@@ -589,9 +608,18 @@ class EvidenceReviewer:
             status = "insufficient"
             notes.append("agent_only_cap")
 
+        # 免佐證類別（identity／general）：不套佐證門檻；contradicted 優先，agent_only 來源維持保守
+        not_required = (
+            corro_class in NOT_REQUIRED_CLASSES
+            and status != "contradicted"
+            and snap.support_source != "agent_only"
+        )
+        if not_required:
+            notes.append(f"corroboration_not_required:{corro_class}")
+
         corroborated: list[str] = []
         corro_strength: float | None = None
-        if claim_kind == "intention":
+        if claim_kind == "intention" and not not_required:
             corroborated = self._eligible_corroborators(corro_ids, cited_units, shown)
             if corro_ids and not corroborated:
                 notes.append("corroboration_not_eligible")
@@ -605,6 +633,7 @@ class EvidenceReviewer:
         status = decide_review_status(
             status, strength, claim_kind, corroborated, self._cfg,
             corroboration_strength=corro_strength,
+            corroboration_class=corro_class if not_required else "",
         )
         if before_gate == "supported" and status == "insufficient":
             if claim_kind == "intention":
@@ -622,6 +651,7 @@ class EvidenceReviewer:
             snap, status=status, strength=strength, cited=cited_ids, claim_kind=claim_kind,
             corroborated=corroborated, scope=scope, reason=reason or "LLM 證據審核",
             reviewer="llm", corroboration_strength=corro_strength,
+            corroboration_class=corro_class,
         )
         return _Decision(review=review, notes=notes)
 
@@ -706,6 +736,7 @@ class EvidenceReviewer:
         reason: str,
         reviewer: str,
         corroboration_strength: float | None = None,
+        corroboration_class: str = "",
     ) -> EvidenceReview:
         return EvidenceReview(
             status=status,
@@ -722,6 +753,7 @@ class EvidenceReviewer:
             claim_kind=claim_kind,
             corroborated_by=list(corroborated),
             corroboration_strength=corroboration_strength,
+            corroboration_class=corroboration_class,
         )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -956,8 +988,14 @@ class EvidenceReviewer:
             # 只依 U_S 的被引用 unit 重算：不帶入全部來源（含 DM／其他場域）的審核結果
             cited_units = [shown[i] for i in out.cited_unit_ids]
             out.support_strength, _ = self._support_strength_of(cited_units)
+            # 分享判定自己的類別優先；缺漏時沿用概念審核的類別（舊資料為空＝照 self_fact）。
+            # agent_only 來源沿用審核器的保守規則，不給免佐證
+            corro_class = out.corroboration_class or review.corroboration_class
+            if snap.support_source == "agent_only":
+                corro_class = ""
             out.review_status = decide_review_status(
                 "supported", out.support_strength, out.claim_kind, [], self._cfg,
+                corroboration_class=corro_class,
             )
         return out
 
@@ -997,6 +1035,9 @@ class EvidenceReviewer:
         unknown = [i for i in cited + restrict if i not in shown]
         if unknown:
             return held(f"unknown_evidence_id: {unknown[0]}")
+        corro_class = parsed.get("corroboration_class")
+        if corro_class not in CORROBORATION_CLASSES:
+            corro_class = ""  # 缺漏或無效＝未分類，後續保守處理
         summary = parsed.get("shareable_summary")
         summary = summary.strip() if isinstance(summary, str) else ""
         if len(summary) > SHARE_SUMMARY_MAX_CHARS:
@@ -1006,7 +1047,7 @@ class EvidenceReviewer:
         out = dataclasses.replace(
             base, outcome="judged", sensitivity=sensitivity, claim_kind=claim_kind,
             cited_unit_ids=cited, shareable_summary=summary,
-            privacy_restrict_unit_ids=restrict,
+            privacy_restrict_unit_ids=restrict, corroboration_class=corro_class,
         )
         if sensitivity not in SHAREABLE_SENSITIVITIES:
             out.reason = "sensitive"

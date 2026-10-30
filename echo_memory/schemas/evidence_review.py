@@ -17,12 +17,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-REVIEW_STATUSES = ("not_checked", "supported", "contradicted", "insufficient")
+# not_required＝免佐證：主張屬 identity／general 類（稱呼自我識別、一般內容），沒有真假可驗證的問題，
+# 不套用佐證門檻；與 supported 的差別是「沒有被驗證」，與 insufficient 的差別是「不需要驗證」
+REVIEW_STATUSES = ("not_checked", "supported", "contradicted", "insufficient", "not_required")
 # 審核 patch 可寫入的狀態（not_checked 代表「沒審核」，不能作為審核結果寫入）
-REVIEWED_STATUSES = ("supported", "contradicted", "insufficient")
+REVIEWED_STATUSES = ("supported", "contradicted", "insufficient", "not_required")
 REVIEWERS = ("llm", "none")
 # 主張類型（審核 LLM 判斷）；intention＝意圖／計畫／承諾，使用者自述最高 insufficient
 CLAIM_KINDS = ("fact", "preference", "state", "intention")
+# 佐證類別（審核 LLM 依語意判斷）：
+#   identity＝稱呼與自我識別（本人說了就算）；general＝一般內容（話題、作品、事件、偏好、意圖計畫）；
+#   self_fact＝使用者講自己、且不容易驗證的相關事實（自稱經歷、身分、能力），才需要佐證。
+# 空字串＝未分類（舊資料或 LLM 未給有效值），一律照 self_fact 的現行流程處理。
+CORROBORATION_CLASSES = ("identity", "general", "self_fact")
+# 免佐證的類別：判定為 not_required（contradicted 永遠優先，不受影響）
+NOT_REQUIRED_CLASSES = ("identity", "general")
 
 
 # ─── 共享投影佐證參考（M10 §5）────────────────────────────────────────────────
@@ -140,7 +149,7 @@ class EvidenceReview:
     """一次證據審核的結果（存於 Concept.evidence_review）。
 
     Attributes:
-        status: not_checked / supported / contradicted / insufficient
+        status: not_checked / supported / contradicted / insufficient / not_required
         support_strength: 審核者在已引用證據下的支持強度 [0, 1]
         cited_evidence_ids: 審核者引用的 evidence unit id（必須是送審當下提供者）
         scope: {"subject_ref": str|None, "context": str|None}，審核者填的自由標籤，
@@ -154,6 +163,7 @@ class EvidenceReview:
         reason: 審核理由
         patch_id: 寫入這筆審核的 review patch id（rollback／追溯用）
         claim_kind: fact / preference / state / intention（審核 LLM 判斷）
+        corroboration_class: identity / general / self_fact；空字串＝未分類（舊資料，維持原狀態）
         corroborated_by: 交叉佐證的 unit id（intention 要 supported 必須非空）
         corroboration_strength: 本 namespace 內 unit 佐證的學習權重 noisy-OR（M-13）；
             None＝未計算（舊資料），沿用「有佐證即可」。有值且無 sp: 參考時須達 SUPPORT_THRESHOLD
@@ -176,6 +186,7 @@ class EvidenceReview:
     claim_kind: str = "fact"
     corroborated_by: list[str] = field(default_factory=list)  # 佐證 unit id
     corroboration_strength: float | None = None
+    corroboration_class: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -198,6 +209,7 @@ class EvidenceReview:
                 None if self.corroboration_strength is None
                 else round(float(self.corroboration_strength), 4)
             ),
+            "corroboration_class": self.corroboration_class,
         }
 
     @classmethod
@@ -214,6 +226,9 @@ class EvidenceReview:
         if claim_kind not in CLAIM_KINDS:
             claim_kind = "fact"
         corroborated = data.get("corroborated_by")
+        corroboration_class = data.get("corroboration_class", "")
+        if corroboration_class not in CORROBORATION_CLASSES:
+            corroboration_class = ""  # 舊資料或壞值＝未分類
 
         def _int(key: str) -> int:
             try:
@@ -243,6 +258,7 @@ class EvidenceReview:
                 None if data.get("corroboration_strength") is None
                 else _clamp01(data.get("corroboration_strength"))
             ),
+            corroboration_class=corroboration_class,
         )
 
 
@@ -281,6 +297,7 @@ def review_confidence_cap(status: str, cfg: Any = None) -> float | None:
         "supported": cfg.review_confidence_cap_supported,
         "insufficient": cfg.review_confidence_cap_insufficient,
         "contradicted": cfg.review_confidence_cap_contradicted,
+        "not_required": cfg.review_confidence_cap_not_required,
     }[status])
 
 
@@ -372,6 +389,7 @@ def decide_review_status(
     corroborated_by: Any = (),
     cfg: Any = None,
     corroboration_strength: float | None = None,
+    corroboration_class: str = "",
 ) -> str:
     """由「LLM 判定」＋門檻決定最終 review status（§8.2、§8.3）。
 
@@ -381,9 +399,15 @@ def decide_review_status(
       給了 corroboration_strength 且佐證中沒有 sp: 共享投影參考時，須 >= SUPPORT_THRESHOLD
       （sp: 參考在寫入時已各自過門檻）；沒給（None）沿用「有佐證即可」
     - contradicted／insufficient 照 LLM 判定；非法值視為 insufficient
+    - corroboration_class 為 identity／general（免佐證類）-> not_required，不套用上述門檻；
+      contradicted 永遠優先。未分類（空字串）或 self_fact 維持上述現行流程
     """
     if llm_status not in REVIEWED_STATUSES:
         return "insufficient"
+    if llm_status == "contradicted":
+        return llm_status
+    if corroboration_class in NOT_REQUIRED_CLASSES:
+        return "not_required"
     if llm_status != "supported":
         return llm_status
     if cfg is None:

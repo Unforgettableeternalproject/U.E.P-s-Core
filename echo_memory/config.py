@@ -163,6 +163,10 @@ class Config:
         self.review_confidence_cap_contradicted = float(
             os.getenv("REVIEW_CONFIDENCE_CAP_CONTRADICTED", "0.30")
         )
+        # not_required（免佐證）沒有被驗證，但也不該被當成存疑：上限與 supported 相同
+        self.review_confidence_cap_not_required = float(
+            os.getenv("REVIEW_CONFIDENCE_CAP_NOT_REQUIRED", "0.95")
+        )
         # confidence 重算時 support_source 的係數
         self.review_source_factor_user = float(os.getenv("REVIEW_SOURCE_FACTOR_USER", "1.0"))
         self.review_source_factor_legacy = float(os.getenv("REVIEW_SOURCE_FACTOR_LEGACY", "0.7"))
@@ -179,6 +183,10 @@ class Config:
         )
         self.review_status_factor_contradicted = float(
             os.getenv("REVIEW_STATUS_FACTOR_CONTRADICTED", "0.45")
+        )
+        # 免佐證不低於 supported：排序不因為「不需要驗證」而吃虧
+        self.review_status_factor_not_required = float(
+            os.getenv("REVIEW_STATUS_FACTOR_NOT_REQUIRED", "1.0")
         )
         # standing = confidence * status_factor * source_rank
         self.standing_source_rank_user = float(os.getenv("STANDING_SOURCE_RANK_USER", "1.0"))

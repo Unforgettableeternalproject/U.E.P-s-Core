@@ -614,6 +614,26 @@ concept_extractor.shutdown(wait=False) # 關閉執行緒池
 - 將相似的 episodes 群組壓縮為概括性概念
 - 需要 LLM（`llm_fn=None` 時優雅跳過）
 
+#### 12.4 證據審核與佐證類別
+
+Dream 的審核 phase（`EvidenceReviewer`）對概念產生 `review_status`：`supported`（證據支持）、`contradicted`（證據矛盾）、`insufficient`（證據不足）、`not_required`（免佐證），另有 `not_checked`（未審核或審核已因內容變動失效，舊資料零遷移即此值）。
+
+**佐證類別 `corroboration_class`**（審核與分享判定的 LLM 依語意輸出，不得依賴特定字詞）：
+
+| 類別 | 意義 | 狀態 |
+|------|------|------|
+| `identity` | 稱呼與自我識別（本人說了就算） | `not_required` |
+| `general` | 一般內容：話題、作品、事件、偏好、感受，以及意圖或計畫本身 | `not_required` |
+| `self_fact` | 使用者講自己、且不容易驗證的相關事實（自稱經歷、身分、能力） | 照原流程：`supported`／`insufficient`／`contradicted` |
+
+- 只有 `self_fact` 套用支持度門檻（`SUPPORT_THRESHOLD`）與 intention 的他人佐證規則；`insufficient` 因此只會出現在 `self_fact`、未分類與 `agent_only` 來源。
+- `contradicted` 永遠優先：任何類別有反證都照矛盾處理。
+- 保守降級：LLM 未給或給了無效類別、舊資料沒有此欄位（`""`＝未分類）一律照 `self_fact` 處理，維持原狀態；`agent_only` 來源不給 `not_required`。Gate 驗證 `not_required` 必須搭配 `identity`／`general`。
+- `not_required` 沒有被驗證：不蓋 `last_verified_at`；confidence 上限 `REVIEW_CONFIDENCE_CAP_NOT_REQUIRED`（預設 0.95，同 supported）。
+- 檢索排序因子 `REVIEW_STATUS_FACTOR_NOT_REQUIRED`（預設 1.0，同 supported，不低於 insufficient 的 0.80）；不掛「證據不足」標籤。
+- intention 不再因 claim_kind 本身強制他人佐證：屬 `general` 時為 `not_required`，共享時仍標「宣稱」；只有同時宣稱不易驗證的自身經歷、身分、能力（`self_fact`）才維持需佐證。
+- 共享投影的 `review_status` 同樣由分享判定的類別決定並隨投影傳遞（`not_required` 不標「僅本人提過」）。
+
 ### DreamReport
 
 ```python

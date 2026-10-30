@@ -69,6 +69,7 @@ class ShareLLM:
         corroborate: bool = True,
         probe: Callable[[str], None] | None = None,
         raw: str | None = None,
+        corroboration_class: str | None = None,
     ):
         self.summary = summary
         self.sensitivity = sensitivity
@@ -78,6 +79,7 @@ class ShareLLM:
         self.corroborate = corroborate
         self.probe = probe
         self.raw = raw
+        self.corroboration_class = corroboration_class
         self.calls: list[str] = []
 
     @property
@@ -93,7 +95,7 @@ class ShareLLM:
         if "分享審核員" in prompt:
             ids = re.findall(r"^\[([^\]]+)\] ", prompt, re.M)
             summary = self.summary(prompt) if callable(self.summary) else self.summary
-            return json.dumps({
+            payload = {
                 "sensitivity": self.sensitivity,
                 "claim_kind": self.claim_kind,
                 "cited_unit_ids": ids,
@@ -101,7 +103,10 @@ class ShareLLM:
                 "shareable_summary": summary,
                 "privacy_restrict_unit_ids": ids if self.restrict_all else [],
                 "reason": "stub",
-            }, ensure_ascii=False)
+            }
+            if self.corroboration_class is not None:  # None＝不輸出欄位（模擬舊輸出）
+                payload["corroboration_class"] = self.corroboration_class
+            return json.dumps(payload, ensure_ascii=False)
         if "交叉佐證審核員" in prompt:
             ids = re.findall(r"^\[(proj_[^\]]+)\] ", prompt, re.M)
             return json.dumps(

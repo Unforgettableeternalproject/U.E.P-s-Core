@@ -363,6 +363,7 @@ class SharedItem:
 
         共享項目的 insufficient 只代表沒有其他成員佐證，不代表本人沒說過；
         用「證據不足」會讓模型把整條當成不可靠而回答查無此人（D85 實測）。
+        not_required（免佐證：稱呼自我識別、一般內容）不掛任何佐證標籤；intention 仍標「宣稱」。
         """
         if self.claim_kind == "intention":
             return "宣稱"

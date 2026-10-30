@@ -43,6 +43,8 @@ from echo_memory.schemas.concept import Concept
 from echo_memory.config import get_config
 from echo_memory.schemas.evidence_review import (
     CLAIM_KINDS,
+    CORROBORATION_CLASSES,
+    NOT_REQUIRED_CLASSES,
     REVIEWED_STATUSES,
     EvidenceReview,
     compute_basis_digest,
@@ -1114,6 +1116,12 @@ class ConceptInhibitor(HypothesisGateMixin, SelfModelGateMixin):
         problem = validate_corroborated_by(value.get("corroborated_by"))
         if problem is not None:
             return problem
+        corro_class = value.get("corroboration_class") or ""
+        if corro_class and corro_class not in CORROBORATION_CLASSES:
+            return f"corroboration_class 無效: {corro_class!r}"
+        # not_required（免佐證）只能由 identity／general 類產生；self_fact／未分類不得走這條
+        if value.get("status") == "not_required" and corro_class not in NOT_REQUIRED_CLASSES:
+            return "not_required 必須搭配 identity／general 的 corroboration_class"
         if (
             claim_kind == "intention"
             and value.get("status") == "supported"
@@ -1233,10 +1241,10 @@ class ConceptInhibitor(HypothesisGateMixin, SelfModelGateMixin):
                 reason_rejected = "stale: basis_digest 與目前證據基礎不符"
             if (
                 reason_rejected is None
-                and value["status"] == "supported"
+                and value["status"] in ("supported", "not_required")
                 and support_source == "agent_only"
             ):
-                reason_rejected = "agent_only 來源不能審為 supported"
+                reason_rejected = f"agent_only 來源不能審為 {value['status']}"
 
             if reason_rejected is None:
                 if confidence is None:

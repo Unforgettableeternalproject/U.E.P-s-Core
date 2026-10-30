@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping
 # 審核狀態 → 排序因子（not_checked 只是微幅偏低，不得變相成「未審核＝可疑」）
 DEFAULT_STATUS_FACTOR: dict[str, float] = {
     "supported": 1.00,
+    "not_required": 1.00,  # 免佐證（identity／general）：不因不需驗證而低於 supported
     "not_checked": 0.95,
     "insufficient": 0.80,
     "contradicted": 0.45,

@@ -92,6 +92,18 @@ class TestRetrieveShared:
         # 本人不會在共享區塊看到自己
         assert view(scope_engine, viewer="1001").items == []
 
+    def test_logs_items_and_degraded_reason(self, root, layer, scope_engine, caplog):
+        """每次共享檢索都留一行觀測 log：成功記 items 數，degraded 記原因。"""
+        alice = make_owner(root, layer, "1001")
+        share_one(alice)
+        with caplog.at_level("INFO", logger="echo_memory.retrieval.shared"):
+            view(scope_engine, viewer="1002")
+            view(scope_engine, viewer="")
+        lines = [r.getMessage() for r in caplog.records if "[retrieve_shared]" in r.getMessage()]
+        assert len(lines) == 2
+        assert "items=1" in lines[0] and "degraded=False" in lines[0]
+        assert "reason=missing_viewer" in lines[1] and "elapsed_ms=" in lines[1]
+
     def test_below_similarity_floor_returns_nothing(self, root, layer, scope_engine):
         alice = make_owner(root, layer, "1001")
         share_one(alice)

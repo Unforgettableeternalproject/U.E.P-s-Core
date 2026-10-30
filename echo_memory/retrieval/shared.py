@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterable
 from typing import Any
 
@@ -47,7 +48,19 @@ def _clean_uids(values: Iterable[Any] | None) -> set[str]:
     return {str(v).strip() for v in (values or ()) if str(v).strip()}
 
 
-def retrieve_shared_context(
+def retrieve_shared_context(**kwargs: Any) -> SharedContext:
+    """檢索共享摘要並記一行觀測 log（items 數、degraded 原因、耗時）。參數同 ``_retrieve_shared_context``。"""
+    started = time.monotonic()
+    ctx = _retrieve_shared_context(**kwargs)
+    elapsed_ms = (time.monotonic() - started) * 1000
+    logger.info(
+        "[retrieve_shared] scope=%s items=%d degraded=%s reason=%s elapsed_ms=%.0f",
+        ctx.scope_id, len(ctx.items), ctx.degraded, ctx.degraded_reason or "-", elapsed_ms,
+    )
+    return ctx
+
+
+def _retrieve_shared_context(
     *,
     layer: Any,
     embed_query: Any,

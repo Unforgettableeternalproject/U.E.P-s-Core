@@ -281,6 +281,22 @@ engine.neurochem.stimulate(dopamine_delta=0.2)
 engine.neurochem.tick()
 ```
 
+### 宿主整合介面（MemoryHost）
+
+由外部宿主（如 U.E.P Core）持有多個 engine 時使用的注入點與生命週期。
+
+| 介面 | 語意 |
+|---|---|
+| `set_concept_inhibitor(inhibitor, *, opt_out=None)` | `inhibitor=None` 且 `opt_out` 為 None／True：刻意無 Gate，不再自動建立預設 `ConceptInhibitor`。`opt_out=False`：只清掉目前 Gate，下次 `ensure_initialized()` 仍自動建立預設 Gate。 |
+| `MemoryEngine(..., event_emitter_enabled_fn=fn)`／`event_emitter.set_enabled_fn(fn)` | 宿主注入 `memory.*` 事件開關，取代全域 `SELF_MODEL_EVENTS_ENABLED`；`set_enabled_fn(None)` 還原全域設定。仍需 sink，共享 namespace（`scope-g*`）一律不發。emitter 在建構子建立，沒有延遲建立問題。 |
+| `configure_dream(**overrides)` | per-engine 覆寫 Dream 設定，沒給的鍵沿用全域 config。鍵為 `dream_enabled`、`dream_idle_minutes`、`dream_cron`、`dream_enable_idle`、`dream_enable_cron`、`dream_lease_ttl_seconds`、`dream_cron_window_seconds`、`dream_min_pending`、`dream_daydream_pending`、`dream_cron_require_pending`（可省略 `dream_` 前綴）。值為 None 撤回覆寫；不認得的鍵或型別錯誤拋 `ValueError`。須在 DreamEngine 建立前（第一次 `start_dream_scheduler`／`dream`／`dream_readiness`）呼叫；太晚呼叫不套用、記 warning，回傳 `{"applied": False}`。 |
+| `start_dream_scheduler()` | 新增 `{"started": False, "reason": "scope_namespace"}`（共享 namespace 不排程）。 |
+| `set_dream_listener(fn)`（None 取消） | 每次 `dream_now` 結束呼叫一次（排程與手動、含 skipped／error）。報告 dict：`triggered_by`、`started_at`、`finished_at`（UTC ISO 8601 字串）、`skipped_reason`、`error`、`status`（`completed`／`skipped`／`error`）。在觸發 dream 的執行緒同步呼叫；listener 例外被吞掉並記 log。 |
+| `dream_readiness()["lease"]` | `{"held_by_other", "holder_pid", "expires_at"}`，唯讀（`FileLease.read_state()`）。他行程持有且未逾期才為 True；本實例自己持有、已逾期或無租約為 False。 |
+| `close()` | 冪等。停 Dream 排程並等進行中的週期（至多 5 秒）→ `event_emitter.drain` → 對已建立的 store 存檔 → 存 neurochem；各步驟失敗只記 log。之後 store／retrieve／dream／`start_dream_scheduler`／`configure_dream` 拋 `RuntimeError`，`stop_dream_scheduler` 與 `close` 仍可呼叫。宿主自建的 `ConceptExtractor` 不在範圍內，須由宿主 shutdown。 |
+
+維持現狀並有測試鎖定：`scope_ref_for` 只產生 `scope_private_<namespace_id>`（非 private 拋 `ValueError`）；`store_episode` 同一 `idempotency_key` 回傳原 episode id。測試見 `tests/test_host_interfaces.py`。
+
 ---
 
 ## 6. 檢索層：EcphoryRAG

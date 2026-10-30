@@ -1202,7 +1202,10 @@ class MemoryEngine:
             raise ValueError(f"kind 必須是 {OBSERVATION_KINDS} 之一，收到 {kind!r}")
         if top_n <= 0:
             return []
-        entries = self.activity.list(kind)
+        # 跨 engine 讀取（指名查詢經 resolver 進來）不經宿主 adapter 鎖；
+        # 取 storage_lock 與寫入路徑互斥（可重入、跨行程），避免 Windows 上 replace 與讀取相撞
+        with storage_lock(self.storage_path):
+            entries = self.activity.list(kind)
         entries.sort(key=lambda e: e["last_played"], reverse=True)
         entries.sort(key=lambda e: e["total_minutes"], reverse=True)
         return [

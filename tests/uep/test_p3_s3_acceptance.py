@@ -5,44 +5,22 @@ V09 一入一出、journal 內 turn 事件序列、V07 取消後晚到輸出被�
 """
 from __future__ import annotations
 
-import asyncio
-import threading
-
 import pytest
 
 pytest.importorskip("echo_stream")
 
 from echo_stream.contracts.types import AudioChunk
-from echo_stream.fakes.stages import FakeSpeakStage
 
 from tests.uep.echo_support import (
     SPEAKER,
     TEXT_TWO_SENTENCES,
     WAIT,
+    GatedSpeak,
     build_rig,
 )
 from uep.output.delivery import DeliveryStatus
 
 pytestmark = pytest.mark.usefixtures("session_factory")
-
-
-class GatedSpeak(FakeSpeakStage):
-    """每個 chunk 交給下游後先停住，直到 ``release`` 才合成下一個。
-
-    讓測試能在「首個 chunk 已寫入、第二個還沒產生」這個確切的點動作，不靠 sleep 賭 ES 的速度
-    （rtf=0 的 fake 會在輪詢到首個 chunk 之前就把所有句子寫完）。
-    """
-
-    def __init__(self, **kw) -> None:
-        super().__init__(first_chunk_extra_s=0.0, rtf=0.0, **kw)
-        self.release = threading.Event()
-
-    async def stream(self, sentences, token):
-        async for chunk in super().stream(sentences, token):
-            yield chunk
-            while not self.release.is_set():
-                token.raise_if_cancelled()
-                await asyncio.sleep(0.005)
 
 
 @pytest.fixture
@@ -110,11 +88,14 @@ def test_utterance_text_goes_to_blob_not_payload(rig):
 # ---- V07：取消後晚到輸出被丟、不產生 intent ----
 
 def test_v07_late_chunks_after_cancel_are_discarded_and_create_no_intent(rig):
-    r = rig(realtime=True, responses=("第一句話很長很長很長很長。第二句話也很長很長很長。第三句。",))
+    speak = GatedSpeak()
+    r = rig(realtime=True, speak=speak, responses=("第一句話很長很長很長很長。第二句話也很長很長很長。第三句。",))
     result = r.say("講點什麼")
     turn_id = result.ticket.turn_id
+    # speak 停在首個 chunk 之後：插話一定發生在「還有後續 chunk 要寫」的確切時點，不靠 sleep 賭速度
     r.wait_for(lambda: bool(r.host.wrappers_of(turn_id)) and r.inner_sinks and r.inner_sinks[0].chunks, what="首個 chunk")
     r.voice(seconds=3.0)  # 插話：只取消語音，think 照常
+    speak.release.set()
     kinds = r.wait_terminal(turn_id)
     assert kinds[-1] == "turn.cancelled"
     cancelled = r.events(turn_id, ("turn.cancelled",))[0]
@@ -173,12 +154,15 @@ def test_v12_old_generation_output_rejected_before_inner_write(rig):
 
 
 def test_v12_revoked_lease_cancels_turn_with_core_reason_and_rejects_new_outputs(rig):
-    r = rig(realtime=True, responses=("第一句話很長很長很長很長很長。第二句話也很長很長很長很長。第三句。",))
+    speak = GatedSpeak()
+    r = rig(realtime=True, speak=speak, responses=("第一句話很長很長很長很長很長。第二句話也很長很長很長很長。第三句。",))
     result = r.say("講點什麼")
     turn_id = result.ticket.turn_id
     gen0 = result.ticket.turn_generation
     r.wait_for(lambda: r.inner_sinks and r.inner_sinks[0].chunks, what="首個 chunk")
     r.core.presence.revoke("presence_lost_test")
+    r.wait_for(lambda: r.host.generations.get(turn_id) > gen0, what="撤銷已登記")  # 撤銷生效後才放行後續 chunk
+    speak.release.set()
     kinds = r.wait_terminal(turn_id)
     assert kinds[-1] == "turn.cancelled"
     cancelled = r.events(turn_id, ("turn.cancelled",))[0]

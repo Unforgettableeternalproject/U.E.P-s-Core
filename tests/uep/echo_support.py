@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import Callable
@@ -56,6 +57,25 @@ def fast_think(tracer: LatencyTracer, responses=(TEXT_TWO_SENTENCES,), **over: A
     }
     kw.update(over)
     return FakeThinkStage(**kw)
+
+
+class GatedSpeak(FakeSpeakStage):
+    """每個 chunk 交給下游後先停住，直到 ``release`` 才合成下一個。
+
+    讓測試能在「首個 chunk 已寫入、第二個還沒產生」這個確切的點動作，不靠 sleep 賭 ES 的速度
+    （rtf=0 的 fake 會在輪詢到首個 chunk 之前就把所有句子寫完）。
+    """
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(first_chunk_extra_s=0.0, rtf=0.0, **kw)
+        self.release = threading.Event()
+
+    async def stream(self, sentences, token):
+        async for chunk in super().stream(sentences, token):
+            yield chunk
+            while not self.release.is_set():
+                token.raise_if_cancelled()
+                await asyncio.sleep(0.005)
 
 
 def fast_speak(**over: Any) -> FakeSpeakStage:

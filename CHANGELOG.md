@@ -3214,3 +3214,15 @@
 
 ---
 
+### test: P3 S4 驗收，V06／V08／VC-4-5／VC-5-2 與 D5／D79／D82. 10/30
+
+> Date: Fri, 30 Oct 2026 19:43:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `453bbd909df7ca901906a82f5fe787d761597cd0`
+
+---
+

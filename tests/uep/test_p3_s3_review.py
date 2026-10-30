@@ -14,7 +14,14 @@ from echo_stream.adapters.think_llm import EchoBackend, LLMThinkStage
 from echo_stream.fakes.audio import FakeAudioSink
 from sqlalchemy import select
 
-from tests.uep.echo_support import PRIVATE, SPEAKER, WAIT, build_rig, make_session
+from tests.uep.echo_support import (
+    PRIVATE,
+    SPEAKER,
+    WAIT,
+    GatedSpeak,
+    build_rig,
+    make_session,
+)
 from tests.uep.test_p3_s3_host import LONG, RecPort, StubInput
 from uep.context.models import ContextSnapshotRow
 from uep.echo.host import EchoPipelineHost, SessionBusyError
@@ -153,11 +160,14 @@ def test_dispatch_exception_silences_and_cancels_turn(rig):
 
 def test_rejected_turn_ends_cancelled_without_snapshot_or_memory_store(rig, session_factory):
     port = RecPort()
-    r = rig(realtime=True, responses=(LONG,), memory=port)
+    speak = GatedSpeak()
+    r = rig(realtime=True, speak=speak, responses=(LONG,), memory=port)
     result = r.say("講點什麼")
     turn_id = result.ticket.turn_id
     r.wait_for(lambda: r.inner_sinks and r.inner_sinks[0].chunks, what="首個 chunk")
-    r.host.generations.bump(turn_id)  # 舊 generation：下一個 chunk 被拒
+    r.wait_for(lambda: any(0 in w.delivery_ids for w in r.host.wrappers_of(turn_id)), what="首句 dispatch")
+    r.host.generations.bump(turn_id)  # 舊 generation：下一個 chunk 被拒（speak 停在首 chunk 後，bump 必先於它）
+    speak.release.set()
     kinds = r.wait_terminal(turn_id)
     assert kinds[-1] == "turn.cancelled"  # 不再是 completed(skipped)
     assert r.events(turn_id, ("turn.cancelled",))[0].payload["reason_code"] == "admission_rejected"
@@ -166,12 +176,16 @@ def test_rejected_turn_ends_cancelled_without_snapshot_or_memory_store(rig, sess
     assert port.stored == []
 
 
-def test_cancel_voice_miss_is_counted(rig):
+def test_cancel_turn_miss_is_counted_and_history_is_retracted_by_host(rig):
+    """D5：輪已結束時 cancel_turn 回 False，宿主自己 think.retract（整輪撤出歷史）。"""
     r = rig()
     result = r.say()
     r.wait_terminal(result.ticket.turn_id)
+    assert any(h["role"] == "assistant" for h in r.think.history)  # 已正常結束：歷史有這一輪
     r.run_on_es(_call(lambda: r.host._refuse_turn(result.ticket.turn_id, "admission_rejected")))
-    assert r.host.metrics["echo.cancel_voice_missed"] == 1
+    r.wait_for(lambda: r.host.metrics["echo.history_retracted"] == 1, what="宿主撤回歷史")
+    assert r.host.metrics["echo.cancel_turn_missed"] == 1
+    assert not any(h["role"] == "assistant" for h in r.think.history)
 
 
 async def _call(fn):
@@ -287,7 +301,8 @@ def test_idempotency_key_includes_run_id_so_restart_does_not_collide(rig):
 
 # ---- Minor ----
 
-def test_es_reason_codes_are_kept_and_only_shutdown_echo_is_overridden(rig):
+def test_es_reason_codes_are_kept_as_reported(rig):
+    """S4：Orchestrator 不覆寫 ES 回報的終結原因（Core 的原因碼已隨 cancel_turn 的 outcome 回來）。"""
     r = rig()
     orch = r.host.orchestrator
     t1 = orch.on_utterance(r.host.session, UtteranceFact(SPEAKER, "a", seq=70)).ticket
@@ -300,7 +315,7 @@ def test_es_reason_codes_are_kept_and_only_shutdown_echo_is_overridden(rig):
     assert r.events(t2.turn_id, ("turn.cancelled",))[0].payload["reason_code"] == "yielded"
     t3 = orch.on_utterance(r.host.session, UtteranceFact(SPEAKER, "c", seq=72)).ticket
     orch.cancel_turn(t3.turn_id, "admission_rejected")
-    orch.on_turn_ended(t3.turn_id, TurnEndFacts("skipped", "voice_cancelled", True))  # cancel_voice 的回音才覆寫
+    orch.on_turn_ended(t3.turn_id, TurnEndFacts("cancelled", "admission_rejected"))
     assert r.events(t3.turn_id, ("turn.cancelled",))[0].payload["reason_code"] == "admission_rejected"
 
 

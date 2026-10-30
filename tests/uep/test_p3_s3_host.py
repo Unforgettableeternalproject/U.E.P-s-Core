@@ -345,19 +345,20 @@ def test_orchestrator_terminal_mapping_exactly_once(rig, facts, kind, payload, b
     assert "turn.generation_completed" not in r.kinds(ticket.turn_id)  # 只由 ES 的 on_generation_done 觸發
 
 
-def test_core_initiated_cancel_reason_wins_over_es_reason_only_when_es_was_cancelled(rig):
+def test_core_cancel_reason_comes_from_es_outcome_and_is_not_rewritten(rig):
+    """S4（D5）：Core 的原因碼隨 ES cancel_turn 的 outcome 回來；Orchestrator 不再覆寫 ES 回報的終結原因。"""
     r = rig()
     orch = r.host.orchestrator
     t1 = orch.on_utterance(r.host.session, UtteranceFact(SPEAKER, "a", seq=801)).ticket
     assert orch.cancel_turn(t1.turn_id, "global_stop") and not orch.cancel_turn(t1.turn_id, "global_stop")
     bumped = r.host.generations.get(t1.turn_id)
     assert bumped > t1.turn_generation
-    orch.on_turn_ended(t1.turn_id, TurnEndFacts("cancelled", "shutdown"))  # ES 只能標 shutdown
+    orch.on_turn_ended(t1.turn_id, TurnEndFacts("cancelled", "global_stop"))  # cancel_turn 帶回來的 Core 原因碼
     assert r.events(t1.turn_id, ("turn.cancelled",))[0].payload["reason_code"] == "global_stop"
     assert r.host.generations.get(t1.turn_id) == bumped  # 已前進一次，不重複前進
     t2 = orch.on_utterance(r.host.session, UtteranceFact(SPEAKER, "b", seq=802)).ticket
     orch.cancel_turn(t2.turn_id, "presence_lost")
-    orch.on_turn_ended(t2.turn_id, TurnEndFacts("completed", None, True))  # 取消來得太晚：輪已完成就不覆寫
+    orch.on_turn_ended(t2.turn_id, TurnEndFacts("completed", None, True))  # 取消來得太晚：輪已完成就不改寫
     assert r.kinds(t2.turn_id)[-1] == "turn.completed"
 
 
@@ -562,8 +563,8 @@ def test_each_turn_gets_its_own_tool_context_dict(rig):
     seen = []
     original = r.host._build_request
 
-    def spy(ticket, fact):
-        req = original(ticket, fact)
+    def spy(ticket, fact, runtime=None):
+        req = original(ticket, fact, runtime)
         seen.append(req.utterance.metadata["tool_context"])
         return req
 

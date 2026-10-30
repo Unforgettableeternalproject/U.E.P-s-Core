@@ -3010,3 +3010,15 @@
 
 ---
 
+### docs: P3 契約修訂與方案文件, 同步裁決狀態. 10/30
+
+> Date: Fri, 30 Oct 2026 13:04:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `46d5f1a151c2aeac83d2886eee9ed0e75d779675`
+
+---
+

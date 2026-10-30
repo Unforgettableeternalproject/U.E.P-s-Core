@@ -26,6 +26,7 @@
 - 穩定 ID 一律字串，格式為 `前綴_ULID`（D32，已定案 A8）。前綴：`evt_`、`actv_`（activity）、`task_`、`run_`、`step_`、`act_`（action）、`turn_`、`seg_`（segment）、`conv_`、`lease_`、`xfer_`、`out_`、`dsp_`（dispatch）、`dlv_`、`snap_`、`appr_`、`req_`（state transition request）、`obx_`（outbox）、`blob_`（payload blob）、`trc_`（trace）、`rcpt_`（receipt）、`att_`（attempt）。
 - legacy ID（`gs_／cs_／ws_`）**只存 `legacy_ref`**，不作為新主鍵（D23，已定案 A8），但須可解析。§8.3 以此為準，segment 的原生前綴為 `seg_`。
 - legacy 的 `turn_{n}`（每個 CS 內自增）與 `step_{n}`（每個 WS 內自增）**非全域唯一**，不得單獨當主鍵；新 Core 的 `turn_id`／`step_id` 為全域唯一值，legacy 值只存 `legacy_ref`，或以複合鍵 `(segment_id, turn_n)`、`(task_id, step_n)` 表示。
+- **P3 註記（P3接入方案 §2.2）**：Echo Stream 的 `new_turn_id()`（uuid 前 12 碼）是輸入端 id，不符 `turn_<ULID>`。Core 於簽發 TurnTicket 時綁定正式 `turn_id`；輸入端 id 存於 ticket 的 `source_turn_ref`，不當主鍵，也不進事件的 ID 欄位。ES 的其餘 trace 用 ID 同樣不外洩到 journal 的 ID 欄位。
 - 事件類型採 `領域.動詞過去式` 點分字串（例 `task.completed`），非封閉 enum（現況表 §4.1 指出 `SystemEvent` 封閉 enum 之限制）。
 - 時間：持久化欄位用 `ts`；跨主機延遲只比較同端 elapsed time（提案 §19.1），不相減外部時鐘。
 
@@ -112,7 +113,7 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 | `scope_ref` | str | Y | GW 重建 | 資料可見範圍（私人／群組／公開），**只能縮不能放大**（見 E-6） |
 | `fence` | obj? | C | Core | 與 CC-4 授權六元組同構：`{persona_id, endpoint_id, lease_id, fencing_epoch, core_epoch, presence_generation}`，互動回合另加 `turn_generation`；承載輸出或位置相關動作的事件必填（CC-4／CC-5） |
 | `payload` | obj | Y | 產生者 | 僅限**不含私人原文**的小型結構化內容（ID、狀態、計數、結果碼）；其餘一律走 `payload_ref`（D33） |
-| `payload_ref` | str? | C | 產生者 | 指向可刪除 blob 的引用；含私人原文（對話、轉錄、記憶內容）、音檔、長文時必填 |
+| `payload_ref` | str? | C | 產生者 | 指向可刪除 blob 的引用；含私人原文（對話、轉錄、記憶內容）、音檔、長文時必填。**P3 慣例**：語音轉錄文字與 `Utterance.metadata` 的私人部分、記憶端的自由文字（如 `proactive.trigger_observed.summary`，D78）一律走此欄，`payload` 只放 ID、語言、信心、毫秒統計、`speaker_ref` 等小型結構化值 |
 | `payload_hash` | str? | C | Journal | `payload_ref` 內容的雜湊；blob 被刪除後仍保留，供完整性稽核。格式 `hmac-sha256:<kid>:<hex>`（E-18） |
 
 #### delivery_class × journal × 投遞通道
@@ -140,16 +141,16 @@ A4 前提：Event Bus 程式碼沿用，journal 以封裝層加在 Bus 之前，
 | 類別 | event_type | delivery_class |
 |---|---|---|
 | 輸入 | `input.text_final`、`input.utterance_final`、`input.attachment_provided` | interaction |
-| 回合 | `turn.started`、`turn.generation_completed`、`turn.completed`、`turn.cancelled` | durable |
-| 對話 | `conversation.episode_started`、`conversation.episode_ended`、`conversation.segment_started`、`conversation.segment_ended` | durable |
+| 回合 | `turn.started`、`turn.generation_completed`、`turn.completed`、`turn.cancelled`、`turn.attempt_started`、`turn.skipped` | durable；`turn.cancelled` 以 `payload.reason_code` 區分取消原因，不另增 kind；`turn.attempt_started` 於 regen／fallback 新 attempt 時發；`turn.skipped` 記錄決策為 passive／pass／observe 而未開 turn（P3 新增，D81） |
+| 對話 | `conversation.episode_started`、`conversation.episode_ended`、`conversation.segment_started`、`conversation.segment_ended`、`conversation.participant_joined`、`conversation.participant_left` | durable；participant 事件供 audience 與政策快照，payload 只收 `speaker_ref`、`role`（P3 新增，D81） |
 | 狀態 | `state.transition_requested`、`state.changed` | durable |
 | 任務 | `task.created`、`task.completed`、`task.failed`、`task.cancelled`、`task.input_requested`、`task.input_provided`、`run.started`、`run.ended`、`step.completed` | durable；`task.*` 只由 Task Manager 發 |
 | 動作 | `action.intended`、`action.approved`、`action.executed`、`action.unknown` | durable |
 | 在場 | `presence.arrival_requested`、`presence.departure_requested`、`presence.transfer_requested`、`presence.granted`、`presence.activated`、`presence.quiesced`、`presence.revoked`、`presence.recovering`、`presence.recovered` | durable；其中 stop／revoke 的即時訊號走 control |
 | 輸出 | `output.intent_created`、`output.admitted`、`output.rejected`、`delivery.reported` | durable |
 | 控制 | `control.stop`、`control.abort`、`control.revoke` | control |
-| 記憶 | `memory.record_created`、`memory.consolidated` | durable |
-| 主動 | `proactive.trigger_observed`、`proactive.candidate_decided` | durable |
+| 記憶 | `memory.record_created`、`memory.consolidated`、`memory.dream_completed`、`memory.reflection_completed`、`memory.hypothesis_supported`、`memory.hypothesis_contradicted`、`memory.contradiction_found`、`memory.episode_flagged`、`memory.self_observation_proposed` | durable；後七種各自獨立註冊，不併入 `memory.consolidated`；payload 白名單 `evidence_refs`、`derived_from`、`weight`、`privacy_scope`、`schema_version`（P3 新增，D81） |
+| 主動 | `proactive.trigger_observed`、`proactive.candidate_decided` | durable；`trigger_observed` 於 P3 擴充 `trigger_kind=memory_<七種 kind>`，白名單鍵 `trigger_kind`、`dedupe_key`、`source_idempotency_keys`、`evidence_refs`、`memory_weight`、`confidence`、`privacy_scope`、`schema_version`；`expires_at` 對映信封欄位；**`summary` 不入白名單，轉入可刪 `payload_ref` blob**（D78） |
 | 生命週期 | `core.started`、`core.ready`、`core.stopping`、`core.component_health_changed` | durable |
 
 P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另發 `task.*`**；其可觀測性由 CC-7 `state.changed` 承擔（P2 實作）。P1 的核准 UI 依 `action.intended` 事件驅動。
@@ -186,7 +187,8 @@ P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另
 | E-17 | **冪等重送一致性**：`(source, idempotency_key)` 命中既有事件時，須比對 `event_type`、`scope_ref`、`aggregate`（type／id／version）三者與原事件一致；若重送帶 blob，另比對 blob 雜湊（三態見 E-18）。任一確定不符即拋 `IdempotencyConflict`（訊息只含欄位名與 `event_id`，不含內容）；全部一致為真重送，回傳原事件（`duplicate`）、不新增列、不寫 blob。併發重送輸掉競爭者走同一核對 | E-2、V20 |
 | E-18 | **`payload_hash` 格式與三態驗證**：新寫入為 `hmac-sha256:<kid>:<hex>`，`kid` = HMAC(密鑰, `"uep-payload-kid"`) 的前 8 位十六進位（只辨識用哪把密鑰，不可回推密鑰）。可辨識三種格式：無前綴 64 位十六進位（T-23 前的 sha256，只驗證不再新寫）、`hmac-sha256:<hex>`（T-24 前無 kid 的 HMAC，只驗證不再新寫）、新格式。驗證結果三態：`MATCH`；`MISMATCH`（可確定內容不同：舊 sha256 不符，或 kid 相同卻驗不過）；`UNVERIFIABLE`（kid 不同，或舊無 kid HMAC 驗不過——可能只是密鑰已輪替）。冪等重送時只有 `MISMATCH` 算衝突，`UNVERIFIABLE`／缺密鑰記 warning 並視為重送。全空白或短於 16 位元組的密鑰視同缺失。`assemble_core(strict=True)` 在缺少、全空白或過短的 `UEP_PAYLOAD_HASH_KEY` 時拒絕組裝（預設只告警） | E-11、E-16、D42 |
 | E-19 | **tailer 與只讀交易**：tailer 取水位的交易為短交易、不持有鎖；但任何長時間未結束的交易（包含只讀、停在 idle in transaction 的連線）都會釘住 xmin 使水位不前進（事件不遺失只延遲），使用方須避免長交易並以 `watermark_lag` 監控 | E-14、D41 |
-| E-20 | **EventDraft 欄位格式（外部輸入，驗證一律 `fullmatch`）**：`task_id`、`activity_id`、`run_id`、`conversation_id`、`segment_id`、`turn_id` 須為合法 `前綴_ULID`（`is_valid_id`）；`trace_id`、`causation_id`、`aggregate_id` 限安全字元集 `[A-Za-z0-9_:.-]`、長度 1～128（防止夾帶私人文字）；`idempotency_key` 限 `[A-Za-z0-9_:.-]`、長度 ≤ 256；`scope_ref` 須符合 §0.6 格式。ID 與 scope 的驗證不接受結尾換行等 `match` 漏洞 | INV-07、E-3 |
+| E-20 | **EventDraft 欄位格式（外部輸入，驗證一律 `fullmatch`）**：`task_id`、`activity_id`、`run_id`、`conversation_id`、`segment_id`、`turn_id` 須為合法 `前綴_ULID`（`is_valid_id`）；`trace_id`、`causation_id`、`aggregate_id` 限安全字元集 `[A-Za-z0-9_:.-]`、長度 1～128（防止夾帶私人文字）；`idempotency_key` 限 `[A-Za-z0-9_:.-]`、長度 ≤ 256；`scope_ref` 須符合 §0.6 格式。ID 與 scope 的驗證不接受結尾換行等 `match` 漏洞。**P3 註記**：Echo Stream 的輸入端 turn id 不符格式，由 Core 綁定後覆寫（§0.3） | INV-07、E-3 |
+| E-23 | **memory.* 轉譯與 payload 白名單（P3）**：記憶端（echo_memory）的 `EventDraft` 只有 `event_type`、`payload`、`idempotency_key`、`scope_ref`，由 MemoryHost 的 sink 轉譯器轉成 uep 草稿：`scope_ref` -> `TrustedContext.scope_ref`；`source=core.memory`、`actor_id=uep:memory`、`external=True`；`idempotency_key` 原樣沿用（重放同鍵得 duplicate）；`payload.expires_at` 搬到信封 `expires_at`；`payload.summary` 搬入 `payload_blob`（可刪，D78）。新增 kind 的 `EventSpec.payload_keys` 為嚴格白名單，私人 scope 出現白名單外的鍵（含未轉譯的 `summary`）一律 `PayloadPolicyError`；未註冊 kind 一律 `UnregisteredEventType`。轉譯器對記憶端 fire-and-forget，Core 端發布失敗只記 log 與計數，不回拋 | E-3、E-11、E-17、E-20 |
 | E-21 | **journal 防清空**：除列級 `events_append_only`（擋 UPDATE／DELETE）外，migration `0007_journal_truncate_guard` 另加語句級 `events_no_truncate`（BEFORE TRUNCATE），擋一次清空整個 journal。測試清庫在交易內暫時停用此 trigger；正式環境不得停用 | E-11、append-only |
 | E-22 | **聚合版本連續性不在 journal 層檢查**：journal 以 `aggregate_id`＋`aggregate_version` 唯一約束擋重複，但**不檢查版本連續**（可跳號）。連續性與樂觀併發由寫入聚合的 Manager 在同一交易自行保證 | E-8 |
 
@@ -243,7 +245,7 @@ P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另
 | `capabilities` | obj | Y | Core | 本次允許的工具集合與 Provider 能力（`text_stream`、`tool_calling`、`cancel_semantics` 等）；Capability 是技術可行，Policy 才是允許 |
 | `data_egress` | obj | Y | Core | 允許的 Provider／資料出口；無符合者則明確失敗，不擅自 fallback（提案 §8.3） |
 | `token_budget` | obj | Y | Context Adapter | `{max, per_section}`；組裝只做一次 |
-| `history_owner` | enum{core_projection, sdk_store} | Y | Core | 每個 conversation 只能一個歷史擁有者，避免 SessionControl 與 SDK 重複寫入（提案 §14.4） |
+| `history_owner` | enum{core_projection, sdk_store} | Y | Core | 每個 conversation 只能一個歷史擁有者，避免 SessionControl 與 SDK 重複寫入（提案 §14.4）。P3：ES Think 作為 Context Adapter 時固定為 `sdk_store`（見 §2.2 例外、X-3） |
 | `sdk_session_ref` | str? | N | Runtime Adapter 回填，Core 記錄 | `sdk_session_ref ↔ segment_id／run_id` 對應 |
 | `built_at` / `valid_until` | ts / ts? | Y / N | Context Adapter | |
 
@@ -251,7 +253,7 @@ P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另
 
 | 資源 | 唯一寫入者 | 說明 |
 |---|---|---|
-| 快照組裝與 `context_revision` | Context Adapter | Runtime、Echo Stream、SDK 不得自行拼接第二份上下文 |
+| 快照組裝與 `context_revision` | Context Adapter | Runtime、Echo Stream、SDK 不得自行拼接第二份上下文。**P3 例外（D72 (a)，艾斯維爾 2026-10-30）**：Echo Stream 的 Think 指定為 `purpose=conversation_turn` 的 Context Adapter 實作（保留其並行檢索與 prompt cache）；Core 於回合後登記快照，`history_owner=sdk_store`。這是明文例外，Part S 之後再評估是否收斂為 Core 先組快照（D72 (b)） |
 | 記憶內容與 ACL | MEM Access Layer | Context Adapter 只能經它讀取並裁切 |
 | 摘要提交 | Context Adapter，於 `summary_source_revision` 與當前 revision 相符時原子提交 | 否則捨棄 |
 | Persona／Policy 版本 | Persona／Context Service | 快照只引用版本號 |
@@ -262,7 +264,7 @@ P1 註記：Task 的 `paused`／`resumed`／`waiting_approval` 等轉移**不另
 |---|---|---|
 | X-1 | `memory_slices`、`history_entries`、摘要皆須滿足 §0.6 放入規則（`rank(audience_scope) <= rank(來源.scope)` 且 owner／group 相符）；跨 audience 的 continuation 只帶允許的摘要、承諾與 task refs | INV-07、V28 |
 | X-2 | 快照對 Runtime 唯讀；Runtime 不能修改 revision、記憶或 history | INV-04 |
-| X-3 | 同一段訊息只能由一個擁有者寫入歷史（`history_owner`）；MEM 檢索、SessionControl 壓縮、SDK 歷史不得各自重複注入 | 提案 §6.3、§14.4 |
+| X-3 | 同一段訊息只能由一個擁有者寫入歷史（`history_owner`）；MEM 檢索、SessionControl 壓縮、SDK 歷史不得各自重複注入。**P3 例外**：ES Think 為 conversation_turn 的 Context Adapter 時，`history_owner=sdk_store`（ES 的 SessionControl 為單一擁有者），Core 端不另寫歷史注入，只從 `delivery.reported` 與 `turn.*` 事件投影 `history_entries` 供稽核與跨 audience 過濾；**audience 切換時須換 history 或重建 Think 實例**，不得讓單一 history 跨 audience 共用（X-1） | 提案 §6.3、§14.4；D72 |
 | X-4 | 歷史條目帶 `delivery_state`（`DeliveryStatus` 列舉）；`cancelled`／`unknown`／`rejected`／`suppressed` 四種未完整交付狀態不得寫成「已完整說出」（`delivered_range.complete` 不可為 true） | INV-05、V08 |
 | X-5 | 壓縮摘要在背景以 revision 為基準產生；來源 revision 已變則捨棄；禁止先清空歷史再等摘要 | 提案 §14.3 |
 | X-6 | `memory_status != ok` 時，涉及個人事實的回答不得斷言記得；敏感操作暫停 | 提案 §17.1（MEM 不可用） |
@@ -304,7 +306,9 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | `stream(attempt_id)` | | `RuntimeEvent` 非同步串流 | 取得該 attempt 的事件流（`start`／`resume` 之後消費）；`start` 只回傳 `attempt_id`，不直接回傳串流 |
 | `status(attempt_id)` | | `RuntimeStatus` | 只讀 |
 
-協定型別（`RuntimeRequest`、`RuntimeEvent`、`RuntimeStatus`）以 dataclass 表示。`cancel` 對未知或已結束的 `attempt_id` 同樣冪等（回 `stopped`，不報錯）。
+協定型別（`RuntimeRequest`、`RuntimeEvent`、`RuntimeStatus`）以 dataclass 表示。
+
+**P3 註記（P3接入方案 §2.2）**：`stream` 目前為同步 `Iterator`，與 Echo Stream 的 `AsyncIterator` 不同。P3 不強迫 ES Think 實作 `Runtime`：一般對話回合走 `mode=direct_chat`，推理迴圈在 ES 內，由 Core Host 的 EchoPipelineHost 轉接層對外報告 attempt 與結果（`turn.attempt_started`、`turn.generation_completed`、`turn.cancelled`）；轉接層以 `turn_generation` 與 TurnTicket 失效實現 R-2。本契約預留非同步變體，待 Part S S3（LLM tool call -> ActionIntent）需要 `tool_intent` 時，再決定把 ES Think 包成 Runtime 或讓它以 Port 提交 `tool_intent`；P3 不實作。`cancel` 對未知或已結束的 `attempt_id` 同樣冪等（回 `stopped`，不報錯）。
 
 ### 3.2 RuntimeRequest 欄位
 
@@ -337,7 +341,7 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | 資源 | 唯一寫入者 | Runtime 可做 |
 |---|---|---|
 | run／attempt 狀態 | Core（Task Manager／Orchestrator） | 回報進度與結果 |
-| 對外輸出 | Output Gate（CC-4）＋Delivery（CC-5） | 只能提出 *output intent* 之文字增量，由 Core 轉換 |
+| 對外輸出 | Output Gate（CC-4）＋Delivery（CC-5） | 只能提出 *output intent* 之文字增量，由 Core 轉換。P3：EchoPipelineHost 轉接層是 ES 與 Core 之間唯一的橋，ES 不直接寫 intent |
 | 工具授權與副作用 | Policy＋Tool Gateway＋executor | 只能提出 `tool_intent` |
 | Presence、Lease、全域狀態 | Presence Manager／State Coordinator | 無權寫入，也不得持有平台 Bot Token |
 
@@ -579,7 +583,7 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 | `origin` | enum{persona, system} | Y | Core | `system` = 中性服務回條或告警，**不得**以她的口吻（提案 §10.3、§17.1） |
 | 授權六元組 `(persona_id, endpoint_id, lease_id, fencing_epoch, core_epoch, presence_generation)` | | Y | Core（取自 CC-4 當前授權） | |
 | `activity_id`、`turn_id`、`turn_generation`、`attempt_id` | | C | Core | 互動輸出必填；主動通知用 `activity_id` |
-| `sequence` | int | Y | Core | 同 `output_id` 序列內單調 |
+| `sequence` | int | Y | Core | 同 `output_id` 序列內單調。P3：一句一個 intent，`sequence=Sentence.index`，`output_id` 以 `(turn_id, attempt_id)` 為單位（D73 先採逐句）；墊片音（gap／tool filler）用獨立序列區段，`origin=persona`、`kind=audio_stream`，`content_format` 標 `is_filler`，歷史中不計入 `spoken_text` |
 | `audience_scope` | ScopeRef | Y | Core | |
 | `content_ref` | str | Y | Core | 文字或 artifact 引用；音訊以串流通道傳，這裡存參照與格式 `{sample_rate, channels, codec}` |
 | `valid_until` | ts | Y | Core | 短期限播放許可；須 tz-aware（O-15） |
@@ -596,9 +600,9 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 | `dispatch_id` | str | Y | Delivery Manager | 外部送出的追蹤 ID；timeout 時不知是否被接受 |
 | `status` | enum{generated, synthesized, enqueued, sent, accepted, rendered_played, failed, unknown, cancelled, rejected, suppressed} | Y | Delivery Manager（依證據推進） | 前六為提案 §6.5；`cancelled`、`rejected`（Gate 拒絕）、`suppressed`（重播／shadow 抑制，未真正輸出）為草案補充（D29）。合法路徑見下 |
 | `delivery_evidence` | enum{local_playback, remote_render, transport_sent, unknown} | Y | Adapter 回報、Delivery Manager 驗證 | 證據強度（提案 §6.5） |
-| `played_range` | obj? | C | Adapter | `{from_sample/chunk, to_sample/chunk}`；Desktop／Website 可回報。未涵蓋完整輸出時見 O-12 |
+| `played_range` | obj? | C | Adapter | `{from_sample/chunk, to_sample/chunk}`；Desktop／Website 可回報。未涵蓋完整輸出時見 O-12。P3：ES 以 `AudioSink.played_duration_s` 配合句界對映成逐句範圍，經 `report_evidence` 回報（O-16）；Discord 只有 `transport_sent`，停在 `sent`，歷史標「已送出，聽眾播放未知」 |
 | `cancel_position` | obj? | C | Core | 被取消時的位置 |
-| `spoken_text_ref` / `spoken_text_hash` | str? / str? | C | Delivery Manager | 以 `played_range` 對映的已說出文字，存於可刪 blob（私人原文，同 D33 精神）；供 `ThinkStage.commit(turn_id, spoken_text, generated_text)` 時由 ref 取出 |
+| `spoken_text_ref` / `spoken_text_hash` | str? / str? | C | Delivery Manager | 以 `played_range` 對映的已說出文字，存於可刪 blob（私人原文，同 D33 精神）；供 `ThinkStage.commit(turn_id, spoken_text, generated_text)` 時由 ref 取出。**取法（D74）**：`SpokenRule` 預設 `PARTIAL`（部分播出的句子按已播範圍計入）；sink 宣告 `played_evidence`，證據不是 `playback_confirmed`（如 Discord 的 `transport_sent`）時自動退回 `WHOLE_SENTENCE`（整句播完才算，`spoken_rule=auto`，`TurnRequest.spoken_rule` 可覆寫）。此處只管文字取法，delivery 狀態推進仍依 O-1／O-2／O-12 |
 | `failure` | obj? | C | | `{code, retryable}` |
 | `sent_at` / `reported_at` | ts / ts? | Y / N | | |
 
@@ -658,6 +662,7 @@ CC-5 以 CC-4 的授權六元組為前提，定義 *輸出意圖* 與 *交付結
 | O-13 | **dispatch 比對已持久化 intent**：`dispatch(intent)` 於 `prepare` 之後載入已持久化的同 `(output_id, sequence)` intent，與呼叫端傳入者**全欄位**比對（`content_ref`、授權六元組、`valid_until` 等）；不一致拋 `IntentMismatchError`，不送出。送出的永遠是已持久化的那份，不信任呼叫端另帶的內容 | INV-03、O-11 |
 | O-14 | **Gate 例外 fail-closed**：Output Gate 接納時拋例外，視為拒絕——delivery 目前為 `generated` 記 `rejected`，其後（`synthesized`／`enqueued`）記 `cancelled`，`failure.code=GATE_ERROR`、`retryable=False`，不送出、不卡在 `generated`；例外只記 log，不外洩內容 | INV-02、O-5 |
 | O-15 | **時間欄須 tz-aware**：`OutputIntent.valid_until`、`ControlSignal.issued_at`（以及 CC-7 `StateTransitionRequest.expires_at`）建構時即拒絕 naive datetime，避免 naive 與 aware 時鐘比較在 Gate 內才拋 `TypeError` | P-13 |
+| O-16 | **非同步證據回報（P3）**：`OutputAdapter.send` 允許在 `enqueued`／`sent` 階段（取得 `transport_sent` 即可）返回，不必阻塞到播放結束；之後 Adapter 以 `DeliveryManager.report_evidence(delivery_id, evidence, played_range)` 回報後續證據，Delivery Manager 依證據推進 `sent -> accepted -> rendered_played`。規則：(1) 單向推進，沿用 O-1／O-2／O-12，不跳級；`audio_stream` 須 `played_range.complete` 才到 `rendered_played`；(2) **證據只升不降**：低於已記錄證據或 `unknown` 一律拒絕（`IllegalDeliveryTransition`）；(3) 同證據重複回報冪等；(4) 尚未送出（`generated`／`synthesized`／`enqueued`）不得先有證據；(5) 已終態的 delivery 晚到證據不改狀態（回傳現況，由呼叫端另行記錄）；(6) `unknown` 狀態收到證據時依 O-6 解析路徑走回 `sent` 之後的階段；(7) delivery 不存在為 `LookupError`。這讓逐句 dispatch 的 DB 交易不必串在句與句之間 | INV-05、O-1、O-2、O-12 |
 | O-12 | `played_range` 未涵蓋完整輸出時，即使證據為強證據（`local_playback`／`remote_render`）也**不推到 `rendered_played`**，停在 `accepted`（部分播放以 `played_range` 記錄）。文字類輸出（無合成的 kind）無 `played_range` 時視為完整，可推到 `rendered_played`；`audio_stream` 必須有 `played_range.complete` 才可推到 `rendered_played` | INV-05、V08 |
 | O-7 | 工具實際完成以 CC-6 receipt 記帳，與是否已講出無關；不得為補說明而重跑工具 | INV-05、提案 §6.5 |
 | O-8 | `origin=system` 的輸出不得使用 Persona 語氣，且仍受 audience 與 Gate 管制 | INV-02、INV-07 |
@@ -894,6 +899,8 @@ D35 已定案（A8）：新增輕量第七契約。編號為 6A 以保持既有�
 | 各軸投影表（`state_projection`） | State Coordinator | 任何元件唯讀 |
 | Interaction 軸 | State Coordinator | 提議者只能發請求 |
 | 他人實體表（presence／tasks／deliveries 等） | 各 Manager | State Coordinator 不寫 |
+
+**P3 註記（proposer 表，P3接入方案 §2.1）**：`DEFAULT_PROPOSERS`（`uep/assembly.py`）的 Interaction 軸新增 `core.turn`（Turn Orchestrator 依事件提 phase 轉換）與 `core.decision`（決策插槽提 reply_mode 相關轉換，如進入 passive 觀察）；`core.agent` 已由 D63 預留（SYS 契約）。Behavior 軸不動；ES 轉接層與 ES 本身不是 proposer，只送事實（S-1）。
 
 ### 6A.4 不變條件
 

@@ -29,7 +29,7 @@ from tests.uep.echo_support import (
 )
 from uep.echo.memory import GuildRoster
 from uep.echo.outcomes import facts_from_outcome
-from uep.state.coordinator import Axis, Decision, StateTransitionRequest
+from uep.state.coordinator import Axis, Decision, StateDecision, StateTransitionRequest
 from uep.state.models import StateRequestRow
 from uep.turn.aggregator import BufferedAggregator
 from uep.turn.decision_config import (
@@ -145,7 +145,8 @@ def test_timeout_in_a_group_unaddressed_becomes_passive_and_addressed_responds(r
     done = r.events(quiet.ticket.turn_id, ("turn.completed",))[0]
     assert done.payload == {"status": "skipped", "reason_code": "mode_silent"}  # passive：LLM 跑一次、不出聲
     called = r.say("小諾 你覺得呢")  # 喚醒詞比對由 Core 做（與 proposer 無關）
-    assert called.ticket.reply_mode == "respond" and called.proposal.reason_code == "proposer_timeout"
+    # 第一個 proposer 呼叫還卡著：不再等預算，立即回預設（被點名 -> respond）
+    assert called.ticket.reply_mode == "respond" and called.proposal.reason_code == "proposer_busy"
 
 
 def test_exception_in_a_group_unaddressed_becomes_passive(rig):
@@ -155,12 +156,14 @@ def test_exception_in_a_group_unaddressed_becomes_passive(rig):
     assert r.host.orchestrator.metrics["proposer.error"] == 1
 
 
-def test_stuck_proposer_only_costs_the_budget_per_turn_and_later_turns_still_resolve(rig):
+def test_stuck_proposer_costs_the_budget_once_and_later_turns_resolve_immediately(rig):
     r = rig(host_kwargs={"proposer": Slow(0.6), "decision": fast(proposer_budget_ms=50)})
     first = r.say("一")
-    second = r.say("二")  # 單一決策執行緒仍被第一個占住：同樣在預算內放棄、回預設
+    second = r.say("二")  # 上一個呼叫還卡著：立即回預設，不排隊也不再等預算
     assert first.ticket is not None and second.ticket is not None
-    assert r.host.orchestrator.metrics["proposer.timeout"] == 2
+    assert second.proposal.reason_code == "proposer_busy"
+    metrics = r.host.orchestrator.metrics
+    assert metrics["proposer.timeout"] == 1 and metrics["proposer.busy"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +175,8 @@ def test_stuck_proposer_only_costs_the_budget_per_turn_and_later_turns_still_res
     ({"route": "shell"}, "route"),
     ({"interaction_to": "WORK"}, "Behavior 軸的值"),
     ({"interaction_to": "MISCHIEF"}, "Behavior 軸的值"),
+    ({"interaction_to": "THINKING"}, "只允許 LISTENING"),
+    ({"interaction_to": "SPEAKING"}, "只允許 LISTENING"),
     ({"confidence": 7.0}, "confidence"),
     ({"reason_code": "含中文與 空白"}, "reason_code"),
 ])
@@ -205,42 +210,69 @@ def test_interaction_request_is_made_as_core_decision_and_accepted(rig):
     assert r.wait_terminal(nxt.ticket.turn_id)[-1] == "turn.completed"
 
 
-class StaleVersion:
-    """先讓 Interaction 軸前進一版，再用過期的 expected_version 提請求 -> REJECTED_VERSION。"""
+class RejectingState:
+    """包住真的 State Coordinator：Interaction 軸的請求一律回指定的裁決（製造競態下的被拒）。"""
 
-    def __init__(self, core) -> None:
-        self.core = core
+    def __init__(self, inner, decision: Decision = Decision.REJECTED_VERSION) -> None:
+        self._inner, self._decision, self.requests = inner, decision, []
 
-    def propose(self, candidate):
-        self.core.state.request_transition(StateTransitionRequest(
-            request_id=f"bump:{candidate.candidate_id}", axis="Interaction", proposer="core.nlp",
-            expected_version=candidate.interaction_version, from_state=candidate.interaction_state,
-            to_state="LISTENING",
-        ))
-        return Proposal(reply_mode=ReplyMode.PASS, reason_code="observe", interaction_to="THINKING",
-                        proposer_id="test.stale")
+    def current(self, axis):
+        return self._inner.current(axis)
+
+    def request_transition(self, req):
+        self.requests.append(req)
+        return StateDecision(req.request_id, self._decision, "version_mismatch", None)
 
 
-def test_cc7_rejection_falls_back_to_the_default_without_retry(rig):
-    proposer = StaleVersion(None)
+def test_cc7_rejection_of_a_respond_proposal_falls_back_to_the_default_without_retry(rig):
+    r = rig(host_kwargs={"proposer": Fixed(interaction_to="LISTENING", reason_code="x")})
+    stub = RejectingState(r.core.state)
+    r.host.orchestrator.state = stub
+    result = r.say("你好")
+    assert result.proposal.reason_code == "proposal_rejected"
+    assert result.ticket is not None and result.ticket.reply_mode == "respond"  # D80 預設
+    decision_requests = lambda: [x for x in stub.requests if x.proposer == "core.decision"]
+    assert len(decision_requests()) == 1
+    assert r.host.orchestrator.metrics["decision.cc7_rejected"] == 1
+    r.wait_terminal(result.ticket.turn_id)
+    assert len(decision_requests()) == 1  # 不重試（phase 請求是 core.turn，另計）
+
+
+def test_cc7_rejection_of_a_pass_proposal_only_drops_interaction_to(rig):
+    r = rig(host_kwargs={"proposer": Fixed(reply_mode=ReplyMode.PASS, reason_code="observe",
+                                            interaction_to="LISTENING")})
+    r.host.orchestrator.state = RejectingState(r.core.state)
+    result = r.say("今天天氣不錯")
+    assert result.ticket is None and result.reason_code == "observe"  # 維持 PASS，不退回 respond
+    assert result.proposal.reply_mode is ReplyMode.PASS and result.proposal.interaction_to is None
+    assert [e.payload["reason_code"] for e in r.events(types=("turn.skipped",))] == ["observe"]
+    assert r.host.orchestrator.metrics["decision.cc7_rejected"] == 1
+    assert r.core.state.current(Axis.INTERACTION).state == "IDLE"
+
+
+def test_interaction_request_uses_a_fresh_axis_read_and_only_from_idle(rig):
+    """propose 期間軸被別人推進：以重讀的版本提請求；不在 IDLE（不是旁聽觀察的起點）時直接丟棄 interaction_to。"""
+
+    class Bump(Fixed):
+        def __init__(self, core) -> None:
+            super().__init__(reply_mode=ReplyMode.PASS, reason_code="observe", interaction_to="LISTENING")
+            self.core = core
+
+        def propose(self, candidate):
+            self.core.state.request_transition(StateTransitionRequest(
+                request_id=f"bump:{candidate.candidate_id}", axis="Interaction", proposer="core.nlp",
+                expected_version=candidate.interaction_version, from_state=candidate.interaction_state,
+                to_state="THINKING",
+            ))
+            return super().propose(candidate)
+
+    proposer = Bump(None)
     r = rig(host_kwargs={"proposer": proposer})
     proposer.core = r.core
     result = r.say("你好")
-    assert result.proposal.reason_code == "proposal_rejected"
-    assert result.ticket is not None and result.ticket.reply_mode == "respond"  # D80 預設，不是 proposer 提議的 pass
-    rows = state_rows(r)
-    assert [(x.decision, x.reason_code) for x in rows] == [("REJECTED_VERSION", "version_mismatch")]
-    assert r.host.orchestrator.metrics["decision.cc7_rejected"] == 1
-    r.wait_terminal(result.ticket.turn_id)
-    assert len(state_rows(r)) == 1  # 不重試
-
-
-def test_illegal_transition_from_the_proposer_is_rejected_by_cc7_and_falls_back(rig):
-    # IDLE -> SPEAKING 不在 Interaction 合法轉換表
-    r = rig(host_kwargs={"proposer": Fixed(interaction_to="SPEAKING", reason_code="x")})
-    result = r.say("你好")
-    assert result.proposal.reason_code == "proposal_rejected" and result.ticket is not None
-    assert [x.decision for x in state_rows(r)] == ["REJECTED_ILLEGAL"]
+    assert result.ticket is None and result.proposal.interaction_to is None
+    assert state_rows(r) == []  # core.decision 沒有提任何請求（軸已不在 IDLE）
+    assert r.host.orchestrator.metrics["decision.interaction_skipped"] == 1
 
 
 def test_core_decision_cannot_request_the_behavior_axis_at_the_coordinator(rig):

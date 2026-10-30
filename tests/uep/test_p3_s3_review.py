@@ -117,8 +117,13 @@ def test_signed_but_not_started_ticket_counts_as_busy(rig):
 # ---- M1：本地 audience 檢查 ----
 
 def test_audience_wider_than_presence_is_rejected_before_first_chunk(rig):
-    r = rig(session=make_session(audience_scope="scope_public"), presence_audience=lambda: PRIVATE)
+    # 簽發當下 audience 還被允許（否則 S5 的否決會在 propose 之前直接 pass）；簽發之後 Presence 收窄，
+    # 由 sink 的本地第二次接納在第一個 chunk 之前攔下
+    allowed = {"v": "scope_public"}
+    r = rig(session=make_session(audience_scope="scope_public"), presence_audience=lambda: allowed["v"],
+            first_token_delay_s=0.4)
     result = r.say("公開場合的話")
+    allowed["v"] = PRIVATE
     turn_id = result.ticket.turn_id
     kinds = r.wait_terminal(turn_id)
     assert kinds[-1] == "turn.cancelled"

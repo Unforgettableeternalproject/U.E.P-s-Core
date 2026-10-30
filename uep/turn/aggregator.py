@@ -88,11 +88,12 @@ class PassThroughAggregator:
 
 
 class _Buffer:
-    __slots__ = ("last_time", "segments")
+    __slots__ = ("last_time", "segments", "urgent_cache")
 
     def __init__(self, first: Segment, now: float) -> None:
         self.segments = [first]
         self.last_time = now
+        self.urgent_cache: tuple[int, bool] | None = None  # (段數, 判斷結果)：buffer 沒長就不重判
 
     def append(self, segment: Segment, now: float) -> None:
         self.segments.append(segment)
@@ -126,6 +127,12 @@ class BufferedAggregator:
     def set_urgent_predicate(self, predicate: Callable[[str], bool] | None) -> None:
         """「這段文字已確定在叫人設」的判斷：被動模式的 merge_gap／max_wait 很長，被叫到的 turn 不必等。"""
         self._urgent = predicate
+        for buf in self._buffers.values():
+            buf.urgent_cache = None
+
+    def discard_speaker(self, speaker_ref: str) -> None:
+        """成員離場：丟掉他還沒成 turn 的文字（不再決策）。"""
+        self._buffers.pop(speaker_ref, None)
 
     @property
     def merge_gap_s(self) -> float:
@@ -138,11 +145,16 @@ class BufferedAggregator:
     def _is_urgent(self, buf: _Buffer) -> bool:
         if self._fast or self._urgent is None:
             return False  # 主動模式本來就是短門檻
+        version = len(buf.segments)
+        if buf.urgent_cache is not None and buf.urgent_cache[0] == version:
+            return buf.urgent_cache[1]
         try:
-            return bool(self._urgent(buf.text))
+            urgent = bool(self._urgent(buf.text))
         except Exception:
             logger.exception("urgent predicate 失敗")
-            return False
+            return False  # 判斷失敗就退回一般等待（不快取，下次再試）
+        buf.urgent_cache = (version, urgent)
+        return urgent
 
     def _gap_for(self, buf: _Buffer) -> float:
         return self._cfg.active_merge_gap_ms / 1000.0 if self._is_urgent(buf) else self.merge_gap_s

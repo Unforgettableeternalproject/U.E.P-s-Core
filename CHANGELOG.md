@@ -3178,3 +3178,15 @@
 
 ---
 
+### fix: P3 S5 審查修正，否決先於 propose、採用時機、audience 清狀態與卡住的 proposer. 10/30
+
+> Date: Fri, 30 Oct 2026 18:40:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `784820b80b01734fe1b53f7ba3a4a1141f48e518`
+
+---
+

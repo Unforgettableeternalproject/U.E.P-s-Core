@@ -12,12 +12,13 @@ Proposal 一律視為不受信資料：``validate_proposal`` 只接受 schema �
 from __future__ import annotations
 
 import logging
+import queue
 import re
 import threading
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from uep.state.coordinator import InteractionState
@@ -28,7 +29,8 @@ logger = logging.getLogger("uep.turn.proposer")
 DECISION_ACTOR = "core.decision"  # CC-7 的提議者身分（DEFAULT_PROPOSERS[Interaction]）
 ROUTES = frozenset({"direct_chat", "agent_loop", "task_request", "ignore"})
 _SAFE_CODE = re.compile(r"[A-Za-z0-9_.:\-]{1,64}")
-_INTERACTION_VALUES = frozenset(s.value for s in InteractionState)
+# 決策插槽目前只允許請求 LISTENING（進入旁聽觀察）；其餘 Interaction 轉換歸 Orchestrator（core.turn）
+_INTERACTION_VALUES = frozenset({InteractionState.LISTENING.value})
 
 
 class TurnProposer(Protocol):
@@ -52,7 +54,7 @@ class Interjection:
     """沒有新 utterance 觸發的決策（被動模式插話）：以 buffer 最後一句為代表。"""
 
     speaker_ref: str
-    text: str
+    text: str = field(repr=False)
     utterance_refs: tuple[str, ...]
     proposal: Proposal
     speakers: tuple[str, ...] = ()  # buffer 內的所有說話者；插話後每個人都開 context window（bot 行為）
@@ -63,6 +65,20 @@ class TickingProposer(Protocol):
     """選用：宿主定期呼叫 ``Orchestrator.tick``，轉給 proposer 的 ``tick``（插話與沉默觸發）。"""
 
     def tick(self) -> list[Interjection]: ...
+
+
+@runtime_checkable
+class AudienceAware(Protocol):
+    """選用：audience 切換時清掉所有進行中的狀態（buffer、context window、生成中標記）。"""
+
+    def on_audience_changed(self) -> None: ...
+
+
+@runtime_checkable
+class ParticipantAware(Protocol):
+    """選用：成員離場時清掉他留在 buffer 的文字與窗口。"""
+
+    def on_participant_left(self, speaker_ref: str) -> None: ...
 
 
 @runtime_checkable
@@ -118,28 +134,59 @@ def validate_proposal(proposal: object) -> str | None:
 
 
 class ProposerGuard:
-    """在專屬單一執行緒上執行 proposer，呼叫端以預算等待；逾時就放棄結果（卡住的執行緒無法終止）。
+    """在自管的 daemon 執行緒上執行 proposer，呼叫端以預算等待；逾時就放棄結果。
 
     proposer 在 Core 端執行，不在 ES 回呼內阻塞；單一執行緒同時序列化有狀態 proposer 的呼叫。
+    卡住的執行緒無法終止，因此：上一個呼叫還在跑（``busy``）時新呼叫**不入佇列**，立即回 busy
+    （佇列因此有界、卡住期間每句不必等滿預算）；執行緒是 daemon，行程結束與 ``close`` 都不會被它拖住。
     """
 
     def __init__(self, name: str) -> None:
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"uep-proposer-{name}")
+        self._name = name
         self._lock = threading.Lock()
+        self._busy = False
         self._closed = False
+        self._queue: queue.SimpleQueue[tuple[Callable[[Any], Any], Any, Future[Any]] | None] = queue.SimpleQueue()
+        self._thread: threading.Thread | None = None
 
-    def submit(self, fn: Callable[[Any], Any], arg: Any) -> Future[Any]:
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
+    def submit(self, fn: Callable[[Any], Any], arg: Any) -> Future[Any] | None:
+        """入佇列並回 Future；guard 已關閉或上一個呼叫還在跑時回 None（不入佇列）。"""
         with self._lock:
-            if self._closed:
-                raise RuntimeError("guard 已關閉")
-            return self._pool.submit(fn, arg)
+            if self._closed or self._busy:
+                return None
+            self._busy = True
+            future: Future[Any] = Future()
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name=f"uep-proposer-{self._name}", daemon=True)
+                self._thread.start()
+            self._queue.put((fn, arg, future))
+            return future
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            fn, arg, future = item
+            try:
+                if future.set_running_or_notify_cancel():
+                    try:
+                        future.set_result(fn(arg))
+                    except BaseException as exc:  # noqa: BLE001 - 任何例外都交回呼叫端
+                        future.set_exception(exc)
+            finally:
+                with self._lock:
+                    self._busy = False
 
     def call(self, fn: Callable[[Any], Any], arg: Any, budget_s: float | None) -> tuple[Any, str]:
-        """回傳 ``(結果, 狀態)``；狀態為 ok／timeout／error，非 ok 時結果為 None。"""
-        try:
-            future = self.submit(fn, arg)
-        except RuntimeError:
-            return None, "error"
+        """回傳 ``(結果, 狀態)``；狀態為 ok／timeout／busy／error，非 ok 時結果為 None。"""
+        future = self.submit(fn, arg)
+        if future is None:
+            return None, "error" if self._closed else "busy"
         try:
             return future.result(timeout=budget_s), "ok"
         except FutureTimeout:
@@ -152,7 +199,7 @@ class ProposerGuard:
     def close(self) -> None:
         with self._lock:
             self._closed = True
-        self._pool.shutdown(wait=False, cancel_futures=True)
+        self._queue.put(None)  # 不 join：卡住的執行緒是 daemon，不拖住關閉
 
 
 class ProposerRegistry:

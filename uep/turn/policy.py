@@ -17,7 +17,10 @@ from uep.turn.engagement import ChannelMode
 @dataclass(frozen=True)
 class PolicySnapshot:
     version: int = 0
-    channel_mode: ChannelMode = ChannelMode.PASSIVE
+    # None = 沒有 proposer 發布頻道模式（Web／最小 proposer）：不讓位、barge-in 不受頻道模式限制
+    channel_mode: ChannelMode | None = None
+    # 允許 barge-in 的頻道模式（對齊 bot 的 barge_in_modes，預設只有主動頻道；channel_mode 已知時才套用）
+    barge_in_channel_modes: frozenset[ChannelMode] = frozenset({ChannelMode.ACTIVE})
     yield_unstarted: bool = True
     yield_min_speech_s: float = 1.5
     yield_min_speech_s_pending: float = 0.7
@@ -85,10 +88,13 @@ class YieldAccumulator:
 
 
 def mode_flags(snapshot: PolicySnapshot, reply_mode: str | None) -> tuple[bool, bool]:
-    """``reply_mode`` -> (speak, barge_in)；reply_mode 為 None 時視為出聲且可打斷（Web 既有行為）。"""
+    """``reply_mode`` -> (speak, barge_in)。barge_in = reply_mode 不在 no_barge_in_modes，且（頻道模式已知時）
+    頻道模式在 barge_in_channel_modes 內；reply_mode 為 None 時視為出聲（Web 既有行為）。"""
     if reply_mode is None:
-        return True, True
-    return reply_mode not in snapshot.silent_modes, reply_mode not in snapshot.no_barge_in_modes
+        channel_ok = snapshot.channel_mode is None or snapshot.channel_mode in snapshot.barge_in_channel_modes
+        return True, channel_ok
+    channel_ok = snapshot.channel_mode is None or snapshot.channel_mode in snapshot.barge_in_channel_modes
+    return reply_mode not in snapshot.silent_modes, reply_mode not in snapshot.no_barge_in_modes and channel_ok
 
 
 def yieldable(owner: str | None, speaker: str, audio_started: bool, behind_playing: bool) -> bool:

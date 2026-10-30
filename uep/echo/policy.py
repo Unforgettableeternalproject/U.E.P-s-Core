@@ -50,13 +50,17 @@ class CoreModeRules:
 
 class HostPolicySource:
     def __init__(
-        self, platform: str = "web", *, ttl_s: float | None = None, listener: ListenerConfig | None = None
+        self, platform: str = "web", *, ttl_s: float | None = None, listener: ListenerConfig | None = None,
+        barge_in_channel_modes: frozenset[ChannelMode] | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._ttl_s = ttl_s
         self._listener = listener or ListenerConfig()
+        overrides: dict[str, object] = {}
+        if barge_in_channel_modes is not None:
+            overrides["barge_in_channel_modes"] = barge_in_channel_modes
         self._core = CorePolicySnapshot.from_listener(
-            self._listener, version=1, issued_at=time.perf_counter(), ttl_s=ttl_s
+            self._listener, version=1, issued_at=time.perf_counter(), ttl_s=ttl_s, **overrides
         )
         self._snapshot = PolicySnapshot.for_platform(
             platform, version=1, mode_rules=CoreModeRules(self.core_current), ttl_s=ttl_s

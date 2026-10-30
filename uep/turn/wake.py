@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -71,11 +73,29 @@ def _best_window(text: str, name: str) -> tuple[int, int]:
 
 
 class WakeDetector:
+    _CACHE_MAX = 256
+
     def __init__(self, config: GateConfig | None = None, identity: BotIdentityConfig | None = None) -> None:
         self._config = config or GateConfig()
         self._identity = identity or BotIdentityConfig()
+        self._cache: OrderedDict[str, GateResult] = OrderedDict()
+        self._cache_lock = threading.Lock()
 
     def detect(self, text: str) -> GateResult:
+        """同一段文字重複判斷（aggregator 每次 tick 都問、candidate 再問一次）時走快取；模糊比對是 O(n*m)。"""
+        with self._cache_lock:
+            hit = self._cache.get(text)
+            if hit is not None:
+                self._cache.move_to_end(text)
+                return hit
+        result = self._detect(text)
+        with self._cache_lock:
+            self._cache[text] = result
+            while len(self._cache) > self._CACHE_MAX:
+                self._cache.popitem(last=False)
+        return result
+
+    def _detect(self, text: str) -> GateResult:
         lowered = text.lower()
         best_score = 0.0
         best_name: str | None = None

@@ -241,6 +241,10 @@ class EngagementMonitor:
         drop = set(turn_keys)
         self._buffer[:] = [t for t in self._buffer if t.turn_key not in drop]
 
+    def discard_speaker(self, speaker_ref: str) -> None:
+        """成員離場：清掉他留在 buffer 的文字。"""
+        self._buffer[:] = [t for t in self._buffer if t.speaker_ref != speaker_ref]
+
     def is_meaningful(self, text: str) -> bool:
         """主動模式的意義性過濾：過短、純語氣詞、純感嘆詞不查詢。"""
         text = text.strip()

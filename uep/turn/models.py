@@ -40,7 +40,7 @@ class UtteranceFact:
     """輸入端交來的一句話。``text`` 與 ``speaker_ref`` 是不受信資料：文字只走 payload_blob，身分只查表。"""
 
     speaker_ref: str  # 平台字串，如 ``discord:<id>``
-    text: str
+    text: str = field(repr=False)
     seq: int  # session 內遞增；進冪等鍵 ``es:<session_ref>:<seq>``
     language: str | None = None
     confidence: float | None = None
@@ -65,7 +65,7 @@ class TurnCandidate:
     presence_active: bool
     text: str = field(repr=False, default="")
     segments: int = 1  # 合併了幾句 utterance
-    participant_count: int | None = None  # 在場人數（含說話者）；None = 未知
+    participant_count: int | None = None  # 在場人數（含說話者）；Orchestrator 在未知時填 1（與 D80 一致）
     addressed_hint: bool = False  # Core 以精確喚醒詞比對算出（與 proposer 無關），D80 逾時預設用
     deadline: float | None = None  # time.monotonic()；proposer 應在此之前回覆（Orchestrator 另以預算強制）
 
@@ -157,3 +157,4 @@ class TurnOutcomeFacts:
     end_reason: str | None = None  # 取消或跳過原因（pass、mode_silent、barge_in…）
     generation_ok: bool = False
     barge_in: bool = False
+    started: bool = True  # ES 真的開始 think 過（False = 從未開始生成就結束：dropped_busy、void、讓位）

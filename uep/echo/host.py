@@ -105,6 +105,14 @@ class SessionBusyError(EchoHostError):
     """audience 切換時仍有進行中的輪（或 stream 進行中）：呼叫端須等空閒再切。"""
 
 
+def _play_done(view: Any) -> bool:
+    """coordinator 的 on_voice_event 會略過已 done 或已 play_done 的輪；TurnView 沒有公開這個旗標，容錯讀取。"""
+    if getattr(view, "_done", False):
+        return True
+    event = getattr(view, "_play_done", None)
+    return bool(event is not None and event.is_set())
+
+
 @dataclass
 class _TurnRuntime:
     ticket: CoreTicket
@@ -159,7 +167,11 @@ class EchoPipelineHost:
         self.tracer = tracer or LatencyTracer()
         self.generations = generations or TurnGenerations()
         self._decision = decision or DecisionConfig()
-        self.policy = policy_source or HostPolicySource(session.platform, listener=self._decision.listener)
+        self.policy = policy_source or HostPolicySource(
+            session.platform, listener=self._decision.listener,
+            barge_in_channel_modes=frozenset(ChannelMode(m) for m in self._decision.barge_in_channel_modes),
+        )
+        self._stopped_reason: str | None = None  # 全域停止成立（直到取得新 Lease）：propose 之前即否決
         self._yield_policy = CoreYieldPolicy(self.policy)
         self._profile_provider = profile_provider
         self._prewarm_prompt = prewarm_prompt
@@ -177,7 +189,7 @@ class EchoPipelineHost:
             wake=wake if isinstance(wake, WakeDetector) else WakeDetector(
                 self._decision.gate, self._decision.bot_identity
             ),
-            participants=self._participant_count, decision=self._decision,
+            participants=self._participant_count, veto=self._veto, decision=self._decision,
             identity=identity, snapshot_version=lambda: self.policy.version,
         )
         self._wire_decision_slot()
@@ -207,6 +219,19 @@ class EchoPipelineHost:
             think.memory_resolver = make_memory_resolver(memory)
 
     # ---- 決策插槽接線 ----
+
+    def _veto(self, ctx: SessionContext) -> str | None:
+        """Core 否決權（只讀記憶體）：全域停止成立、audience 不允許時，propose 之前就 pass。
+        Presence 非 ACTIVE 由 Orchestrator 以 Lease 判斷。"""
+        if self._stopped_reason is not None:
+            return "global_stop"
+        services = self._services
+        provider = services.presence_audience if services is not None else None
+        if callable(provider):
+            allowed = provider()
+            if allowed is None or scope_rank(ctx.audience_scope) > scope_rank(allowed):
+                return "audience_not_allowed"
+        return None
 
     def _participant_count(self, ctx: SessionContext) -> int | None:
         """在場人數（含說話者）：只有有 guild 的 session 才知道；未知回 None（決策預設視為單人）。"""
@@ -332,7 +357,9 @@ class EchoPipelineHost:
         except Exception:
             logger.exception("端點 acquire 失敗")
             self.lease_result = AcquireResult.DENIED
-        if self.lease_result is not AcquireResult.GRANTED:
+        if self.lease_result is AcquireResult.GRANTED:
+            self._stopped_reason = None  # 新 Lease：先前的全域停止已解除
+        else:
             logger.warning("EchoPipelineHost 沒有取得 Lease：%s", self.lease_result.value)
         return self.lease_result
 
@@ -439,11 +466,17 @@ class EchoPipelineHost:
         """週期性決策（aggregator 逾時、被動模式插話）。任何非 ES-loop 執行緒；會寫 DB，不可在 ES loop 上呼叫。"""
         if self._es.in_loop_thread():
             raise EchoHostError("submit_tick 會寫 DB，不可在 ES loop 執行緒上呼叫")
-        with self._intake_lock:
+        # tick 不可長時間占住 intake 鎖（utterance 的決策不該被它擋住）：拿不到就略過這一次，下一個 tick 再來
+        if not self._intake_lock.acquire(timeout=0.05):
+            self.metrics["echo.tick_skipped_contended"] += 1
+            return []
+        try:
             if self._closed or not self._started or self._switching:
                 return []
-            results = self.orchestrator.tick()
+            results = self.orchestrator.tick(self._session)
             self._dispatch_results(results, None)
+        finally:
+            self._intake_lock.release()
         return results
 
     def _dispatch_results(self, results: Sequence[IntakeResult], fallback: UtteranceFact | None) -> None:
@@ -563,7 +596,9 @@ class EchoPipelineHost:
         coordinator = self.coordinator
         if coordinator is None or self._closed or not self.presence_active:
             return
-        if not coordinator.live_turns():
+        # 與 coordinator 的篩選一致（未 done 且未 play_done）：它不會呼叫策略時，由宿主補餵讓累積不中斷
+        live = [t for t in coordinator.live_turns() if not _play_done(t)]
+        if not live:
             self._yield_policy.on_voiced(ev, [])  # 沒有進行中的輪：coordinator 不會呼叫策略，補餵讓累積不中斷
         coordinator.on_voice_event(ev)
 
@@ -703,6 +738,8 @@ class EchoPipelineHost:
             else:
                 # roster 以平台 uid 為鍵（不含前綴）：平台前綴與 session 不符就不更新，避免跨平台同 uid 碰撞
                 self.metrics["echo.participant_platform_mismatch"] += 1
+        if not joined:
+            self.orchestrator.on_participant_left(speaker_ref)  # 離場者留在 buffer 的文字不再被決策使用
         self._sync_participants(ctx)  # 人數影響耦合度與主動／被動，先於快照推送（模式翻轉會另推一版）
         self.policy.publish()  # 參與者變動時推送新版快照
         draft = EventDraft(
@@ -756,6 +793,8 @@ class EchoPipelineHost:
 
     async def _on_think_start(self, ticket: CoreTicket, view: Any, attempt_id: int) -> None:
         """C5：attempt 開始由 ``TurnRequest.on_think_start`` 觀測；hook 只能同步入佇列（ES 預設逾時 10 秒）。"""
+        # 提議在 ES 真的開始 think 時才算被採用：回饋 proposer（dropped_busy、void、讓位的輪不會走到這裡）
+        self._enqueue(functools.partial(self.orchestrator.on_think_started, ticket.turn_id), "think_started")
         if attempt_id >= 2:
             self._enqueue(
                 functools.partial(self.orchestrator.on_attempt_started, ticket.turn_id, attempt_id, "regen"),
@@ -915,6 +954,8 @@ class EchoPipelineHost:
         TODO(D5)：ES 沒有「已開播也能取消單輪」的入口；scope=turn 先以 ``cancel_voice`` 靜音，
         其餘範圍用 ``cancel_all``（任何執行緒、同步停 sink）。被拒輪的 history 需 D82／ES per-turn cancel 才能撤回。"""
         coordinator = self.coordinator
+        if notice.reason == "global_stop":
+            self._stopped_reason = "global_stop"
         tickets = self.orchestrator.live_tickets()
         gen = notice.turn_generation
         targets = [t for t in tickets if gen is None or t.turn_generation <= gen]

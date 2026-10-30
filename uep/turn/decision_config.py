@@ -107,8 +107,12 @@ class DecisionConfig:
     coupling: CouplingModelConfig = field(default_factory=CouplingModelConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
     listener: ListenerConfig = field(default_factory=ListenerConfig)
-    # D80：proposer 的決策預算（毫秒），暫定 300；S6 依 D73 的基準校正
+    # D80：proposer 的決策預算（毫秒），暫定 300；S6 依 D73 的基準校正。
+    # <= 0 代表不設預算（呼叫端會一直等 proposer，只建議測試使用；上一個呼叫還沒回來時仍會立即回預設）
     proposer_budget_ms: int = 300
+    # 哪些頻道模式允許 barge-in（對齊 bot 的 ``barge_in_modes``，預設只有主動頻道）；
+    # 只在 proposer 有發布頻道模式時生效（沒有頻道模式的宿主維持 ES 既有的可打斷行為）
+    barge_in_channel_modes: tuple[str, ...] = ("active",)
     # Q-1：使用者插話（outcome.barge_in）之後，非被點名的 passive 類觸發（context_passive、插話）暫停多久。
     # bot 沒有對應行為（只有 engage_cooldown_s），此值為 S5 新增的暫定值
     barge_in_cooldown_s: float = 8.0

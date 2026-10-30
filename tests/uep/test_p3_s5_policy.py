@@ -212,7 +212,7 @@ def test_core_snapshot_is_immutable_and_publish_swaps_the_reference():
     src = HostPolicySource("discord")
     old = src.core_current()
     src.publish_channel_mode(ChannelMode.ACTIVE)
-    assert old.channel_mode is ChannelMode.PASSIVE and src.core_current() is not old
+    assert old.channel_mode is None and src.core_current() is not old
     with pytest.raises(AttributeError):
         old.channel_mode = ChannelMode.ACTIVE  # type: ignore[misc]
 

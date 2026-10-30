@@ -562,7 +562,10 @@ def test_called_hands_over_the_whole_buffer_once():
     p, _ = joined(3)
     p.propose(cand("今天你們有沒有看到那個影片", "u2", n=1))
     p.propose(cand("我看到了，真的很好笑", "u3", n=2))
-    assert p.propose(cand("小諾 你覺得呢？", "u1", n=3)).reply_mode is ReplyMode.RESPOND
+    called = cand("小諾 你覺得呢？", "u1", n=3)
+    assert p.propose(called).reply_mode is ReplyMode.RESPOND
+    assert len(p._engagement.peek_buffer()) == 3  # 提議本身是純讀：還沒被採用，buffer 不會被吞掉
+    started(p, called)  # 被採用（ES 開始 think）才取走 buffer 並套用冷卻
     assert p._engagement.peek_buffer() == []  # 交出去的 turn 不會再被交一次
 
 
@@ -709,7 +712,7 @@ def test_two_users_repeated_pass_drops_to_passive():
     for i in range(8):
         pass_it(p, chat(p, i, "u1" if i % 2 else "u2"))
     assert p.channel_mode is ChannelMode.ACTIVE  # 8 次 PASS 仍高於 active_exit(0.45)
-    for i in range(8, 14):
+    for i in range(8, 12):
         if p.channel_mode is not ChannelMode.ACTIVE:
             break
         pass_it(p, chat(p, i))
@@ -760,9 +763,12 @@ def test_interjects_once_then_cooldown_and_clears_buffer():
     [ij] = p.tick()
     assert ij.proposal.reply_mode is ReplyMode.RESPOND and ij.proposal.reason_code == "interject_context"
     assert ij.text == CHATTER[-1] and set(ij.speakers) == {"u1", "u2", "u3"}
-    assert p._engagement.peek_buffer() == []
-    assert p.tick() == []  # 派出後回到觀察狀態；不會對同一批 turn 再觸發
-    feed_chatter(p, ["我也這麼覺得，下次再一起看"], start=10)
+    assert len(p._engagement.peek_buffer()) == 4  # 還沒被採用：buffer 與冷卻都沒動
+    assert p.tick() == []  # 已提出、尚未採用：不重複提出
+    p.on_turn_started("t_ij", "tick:1", ij.speakers)
+    assert p._engagement.peek_buffer() == []  # 被採用後才取走這批、套用冷卻
+    assert p.tick() == []  # 回到觀察狀態；不會對同一批 turn 再觸發
+    p.propose(cand("我也這麼覺得，下次再一起看", "u2", n=99))  # 插話對象都有 context window，這句算接話
     assert p.tick() == []
     clock.advance(0.6)  # 冷卻過後但新 turn 不足
     assert p.tick() == []
@@ -771,8 +777,12 @@ def test_interjects_once_then_cooldown_and_clears_buffer():
 def test_no_repeat_interjection_while_generating():
     p, clock = joined(3)
     feed_chatter(p, CHATTER)
-    assert len(p.tick()) == 1
-    for _ in range(5):
+    [ij] = p.tick()
+    for _ in range(5):  # 插話提出後、開始 think 前：tick 不會對同一批 turn 再觸發
+        clock.advance(0.05)
+        assert p.tick() == []
+    p.on_turn_started("t_ij", "tick:1", ij.speakers)
+    for _ in range(5):  # 生成期間同樣不會
         clock.advance(0.05)
         assert p.tick() == []
 

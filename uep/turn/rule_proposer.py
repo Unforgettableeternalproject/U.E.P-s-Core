@@ -39,6 +39,7 @@ from uep.turn.wake import AddressConfidence, WakeDetector
 logger = logging.getLogger("uep.turn.rules")
 
 _INTERACTION_LISTENING = "LISTENING"
+_INFLIGHT_S = 10.0  # 已提出的插話在這段時間內沒被採用就自動解除，避免永遠擋住
 _PENDING_MAX = 64  # 待結算話題項的上限（沒有回報結果的 turn 不會永遠佔位）
 
 
@@ -73,6 +74,8 @@ class RuleProposer:
         self._pre_windows: dict[str, float | None] = {}
         self._pending: dict[str, _Topic] = {}  # candidate_id -> 待結算話題項
         self._barge_cooldown_until: float | None = None
+        self._inflight_until: float | None = None  # 已提出、尚未被採用（開始 think）的插話
+        self._inflight_keys: tuple[str, ...] = ()
 
     # ---- 宿主接線 ----
 
@@ -109,7 +112,22 @@ class RuleProposer:
             self._pre_windows.clear()
             self._pending.clear()
             self._barge_cooldown_until = None
+            self._inflight_until = None
+            self._inflight_keys = ()
+            self._context = ContextTracker(self._cfg.gate, self._clock)
             self._refresh()
+
+    def on_audience_changed(self) -> None:
+        """audience 切換：舊 audience 的 buffer、context window、生成中標記全部丟掉（保留人數）。"""
+        self.reset(self._users)
+
+    def on_participant_left(self, speaker_ref: str) -> None:
+        """成員離場：清掉他留在 buffer 的文字、context window 與生成中標記（不再對他接話或插話）。"""
+        with self._lock:
+            self._engagement.discard_speaker(speaker_ref)
+            self._context.restore(speaker_ref, None)
+            self._responding.discard(speaker_ref)
+            self._pre_windows.pop(speaker_ref, None)
 
     @property
     def coupling_value(self) -> float:
@@ -178,9 +196,8 @@ class RuleProposer:
         return self._pass(candidate, "observe")
 
     def _respond(self, candidate: TurnCandidate, reason: str, score: float) -> Proposal:
-        # 回覆即派出：取走 buffer 並套用冷卻（bot 的 ``_take_buffer``）；buffer 內的旁聽 turn 不隨 ticket 帶走
-        self._engagement.consume_buffer()
-        self._engagement.mark_dispatched()
+        # 這裡只是提議：取走 buffer 與套用冷卻（bot 的 ``_take_buffer``）要等被採用（on_turn_started）才做，
+        # 被否決、逾時或被 CC-7 退回的提議不會吞掉 buffer 或誤套冷卻
         return Proposal(
             reply_mode=ReplyMode.RESPOND, addressed=True, confidence=min(1.0, score), reason_code=reason,
             proposer_id=self.proposer_id, proposer_version=self.version,
@@ -201,22 +218,23 @@ class RuleProposer:
             mode = self._refresh()
             self._engagement.tick()
             self._context.cleanup()
-            if mode is not ChannelMode.PASSIVE or self._in_barge_cooldown():
+            if mode is not ChannelMode.PASSIVE or self._in_barge_cooldown() or self._inflight():
                 return []
             decision = self._engagement.evaluate()
             if not decision.should_engage or not decision.context:
                 return []
             if self._prefilter():
                 return []
-            buffered = self._engagement.consume_buffer()
-            self._engagement.mark_dispatched()
-            last = buffered[-1] if buffered else decision.context[-1]
+            last = decision.context[-1]
             reason = "interject_silence" if "silence" in decision.reason else "interject_context"
             proposal = Proposal(
                 reply_mode=ReplyMode.RESPOND, addressed=False, confidence=0.0, reason_code=reason,
                 proposer_id=self.proposer_id, proposer_version=self.version,
             )
-            speakers = tuple(dict.fromkeys(t.speaker_ref for t in (buffered or decision.context)))
+            speakers = tuple(dict.fromkeys(t.speaker_ref for t in decision.context))
+            # buffer 與冷卻等被採用（on_turn_started）才處理；在那之前只擋住重複提出，逾時後自動解除
+            self._inflight_until = self._clock() + _INFLIGHT_S
+            self._inflight_keys = tuple(t.turn_key for t in decision.context)
             return [Interjection(last.speaker_ref, last.text, last.utterance_refs, proposal, speakers)]
 
     def _prefilter(self) -> bool:
@@ -227,8 +245,16 @@ class RuleProposer:
     # ---- OutcomeObserver ----
 
     def on_turn_started(self, turn_id: str, candidate_id: str, speakers: tuple[str, ...]) -> None:
-        """回覆開始：開 context window 並標記「生成中」（bot 的 ``on_bot_response_started``）。"""
+        """提議被採用（ES 真的開始 think）：取走 buffer、套用冷卻、開 context window 並標記「生成中」
+        （bot 的 ``on_bot_response_started`` 與 ``_take_buffer``）。"""
         with self._lock:
+            if candidate_id.startswith("tick:"):
+                self._engagement.discard_turns(self._inflight_keys)  # 插話只帶走它提出時的那批
+            else:
+                self._engagement.consume_buffer()
+            self._engagement.mark_dispatched()
+            self._inflight_until = None
+            self._inflight_keys = ()
             for uid in speakers:
                 if uid:
                     self._pre_windows.setdefault(uid, self._context.snapshot(uid))
@@ -238,6 +264,15 @@ class RuleProposer:
     def on_turn_outcome(self, facts: TurnOutcomeFacts) -> None:
         with self._lock:
             topic = self._pending.pop(facts.candidate_id, None) is not None
+            if facts.candidate_id.startswith("tick:"):
+                self._inflight_until = None
+                self._inflight_keys = ()
+                if not facts.started:
+                    self._engagement.mark_dispatched()  # 插話沒能開始：套冷卻，避免下個 tick 立刻重提（buffer 保留）
+            if not facts.started:
+                # 從未開始生成（dropped_busy、void、讓位）：沒有 started 的副作用要還原，只結算話題項
+                self._settle(topic, None)
+                return
             if facts.barge_in:
                 # Q-1：使用者插話後，非被點名的 passive 類觸發暫停一段時間
                 self._barge_cooldown_until = self._clock() + self._cfg.barge_in_cooldown_s
@@ -275,6 +310,9 @@ class RuleProposer:
             self._pre_windows.pop(uid, None)
 
     # ---- 內部 ----
+
+    def _inflight(self) -> bool:
+        return self._inflight_until is not None and self._clock() < self._inflight_until
 
     def _in_barge_cooldown(self) -> bool:
         return self._barge_cooldown_until is not None and self._clock() < self._barge_cooldown_until

@@ -385,6 +385,7 @@ def assemble_core(
         echo.bind(EchoServices(
             core_api=core_api, state=state, control=control, session_factory=session_factory,
             delivery=delivery, gate=gate,
+            presence_audience=None if presence_audience is ALLOW_ALL else presence_audience,
         ))
     stop = GlobalStop(session_factory, presence, control, publisher=publisher, token=stop_token, **clock_kw)
     bridge = PresenceTaskBridge(bus, tasks, lambda: presence.current().status, persona_id=persona_id)

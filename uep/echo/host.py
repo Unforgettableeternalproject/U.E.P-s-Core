@@ -17,7 +17,7 @@ audience 切換固定流程（D72 (a)）：coordinator ``live_turns()`` 確認�
 （cancel_all shutdown 並等 commit）-> 排乾工作緒 -> 停 stage -> 關端點執行緒 -> 停 loop。關閉不 release Lease
 （Core 關機不終止 Task，T-11；Lease 自然過期）。
 
-ES 基準為 echo_stream develop 445d169（批 B 已合入）：用 ``bind_loop``、關閉後 submit 回 VOIDED（shutdown）、
+ES 基準為 echo_stream develop 0abfaab（批 B、#18 tool_context 已合入）：用 ``bind_loop``、關閉後 submit 回 VOIDED（shutdown）、
 FAILED 一律帶 ``reason_code``、``TurnRequest.on_generation_done(view, ok)``，Core 端不再有批 B 的繞道。
 仍殘留的 ES 缺口只有 D5（已開播也能取消單輪的入口，見 ``_on_endpoint_stop``）與 A8 的 tool_context 鍵名。
 """
@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import threading
 from collections import Counter, OrderedDict
 from collections.abc import Callable
@@ -49,7 +50,7 @@ from uep.echo.policy import HostPolicySource
 from uep.echo.services import EchoServices
 from uep.echo.sink import AdmittingSink, SentenceEvidence
 from uep.echo.worker import CoreWorker
-from uep.events.envelope import EventDraft, TrustedContext
+from uep.events.envelope import EventDraft, TrustedContext, scope_rank
 from uep.events.publisher import EventPublisher
 from uep.ids import new_id
 from uep.memory.identity import IdentityDirectory
@@ -68,6 +69,7 @@ from uep.turn.models import (
 )
 from uep.turn.orchestrator import (
     ACTOR_ECHO,
+    REJECTION_REASONS,
     SOURCE_ECHO,
     TurnOrchestrator,
     attempt_label,
@@ -78,7 +80,11 @@ logger = logging.getLogger("uep.echo.host")
 
 InnerSinkFactory = Callable[[Any, CoreTicket], "AudioSink | str"]
 _STOP_TIMEOUT_S = 10.0
+_SPEAKER_REF = re.compile(r"[A-Za-z0-9_:.\-]{1,128}")
+_ROLE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 _DISPATCH_REFUSED = frozenset({DS.REJECTED, DS.CANCELLED, DS.FAILED})
+HEALTH_SOURCE = "core.health"
+_INPUT_RESTARTS = 1
 
 
 class EchoHostError(RuntimeError):
@@ -124,6 +130,10 @@ class EchoPipelineHost:
         self.publisher = publisher
         self.think = think
         self.speak = speak
+        for attr in ("memory_resolver", "memory"):
+            if getattr(think, attr, None) is not None:
+                # 自帶記憶來源會繞過 Access Layer（audience／ACL 過濾）：一律拒絕組裝
+                raise ValueError(f"傳入的 think 已設定 {attr}：記憶必須經 Core 的 Access Layer（memory= 參數）注入")
         self._inner_sink_factory = sink_factory
         self._session = session
         self.persona_id = persona_id
@@ -148,6 +158,7 @@ class EchoPipelineHost:
             publisher, self.generations, auth_provider=self.endpoint.lease_auth, persona_id=persona_id,
             proposer=proposer, identity=identity, snapshot_version=lambda: self.policy.version,
         )
+        self.run_id = self.orchestrator.run_id
         self._es = EsLoop()
         self._worker = CoreWorker()
         self.coordinator: TurnCoordinator | None = None
@@ -161,14 +172,14 @@ class EchoPipelineHost:
         self._seq = 0
         self._control_sub: Any = None
         self._started = False
+        self._switching = False  # set_session 進行中：不簽新 ticket（audience 不得以舊值簽發）
+        self._input_failed = False
         self._closed = False  # 宿主生命週期：停止開始後不再簽新 ticket（aclose 後的 submit 由 ES 回 VOIDED）
         self.lease_result: AcquireResult | None = None
         self.metrics: Counter[str] = Counter()
         self.discarded_by_turn: Counter[str] = Counter()
-        if memory is not None:
-            resolver = make_memory_resolver(memory)
-            if getattr(think, "memory_resolver", None) is None and hasattr(think, "memory_resolver"):
-                think.memory_resolver = resolver
+        if memory is not None and hasattr(think, "memory_resolver"):
+            think.memory_resolver = make_memory_resolver(memory)
 
     # ---- 組裝 ----
 
@@ -188,7 +199,8 @@ class EchoPipelineHost:
 
     @property
     def started(self) -> bool:
-        return self._started
+        """真實狀態：輸入 stage 重啟後仍失敗時為 False（直接 submit_utterance 仍可用）。"""
+        return self._started and not self._input_failed
 
     @property
     def closed(self) -> bool:
@@ -220,9 +232,10 @@ class EchoPipelineHost:
         if services is None:
             raise EchoHostError("EchoPipelineHost 尚未 bind（請經 assemble_core(echo=...) 組裝）")
         self._closed = False
-        self._worker.start()
-        self._es.start()
+        self._input_failed = False
         try:
+            self._worker.start()
+            self._es.start()
             if self._memory is not None:
                 self._memory.set_session(self._session.segment_id)  # 記憶 episode 標記與 exclude 自我回聲用
             self._es.run(self._startup(), timeout=60.0)
@@ -274,7 +287,9 @@ class EchoPipelineHost:
         self._teardown(quiet=False)
 
     def _teardown(self, *, quiet: bool) -> None:
-        self._closed = True  # 先停止簽新 ticket，之後才 aclose
+        # 在 _intake_lock 內設 closed：等進行中的 on_utterance（已拿鎖者）結束，且其 _start_turn 已排進 loop
+        with self._intake_lock:
+            self._closed = True
         try:
             if self._es.running:
                 self._es.run(self._shutdown_es(), timeout=self._stop_timeout_s)
@@ -284,6 +299,9 @@ class EchoPipelineHost:
         if not self._worker.drain(self._stop_timeout_s):
             logger.warning("Core 工作緒在逾時內沒有排乾")
         self._worker.stop()
+        for ticket in self.orchestrator.live_tickets():
+            # 已發 turn.started 卻沒能啟動（或結果沒回來）的輪：補終結事件，不留孤兒 turn
+            self.orchestrator.on_turn_ended(ticket.turn_id, TurnEndFacts(status="cancelled", reason_code="shutdown"))
         if self._control_sub is not None:
             try:
                 self._control_sub.close()
@@ -324,16 +342,20 @@ class EchoPipelineHost:
         """任何非 ES-loop 執行緒：記錄 utterance、決策、簽 ticket、交給 ES。會寫 DB，不可在 ES loop 上呼叫。"""
         if self._es.in_loop_thread():
             raise EchoHostError("submit_utterance 會寫 DB，不可在 ES loop 執行緒上呼叫")
-        if self._closed or not self._started:
-            return IntakeResult(None, "closed")
         with self._intake_lock:
+            # 檢查、簽發、排進 loop 都在同一把鎖內：set_session 與 teardown 取同一把鎖，
+            # 因此「已簽 ticket 但 _start_turn 尚未排程」的空窗不存在
+            if self._closed or not self._started:
+                return IntakeResult(None, "closed")
+            if self._switching:
+                return IntakeResult(None, "session_switching")  # 不排隊：呼叫端自行重送
             result = self.orchestrator.on_utterance(self._session, fact)
-        ticket = result.ticket
-        if ticket is not None:
-            try:
-                self._es.call_soon(self._start_turn, ticket, fact)
-            except RuntimeError:
-                self._end_unsubmitted(ticket, "shutdown")
+            ticket = result.ticket
+            if ticket is not None:
+                try:
+                    self._es.call_soon(self._start_turn, ticket, fact)
+                except RuntimeError:
+                    self._end_unsubmitted(ticket, "shutdown")
         return result
 
     def _start_turn(self, ticket: CoreTicket, fact: UtteranceFact) -> None:
@@ -341,6 +363,11 @@ class EchoPipelineHost:
         coordinator = self.coordinator
         if coordinator is None:
             self._end_unsubmitted(ticket, "shutdown")
+            return
+        cancelled = self.orchestrator.cancel_reason_of(ticket.turn_id)
+        if cancelled is not None or self.endpoint.lease_auth() != ticket.auth:
+            # 簽發之後、進 coordinator 之前已被取消或 Lease 已變：不送進 ES
+            self._end_unsubmitted(ticket, cancelled or "presence_lost")
             return
         runtime = self._live[ticket.turn_id] = _TurnRuntime(ticket)
         try:
@@ -391,6 +418,8 @@ class EchoPipelineHost:
 
     def _end_unsubmitted(self, ticket: CoreTicket, reason: str) -> None:
         """已簽 ticket 卻沒有交給 ES（關閉中、submit 失敗）：補一個終結事件，不留孤兒 turn。"""
+        if reason != "shutdown":
+            self.orchestrator.cancel_turn(ticket.turn_id, reason)  # generation 前進，舊 ticket 的輸出一律被拒
         facts = TurnEndFacts(status="cancelled", reason_code=reason)
         self._enqueue(functools.partial(self.orchestrator.on_turn_ended, ticket.turn_id, facts), "end_unsubmitted")
 
@@ -415,18 +444,41 @@ class EchoPipelineHost:
 
     async def _consume_input(self) -> None:
         loop = asyncio.get_running_loop()
-        token = self._input_token = CancellationToken()
         stage = self._input_stage
-        try:
-            async for utt in stage.open(token):
-                pool = self._intake_pool
-                if pool is None:
+        restarts = 0
+        while True:
+            token = self._input_token = CancellationToken()
+            try:
+                async for utt in stage.open(token):
+                    pool = self._intake_pool
+                    if pool is None:
+                        return
+                    await loop.run_in_executor(pool, self._intake_stage_utterance, utt)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("輸入 stage 的 utterance 流中斷")
+                self.metrics["echo.input_failures"] += 1
+                self._enqueue(functools.partial(self._publish_health, "degraded"), "health_degraded")
+                if restarts >= _INPUT_RESTARTS or self._closed:
+                    self._input_failed = True  # 不能重啟：started 反映真實狀態
+                    self._enqueue(functools.partial(self._publish_health, "unavailable"), "health_unavailable")
                     return
-                await loop.run_in_executor(pool, self._intake_stage_utterance, utt)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("輸入 stage 的 utterance 流中斷")
+                restarts += 1
+                self.metrics["echo.input_restarts"] += 1
+
+    def _publish_health(self, status: str) -> None:
+        try:
+            self.publisher.publish(
+                EventDraft(
+                    event_type="core.component_health_changed", payload={"ref_id": "echo_input", "status": status}
+                ),
+                TrustedContext(source=HEALTH_SOURCE, actor_id=ACTOR_ECHO, scope_ref="scope_private_core",
+                               persona_id=self.persona_id),
+            )
+        except Exception as exc:  # noqa: BLE001 - health 事件失敗不得影響輸入
+            logger.warning("echo health 事件發布失敗（已忽略）：%s", type(exc).__name__)
 
     def _intake_stage_utterance(self, utt: Utterance) -> None:
         """執行緒池（單一 worker，保序）：ES 的 Utterance -> UtteranceFact -> submit_utterance。"""
@@ -442,12 +494,31 @@ class EchoPipelineHost:
 
     # ---- session ----
 
+    def _busy(self) -> bool:
+        """進行中或「已簽 ticket、_start_turn 尚未執行」的輪都算忙碌。"""
+        coordinator = self.coordinator
+        return bool(self.orchestrator.live_tickets()) or (
+            coordinator is not None and bool(coordinator.live_turns())
+        )
+
     def set_session(self, ctx: SessionContext) -> None:
-        """切換 session（任何非 loop 執行緒，阻塞到套用完成）；audience／conversation 改變時走固定重置流程。"""
-        if self._es.running:
-            self._es.run(self._switch_session(ctx), timeout=30.0)
-        else:
-            self._assign_session(ctx)
+        """切換 session（任何非 loop 執行緒，阻塞到套用完成）；audience／conversation 改變時走固定重置流程。
+
+        忙碌檢查與 ``_switching`` 旗標在 ``_intake_lock`` 內一次完成；切換期間 ``submit_utterance`` 回
+        ``session_switching``（不排隊），因此不會有 ticket 以舊 audience 簽發後在新 session 下執行。"""
+        with self._intake_lock:
+            if self._switching:
+                raise SessionBusyError("另一個 session 切換進行中")
+            if self._busy():
+                raise SessionBusyError("仍有進行中的輪，不可切換 audience")
+            self._switching = True
+        try:
+            if self._es.running:
+                self._es.run(self._switch_session(ctx), timeout=30.0)
+            else:
+                self._assign_session(ctx)
+        finally:
+            self._switching = False
 
     def _assign_session(self, ctx: SessionContext) -> None:
         self._session = ctx
@@ -456,7 +527,7 @@ class EchoPipelineHost:
 
     async def _switch_session(self, ctx: SessionContext) -> None:
         old = self._session
-        if self.coordinator is not None and self.coordinator.live_turns():
+        if self._busy():
             raise SessionBusyError("仍有進行中的輪，不可切換 audience")
         changed = old.audience_scope != ctx.audience_scope or old.conversation_id != ctx.conversation_id
         reset = getattr(self.think, "reset_context", None)
@@ -477,23 +548,38 @@ class EchoPipelineHost:
             return self._memory.profile(actor_id=ctx.profile_actor_id, audience=ctx.audience_scope)
         return ""
 
-    def participant_joined(self, speaker_ref: str, *, role: str = "speaker") -> None:
-        self._participant("conversation.participant_joined", speaker_ref, role, joined=True)
+    def participant_joined(
+        self, speaker_ref: str, *, role: str = "speaker", session: SessionContext | None = None
+    ) -> None:
+        self._participant("conversation.participant_joined", speaker_ref, role, session, joined=True)
 
-    def participant_left(self, speaker_ref: str, *, role: str = "speaker") -> None:
-        self._participant("conversation.participant_left", speaker_ref, role, joined=False)
+    def participant_left(
+        self, speaker_ref: str, *, role: str = "speaker", session: SessionContext | None = None
+    ) -> None:
+        self._participant("conversation.participant_left", speaker_ref, role, session, joined=False)
         if self._es.running:
             self._es.call_soon(self._discard_pending, speaker_ref)  # 成員離場：待注入記憶要丟棄（隱私）
 
-    def _participant(self, event_type: str, speaker_ref: str, role: str, *, joined: bool) -> None:
-        ctx = self._session
-        uid = speaker_ref.split(":", 1)[-1]
+    def _participant(
+        self, event_type: str, speaker_ref: str, role: str, session: SessionContext | None, *, joined: bool
+    ) -> None:
+        """``session`` 是這個事件所屬的 session（預設目前的）；呼叫端若持有事件發生當時的 session 應明確傳入，
+        不要讓切換之後的 guild 套到舊事件上。"""
+        ctx = session or self._session
+        if not _SPEAKER_REF.fullmatch(speaker_ref or "") or not _ROLE.fullmatch(role or ""):
+            self.metrics["echo.invalid_participant"] += 1
+            return
+        platform, _, uid = speaker_ref.partition(":")
         if ctx.guild_id is not None:
-            (self.roster.join if joined else self.roster.leave)(ctx.guild_id, uid)
+            if platform == ctx.platform and uid:
+                (self.roster.join if joined else self.roster.leave)(ctx.guild_id, uid)
+            else:
+                # roster 以平台 uid 為鍵（不含前綴）：平台前綴與 session 不符就不更新，避免跨平台同 uid 碰撞
+                self.metrics["echo.participant_platform_mismatch"] += 1
         self.policy.publish()  # 參與者變動時推送新版快照
         draft = EventDraft(
             event_type=event_type, conversation_id=ctx.conversation_id, segment_id=ctx.segment_id,
-            payload={"speaker_ref": speaker_ref, "role": role},
+            payload={"speaker_ref": speaker_ref, "role": role},  # speaker_ref 保留平台前綴
         )
         trusted = TrustedContext(
             source=SOURCE_ECHO, actor_id=ACTOR_ECHO, scope_ref=ctx.event_scope, persona_id=self.persona_id
@@ -532,6 +618,12 @@ class EchoPipelineHost:
         current = self.generations.get(ticket.turn_id)
         if current is None or current != ticket.turn_generation:
             return GateDecision.REJECT_STALE  # 取消／取代後的舊 generation（V12）
+        services = self._services
+        provider = services.presence_audience if services is not None else None
+        if callable(provider):
+            allowed = provider()  # 與 Gate 同一個 provider；須是只讀記憶體的 callable（在 ES loop 上被呼叫）
+            if allowed is None or scope_rank(ticket.audience_scope) > scope_rank(allowed):
+                return GateDecision.REJECT_AUDIENCE
         return GateDecision.ADMIT
 
     async def _on_think_start(self, ticket: CoreTicket, view: Any, attempt_id: int) -> None:
@@ -568,9 +660,7 @@ class EchoPipelineHost:
     def _on_reject(self, wrapper: AdmittingSink, decision: GateDecision) -> None:
         ticket: CoreTicket = wrapper.context
         self._enqueue(functools.partial(self._publish_rejection, ticket, wrapper, decision), "output_rejected")
-        coordinator = self.coordinator
-        if coordinator is not None:
-            coordinator.cancel_voice(ticket.turn_id, "admission_rejected")  # 只關這一輪的語音，think 照常
+        self._refuse_turn(ticket.turn_id, "admission_rejected")
 
     def _on_discard(self, wrapper: AdmittingSink) -> None:
         self.metrics["echo.discarded_chunks"] += 1
@@ -593,8 +683,7 @@ class EchoPipelineHost:
     # ---- 工作緒（可寫 DB）----
 
     def _enqueue(self, fn: Callable[[], Any], label: str = "job") -> None:
-        if self._worker.running:
-            self._worker.submit(fn, label)
+        if self._worker.submit(fn, label):
             return
         try:
             fn()  # 工作緒已停（關閉的收尾）：就地執行，不遺失終結事件
@@ -605,19 +694,38 @@ class EchoPipelineHost:
         services = self._services
         assert services is not None
         delivery = services.delivery
-        record = delivery.prepare(intent)
-        if record.status is DS.GENERATED:
-            record = delivery.mark_synthesized(record.delivery_id)
-        record = delivery.dispatch(intent)
+        try:
+            record = delivery.prepare(intent)
+            if record.status is DS.GENERATED:
+                record = delivery.mark_synthesized(record.delivery_id)
+            record = delivery.dispatch(intent)
+        except Exception:
+            # fail-closed：dispatch 任一步失敗就比照被拒處理，不能讓這一輪在沒有 delivery 紀錄下繼續出聲
+            logger.exception("intent dispatch 失敗：%s#%s", intent.output_id, index)
+            self.metrics["echo.dispatch_errors"] += 1
+            self._refuse_turn_threadsafe(wrapper.turn_id, "dispatch_failed")
+            return
         wrapper.delivery_ids[index] = record.delivery_id
         if record.status in _DISPATCH_REFUSED:
-            # Gate 或端點二次接納拒絕：靜音這一輪的語音；delivery 已由 Manager 記為 rejected／cancelled
+            # Gate 或端點二次接納拒絕：delivery 已由 Manager 記為 rejected／cancelled
             self.metrics["echo.dispatch_refused"] += 1
-            self._es.call_soon(self._silence_voice, wrapper.turn_id)
+            self._refuse_turn_threadsafe(wrapper.turn_id, "dispatch_refused")
 
-    def _silence_voice(self, turn_id: str) -> None:
-        if self.coordinator is not None:
-            self.coordinator.cancel_voice(turn_id, "dispatch_refused")
+    def _refuse_turn_threadsafe(self, turn_id: str, reason: str) -> None:
+        try:
+            self._es.call_soon(self._refuse_turn, turn_id, reason)
+        except RuntimeError:
+            self.orchestrator.cancel_turn(turn_id, reason)  # ES loop 已停：至少讓 generation 前進
+
+    def _refuse_turn(self, turn_id: str, reason: str) -> None:
+        """輸出被拒：Core 登記取消原因（generation 前進，終結事件為 turn.cancelled）並靜音該輪語音。
+
+        TODO(D5)：被拒輪的 ES history 已有全文；撤回需 D82／ES per-turn cancel（已知限制，見方案 §5.1）。"""
+        self.orchestrator.cancel_turn(turn_id, reason)
+        coordinator = self.coordinator
+        if coordinator is not None and not coordinator.cancel_voice(turn_id, reason):
+            self.metrics["echo.cancel_voice_missed"] += 1  # 輪已結束或已無語音可取消
+            logger.debug("cancel_voice 未生效（%s，%s）", turn_id, reason)
 
     def _publish_rejection(self, ticket: CoreTicket, wrapper: AdmittingSink, decision: GateDecision) -> None:
         a = ticket.auth
@@ -641,8 +749,10 @@ class EchoPipelineHost:
     ) -> None:
         for wrapper, items in evidence:
             self._report_evidence(wrapper, items)
+        rejected = self.orchestrator.cancel_reason_of(ticket.turn_id) in REJECTION_REASONS
         self.orchestrator.on_turn_ended(ticket.turn_id, facts)
-        self._store_memory(ticket, facts)
+        if not rejected:
+            self._store_memory(ticket, facts)  # 被拒的輪不寫記憶
 
     def _report_evidence(self, wrapper: AdmittingSink, items: list[SentenceEvidence]) -> None:
         """D74：played_range 由 sink 包裝自算；只有宣告播放確認的 sink 才升級證據（否則停在 sent）。"""
@@ -675,7 +785,7 @@ class EchoPipelineHost:
         """Lease 撤銷／到期／stop 控制訊號：登記 Core 的原因（generation 前進，舊輸出一律被拒）並停 ES 本地輸出。
 
         TODO(D5)：ES 沒有「已開播也能取消單輪」的入口；scope=turn 先以 ``cancel_voice`` 靜音，
-        其餘範圍用 ``cancel_all``（任何執行緒、同步停 sink）。"""
+        其餘範圍用 ``cancel_all``（任何執行緒、同步停 sink）。被拒輪的 history 需 D82／ES per-turn cancel 才能撤回。"""
         coordinator = self.coordinator
         tickets = self.orchestrator.live_tickets()
         gen = notice.turn_generation

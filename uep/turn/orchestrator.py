@@ -23,12 +23,15 @@ S4／S5 才做：Interaction 軸的 SPEAKING phase、Proposal.interaction_to（`
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
+import re
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from secrets import token_hex
 
 from uep.contracts.presence import AuthorizationTuple
 from uep.events.envelope import EventDraft, TrustedContext
@@ -65,8 +68,16 @@ UNVERIFIED_ACTOR = "uep:unverified_speaker"  # 映射表沒有的說話者：不
 PHASE_PROPOSER = "core.turn"
 
 REASON_SHUTDOWN = "shutdown"
-_CORE_OVERRIDABLE = frozenset({"cancelled", "voided"})
-_OVERRIDABLE_SKIPS = frozenset({"voice_cancelled"})
+# ES 只能標 shutdown（cancel_all）或 voice_cancelled（cancel_voice）：只有這兩種是「Core 要求停止」的回音，
+# 才以 Core 登記的原因覆寫；barge_in、timeout、yielded 等 ES 自己判定的原因保留 ES 的值
+_ES_ECHO_CANCEL_REASONS = frozenset({"shutdown"})
+_ES_ECHO_SKIP_REASONS = frozenset({"voice_cancelled"})
+# Core 因輸出被拒而取消的回合：ES 的 history 已有全文，不登記快照、不寫記憶
+REJECTION_REASONS = frozenset({"admission_rejected", "dispatch_refused", "dispatch_failed"})
+_SAFE_REF = re.compile(r"[A-Za-z0-9_:.\-]{1,128}")
+_SAFE_LANGUAGE = re.compile(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8}){0,3}")
+UNKNOWN_SPEAKER = "unknown:invalid"
+_TERMINAL_RETRIES = 1
 
 
 def attempt_label(attempt_no: int) -> str:
@@ -103,8 +114,13 @@ class TurnOrchestrator:
         ticket_ttl: timedelta = timedelta(minutes=10),
         clock: Callable[[], datetime] = _utcnow,
         registrar: ContextRegistrar | None = None,
+        run_id: str | None = None,
     ) -> None:
         self._publisher = publisher
+        # 此次宿主執行的識別：進冪等鍵，避免重啟後 session 內 seq 從頭來而撞鍵（外部傳入的 seq 也在同一命名空間）
+        self.run_id = run_id or token_hex(4)
+        self.metrics: Counter[str] = Counter()
+        self.dead_letters: list[tuple[str, str, dict[str, object]]] = []
         self.generations = generations
         self._auth_provider = auth_provider
         self._persona = persona_id
@@ -128,6 +144,11 @@ class TurnOrchestrator:
         with self._lock:
             return [live.ticket for live in self._live.values() if not live.ended]
 
+    def cancel_reason_of(self, turn_id: str) -> str | None:
+        with self._lock:
+            live = self._live.get(turn_id)
+            return live.cancel_reason if live is not None else None
+
     def ticket_of(self, turn_id: str) -> CoreTicket | None:
         with self._lock:
             live = self._live.get(turn_id)
@@ -137,6 +158,7 @@ class TurnOrchestrator:
 
     def on_utterance(self, ctx: SessionContext, fact: UtteranceFact) -> IntakeResult:
         """記錄 utterance、跑決策插槽、簽 ticket 並落 ``turn.started``；不開 turn 時回 ticket=None。"""
+        fact = self._sanitize(fact)
         ident = self._identity.resolve_platform(fact.speaker_ref) if self._identity is not None else GUEST
         actor_id = ident.actor_id or UNVERIFIED_ACTOR
         payload: dict[str, object] = {"speaker_ref": fact.speaker_ref, "len": len(fact.text)}
@@ -146,7 +168,7 @@ class TurnOrchestrator:
                 payload[key] = value
         draft = EventDraft(
             event_type="input.utterance_final", conversation_id=ctx.conversation_id, segment_id=ctx.segment_id,
-            idempotency_key=f"es:{ctx.session_ref}:{fact.seq}", payload=payload,
+            idempotency_key=f"es:{self.run_id}:{ctx.session_ref}:{fact.seq}", payload=payload,
             payload_blob=fact.text.encode("utf-8"),
         )
         trusted = TrustedContext(
@@ -168,6 +190,17 @@ class TurnOrchestrator:
             return IntakeResult(None, proposal.reason_code, proposal, utterance_event_id=event.event_id)
         turn_id = new_id("turn")
         generation = self.generations.begin(turn_id)
+        try:
+            return self._issue(ctx, fact, event, proposal, auth, actor_id, turn_id, generation)
+        except BaseException:
+            # turn.started 寫入失敗：回收 live 與 generation，不留下沒有 started 事件的孤兒 turn
+            with self._lock:
+                self._live.pop(turn_id, None)
+            self.generations.discard(turn_id)
+            self.metrics["turn.issue_failed"] += 1
+            raise
+
+    def _issue(self, ctx, fact, event, proposal, auth, actor_id, turn_id, generation) -> IntakeResult:
         ticket = CoreTicket(
             turn_id=turn_id, turn_generation=generation, source_turn_ref=fact.legacy_ref,
             conversation_id=ctx.conversation_id, segment_id=ctx.segment_id, audience_scope=ctx.audience_scope,
@@ -181,6 +214,19 @@ class TurnOrchestrator:
         self._phase(InteractionState.THINKING, turn_id)
         return IntakeResult(ticket, "issued", proposal, utterance_event_id=event.event_id)
 
+    def _sanitize(self, fact: UtteranceFact) -> UtteranceFact:
+        """speaker_ref、language 是不受信資料：長度與字元集不符就丟棄（改成安全預設）並計數。"""
+        speaker, language = fact.speaker_ref, fact.language
+        if not isinstance(speaker, str) or not _SAFE_REF.fullmatch(speaker):
+            self.metrics["intake.invalid_speaker_ref"] += 1
+            speaker = UNKNOWN_SPEAKER
+        if language is not None and (not isinstance(language, str) or not _SAFE_LANGUAGE.fullmatch(language)):
+            self.metrics["intake.invalid_language"] += 1
+            language = None
+        if speaker is fact.speaker_ref and language is fact.language:
+            return fact
+        return dataclasses.replace(fact, speaker_ref=speaker, language=language)
+
     def _propose(self, ctx: SessionContext, fact: UtteranceFact, event_id: str, active: bool) -> Proposal:
         view = None
         if self.state is not None:
@@ -189,7 +235,7 @@ class TurnOrchestrator:
             except Exception:
                 logger.exception("讀取 Interaction 軸失敗，proposer 看不到 interaction_state")
         candidate = TurnCandidate(
-            candidate_id=f"{ctx.session_ref}:{fact.seq}", utterance_refs=(event_id,),
+            candidate_id=f"{self.run_id}:{ctx.session_ref}:{fact.seq}", utterance_refs=(event_id,),
             speakers=(fact.speaker_ref,), ctx=ctx, interaction_state=view.state if view else None,
             interaction_version=view.version if view else None, presence_active=active,
         )
@@ -210,9 +256,9 @@ class TurnOrchestrator:
         draft = EventDraft(
             event_type="turn.skipped", conversation_id=ctx.conversation_id, segment_id=ctx.segment_id,
             trace_id=trace_id, causation_id=cause_event_id,
-            idempotency_key=f"turn_skipped:{ctx.session_ref}:{fact.seq}",
+            idempotency_key=f"turn_skipped:{self.run_id}:{ctx.session_ref}:{fact.seq}",
             payload={"reason_code": reason, "reply_mode": reply_mode.value,
-                     "proposal_ref": f"{ctx.session_ref}:{fact.seq}"},
+                     "proposal_ref": f"{self.run_id}:{ctx.session_ref}:{fact.seq}"},
         )
         trusted = TrustedContext(
             source=SOURCE_TURN, actor_id=ACTOR_TURN, scope_ref=ctx.event_scope, persona_id=self._persona
@@ -271,39 +317,57 @@ class TurnOrchestrator:
                 return None
             live.ended = True
         ticket = live.ticket
-        status, reason = facts.status, facts.reason_code
-        if live.cancel_reason is not None and (
-            status in _CORE_OVERRIDABLE or (status == "skipped" and reason in _OVERRIDABLE_SKIPS)
+        kind: str | None = None
+        try:
+            status, reason = facts.status, facts.reason_code
+            if live.cancel_reason is not None and (
+                (status in ("cancelled", "voided") and reason in _ES_ECHO_CANCEL_REASONS)
+                or (status == "skipped" and reason in _ES_ECHO_SKIP_REASONS)
+            ):
+                status, reason = "cancelled", live.cancel_reason
+            if status == "dropped_busy":
+                kind, payload = "turn.skipped", {"reason_code": "dropped_busy", "reply_mode": ticket.reply_mode}
+            elif status in ("cancelled", "voided", "failed"):
+                code = reason or ("upstream_error" if status == "failed" else status)
+                self._bump_once(live, code)
+                kind, payload = "turn.cancelled", {"reason_code": code}
+            elif status == "skipped":
+                kind, payload = "turn.completed", {"status": "skipped"}
+                if reason:
+                    payload["reason_code"] = reason
+            else:
+                kind, payload = "turn.completed", {"status": "completed"}
+            self._emit_terminal(ticket, kind, payload)
+        finally:
+            # 寫入失敗也要回收狀態：live、generation 的 pin 與 Interaction 軸 IDLE 都不能留著
+            with self._lock:
+                self._live.pop(turn_id, None)
+                self._finished[turn_id] = None
+                while len(self._finished) > 1024:
+                    self._finished.popitem(last=False)
+                idle = not self._live
+            self.generations.finish(turn_id)
+            if idle:
+                self._phase(InteractionState.IDLE, turn_id)
+        if (
+            facts.generation_ok and self.registrar is not None and live.cancel_reason not in REJECTION_REASONS
         ):
-            status, reason = "cancelled", live.cancel_reason
-        if status == "dropped_busy":
-            kind = "turn.skipped"
-            self._emit(ticket, kind, {"reason_code": "dropped_busy", "reply_mode": ticket.reply_mode})
-        elif status in ("cancelled", "voided", "failed"):
-            code = reason or ("upstream_error" if status == "failed" else status)
-            self._bump_once(live, code)
-            kind = "turn.cancelled"
-            self._emit(ticket, kind, {"reason_code": code})
-        elif status == "skipped":
-            kind = "turn.completed"
-            payload: dict[str, object] = {"status": "skipped"}
-            if reason:
-                payload["reason_code"] = reason
-            self._emit(ticket, kind, payload)
-        else:
-            kind = "turn.completed"
-            self._emit(ticket, kind, {"status": "completed"})
-        with self._lock:
-            self._live.pop(turn_id, None)
-            self._finished[turn_id] = None
-            while len(self._finished) > 1024:
-                self._finished.popitem(last=False)
-            idle = not self._live
-        if idle:
-            self._phase(InteractionState.IDLE, turn_id)
-        if facts.generation_ok and self.registrar is not None:
             self.registrar.register(ticket)
         return kind
+
+    def _emit_terminal(self, ticket: CoreTicket, kind: str, payload: dict[str, object]) -> None:
+        """終結事件寫入：失敗重試，仍失敗就 dead-letter（保留在記憶體並計數，不只記 log）。"""
+        last: Exception | None = None
+        for _attempt in range(_TERMINAL_RETRIES + 1):
+            try:
+                self._emit(ticket, kind, payload)
+                return
+            except Exception as exc:  # noqa: BLE001 - 任何寫入失敗都要走重試與 dead-letter
+                last = exc
+                self.metrics["turn.terminal_retry"] += 1
+        self.metrics["turn.terminal_dead_letter"] += 1
+        self.dead_letters.append((ticket.turn_id, kind, dict(payload)))
+        logger.error("終結事件寫入失敗，已 dead-letter：%s %s", kind, ticket.turn_id, exc_info=last)
 
     # ---- 內部 ----
 

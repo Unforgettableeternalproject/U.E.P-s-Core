@@ -517,7 +517,7 @@ def test_audience_switch_refused_while_turn_is_live(rig):
 def test_participant_events_roster_snapshot_and_pending_memory_discard(rig):
     roster = GuildRoster({"123": {"actor_a": "111"}})
     think = LLMThinkStage(EchoBackend())
-    session = make_session(audience_scope="scope_group_g123", guild_id="123")
+    session = make_session(audience_scope="scope_group_g123", guild_id="123", platform="discord")
     r = rig(think=think, session=session, host_kwargs={"roster": roster}, presence_audience=lambda: "scope_group_g123")
     v0 = r.host.policy.version
     r.host.participant_joined(SPEAKER)

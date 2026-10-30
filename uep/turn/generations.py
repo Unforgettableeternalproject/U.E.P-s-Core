@@ -19,6 +19,7 @@ class TurnGenerations:
         self._lock = threading.Lock()
         self._counter = 0
         self._by_turn: OrderedDict[str, int] = OrderedDict()
+        self._live: set[str] = set()  # 進行中的 turn 不可被修剪（Gate 對未知 turn 一律拒絕，會誤殺仍在播的輸出）
         self._keep = keep
 
     def begin(self, turn_id: str) -> int:
@@ -27,9 +28,28 @@ class TurnGenerations:
             self._counter += 1
             self._by_turn[turn_id] = self._counter
             self._by_turn.move_to_end(turn_id)
-            while len(self._by_turn) > self._keep:
-                self._by_turn.popitem(last=False)
+            self._live.add(turn_id)
+            self._prune()
             return self._counter
+
+    def _prune(self) -> None:
+        for key in list(self._by_turn):
+            if len(self._by_turn) <= self._keep:
+                break
+            if key not in self._live:
+                del self._by_turn[key]
+
+    def finish(self, turn_id: str) -> None:
+        """回合結束：之後可被修剪（仍保留一段，讓結束後才到的 dispatch／證據能比對）。"""
+        with self._lock:
+            self._live.discard(turn_id)
+            self._prune()
+
+    def discard(self, turn_id: str) -> None:
+        """簽發失敗的回收：整筆移除。"""
+        with self._lock:
+            self._live.discard(turn_id)
+            self._by_turn.pop(turn_id, None)
 
     def get(self, turn_id: str) -> int | None:
         """目前 generation；未知（從未登記或已被修剪）回 None，Gate 對 None 一律拒絕。"""

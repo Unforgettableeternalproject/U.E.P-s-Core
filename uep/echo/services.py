@@ -18,3 +18,4 @@ class EchoServices:
     session_factory: sessionmaker[Session]
     delivery: Any
     gate: Any = None
+    presence_audience: Any = None  # Gate 的 audience provider（ALLOW_ALL 時為 None）；須是只讀記憶體的 callable

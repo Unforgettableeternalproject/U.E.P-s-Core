@@ -24,6 +24,7 @@ class CoreWorker:
         self._thread: threading.Thread | None = None
         self._cond = threading.Condition()
         self._pending = 0
+        self._closing = False
         self.metrics: Counter[str] = Counter()
 
     @property
@@ -33,14 +34,22 @@ class CoreWorker:
     def start(self) -> None:
         if self.running:
             return
+        with self._cond:
+            self._closing = False
         self._thread = threading.Thread(target=self._run, name=self._name, daemon=True)
         self._thread.start()
 
-    def submit(self, fn: Callable[[], None], label: str = "job") -> None:
-        """任何執行緒（含 ES loop）；只入佇列，不阻塞。"""
+    def submit(self, fn: Callable[[], None], label: str = "job") -> bool:
+        """任何執行緒（含 ES loop）；只入佇列，不阻塞。
+
+        回傳是否入佇列：工作緒已關閉（或尚未啟動）回 False，由呼叫端改走 inline，不遺失任務。
+        判斷與計數在同一把鎖內，關閉旗標之後不會再有任務被收進佇列。"""
         with self._cond:
+            if self._closing or not self.running:
+                return False
             self._pending += 1
-        self._queue.put((fn, label))
+            self._queue.put((fn, label))
+        return True
 
     def _run(self) -> None:
         while True:
@@ -70,6 +79,8 @@ class CoreWorker:
         return True
 
     def stop(self, timeout: float = 5.0) -> None:
+        with self._cond:
+            self._closing = True
         thread = self._thread
         if thread is None:
             return

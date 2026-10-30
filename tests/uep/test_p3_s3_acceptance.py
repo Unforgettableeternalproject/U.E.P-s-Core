@@ -131,6 +131,8 @@ def test_v12_old_generation_output_rejected_before_inner_write(rig):
     r.wait_terminal(turn_id)
     count = len(sink.chunks)
     assert count >= 1  # 前進之前寫出的不可能收回；之後一個都不會增加
+    assert r.kinds(turn_id)[-1] == "turn.cancelled"  # 被拒的輪以 turn.cancelled 結束，不是 completed(skipped)
+    assert r.events(turn_id, ("turn.cancelled",))[0].payload["reason_code"] == "admission_rejected"
     rejected = r.events(turn_id, ("output.rejected",))[0]
     assert rejected.payload["reason_code"] == "REJECT_STALE"
     assert rejected.fence["turn_generation"] == result.ticket.turn_generation

@@ -3130,3 +3130,15 @@
 
 ---
 
+### fix: P3 S3 審查修正，audience 切換、輸出被拒、寫入回收與關閉窗口. 10/30
+
+> Date: Fri, 30 Oct 2026 16:20:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5b9b979b5bbb06066a864914614ba36ba65ea7e1`
+
+---
+

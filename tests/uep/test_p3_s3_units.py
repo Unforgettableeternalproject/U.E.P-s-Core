@@ -101,6 +101,22 @@ async def test_sink_late_chunks_after_stop_are_discarded_without_intent():
 
 
 @sync
+async def test_sink_stopped_during_inner_write_is_not_recorded_as_a_sentence():
+    hooks = Hooks()
+
+    class StopsMidWrite(FakeAudioSink):
+        async def write(self, c):
+            sink.stop()  # 寫入進行中被停止（barge-in 的執行緒同步呼叫 stop）
+            await super().write(c)
+
+    inner = StopsMidWrite(realtime=False)
+    sink = hooks.make(inner)
+    await sink.write(chunk(0))
+    assert hooks.sentences == [] and sink.stopped  # 不記句界、不觸發 intent
+    assert sink.collect_evidence() == []
+
+
+@sync
 async def test_sink_inner_failure_still_propagates():
     class Boom(FakeAudioSink):
         async def write(self, c):
@@ -281,6 +297,8 @@ def test_generations_are_global_monotonic_and_bump_only_known_turns():
     bumped = gens.bump("turn_a")
     assert bumped > b and gens.get("turn_a") == bumped and gens.get("turn_b") == b
     assert gens.bump("turn_unknown") is None and gens.get("turn_unknown") is None  # 不憑空建立；Gate 對 None 一律拒絕
+    gens.finish("turn_a")
+    gens.finish("turn_b")  # 結束後才可被修剪（live 的 turn 不會被修剪）
     gens.begin("turn_c")  # keep=2：最舊的被修剪
     assert gens.get("turn_b") is None and gens.is_current("turn_c", gens.get("turn_c"))
 

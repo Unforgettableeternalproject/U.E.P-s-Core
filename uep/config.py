@@ -28,6 +28,12 @@ class UepSettings(BaseSettings):
     stop_token: SecretStr | None = Field(default=None, validation_alias="UEP_STOP_TOKEN")
     # payload_hash 的 per-install HMAC 密鑰（D42）；未設定時寫入私人 payload 一律拒絕（fail-closed）
     payload_hash_key: SecretStr | None = Field(default=None, validation_alias="UEP_PAYLOAD_HASH_KEY")
+    # 記憶資料根目錄（P3 S6）：每個 namespace 在其下 ``namespaces/<ns>``；須與 bot 的 per-user 目錄不相交（階段 X）。
+    # 未設定時不組裝真記憶（fail-closed，不猜預設位置）
+    memory_data_root: Path | None = Field(default=None, validation_alias="UEP_MEMORY_DATA_ROOT")
+    memory_device: str = Field(default="cpu", validation_alias="UEP_MEMORY_DEVICE")
+    memory_embedding_backend: str | None = Field(default=None, validation_alias="UEP_MEMORY_EMBEDDING_BACKEND")
+    memory_embedding_model: str | None = Field(default=None, validation_alias="UEP_MEMORY_EMBEDDING_MODEL")
 
 
 @lru_cache(maxsize=1)

@@ -1,17 +1,17 @@
 """uep 套件與 legacy 的 import 邊界檢查。
 
-- legacy（core／modules／utils／devtools／Entry）與 echo_memory 一律禁止（真 engine 需 3.12 環境，S6 才接）。
-- ``echo_stream``（依賴方向 ``uep -> echo_stream``）只有 ``uep/echo/`` 可以 import；其他模組仍禁止。
+- legacy（core／modules／utils／devtools／Entry）一律禁止。
+- ``echo_stream`` 與 ``echo_memory``（依賴方向 ``uep -> 外部函式庫``）只有 ``uep/echo/`` 可以 import（S6 起記憶端真實接線
+  放在 ``uep/echo/memory_wiring.py``）；其他模組仍禁止，只認 ``uep/memory/protocol.py`` 的 Protocol 與 fake。
 """
 import ast
 from pathlib import Path
 
 UEP_ROOT = Path(__file__).resolve().parents[2] / "uep"
 ECHO_DIR = UEP_ROOT / "echo"
-# echo_memory 是外部函式庫：uep 只用 Protocol 與 fake，不得硬依賴
-LEGACY_NAMES = {"core", "modules", "utils", "devtools", "Entry", "echo_memory"}
-# 只有 uep/echo/ 轉接層可以 import 的外部函式庫
-ECHO_ONLY_NAMES = {"echo_stream"}
+LEGACY_NAMES = {"core", "modules", "utils", "devtools", "Entry"}
+# 只有 uep/echo/ 轉接層可以 import 的外部函式庫（echo_memory 是外部函式庫：uep 其餘部分只用 Protocol 與 fake）
+ECHO_ONLY_NAMES = {"echo_stream", "echo_memory"}
 
 
 def _imported_top_levels(path: Path) -> set[str]:

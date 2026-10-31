@@ -38,6 +38,8 @@ class ToolSpec:
 class ToolSpecResolver(Protocol):
     """工具名 -> ToolSpec。每次呼叫都查當前資料，呼叫端不得快取結果。
 
+    ``resolve`` 必須是記憶體內查詢，不得做 I/O：``execute_action`` 在 FOR UPDATE 交易內呼叫它。
+
     可見集合（capability_set 投影）是 Registry／Gateway 的另一個介面，不屬於這個協定。
     """
 

@@ -910,13 +910,18 @@ class TaskManager:
 
     @staticmethod
     def _assert_same_action(
-        existing: ActionIntentRow, run_id: str, tool: str, spec: ToolSpec, digest: str
+        existing: ActionIntentRow, run_id: str, tool: str, spec: ToolSpec, digest: str, tightened: bool = False
     ) -> None:
         """同 action_id 重呼叫只在 run、tool、註冊表解析出的 side_effect_class、action hash 全相同時冪等回傳既有列。"""
         if existing.run_id != run_id or existing.tool != tool or existing.side_effect_class != spec.side_effect_class:
             raise PolicyViolation("同 action_id 已屬於不同的 run／tool／side_effect_class，須建立新 action")
+        if existing.tool_version != spec.tool_version:
+            raise ActionBlocked(f"{TOOL_VERSION_CHANGED}：{existing.tool} 已升版，須建立新 action")
         if existing.params_hash != digest:
             raise ParamsHashMismatch("同 action_id 的參數已變更，須建立新 action")
+        if tightened and not existing.presence_bound:
+            raise PolicyViolation("既有 action 的 presence_bound 較寬鬆，不得靜默沿用，須建立新 action",
+                                  code="presence_bound_loosened")
 
     def create_action(
         self, *, run_id: str, step_id: str, tool: str, params: Mapping[str, Any], worker_epoch: int,
@@ -942,7 +947,7 @@ class TaskManager:
             if action_id is not None:
                 existing = s.get(ActionIntentRow, action_id, with_for_update=True, populate_existing=True)
                 if existing is not None:
-                    self._assert_same_action(existing, run_id, tool, spec, digest)
+                    self._assert_same_action(existing, run_id, tool, spec, digest, spec.presence_bound or bool(presence_bound))
                     return existing
             action = ActionIntentRow(
                 action_id=action_id or new_id("act"), run_id=run_id, step_id=step_id, tool=tool,
@@ -959,7 +964,7 @@ class TaskManager:
                 existing = s.get(ActionIntentRow, action.action_id, populate_existing=True)
                 if existing is None:
                     raise
-                self._assert_same_action(existing, run_id, tool, spec, digest)
+                self._assert_same_action(existing, run_id, tool, spec, digest, spec.presence_bound or bool(presence_bound))
                 return existing
             self._emit(
                 s, pending, "action.intended", task, aggregate=("action", action.action_id, action.version),
@@ -1132,7 +1137,7 @@ class TaskManager:
             executor = self._executors.get(action.executor)
             if executor is None:
                 raise ActionBlocked(f"找不到 executor：{action.executor}")
-            if self._presence_check is not None and task.presence_bound:
+            if self._presence_check is not None and (task.presence_bound or action.presence_bound):
                 activity = s.get(ActivityRow, task.activity_id)
                 if activity is None:
                     raise NotFound(f"找不到 activity：{task.activity_id}")
@@ -1232,7 +1237,7 @@ class TaskManager:
             if self._presence_check is None and self._action_guard is None:
                 return None
             code = ""
-            if self._presence_check is not None and task.presence_bound:
+            if self._presence_check is not None and (task.presence_bound or action.presence_bound):
                 activity = s.get(ActivityRow, task.activity_id)
                 if activity is None or not self._presence_check(activity.persona_id):
                     code = "presence_lost_before_call"

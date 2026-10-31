@@ -3358,3 +3358,15 @@
 
 ---
 
+### fix: Part S 切片0 審查修正，presence_bound 執行與冪等重送. 10/31
+
+> Date: Sat, 31 Oct 2026 17:45:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `65d34571ad40eccecb682c8931055dbb796822f7`
+
+---
+

@@ -329,3 +329,93 @@ def test_migration_0009_adds_tool_version_and_is_reversible(alembic_cfg, engine,
     finally:
         command.upgrade(alembic_cfg, "head")
     assert column()["nullable"] is False
+
+
+# ---- 審查修正：action.presence_bound 執行（D62）、重送 create_action 的比對、TG-5 補強 ----
+
+def _action_bound_setup(session_factory, state, *, hook=None):
+    from tests.uep.test_task_model import POLICY, new_task
+
+    executor = StubExecutor()
+    kw = {"crash_hook": hook} if hook else {}
+    mgr = make_manager(session_factory, executor, presence_check=lambda _p: state["ok"], **kw)
+    task = new_task(mgr, policy=POLICY)
+    assert task.presence_bound is False  # Task 非 presence_bound，只有工具宣告為 true
+    run = mgr.start_run(task.task_id, persona_version=1, policy_version=1)
+    step = mgr.begin_step(run.run_id, "work", worker_epoch=run.worker_epoch)
+    mgr.tool_resolver.register(
+        "files.write", executor="stub", side_effect_class="internal_read", idempotency="via_action_id",
+        presence_bound=True, tool_version=1,
+    )
+    params = {"a": 1}
+    action = mgr.create_action(
+        run_id=run.run_id, step_id=step.step_id, tool="files.write", params=params, worker_epoch=run.worker_epoch,
+    )
+    assert action.presence_bound is True
+    return mgr, executor, run, action, params
+
+
+def test_action_presence_bound_enforced_in_stage1(session_factory):
+    from uep.tasks.manager import PresenceRequired
+
+    state = {"ok": False}
+    mgr, executor, run, action, params = _action_bound_setup(session_factory, state)
+    with pytest.raises(PresenceRequired) as err:
+        mgr.execute_action(action.action_id, params, worker_epoch=run.worker_epoch)
+    assert err.value.retryable is True and executor.calls == []
+    assert mgr.get_action(action.action_id).status == "INTENDED"
+
+
+def test_action_presence_bound_enforced_in_stage15(session_factory):
+    from uep.tasks.manager import PresenceRequired
+
+    state = {"ok": True}
+
+    def hook(point: str) -> None:
+        if point == "action.after_executing_commit":
+            state["ok"] = False
+
+    mgr, executor, run, action, params = _action_bound_setup(session_factory, state, hook=hook)
+    with pytest.raises(PresenceRequired) as err:
+        mgr.execute_action(action.action_id, params, worker_epoch=run.worker_epoch)
+    assert err.value.retryable is False and executor.calls == []
+    assert mgr.get_action(action.action_id).status == "FAILED"
+
+
+def test_resend_create_action_after_version_bump_is_tool_version_changed(mgr):
+    _task, run, step = running(mgr)
+    mgr.tool_resolver.register("files.write", executor="stub", side_effect_class="internal_read", tool_version=1)
+    first = _action(mgr, run, step, {"a": 1}, tool="files.write")
+    mgr.tool_resolver.register("files.write", executor="stub", side_effect_class="internal_read", tool_version=2)
+    with pytest.raises(ActionBlocked, match="^tool_version_changed"):
+        _action(mgr, run, step, {"a": 1}, tool="files.write", action_id=first.action_id)
+
+
+def test_resend_create_action_cannot_silently_keep_looser_presence_bound(mgr):
+    _task, run, step = running(mgr)
+    mgr.tool_resolver.register("files.write", executor="stub", side_effect_class="internal_read", tool_version=1)
+    first = _action(mgr, run, step, {"a": 1}, tool="files.write", presence_bound=False)
+    assert first.presence_bound is False
+    with pytest.raises(PolicyViolation):  # 呼叫端這次要求收緊，既有列較寬鬆
+        _action(mgr, run, step, {"a": 1}, tool="files.write", presence_bound=True, action_id=first.action_id)
+    # 同條件重送仍冪等
+    again = _action(mgr, run, step, {"a": 1}, tool="files.write", presence_bound=False, action_id=first.action_id)
+    assert again.action_id == first.action_id
+
+
+def test_tg5_internal_executor_must_exist_in_executors(session_factory, tmp_path):
+    over = {"tool_resolver": FakeToolSpecResolver(a={})}
+    with pytest.raises(AssemblyError, match="ghost"):
+        assemble_core(
+            session_factory, **assembly_kwargs(session_factory, tmp_path, internal_executors=("ghost",), **over)
+        )
+
+
+def test_tg5_non_enumerable_resolver_logs_warning(session_factory, tmp_path, caplog):
+    class Dynamic:
+        def resolve(self, tool: str) -> ToolSpec:
+            raise PolicyViolation("none", code=TOOL_UNKNOWN)
+
+    with caplog.at_level("WARNING", logger="uep.assembly"):
+        assemble_core(session_factory, **assembly_kwargs(session_factory, tmp_path, tool_resolver=Dynamic()))
+    assert sum("TG-5" in r.getMessage() for r in caplog.records) == 1

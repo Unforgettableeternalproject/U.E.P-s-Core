@@ -258,7 +258,11 @@ def _check_registry_executors(
     resolver: ToolSpecResolver, executors: Mapping[str, ToolExecutor], internal: Collection[str]
 ) -> None:
     """TG-5：註冊表與 executors 映射雙向一致；只對可列舉的靜態註冊表做。"""
+    stray = sorted(set(internal) - set(executors))
+    if stray:
+        raise AssemblyError(f"internal_executors 引用了不存在的 executor：{', '.join(stray)}（TG-5）")
     if not isinstance(resolver, EnumerableToolSpecResolver):
+        logger.warning("tool_resolver 不可列舉，略過 TG-5 註冊表與 executors 的雙向檢查")
         return
     specs = resolver.specs()
     unknown = sorted({spec.executor for spec in specs.values()} - set(executors))

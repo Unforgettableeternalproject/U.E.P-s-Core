@@ -3310,3 +3310,15 @@
 
 ---
 
+### docs: Host 全域做夢迴圈設計與 P3 方案註記. 10/31
+
+> Date: Sat, 31 Oct 2026 17:28:43 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `83fa58901e0d14601b1c069ce5128163b9bb181e`
+
+---
+

@@ -52,6 +52,7 @@ def make_host(tmp_path: Path, factory: FakeEngineFactory | None = None, **over) 
         "engine_factory": factory, "data_root": tmp_path / "core_memory", "namespaces": SPECS,
         "identity": make_identity(), "llm_fn": lambda prompt: "ok", "drain_timeout_s": 1.0,
         "guild_membership": FakeGuildMembership({"123": {"actor_a": "111"}}),  # actor_c 不是成員
+        "enable_dream_scheduler": True,  # 舊路徑（engine 內建排程）供既有案例沿用；新預設見 test_p3_s6_memory_wiring
     }
     kwargs.update(over)
     return MemoryHost(**kwargs), factory
@@ -142,10 +143,12 @@ def test_stop_order_is_scheduler_then_drain_then_close_and_idempotent(tmp_path):
     assert not host.started
 
 
-def test_engine_without_close_is_tolerated(host_pair):
+def test_close_is_required_and_called_for_every_engine_with_timeout(host_pair):
+    """B-4：close 是 engine 必要介面（不再用 getattr 容忍沒有 close），逐個以 drain_timeout 呼叫。"""
     host, factory = host_pair
-    assert not hasattr(factory.engines[OWNER_NS], "close")
     host.stop()
+    for ns in (OWNER_NS, SCOPE_NS):
+        assert factory.engines[ns].closed and factory.engines[ns].close_timeouts == [1.0]
 
 
 def test_start_failure_stops_already_started_engines(tmp_path):
@@ -504,15 +507,22 @@ def test_store_publishes_record_created_once_with_ids_only(wired):
     assert "拉麵" not in str(payload)
 
 
-def test_scheduled_dream_completed_event_adds_finished_activity(wired):
-    """排程在記憶端：Host 只能從 memory.dream_completed 事後補 Activity；Host 手動 dream 進行中不重複記。"""
+def test_dream_listener_report_adds_finished_activity_and_counts(wired):
+    """B-6：Activity 與計數由 set_dream_listener 的報告負責（sink 只轉事件，不再補 Activity，避免重複）；
+    skipped 不補 Activity，租約衝突單獨計數（E4）。"""
     host, factory, _, sf = wired
-    factory.engines[OWNER_NS].emit(fixture_draft(1))
+    engine = factory.engines[OWNER_NS]
+    engine.emit(fixture_draft(1))  # 事件本身不產生 Activity
     assert fixture_draft(1).event_type == "memory.dream_completed"
+    with sf() as s:
+        assert s.query(ActivityRow).filter(ActivityRow.kind == "maintenance").count() == 0
+    engine.report_dream({"status": "completed", "triggered_by": "scheduler"})
+    engine.report_dream({"status": "skipped", "triggered_by": "scheduler", "skipped_reason": "租約由 pid=1 持有"})
     with sf() as s:
         rows = list(s.query(ActivityRow).filter(ActivityRow.kind == "maintenance"))
     assert len(rows) == 1 and rows[0].origin_ref["triggered_by"] == "scheduler" and rows[0].status == "ENDED"
     assert host.metrics.get("memory.dream.runs.scheduler") == 1
+    assert host.metrics.get("memory.dream.skipped_lease") == 1
 
 
 @pytest.mark.parametrize("fail_on", ["set_llm_fn", "start_dream_scheduler"])

@@ -1,4 +1,4 @@
-"""MemoryHost 的型別邊界：Core 只認這些 Protocol，不 import echo_memory（真 engine 需 3.12 環境，S6 才接）。
+"""MemoryHost 的型別邊界：Core 只認這些 Protocol；真 engine 只由 ``uep/echo/memory_wiring.py`` 接線（S6）。
 
 ``MemoryEngineLike`` 照記憶端 ``MemoryEngine`` 的真實簽名取 S2 用到的子集（見 S2 記憶介面清單）；
 ``MemoryPort`` 是 Core 對 ES 暴露的同步版介面（Core 為同步 SQLAlchemy 加執行緒；asyncio 包裝由 S3 的
@@ -17,7 +17,8 @@ from uep.context.snapshot import MemoryStatus
 @runtime_checkable
 class MemoryEngineLike(Protocol):
     """真 ``MemoryEngine`` 的子集。回傳型別刻意寬鬆（duck typing）：``retrieve`` 回物件需有
-    ``to_text()``／``is_empty()``／``degraded``／``degraded_reason``。``close`` 為可選（真 engine 目前沒有）。"""
+    ``to_text()``／``is_empty()``／``degraded``／``degraded_reason``。``close(timeout)`` 為必要（B-4，冪等）；
+    ``configure_dream``／``set_dream_listener``／``set_engine_resolver`` 為宿主整合介面（B-1、B-6、B-7）。"""
 
     namespace_id: str
     storage_path: Path
@@ -31,6 +32,14 @@ class MemoryEngineLike(Protocol):
     def start_dream_scheduler(self) -> dict[str, Any]: ...
 
     def stop_dream_scheduler(self) -> None: ...
+
+    def configure_dream(self, **overrides: Any) -> dict[str, Any]: ...
+
+    def set_dream_listener(self, fn: Callable[[dict[str, Any]], None] | None) -> None: ...
+
+    def set_engine_resolver(self, resolver: Callable[[str], Any] | None) -> None: ...
+
+    def close(self, timeout: float = 5.0) -> None: ...
 
     def dream_readiness(self) -> dict[str, Any]: ...
 
@@ -57,6 +66,25 @@ class MemoryEngineLike(Protocol):
     ) -> str: ...
 
     def get_profile(self, max_chars: int = 800, limit: int = 30) -> str: ...
+
+
+@runtime_checkable
+class MemoryAdapterLike(Protocol):
+    """``EchoMemoryAdapter`` 的子集（async 版）。每個 engine 只能有一個 adapter，所有寫入都經過它（EM #619）。
+    Host 在專屬的 event loop 執行緒上執行這些協程；``aclose`` 在 ``engine.close`` 之前呼叫（排空排隊中的寫入）。"""
+
+    async def store(
+        self, user_text: str, spoken_text: str, session_id: str | None = None,
+        idempotency_key: str | None = None, **metadata: Any,
+    ) -> dict[str, Any] | None: ...
+
+    async def execute_tool(
+        self, name: str, args: dict[str, Any], *, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]: ...
+
+    def set_session(self, session_id: str | None) -> None: ...
+
+    async def aclose(self) -> None: ...
 
 
 # 檢索結果的嚴重度排序（合併多個來源時取最差者）

@@ -1,21 +1,31 @@
 """MemoryHost（P3接入方案 §3.1）：Core 內唯一建立記憶 engine 的地方。
 
-啟動順序（宿主契約，由測試固定）：建 engine -> ``set_llm_fn`` -> （有才）``set_concept_inhibitor`` -> ``set_candidate_sink``
--> ``start_dream_scheduler()``。先注入再 start。Gate（concept inhibitor）每個 engine 各一個（由 factory 產生）：
-真 engine 的 setter 會覆寫 ``inhibitor.event_emitter``，Gate 也綁單一 engine，共用會讓事件丟失或歸錯 owner。
-關閉：先 ``stop_dream_scheduler()``，再等在途事件投遞與排隊中的呼叫排空，最後（若 engine 有）``close()``。
+啟動順序（宿主契約，由測試固定）：建 engine -> ``configure_dream`` -> ``set_llm_fn`` -> （有才）``set_concept_inhibitor``
+-> ``set_candidate_sink`` -> ``set_dream_listener`` -> （僅 ``enable_dream_scheduler=True`` 的舊路徑）``start_dream_scheduler()``。
+先注入再 start。Gate（concept inhibitor）每個 engine 各一個（由 factory 產生）：真 engine 的 setter 會覆寫
+``inhibitor.event_emitter``，Gate 也綁單一 engine，共用會讓事件丟失或歸錯 owner。
 
-做夢（D75 (c)）：累積門檻由 echo_memory 內建排程驅動，Host 只負責啟停，不自己觸發 dream；``scope-g*`` 共享
-namespace 一律不啟動排程。階段 X（D76）：Host 只管 Core 自己的 namespace 與資料目錄，啟動時核對與外部占用不相交。
+寫入（EM #619）：每個 engine 只有一個 ``EchoMemoryAdapter``（``adapter_factory`` 建立），所有寫入經它；唯讀查詢直接呼叫 engine。
+adapter 是 async，Host 擁有一條專屬 event loop 執行緒執行其協程；adapter 的寫入**不在** ``call()`` 的 engine 鎖內執行
+（同一把鎖由 adapter 自己持有，否則舊式 engine 會死結）。
+
+關閉：先 ``stop_dream_scheduler()``，再等在途事件投遞與排隊中的呼叫排空，接著 ``adapter.aclose()``（排空寫入），
+最後逐個 ``engine.close(timeout)``（B-4，冪等）。
+
+做夢（Bernie 裁決，取代 D75 (c)）：per-user engine 與 ``scope-g*`` 共享 namespace 一律關閉自己的排程（``configure_dream``
+關 idle／cron，不呼叫 ``start_dream_scheduler``）；全域做夢迴圈由 Host 管（完整迴圈另案，此處只接 ``set_dream_listener``
+收每次 dream 結束的報告：計數、Activity 與 log）。階段 X（D76）：Host 只管 Core 自己的 namespace 與資料目錄，啟動時核對與外部占用不相交。
 
 併發：每個 namespace 一個單工作緒 executor 加一把 engine 鎖，A namespace 卡住不影響 B。
 """
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import logging
+import re
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -45,7 +55,7 @@ from uep.memory.namespaces import (
     resolve_namespace_path,
     validate_owner_id,
 )
-from uep.memory.protocol import MemoryEngineLike
+from uep.memory.protocol import MemoryAdapterLike, MemoryEngineLike
 from uep.memory.sink import MemorySink
 
 logger = logging.getLogger("uep.memory.host")
@@ -55,6 +65,45 @@ HEALTH_REF = "memory"
 
 EngineFactory = Callable[[str, Path], MemoryEngineLike]
 InhibitorFactory = Callable[[str], Any]
+AdapterFactory = Callable[[str, MemoryEngineLike, threading.Lock], MemoryAdapterLike]
+_TRIGGER_SAFE = re.compile(r"[^a-z0-9_]+")
+
+
+class _AdapterRunner:
+    """專屬 event loop 執行緒：把 adapter 的協程橋接成同步呼叫（逾時語意與 ``call()`` 一致）。"""
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="uep-mem-adapter-loop", daemon=True)
+        self._thread.start()
+        self._ready.wait(timeout=5.0)
+
+    def _run(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.call_soon(self._ready.set)
+        self._loop.run_forever()
+        self._loop.close()
+
+    def submit(self, coro: Awaitable[Any]) -> concurrent.futures.Future[Any]:
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)  # type: ignore[arg-type]
+
+    def stop(self) -> None:
+        if self._loop.is_closed():
+            return
+
+        async def cancel_pending() -> None:
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        try:
+            asyncio.run_coroutine_threadsafe(cancel_pending(), self._loop).result(timeout=2.0)
+        except Exception as exc:  # noqa: BLE001 - 收尾盡力而為，仍要停掉 loop
+            logger.warning("adapter loop 收尾失敗（已忽略）：%s", type(exc).__name__)
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=2.0)
 
 
 class MemoryHostError(RuntimeError):
@@ -90,7 +139,8 @@ class MemoryHost:
         concept_inhibitor_factory: InhibitorFactory | None = None,
         guild_membership: GuildMembership | None = None,
         foreign_claims: Sequence[ForeignClaim] = (),
-        enable_dream_scheduler: bool = True,
+        enable_dream_scheduler: bool = False,
+        adapter_factory: AdapterFactory | None = None,
         persona_id: str = "uep",
         tool_backend: MemoryToolBackend | None = None,
         retrieve_timeout_s: float = DEFAULT_RETRIEVE_TIMEOUT_S,
@@ -105,7 +155,10 @@ class MemoryHost:
         self._llm_fn = llm_fn
         self._inhibitor_factory = concept_inhibitor_factory
         self._foreign = tuple(foreign_claims)
-        self._enable_scheduler = enable_dream_scheduler
+        self._enable_scheduler = enable_dream_scheduler  # 舊路徑：engine 內建排程；預設關（Host 全域迴圈另案）
+        self._adapter_factory = adapter_factory
+        self._adapters: dict[str, MemoryAdapterLike] = {}
+        self._runner: _AdapterRunner | None = None
         self._drain_timeout_s = drain_timeout_s
         self.metrics = MemoryMetrics()
         self._activity = (
@@ -213,7 +266,14 @@ class MemoryHost:
             raise MemoryHostError(f"engine {ns!r} 的資料目錄 {engine.storage_path} 與預期 {expected} 不符")
         if spec.owner_id is not None:
             self._owner_ns[spec.owner_id] = ns
-        # 先注入、再 start
+        # 先設定做夢（須在 DreamEngine 建立之前）、再注入、再 start
+        scope = is_scope_namespace_id(ns)
+        if scope or not self._enable_scheduler:
+            engine.configure_dream(dream_enable_idle=False, dream_enable_cron=False)
+        if self._adapter_factory is not None:
+            if self._runner is None:
+                self._runner = _AdapterRunner()
+            self._adapters[ns] = self._adapter_factory(ns, engine, self._locks[ns])
         engine.set_llm_fn(self._llm_fn)
         if not is_scope_namespace_id(ns) and self._inhibitor_factory is not None:
             inhibitor = self._inhibitor_factory(ns)
@@ -226,8 +286,11 @@ class MemoryHost:
             logger.info("namespace=%s 不注入 concept inhibitor（使用記憶端預設 Gate 或共享層不需要）", ns)
         if spec.owner_id is not None:
             engine.set_candidate_sink(self._make_sink(ns, spec.owner_id))
-        if is_scope_namespace_id(ns):
+        if scope:
+            # 共享場域：不啟動排程；糾正寫入要找當事人自己的 engine（uid -> engine）
+            engine.set_engine_resolver(self._resolve_user_engine)
             return {"scheduler": {"started": False, "reason": "scope_namespace"}}
+        engine.set_dream_listener(lambda report, n=ns: self._on_dream_report(n, report))
         if not self._enable_scheduler:
             return {"scheduler": {"started": False, "reason": "disabled_by_host"}}
         result = dict(engine.start_dream_scheduler())
@@ -239,10 +302,7 @@ class MemoryHost:
     def _make_sink(self, namespace_id: str, owner_id: str | None) -> Any:
         if self._publisher is None:
             return _NullSink()
-        return MemorySink(
-            self._publisher, namespace_id, owner_id, metrics=self.metrics,
-            on_dream_completed=self._on_scheduled_dream_completed,
-        )
+        return MemorySink(self._publisher, namespace_id, owner_id, metrics=self.metrics)
 
     def stop(self) -> None:
         """冪等；每一步獨立容錯，避免一個 engine 卡住讓其他 engine 的排程沒停。先發 health 下線事件。"""
@@ -266,14 +326,25 @@ class MemoryHost:
             except Exception as exc:  # noqa: BLE001 - 逾時或已關閉都只記類別，仍要繼續關閉其他項目
                 logger.warning("等待記憶呼叫排空失敗（%s），放棄尚未開始的呼叫：%s", ns, type(exc).__name__)
             executor.shutdown(wait=False, cancel_futures=True)
+        self._close_adapters()
         for ns, engine in reversed(engines):
-            close = getattr(engine, "close", None)  # 真 engine 目前沒有 close（見介面清單 B-4）
-            if callable(close):
-                self._safe(f"close({ns})", close)
+            self._safe(f"close({ns})", lambda e=engine: e.close(self._drain_timeout_s))  # B-4：冪等，逐個關閉
         self._engines.clear()
+        self._adapters.clear()
         self._locks.clear()
         self._owner_ns.clear()
         self.started = False
+
+    def _close_adapters(self) -> None:
+        """排空各 adapter 排隊中的寫入（``aclose``），再停 event loop；必須在 ``engine.close`` 之前。"""
+        runner, self._runner = self._runner, None
+        if runner is None:
+            return
+        for ns, adapter in reversed(list(self._adapters.items())):
+            def close(a: MemoryAdapterLike = adapter) -> None:
+                runner.submit(a.aclose()).result(timeout=self._drain_timeout_s)
+            self._safe(f"adapter.aclose({ns})", close)
+        runner.stop()
 
     def _drain(self, drain: Callable[[float], Any], namespace_id: str) -> None:
         if drain(self._drain_timeout_s) is False:
@@ -311,6 +382,45 @@ class MemoryHost:
             return self._locks[namespace_id]
         except KeyError:
             raise MemoryHostError(f"未啟動或未知的 namespace：{namespace_id!r}") from None
+
+    def adapter(self, namespace_id: str) -> MemoryAdapterLike | None:
+        """該 namespace 唯一的 ``EchoMemoryAdapter``（沒有設定 ``adapter_factory`` 時為 None）。"""
+        return self._adapters.get(namespace_id)
+
+    def adapter_call(
+        self,
+        namespace_id: str,
+        fn: Callable[[MemoryAdapterLike], Awaitable[Any]],
+        *,
+        timeout_s: float,
+        on_late: Callable[[Any], None] | None = None,
+    ) -> Any:
+        """在 Host 的 adapter event loop 上執行 ``fn(adapter)`` 協程並有界等待；逾時拋 ``TimeoutError``。
+        不持 engine 鎖（adapter 自己序列化）；逾時後若寫入才完成，結果交給 ``on_late``。"""
+        adapter, runner = self._adapters.get(namespace_id), self._runner
+        if not self.started or adapter is None or runner is None:
+            raise MemoryHostError("MemoryHost 未啟動或該 namespace 沒有 adapter")
+        future = runner.submit(fn(adapter))
+        try:
+            return future.result(timeout=timeout_s)
+        except concurrent.futures.TimeoutError:
+            if on_late is not None:
+                future.add_done_callback(lambda f: self._deliver_late(f, on_late))
+            else:
+                future.cancel()
+            raise TimeoutError(f"記憶呼叫逾時（{timeout_s}s）") from None
+
+    def adapter_fire(self, namespace_id: str, fn: Callable[[MemoryAdapterLike], Awaitable[Any]]) -> None:
+        """fire-and-forget（例如回覆後的隱私意圖掃描）：失敗只記 log，不影響呼叫端。"""
+        adapter, runner = self._adapters.get(namespace_id), self._runner
+        if not self.started or adapter is None or runner is None:
+            return
+
+        def done(f: concurrent.futures.Future[Any]) -> None:
+            if not f.cancelled() and f.exception() is not None:
+                logger.warning("adapter 背景呼叫失敗（已忽略）：%s", type(f.exception()).__name__)
+
+        runner.submit(fn(adapter)).add_done_callback(done)
 
     def call(
         self,
@@ -352,14 +462,38 @@ class MemoryHost:
         self.metrics.inc("memory.call.late_completed")
         self._safe("on_late", lambda: on_late(future.result()))
 
-    # ---- 排程觸發的 dream 事後記錄 ----
+    # ---- dream 結束通知（set_dream_listener）----
 
-    def _on_scheduled_dream_completed(self, namespace_id: str, _draft: Any) -> None:
-        """排程（記憶端內建）觸發的 dream 只能事後從 ``memory.dream_completed`` 得知，補一筆已結束的 Activity。
-        前提：記憶端 emitter 已開啟（``SELF_MODEL_EVENTS_ENABLED``；B-2 的 set_enabled_fn 完成前預設關閉）。"""
-        self.metrics.inc("memory.dream.runs.scheduler")
-        if self._activity is not None:
-            self._activity.record_finished(namespace_id, "scheduler", "completed")
+    def _resolve_user_engine(self, uid: str) -> MemoryEngineLike | None:
+        """共享 engine 的 ``set_engine_resolver``：``uid`` 是 owner_id 或 discord 平台 uid，找不到回 None（拒絕）。
+        只回非共享 namespace 的 engine。注意：記憶端的 ``correct_about_me`` 會直接寫這個 engine（繞過 adapter，EM 介面決定）。"""
+        ns = self._owner_ns.get(str(uid))
+        if ns is None:
+            ident = self._identity.resolve_platform(f"discord:{uid}")
+            ns = self._owner_ns.get(ident.owner_id) if ident.owner_id is not None else None
+        return self._engines.get(ns) if ns is not None else None
+
+    def _on_dream_report(self, namespace_id: str, report: Mapping[str, Any]) -> None:
+        """每次 dream_now 結束都會呼叫（含 skipped／error），在觸發 dream 的執行緒上同步執行，絕不拋例外。
+        計數：``memory.dream.runs.<trigger>``、``memory.dream.skipped_lease``（E1／E4）；只有 completed／error 補 Activity。"""
+        try:
+            status = str(report.get("status") or "")
+            trigger = _TRIGGER_SAFE.sub("_", str(report.get("triggered_by") or "unknown").lower()).strip("_") or "unknown"
+            if status == "skipped":
+                reason = str(report.get("skipped_reason") or "")
+                lease = "lease" in reason.lower() or "租約" in reason
+                self.metrics.inc("memory.dream.skipped_lease" if lease else "memory.dream.skipped")
+                logger.info("dream 略過：namespace=%s trigger=%s lease=%s", namespace_id, trigger, lease)
+                return
+            if status == "error":
+                self.metrics.inc("memory.dream.error")
+                logger.warning("dream 失敗：namespace=%s trigger=%s", namespace_id, trigger)
+            else:
+                self.metrics.inc(f"memory.dream.runs.{trigger}")
+            if self._activity is not None:
+                self._activity.record_finished(namespace_id, trigger, "failed" if status == "error" else "completed")
+        except Exception as exc:  # noqa: BLE001 - 在 engine 執行緒上呼叫；補記失敗不得影響 dream
+            logger.warning("dream 報告處理失敗（已忽略）：%s", type(exc).__name__)
 
     # ---- health／狀態 ----
 

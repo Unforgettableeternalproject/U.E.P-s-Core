@@ -3,11 +3,15 @@
 - ``call_log`` 為多個 engine 共用的有序呼叫紀錄（``(namespace_id, 方法名, 參數)``），測試用來固定啟動順序。
 - 檢索：以子字串比對 ``episodes``（私人 engine）；``retrieve_shared`` 回 ``shared_summaries``。
 - ``dream_result`` 可設成 ``{"skipped_reason": "租約由 pid=... 持有"}`` 或 ``{"error": "..."}``。
-- ``retrieve_delay_s`` 模擬慢檢索（逾時案例）；``close`` 預設不存在（真 engine 沒有），``with_close=True`` 才有。
+- ``retrieve_delay_s`` 模擬慢檢索（逾時案例）；``close(timeout)`` 永遠存在（B-4，冪等）；``with_close`` 僅為相容舊測試，已無作用。
+- ``FakeMemoryAdapter`` 照 ES ``EchoMemoryAdapter`` 的形狀（async ``store``／``execute_tool``／``aclose``），寫入轉呼叫 engine；
+  ``FakeAdapterFactory`` 記錄每個 engine 建了幾個 adapter（單一 adapter 約束）。
 - ``emit(draft)`` 透過已注入的 sink 發草稿，模擬記憶端 emitter。
 """
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -111,8 +115,10 @@ class FakeMemoryEngine:
         self.event_emitter = FakeEventEmitter(self)
         self.profile_text = ""
         self.closed = False
-        if with_close:
-            self.close = self._close  # type: ignore[method-assign]
+        self.dream_overrides: dict[str, Any] = {}
+        self.dream_listener: Callable[[dict[str, Any]], None] | None = None
+        self.engine_resolver: Callable[[str], Any] | None = None
+        self.close_timeouts: list[float] = []
 
     def _log(self, name: str, arg: Any = None) -> None:
         self.call_log.append((self.namespace_id, name, arg))
@@ -131,6 +137,24 @@ class FakeMemoryEngine:
     def set_candidate_sink(self, sink: Any) -> None:
         self.sink = sink
         self._log("set_candidate_sink", sink)
+
+    def set_engine_resolver(self, resolver: Callable[[str], Any] | None) -> None:
+        self.engine_resolver = resolver
+        self._log("set_engine_resolver", resolver)
+
+    def set_dream_listener(self, fn: Callable[[dict[str, Any]], None] | None) -> None:
+        self.dream_listener = fn
+        self._log("set_dream_listener", fn)
+
+    def configure_dream(self, **overrides: Any) -> dict[str, Any]:
+        self.dream_overrides.update(overrides)
+        self._log("configure_dream", dict(overrides))
+        return {"applied": True, "overrides": dict(self.dream_overrides)}
+
+    def report_dream(self, report: dict[str, Any]) -> None:
+        """模擬一次 dream_now 結束：呼叫已註冊的 listener（含 skipped／error）。"""
+        assert self.dream_listener is not None, "尚未註冊 dream listener"
+        self.dream_listener(report)
 
     # ---- 做夢 ----
 
@@ -209,8 +233,12 @@ class FakeMemoryEngine:
     def get_profile(self, max_chars: int = 800, limit: int = 30) -> str:
         return self.profile_text[:max_chars]
 
-    def _close(self) -> None:
+    def close(self, timeout: float = 5.0) -> None:
+        """冪等：第二次起不動作、不記 call_log。"""
+        if self.closed:
+            return
         self.closed = True
+        self.close_timeouts.append(timeout)
         self._log("close")
 
     # ---- 模擬記憶端 emitter ----
@@ -251,3 +279,65 @@ class FakeEngineFactory:
 
     def calls(self, namespace_id: str) -> list[str]:
         return [name for ns, name, _ in self.call_log if ns == namespace_id]
+
+
+class FakeMemoryAdapter:
+    """``EchoMemoryAdapter`` 的替身（async 形狀）。寫入在 adapter 自己的單工作緒 executor 上轉呼叫 engine，
+    並持有 Host 給的 engine 鎖（與真 adapter 的舊式 engine 全包鎖行為一致）。"""
+
+    def __init__(self, engine: FakeMemoryEngine, engine_lock: threading.Lock | None) -> None:
+        self.engine = engine
+        self.engine_lock = engine_lock
+        self.sessions: list[str | None] = []
+        self.tool_calls: list[tuple[str, dict[str, Any]]] = []
+        self.scans: list[list[str]] = []
+        self.store_results_none = False  # True：模擬 adapter 的 store 失敗（旁路回 None）
+        self.closed = False
+        self.unit_ids: list[str] = []
+
+    def _locked(self, fn: Callable[[], Any]) -> Any:
+        if self.engine_lock is None:
+            return fn()
+        with self.engine_lock:
+            return fn()
+
+    async def store(
+        self, user_text: str, spoken_text: str, session_id: str | None = None,
+        idempotency_key: str | None = None, **metadata: Any,
+    ) -> dict[str, Any] | None:
+        if self.store_results_none:
+            return None
+        loop = asyncio.get_running_loop()
+        episode_id = await loop.run_in_executor(None, lambda: self._locked(lambda: self.engine.store_episode(
+            user_input=user_text, agent_response=spoken_text, session_id=session_id or "unknown",
+            idempotency_key=idempotency_key, **metadata,
+        )))
+        return {"episode_id": episode_id, "salience": 0.5, "unit_ids": list(self.unit_ids)}
+
+    async def execute_tool(
+        self, name: str, args: dict[str, Any], *, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        self.tool_calls.append((name, dict(args)))
+        return {"success": True, "result": f"{name} via adapter"}
+
+    async def scan_privacy_intent(self, unit_ids: Any, *, timeout: float = 20.0, force: bool = False) -> None:
+        self.scans.append(list(unit_ids))
+
+    def set_session(self, session_id: str | None) -> None:
+        self.sessions.append(session_id)
+
+    async def aclose(self) -> None:
+        self.closed = True
+        self.engine.call_log.append((self.engine.namespace_id, "adapter.aclose", None))
+
+
+class FakeAdapterFactory:
+    """``MemoryHost(adapter_factory=...)`` 用：記錄每個 namespace 建過的 adapter（單一 adapter 約束由測試檢查）。"""
+
+    def __init__(self) -> None:
+        self.created: dict[str, list[FakeMemoryAdapter]] = {}
+
+    def __call__(self, namespace_id: str, engine: Any, engine_lock: threading.Lock) -> FakeMemoryAdapter:
+        adapter = FakeMemoryAdapter(engine, engine_lock)
+        self.created.setdefault(namespace_id, []).append(adapter)
+        return adapter

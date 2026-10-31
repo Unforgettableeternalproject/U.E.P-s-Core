@@ -5,6 +5,8 @@
 - 每次讀取先以 ``scope_admits(audience, 來源 scope)`` 判斷（CC-2 X-1、VC-2-1）：不通過就**不呼叫 engine**，
   結果只帶 ``excluded_summary``（鍵為原因碼，值為被排除的來源數，不含內容；X-9）。
 - 身分只認 Gateway 重建的 ``actor_id``（D77）；映射缺失一律訪客，訪客讀不到、也寫不進任何 owner 的記憶。
+- 寫入（store／force_remember）走該 engine 唯一的 ``EchoMemoryAdapter``（EM #619）：salience 評估、evidence 準備、
+  idempotency 都在 adapter 內，回覆後再 fire-and-forget 跑隱私意圖掃描；讀取直接呼叫 engine。
 - 逾時有界（X-6）：逾時回 ``memory_status=timeout`` 與空文字，不回傳可能不完整的內容。
 """
 from __future__ import annotations
@@ -14,7 +16,7 @@ import logging
 import re
 import threading
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from typing import Any, Protocol
 
 from uep.context.snapshot import MemoryStatus, scope_admits
@@ -28,6 +30,7 @@ from uep.memory.namespaces import (
     owner_scope_ref,
 )
 from uep.memory.protocol import (
+    MemoryAdapterLike,
     MemoryEngineLike,
     RetrieveResult,
     StoreResult,
@@ -88,6 +91,17 @@ class MemoryRuntime(Protocol):
         逾時時已在執行、之後才完成的呼叫，結果交給 ``on_late``。"""
         ...
 
+    def adapter(self, namespace_id: str) -> MemoryAdapterLike | None:
+        """該 namespace 唯一的 adapter；沒有設定時為 None（寫入退回直接呼叫 engine，僅供沒有 adapter 的最小組裝）。"""
+        ...
+
+    def adapter_call(
+        self, namespace_id: str, fn: Callable[[MemoryAdapterLike], Awaitable[Any]], *, timeout_s: float,
+        on_late: Callable[[Any], None] | None = None,
+    ) -> Any: ...
+
+    def adapter_fire(self, namespace_id: str, fn: Callable[[MemoryAdapterLike], Awaitable[Any]]) -> None: ...
+
 
 class GuildMembership(Protocol):
     """場域（guild）成員資格 Port（fail-closed）：共享層讀取一律要求 viewer 為成員。
@@ -109,7 +123,9 @@ class GuildMembership(Protocol):
 
 
 class MemoryToolBackend(Protocol):
-    """記憶工具（deep_recall／force_remember）的後端，由宿主依真 engine 的 llm_integration 實作；S2 不內建。
+    """記憶工具（deep_recall／force_remember）的後端，由宿主依真 engine 的 llm_integration 實作
+    （S6：``uep/echo/memory_wiring.py`` 的 ``EchoMemoryToolBackend``）。有 adapter 時只用 ``definitions()``，
+    執行改走 ``adapter.execute_tool``（寫入唯一經 adapter）；``execute`` 只在沒有 adapter 的最小組裝使用。
     ``member_recall`` 不在這裡：真 engine 的工具宣告沒有它，由 Access Layer 直接以 ``retrieve_shared`` 實作。"""
 
     def definitions(self) -> list[dict[str, Any]]: ...
@@ -349,21 +365,38 @@ class MemoryAccessLayer:
             return StoreResult(status="rejected", reason="no_engine")
         sid = self._current_session(session_id)
 
+        adapter_mode = self._runtime.adapter(namespace_id) is not None
+        unit_ids: list[str] = []
+
         def work(engine: MemoryEngineLike) -> str:
             return engine.store_episode(
                 user_input=user_text, agent_response=spoken_text, session_id=sid,
                 idempotency_key=idempotency_key, **metadata,
             )
 
-        def late(episode_id: str) -> None:
-            # 呼叫端已回報逾時、但寫入之後才完成：補發 record_created（key 為 None 時重送可能產生重複 episode）
-            self._publish_record_created(namespace_id, owner_id, str(episode_id))
-
-        try:
-            episode_id = self._runtime.call(
-                namespace_id, work, timeout_s=self._store_timeout_s if timeout_s is None else timeout_s,
-                on_late=late,
+        async def adapter_work(adapter: MemoryAdapterLike) -> dict[str, Any] | None:
+            return await adapter.store(
+                user_text, spoken_text, session_id=sid, idempotency_key=idempotency_key, **metadata
             )
+
+        def late(result: Any) -> None:
+            # 呼叫端已回報逾時、但寫入之後才完成：補發 record_created（key 為 None 時重送可能產生重複 episode）
+            episode = result.get("episode_id") if isinstance(result, Mapping) else result
+            if episode:
+                self._publish_record_created(namespace_id, owner_id, str(episode))
+
+        timeout = self._store_timeout_s if timeout_s is None else timeout_s
+        try:
+            if adapter_mode:
+                result = self._runtime.adapter_call(namespace_id, adapter_work, timeout_s=timeout, on_late=late)
+                if not isinstance(result, Mapping) or not result.get("episode_id"):
+                    # adapter 的 store 是旁路：失敗吞例外回 None
+                    self._metrics.inc("memory.store.failed")
+                    return StoreResult(status="failed", reason="adapter_store_failed")
+                episode_id = result["episode_id"]
+                unit_ids = [str(u) for u in (result.get("unit_ids") or ())]
+            else:
+                episode_id = self._runtime.call(namespace_id, work, timeout_s=timeout, on_late=late)
         except TimeoutError:
             self._metrics.inc("memory.store.timeout")
             return StoreResult(status="timeout", reason="timeout")
@@ -373,7 +406,20 @@ class MemoryAccessLayer:
             return StoreResult(status="failed", reason=type(exc).__name__)
         self._metrics.inc("memory.store.stored")
         duplicate = self._publish_record_created(namespace_id, owner_id, str(episode_id))
+        if unit_ids:
+            self._scan_privacy(namespace_id, unit_ids)
         return StoreResult(status="stored", episode_id=str(episode_id), event_duplicate=duplicate)
+
+    def _scan_privacy(self, namespace_id: str, unit_ids: Sequence[str]) -> None:
+        """回覆後的隱私意圖掃描（熱路徑外、fire-and-forget；adapter 沒有此方法或失敗都只記 log）。"""
+        ids = list(unit_ids)
+
+        async def scan(adapter: MemoryAdapterLike) -> Any:
+            fn = getattr(adapter, "scan_privacy_intent", None)
+            return await fn(ids) if callable(fn) else None
+
+        self._metrics.inc("memory.store.privacy_scan")
+        self._runtime.adapter_fire(namespace_id, scan)
 
     def _publish_record_created(self, namespace_id: str, owner_id: str, episode_id: str) -> bool | None:
         """只帶 ID（ref_id）；同 episode 重送得同一把 key -> 重複。失敗只記 log 與計數。"""
@@ -483,6 +529,12 @@ class MemoryAccessLayer:
         backend = self._tool_backend
         assert backend is not None
         try:
+            if self._runtime.adapter(namespace_id) is not None:
+                async def via_adapter(adapter: MemoryAdapterLike) -> dict[str, Any]:
+                    adapter.set_session(sid)  # adapter 的 ToolExecutor 綁 session_id
+                    return await adapter.execute_tool(name, dict(args))
+
+                return dict(self._runtime.adapter_call(namespace_id, via_adapter, timeout_s=self._store_timeout_s))
             return dict(self._runtime.call(
                 namespace_id, lambda e: backend.execute(e, name, args, sid), timeout_s=self._store_timeout_s,
             ))

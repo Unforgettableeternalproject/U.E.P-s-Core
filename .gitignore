@@ -443,3 +443,6 @@ openspec/changes/
 
 # uv 虛擬環境
 .venv/
+
+# 推理環境（Python 3.12，P3 S6）
+.venv-infer/

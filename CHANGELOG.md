@@ -3370,3 +3370,15 @@
 
 ---
 
+### chore: 新增 .venv-infer 推理環境設定. 10/31
+
+> Date: Sat, 31 Oct 2026 17:57:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `27fc48bc6a566e68aaae92d4804981c88bfca4ab`
+
+---
+

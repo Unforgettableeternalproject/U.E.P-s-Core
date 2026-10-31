@@ -291,3 +291,75 @@ def test_output_crash_after_send_has_delivered():
     with pytest.raises(SimulatedCrash):
         out.send(make_intent(), "dsp_1")
     assert "dsp_1" in out.delivered
+
+
+# ---- submit_tool_result（D61 選項 A）----
+def _tool_result(**over):
+    data = {"items": [{"ref": "r1", "scope": "scope_private_owner", "content_ref": "blob_1"}],
+            "status": "ok", "degraded": False, "partial": False}
+    data.update(over)
+    return data
+
+
+def test_submit_tool_result_pauses_stream_until_result_then_resumes():
+    fake = FakeRuntime()
+    fake.script([rt.text("a"), rt.tool_intent("lore.recall", {"q": "x"}, await_result=True), rt.text("b"), rt.result()])
+    aid = fake.start(_request())
+    first = list(fake.stream(aid))
+    assert [e.kind for e in first] == ["text_delta", "tool_intent"]  # 暫停在 tool_intent 之後
+    assert fake.status(aid).state == "running"  # 暫停不是完成
+    assert list(fake.stream(aid)) == []  # 沒結果仍暫停
+    fake.submit_tool_result(aid, "act_1", _tool_result())
+    rest = list(fake.stream(aid))
+    assert [e.kind for e in rest] == ["text_delta", "result"]
+    assert [e.seq for e in first + rest] == [1, 2, 3, 4]  # seq 接續
+    assert fake.status(aid).state == "completed"
+    ((action_id, received),) = fake.tool_results[aid]
+    assert action_id == "act_1"
+    assert received["status"] == "ok" and received["degraded"] is False and received["partial"] is False
+    assert received["items"][0]["ref"] == "r1"
+
+
+def test_submit_inside_the_stream_loop_continues_same_generator():
+    fake = FakeRuntime()
+    fake.script([rt.tool_intent("t", await_result=True), rt.text("done"), rt.result()])
+    aid = fake.start(_request())
+    kinds = []
+    for event in fake.stream(aid):
+        kinds.append(event.kind)
+        if event.kind == "tool_intent":
+            fake.submit_tool_result(aid, "act_1", _tool_result())
+    assert kinds == ["tool_intent", "text_delta", "result"]
+
+
+def test_tool_intent_without_await_flag_does_not_pause():
+    fake = FakeRuntime()
+    fake.script([rt.tool_intent("t"), rt.text("x"), rt.result()])
+    aid = fake.start(_request())
+    assert [e.kind for e in fake.stream(aid)] == ["tool_intent", "text_delta", "result"]
+    assert "await_result" not in rt.tool_intent("t").value  # 不洩漏到事件內容
+
+
+def test_submit_tool_result_validates_shape_and_attempt():
+    fake = FakeRuntime()
+    aid = fake.start(_request())
+    with pytest.raises(ValueError):
+        fake.submit_tool_result("nope", "act_1", _tool_result())
+    with pytest.raises(TypeError):
+        fake.submit_tool_result(aid, "act_1", {"status": "ok"})  # 缺 items
+    with pytest.raises(ValueError):
+        fake.submit_tool_result(aid, "act_1", _tool_result(excluded_summary={"n": 1}))  # D61：不含 excluded_summary
+    with pytest.raises(ValueError):
+        fake.submit_tool_result(aid, "act_1", _tool_result(partial="no"))
+    assert fake.tool_results[aid] == []
+
+
+def test_cancel_stopped_while_awaiting_result_stops_generation():
+    fake = FakeRuntime()
+    fake.script([rt.tool_intent("t", await_result=True), rt.text("never"), rt.result()])
+    aid = fake.start(_request())
+    assert [e.kind for e in fake.stream(aid)] == ["tool_intent"]
+    fake.cancel(aid, "stop")
+    fake.submit_tool_result(aid, "act_1", _tool_result())  # 晚到的結果只記錄，不讓 stopped 的 attempt 復活
+    assert list(fake.stream(aid)) == []
+    assert fake.status(aid).state == "cancelled"

@@ -13,6 +13,12 @@ R-2 行為：``cancel`` 之後
 - ``receipt`` 項目（已發生的工具副作用）在兩種策略下都保留於 ``receipts[attempt_id]``，
   且只記 ``{action_id, receipt_id}`` 引用，不依賴 CC-6 型別。
 
+工具結果回饋（D61 選項 A）：``tool_intent(..., await_result=True)`` 之後，``stream`` 在消費者索取下一個事件時
+若尚未收到 ``submit_tool_result`` 就暫停（結束這次迭代，attempt 維持 running，不算完成）；收到後再次
+迭代 ``stream(attempt_id)``（或同一個產生器繼續）即從暫停處續跑。沒標記的 tool_intent 照舊不暫停。
+收到的內容記在 ``tool_results[attempt_id]``（依序的 ``(action_id, result)``）。``result`` 須帶 ``items``、
+``status``，可帶布林 ``degraded``／``partial``，不得含 ``excluded_summary``（D61）。
+
 注入點：``cancel_ack``、``late_policy``、``script``／``script_for``、crash 點 ``runtime.before_event``。
 計數：``start_calls``、``resume_calls``、``cancel_calls``、``status_calls``。
 """
@@ -34,6 +40,7 @@ LatePolicy = Literal["emit", "drop"]
 class ScriptItem:
     kind: str  # RuntimeEvent.kind 或 "receipt"
     value: Any
+    await_result: bool = False  # 只對 tool_intent：送出後暫停到 submit_tool_result
 
 
 def text(delta: str) -> ScriptItem:
@@ -42,12 +49,12 @@ def text(delta: str) -> ScriptItem:
 
 def tool_intent(
     tool: str, args: Mapping[str, Any] | None = None, *, args_complete: bool = True,
-    side_effect_hint: str = "internal_read",
+    side_effect_hint: str = "internal_read", await_result: bool = False,
 ) -> ScriptItem:
     return ScriptItem("tool_intent", {
         "tool": tool, "args_complete": args_complete, "args": dict(args or {}),
         "side_effect_hint": side_effect_hint,
-    })
+    }, await_result=await_result)
 
 
 def approval_request(action_hash: str, reason: str = "") -> ScriptItem:
@@ -95,6 +102,9 @@ class FakeRuntime:
         self.ignored_after_cancel: Counter[str] = Counter()  # drop 策略：其他 kind
         self.emitted_late: Counter[str] = Counter()  # emit 策略：cancel 後仍送出的事件件數
         self.receipts: dict[str, list[dict[str, str]]] = defaultdict(list)
+        self.tool_results: dict[str, list[tuple[str, Mapping[str, Any]]]] = defaultdict(list)  # submit_tool_result 收到的內容
+        self._awaiting: set[str] = set()  # 已送出 await_result 的 tool_intent、等結果中
+        self._resumable: set[str] = set()  # 等待中的 attempt 已收到結果
 
     # ---- 注入 ----
     def script(self, items: Sequence[ScriptItem]) -> None:
@@ -124,7 +134,14 @@ class FakeRuntime:
 
     def stream(self, attempt_id: str) -> Iterator[RuntimeEvent]:
         pending = self._pending[attempt_id]
-        while pending:
+        while True:
+            if attempt_id in self._awaiting:
+                if attempt_id not in self._resumable:
+                    return  # 暫停：等 submit_tool_result 後再迭代 stream 續跑
+                self._awaiting.discard(attempt_id)
+                self._resumable.discard(attempt_id)
+            if not pending:
+                break
             item = pending.pop(0)
             cancelled = self._cancelled.get(attempt_id)
             if cancelled == "stopped":
@@ -140,11 +157,27 @@ class FakeRuntime:
                 self.emitted_late[attempt_id] += 1
             self.crash.hit("runtime.before_event")
             self._last_seq[attempt_id] += 1
+            if item.await_result:
+                self._awaiting.add(attempt_id)  # 先標記再 yield：消費者在迴圈內就能 submit
             yield RuntimeEvent(
                 attempt_id=attempt_id, seq=self._last_seq[attempt_id], kind=item.kind,  # type: ignore[arg-type]
                 **{item.kind: item.value},
             )
         self._finished.add(attempt_id)
+
+    def submit_tool_result(self, attempt_id: str, action_id: str, result: Mapping[str, Any]) -> None:
+        if attempt_id not in self.requests:
+            raise ValueError(f"未知的 attempt：{attempt_id}")
+        if not isinstance(result.get("items"), (list, tuple)) or not isinstance(result.get("status"), str):
+            raise TypeError("result 必須帶 items（清單）與 status（字串）")
+        if "excluded_summary" in result:
+            raise ValueError("result 不得含 excluded_summary（筆數與原因碼只進稽核，D61）")
+        for flag in ("degraded", "partial"):
+            if flag in result and not isinstance(result[flag], bool):
+                raise ValueError(f"result.{flag} 必須是布林")
+        self.tool_results[attempt_id].append((action_id, dict(result)))
+        if attempt_id in self._awaiting:
+            self._resumable.add(attempt_id)
 
     def _drop_late(self, attempt_id: str, item: ScriptItem) -> None:
         if item.kind in _LATE_DISCARD:

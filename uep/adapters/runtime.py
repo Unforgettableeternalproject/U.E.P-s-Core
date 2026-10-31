@@ -101,3 +101,11 @@ class Runtime(Protocol):
     def status(self, attempt_id: str) -> RuntimeStatus:
         """只讀。"""
         ...
+
+    def submit_tool_result(self, attempt_id: str, action_id: str, result: Mapping[str, Any]) -> None:
+        """把工具結果交回進行中的 attempt 使其續跑（D61 選項 A；崩潰／fallback 走 ``resume``）。
+
+        ``result`` 為交付當下依 TG-9 過濾的視圖（不持久化）：``items``（逐項 ref／scope／內容引用）、
+        ``status``、``degraded``、``partial``；不含 excluded_summary。
+        """
+        ...

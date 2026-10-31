@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -435,11 +436,12 @@ class LLMRouter:
         Returns:
             Callable[[str], str]
         """
-        def _fn(prompt: str) -> str:
+        def _fn(prompt: str, max_tokens: int | None = None) -> str:
             return self.generate(
                 prompt,
                 role=role,
                 system_instruction=system_instruction,
+                max_tokens=max_tokens,
             )
         return _fn
 
@@ -531,6 +533,49 @@ class LLMRouter:
     _OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     _OLLAMA_FALLBACK_ENABLED = os.getenv("OLLAMA_FALLBACK_ENABLED", "true").lower() == "true"
 
+    @staticmethod
+    def _ollama_extra_options() -> tuple[int | None, str | int | None]:
+        """讀取 OLLAMA_FALLBACK_NUM_GPU／OLLAMA_FALLBACK_KEEP_ALIVE；未設或非法回 None（非法記 warning）。
+
+        keep_alive 接受 Ollama 的時間字串（如 "5m"、"1h"）或整數秒（含 -1 常駐）。
+        """
+        num_gpu: int | None = None
+        raw_gpu = os.getenv("OLLAMA_FALLBACK_NUM_GPU", "").strip()
+        if raw_gpu:
+            try:
+                num_gpu = int(raw_gpu)
+            except ValueError:
+                logger.warning(f"[Router] OLLAMA_FALLBACK_NUM_GPU 非法（{raw_gpu!r}），已忽略")
+        keep_alive: str | int | None = None
+        raw_keep = os.getenv("OLLAMA_FALLBACK_KEEP_ALIVE", "").strip()
+        if raw_keep:
+            if re.fullmatch(r"-?\d+", raw_keep):
+                keep_alive = int(raw_keep)
+            elif re.fullmatch(r"\d+(\.\d+)?(ms|s|m|h)", raw_keep):
+                keep_alive = raw_keep
+            else:
+                logger.warning(f"[Router] OLLAMA_FALLBACK_KEEP_ALIVE 非法（{raw_keep!r}），已忽略")
+        return num_gpu, keep_alive
+
+    def _ollama_request_body(self, prompt: str, cfg: RoleConfig) -> dict:
+        """組 Ollama /api/generate 請求本體（兩條 fallback 共用）。"""
+        options: dict = {
+            "temperature": cfg.temperature,
+            "num_predict": cfg.max_tokens,
+        }
+        num_gpu, keep_alive = self._ollama_extra_options()
+        if num_gpu is not None:
+            options["num_gpu"] = num_gpu
+        body: dict = {
+            "model": self._OLLAMA_FALLBACK_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": options,
+        }
+        if keep_alive is not None:
+            body["keep_alive"] = keep_alive
+        return body
+
     def _try_ollama_fallback(
         self,
         prompt: str,
@@ -562,15 +607,7 @@ class LLMRouter:
         try:
             response = httpx.post(
                 url,
-                json={
-                    "model": self._OLLAMA_FALLBACK_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": cfg.temperature,
-                        "num_predict": cfg.max_tokens,
-                    },
-                },
+                json=self._ollama_request_body(prompt, cfg),
                 timeout=120.0,  # 本地模型推理可能較慢
             )
             response.raise_for_status()
@@ -602,15 +639,7 @@ class LLMRouter:
 
         url = f"{self._OLLAMA_BASE_URL}/api/generate"
 
-        request_body: dict = {
-            "model": self._OLLAMA_FALLBACK_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": cfg.temperature,
-                "num_predict": cfg.max_tokens,
-            },
-        }
+        request_body: dict = self._ollama_request_body(prompt, cfg)
         # Ollama 的 format 參數支援 "json" 或完整 JSON schema
         if response_schema is not None:
             request_body["format"] = response_schema

@@ -544,3 +544,62 @@ class TestRoleConfig:
             description="測試用",
         )
         assert cfg.description == "測試用"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Ollama fallback：num_gpu / keep_alive
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class TestOllamaFallbackOptions:
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_FALLBACK_NUM_GPU", raising=False)
+        monkeypatch.delenv("OLLAMA_FALLBACK_KEEP_ALIVE", raising=False)
+
+    @staticmethod
+    def _post(router: LLMRouter, structured: bool = False) -> dict:
+        router._OLLAMA_FALLBACK_ENABLED = True
+        resp = MagicMock()
+        resp.json.return_value = {"response": '{"a": 1}'}
+        cfg = router.get_role_config(LLMRole.EVAL)
+        with patch("httpx.post", return_value=resp) as post:
+            if structured:
+                router._try_ollama_fallback_structured("p", LLMRole.EVAL, cfg)
+            else:
+                router._try_ollama_fallback("p", LLMRole.EVAL, cfg)
+        return post.call_args.kwargs["json"]
+
+    @pytest.mark.parametrize("structured", [False, True])
+    def test_unset_not_sent(self, router_default, structured):
+        body = self._post(router_default, structured)
+        assert "num_gpu" not in body["options"] and "keep_alive" not in body
+
+    @pytest.mark.parametrize("structured", [False, True])
+    def test_set_values_sent(self, router_default, monkeypatch, structured):
+        monkeypatch.setenv("OLLAMA_FALLBACK_NUM_GPU", "0")
+        monkeypatch.setenv("OLLAMA_FALLBACK_KEEP_ALIVE", "10m")
+        body = self._post(router_default, structured)
+        assert body["options"]["num_gpu"] == 0
+        assert isinstance(body["options"]["num_gpu"], int)
+        assert body["keep_alive"] == "10m"
+
+    def test_integer_keep_alive(self, router_default, monkeypatch):
+        monkeypatch.setenv("OLLAMA_FALLBACK_KEEP_ALIVE", "-1")
+        assert self._post(router_default)["keep_alive"] == -1
+
+    def test_invalid_values_ignored_with_warning(self, router_default, monkeypatch, caplog):
+        monkeypatch.setenv("OLLAMA_FALLBACK_NUM_GPU", "abc")
+        monkeypatch.setenv("OLLAMA_FALLBACK_KEEP_ALIVE", "forever")
+        with caplog.at_level("WARNING"):
+            body = self._post(router_default)
+        assert "num_gpu" not in body["options"] and "keep_alive" not in body
+        assert "OLLAMA_FALLBACK_NUM_GPU" in caplog.text and "OLLAMA_FALLBACK_KEEP_ALIVE" in caplog.text
+
+    def test_llm_fn_forwards_max_tokens(self, router_default):
+        with patch.object(router_default, "generate", return_value="ok") as gen:
+            fn = router_default.get_llm_fn(LLMRole.EVAL)
+            fn("p", max_tokens=2048)
+            fn("p")
+        assert gen.call_args_list[0].kwargs["max_tokens"] == 2048
+        assert gen.call_args_list[1].kwargs["max_tokens"] is None

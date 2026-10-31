@@ -68,3 +68,7 @@ experiments/lora_training_data/
 
 # Claude-Codex pipeline 本地狀態
 .claude/pipeline-state.json
+
+# VoxCPM 實驗環境與模型
+.venv-voxcpm/
+/models_cache/

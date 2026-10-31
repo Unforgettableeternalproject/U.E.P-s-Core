@@ -190,3 +190,51 @@ class TestReplayReport:
         s = report.summary()
         assert "3" in s
         assert "0.60" in s
+
+
+class TestCollectCandidatesWindow:
+    """候選須先濾未 dream 再截斷，已 dreamed 高 salience 不得佔滿視窗。"""
+
+    def test_low_salience_pending_not_starved_by_dreamed(self, storage):
+        from datetime import datetime, timedelta
+
+        episodic, _ = storage
+        for i in range(210):
+            episodic.write(Episode(
+                user_input=f"done{i}", agent_response="r", session_id="t",
+                content_summary=f"done{i}", salience_score=0.9, is_dreamed=True,
+            ))
+        base = datetime(2026, 1, 1)
+        pending = []
+        for i, sal in enumerate([0.45, 0.41, 0.462]):
+            ep = Episode(
+                user_input=f"p{i}", agent_response="r", session_id="t",
+                content_summary=f"p{i}", salience_score=sal,
+                dream_scanned_at=base + timedelta(days=i),
+            )
+            episodic.write(ep)
+            pending.append(ep)
+        low = Episode(
+            user_input="low", agent_response="r", session_id="t",
+            content_summary="low", salience_score=0.2,
+        )
+        episodic.write(low)
+
+        replay = LiDERReplay(episodic=episodic, graph=episodic.graph, llm_fn=_mock_llm_replay)
+        got = replay._collect_candidates(0.4, 10)
+
+        assert {e.id for e in got} == {e.id for e in pending}
+        # 排序規則不變：dream_scanned_at 最舊先
+        assert [e.id for e in got] == [e.id for e in pending]
+        assert all(not e.is_dreamed and e.salience_score >= 0.4 for e in got)
+
+    def test_never_scanned_first_keeps_salience_desc(self, storage):
+        episodic, _ = storage
+        for sal in (0.41, 0.8, 0.5):
+            episodic.write(Episode(
+                user_input=str(sal), agent_response="r", session_id="t",
+                content_summary=str(sal), salience_score=sal,
+            ))
+        replay = LiDERReplay(episodic=episodic, graph=episodic.graph, llm_fn=_mock_llm_replay)
+        got = replay._collect_candidates(0.4, 2)
+        assert [e.salience_score for e in got] == [0.8, 0.5]

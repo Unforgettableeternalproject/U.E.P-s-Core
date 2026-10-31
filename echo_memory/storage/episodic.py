@@ -594,6 +594,21 @@ class EpisodicMemory:
         # 分頁
         return episodes[offset: offset + limit]
 
+    def list_pending(self, min_salience: float = 0.0) -> list[Episode]:
+        """
+        列出尚未 dream 且 salience >= min_salience 的情節（無數量上限）。
+
+        順序為 salience 降序，與 list_episodes(sort_by="salience") 一致；
+        截斷由呼叫端在篩選之後自行處理，避免已 dreamed 者佔滿視窗。
+        """
+        with self._mem_lock:
+            episodes = [
+                ep for ep in self._episodes.values()
+                if not ep.is_dreamed and ep.salience_score >= min_salience
+            ]
+        episodes.sort(key=lambda ep: ep.salience_score, reverse=True)
+        return episodes
+
     def delete_episode(self, episode_id: str) -> bool:
         """
         刪除單一情節，同步更新 vectors/graph/metadata。

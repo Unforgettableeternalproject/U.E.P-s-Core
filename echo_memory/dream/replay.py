@@ -428,16 +428,8 @@ class LiDERReplay:
         max_count: int,
     ) -> list[Episode]:
         """收集未重播的高顯著性 Episode；dream_scanned_at 最舊（從未評估者優先）先重播，避免每輪重播同一批。"""
-        all_episodes = self.episodic.list_episodes(
-            limit=200,
-            sort_by="salience",
-            ascending=False,
-        )
-
-        candidates = [
-            ep for ep in all_episodes
-            if ep.salience_score >= min_salience and not ep.is_dreamed
-        ]
+        # 先篩未 dream 且達門檻者再截斷，避免已 dreamed 的高 salience 佔滿視窗
+        candidates = self.episodic.list_pending(min_salience)
         # 穩定排序：同為從未評估（或同時間）時保留原本的 salience 降序
         candidates.sort(
             key=lambda ep: ep.dream_scanned_at.timestamp() if ep.dream_scanned_at else float("-inf")

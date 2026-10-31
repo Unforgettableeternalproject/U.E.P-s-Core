@@ -107,7 +107,11 @@ class StaleWorkerEpoch(TaskError):
 
 
 class PolicyViolation(TaskError):
-    pass
+    """違反政策；需要機器可判讀的原因時帶 ``code``（例如 params_not_canonical），訊息不得含參數內容。"""
+
+    def __init__(self, message: str = "", *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class ParamsHashMismatch(TaskError):
@@ -205,10 +209,67 @@ class ResumePlan:
     unknown_action_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ParamsLimits:
+    """params canonical 化的上限（TG-6 第 6 點，調校起點）；TaskManager 建構時可覆寫。"""
+
+    max_depth: int = 8  # 巢狀容器層數（頂層 dict 算第 1 層）
+    max_string_bytes: int = 32 * 1024  # 單一字串（含鍵）UTF-8 位元組數
+    max_total_bytes: int = 128 * 1024  # canonical 後總位元組數
+
+
+DEFAULT_PARAMS_LIMITS = ParamsLimits()
+PARAMS_NOT_CANONICAL = "params_not_canonical"
+
+
+def _not_canonical(reason: str) -> PolicyViolation:
+    # 訊息只放固定原因，絕不帶參數內容
+    return PolicyViolation(f"params 不符合 canonical 規則：{reason}", code=PARAMS_NOT_CANONICAL)
+
+
+def _check_canonical(value: Any, limits: ParamsLimits, depth: int) -> None:
+    """序列化前的結構檢查：深度、鍵型別、字串長度。先擋深度，避免 RecursionError／循環參照。"""
+    if isinstance(value, str):
+        if len(value) > limits.max_string_bytes:  # 每字元至少 1 位元組：先擋超長，避免編碼巨大字串
+            raise _not_canonical("字串過長")
+        if len(value.encode("utf-8")) > limits.max_string_bytes:  # lone surrogate 在此拋 UnicodeEncodeError
+            raise _not_canonical("字串過長")
+        return
+    if isinstance(value, Mapping):
+        if depth + 1 > limits.max_depth:
+            raise _not_canonical("巢狀過深")
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise _not_canonical("鍵必須是字串")
+            _check_canonical(k, limits, depth + 1)
+            _check_canonical(v, limits, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        if depth + 1 > limits.max_depth:
+            raise _not_canonical("巢狀過深")
+        for item in value:
+            _check_canonical(item, limits, depth + 1)
+
+
+def canonical_params_hash(params: Mapping[str, Any], limits: ParamsLimits = DEFAULT_PARAMS_LIMITS) -> str:
+    """params_hash 的唯一實作（TG-6）：不合規一律拋 PolicyViolation(code=params_not_canonical)。"""
+    try:
+        _check_canonical(params, limits, 0)
+        canonical = json.dumps(
+            params, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, default=_reject
+        )
+        raw = canonical.encode("utf-8")
+    except PolicyViolation:
+        raise
+    except (ValueError, TypeError, UnicodeEncodeError, RecursionError, OverflowError):
+        raise _not_canonical("無法序列化") from None  # 不串接原例外，避免訊息帶出參數內容
+    if len(raw) > limits.max_total_bytes:
+        raise _not_canonical("總長過大")
+    return hashlib.sha256(raw).hexdigest()
+
+
 def params_hash(params: Mapping[str, Any]) -> str:
-    """canonical 參數雜湊：鍵排序、無空白的 JSON 後取 sha256。"""
-    canonical = json.dumps(params, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=_reject)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    """canonical 參數雜湊：鍵排序、無空白的 JSON 後取 sha256（以預設上限；規則見 canonical_params_hash）。"""
+    return canonical_params_hash(params)
 
 
 def _reject(obj: Any) -> Any:
@@ -286,8 +347,10 @@ class TaskManager:
         presence_check: Callable[[str], bool] | None = None,
         action_guard: Callable[[Session], str | None] | None = None,
         payload_hasher: PayloadHasher | None = None,
+        params_limits: ParamsLimits = DEFAULT_PARAMS_LIMITS,
     ) -> None:
         self._sf = session_factory
+        self._params_limits = params_limits  # params canonical 化上限（TG-6）
         self._publisher = publisher
         self._executors = dict(executors)
         self._clock = clock
@@ -839,7 +902,7 @@ class TaskManager:
         presence_bound: bool | None = None, action_id: str | None = None,
     ) -> ActionIntentRow:
         """建立 INTENDED 的 ActionIntent。同 action_id 重呼叫回傳既有列；參數改變則拒絕（須新 action）。"""
-        digest = params_hash(params)
+        digest = canonical_params_hash(params, self._params_limits)  # 在交易之前：不合規不產生 act_ 列
         with self._tx() as (s, pending):
             task, run = self._lock_run(s, run_id)
             self._require_epoch(run, worker_epoch)
@@ -1008,7 +1071,7 @@ class TaskManager:
           階段 1.5 的 PresenceRequired 帶 ``retryable=False``：action 已是終態，須建新 action 與新核准；
           階段 1 的 PresenceRequired（``retryable=True``）則 action 維持 INTENDED、核准未消耗，可於 Presence 恢復後重試。
         """
-        digest = params_hash(params)
+        digest = canonical_params_hash(params, self._params_limits)
         deferred: TaskError | None = None
         call: ToolCall | None = None
         executor: ToolExecutor | None = None

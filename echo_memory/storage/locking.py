@@ -156,6 +156,13 @@ def temporary_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
 
 
+# try_acquire_ex 失敗時的固定代碼（宿主以代碼判斷，不比對說明文字）
+LEASE_HELD = "lease_held"
+LEASE_WINDOW_COMPLETED = "window_completed"
+LEASE_TIMEOUT = "lease_timeout"
+LEASE_IO_ERROR = "lease_io_error"
+
+
 class FileLease:
     """
     跨行程租約：以獨立檔案鎖保護短臨界區，狀態寫在 JSON 檔（持有者 pid、取得時間、
@@ -201,7 +208,30 @@ class FileLease:
         now: float | None = None,
     ) -> tuple[bool, str]:
         """
-        嘗試取得租約。回傳 (是否取得, 原因)；原因在取得時為空字串。
+        嘗試取得租約。回傳 (是否取得, 說明)；說明在取得時為空字串，失敗時為給人看的中文訊息。
+        需要固定代碼請用 try_acquire_ex。
+        """
+        ok, _code, detail = self.try_acquire_ex(
+            owner,
+            skip_if_completed_within=skip_if_completed_within,
+            completion_key=completion_key,
+            now=now,
+        )
+        return ok, detail
+
+    def try_acquire_ex(
+        self,
+        owner: str = "",
+        *,
+        skip_if_completed_within: float | None = None,
+        completion_key: str = "last_completed_at",
+        now: float | None = None,
+    ) -> tuple[bool, str, str]:
+        """
+        嘗試取得租約。回傳 (是否取得, 代碼, 說明)；取得時代碼與說明皆為空字串。
+
+        代碼固定為 LEASE_HELD／LEASE_WINDOW_COMPLETED／LEASE_TIMEOUT／LEASE_IO_ERROR 之一，
+        說明是給人看的中文訊息（含 pid、秒數等）。
 
         skip_if_completed_within: 指定時，若 completion_key 的最後完成時間距今不到該秒數，
             視為同一窗口已有人完成而不取得（cron 窗口去重）。
@@ -213,14 +243,16 @@ class FileLease:
                 holder = state.get("holder_token")
                 expires_at = float(state.get("expires_at") or 0.0)
                 if holder and holder != self.token and expires_at > now:
-                    return False, (
+                    return False, LEASE_HELD, (
                         f"租約由 pid={state.get('holder_pid')} 持有"
                         f"（約 {expires_at - now:.0f} 秒後過期）"
                     )
                 if skip_if_completed_within is not None:
                     done = float(state.get(completion_key) or 0.0)
                     if done and now - done < skip_if_completed_within:
-                        return False, f"同一窗口內已於 {now - done:.0f} 秒前完成（{completion_key}）"
+                        return False, LEASE_WINDOW_COMPLETED, (
+                            f"同一窗口內已於 {now - done:.0f} 秒前完成（{completion_key}）"
+                        )
                 state.update(
                     holder_token=self.token,
                     holder_pid=os.getpid(),
@@ -229,11 +261,11 @@ class FileLease:
                     expires_at=now + self.ttl_seconds,
                 )
                 self._write(state)
-                return True, ""
+                return True, "", ""
         except TimeoutError:
-            return False, "租約檢查逾時"
+            return False, LEASE_TIMEOUT, "租約檢查逾時"
         except OSError as exc:
-            return False, f"租約檔無法存取: {exc}"
+            return False, LEASE_IO_ERROR, f"租約檔無法存取: {exc}"
 
     def renew(self, *, now: float | None = None) -> bool:
         """

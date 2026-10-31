@@ -71,7 +71,9 @@ class DreamReport:
     edges_superseded: int = 0  # 其中被改判為取代（邊已移除）的數量
     edges_updated: int = 0
     error: str | None = None
-    skipped_reason: str | None = None  # 未執行的原因（租約被占用、cron 同窗口已完成等）
+    # 週期層級未執行的固定代碼：already_running／lease_held／window_completed／lease_timeout／lease_io_error
+    skipped_reason: str | None = None
+    skipped_detail: str | None = None  # 給人看的說明（含 pid、秒數等），不可用來判斷邏輯
 
     @property
     def duration_seconds(self) -> float:
@@ -521,6 +523,7 @@ class DreamEngine:
                 "started_at": report.started_at,
                 "finished_at": report.finished_at,
                 "skipped_reason": report.skipped_reason,
+                "skipped_detail": report.skipped_detail,
                 "error": report.error,
                 "status": status,
             })
@@ -692,6 +695,7 @@ class DreamEngine:
                     triggered_by=triggered_by,
                 )
                 report.skipped_reason = "already_running"  # 並行觸發＝跳過，不是錯誤
+                report.skipped_detail = "同一實例已有夢境週期進行中"
                 report.finished_at = report.started_at
                 self._notify_listener(report)
                 return report
@@ -706,17 +710,18 @@ class DreamEngine:
         lease_held = False
         if self._lease is not None:
             window = self.cron_window_seconds if triggered_by == "cron" else None
-            ok, reason = self._lease.try_acquire(
+            ok, code, detail = self._lease.try_acquire_ex(
                 owner=triggered_by,
                 skip_if_completed_within=window,
                 completion_key="last_cron_completed_at",
             )
             if not ok:
-                report.skipped_reason = reason
+                report.skipped_reason = code
+                report.skipped_detail = detail
                 report.finished_at = datetime.now(timezone.utc).isoformat()
                 with self._lock:
                     self._is_dreaming = False
-                logger.info(f"[DreamEngine] 跳過夢境週期 [{triggered_by}]: {reason}")
+                logger.info(f"[DreamEngine] 跳過夢境週期 [{triggered_by}]: {code}（{detail}）")
                 self._notify_listener(report)
                 return report
             lease_held = True
@@ -933,6 +938,7 @@ class DreamEngine:
                         status="error" if report.error else "completed",
                         error=report.error,
                         skipped_reason=report.skipped_reason,
+                        skipped_detail=report.skipped_detail,
                         episodes_marked=marked_count,
                     )
                 except Exception as e:

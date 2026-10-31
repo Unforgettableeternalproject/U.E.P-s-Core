@@ -89,12 +89,13 @@ def test_cycle_end_records_error(tmp_path, audit_path, monkeypatch):
 
 def test_lease_blocked_cycle_writes_nothing(tmp_path, audit_path, monkeypatch):
     class DenyLease:
-        def try_acquire(self, **kw):
-            return False, "held_by_other"
+        def try_acquire_ex(self, *a, **kw):
+            return False, "lease_held", "租約由 pid=1 持有"
 
     eng = _engine(tmp_path, audit_path, monkeypatch, lease=DenyLease())
     report = eng.dream_now(triggered_by="cron")
-    assert report.skipped_reason == "held_by_other"
+    assert report.skipped_reason == "lease_held"
+    assert report.skipped_detail
     assert _read(audit_path) == []
 
 

@@ -2152,8 +2152,13 @@ class MemoryEngine:
         """註冊 Dream 週期結束通知；None 取消。
 
         每次 dream_now 結束（排程與手動觸發）呼叫一次，含 skipped、error、成功。報告 dict：
-        triggered_by、started_at／finished_at（UTC ISO 8601 字串）、skipped_reason、error、
-        status（"completed"／"skipped"／"error"）。在觸發 dream 的執行緒上同步呼叫，
+        triggered_by、started_at／finished_at（UTC ISO 8601 字串）、skipped_reason、skipped_detail、
+        error、status（"completed"／"skipped"／"error"）。
+        skipped_reason 是週期層級的固定代碼（未跳過時為 None），宿主只應比對代碼：
+        "already_running"（本實例已有週期進行中）、"lease_held"（跨行程租約被他人持有）、
+        "window_completed"（cron 同窗口已有人完成）、"lease_timeout"（租約檢查逾時）、
+        "lease_io_error"（租約檔無法存取）。skipped_detail 是給人看的中文說明（含 pid、秒數），
+        未跳過時為 None，不可用於邏輯判斷。在觸發 dream 的執行緒上同步呼叫，
         listener 拋出的例外會被吞掉並記 log。
         """
         self._dream_listener = fn
@@ -2358,6 +2363,7 @@ class MemoryEngine:
             "edges_pruned": report.pruning.edges_pruned if report.pruning else 0,
             "error": report.error,
             "skipped_reason": report.skipped_reason,
+            "skipped_detail": report.skipped_detail,
         }
 
         # 重播報告

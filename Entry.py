@@ -1073,7 +1073,9 @@ def _cmd_dream(engine: MemoryEngine, llm: LLMClient | None = None):
         report = engine.dream(triggered_by="manual")
 
     if report.get("skipped_reason"):
-        console.print(f"[yellow]Dream skipped: {report['skipped_reason']}[/]")
+        detail = report.get("skipped_detail")
+        suffix = f" ({detail})" if detail else ""
+        console.print(f"[yellow]Dream skipped: {report['skipped_reason']}{suffix}[/]")
         return
     if report.get("error"):
         console.print(f"[red]Dream failed: {report['error']}[/]")

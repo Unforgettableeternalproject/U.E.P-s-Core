@@ -531,8 +531,9 @@ class DreamPatchCoordinator:
         error: str | None = None,
         skipped_reason: str | None = None,
         episodes_marked: int = 0,
+        skipped_detail: str | None = None,
     ) -> bool:
-        """寫入 operation="cycle_end"（status＝completed／error，skipped_reason 若有，episodes_marked 計數）。"""
+        """寫入 operation="cycle_end"（status＝completed／error，skipped_reason／skipped_detail 若有，episodes_marked 計數）。"""
         entry: dict[str, Any] = {
             "operation": "cycle_end",
             "status": status,
@@ -542,6 +543,8 @@ class DreamPatchCoordinator:
             entry["error"] = error
         if skipped_reason:
             entry["skipped_reason"] = skipped_reason
+        if skipped_detail:
+            entry["skipped_detail"] = skipped_detail
         return self._write_dream_audit(entry)
 
     def record_mutations(self, stage: str, entries: list[dict[str, Any]]) -> bool:

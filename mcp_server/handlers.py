@@ -552,7 +552,9 @@ async def _handle_trigger_dream(
     logger.info(f"[MCP Handler] trigger_dream 完成: {report}")
 
     if report.get("skipped_reason"):
-        return f"Dream Engine 本次未執行：{report['skipped_reason']}"
+        detail = report.get("skipped_detail")
+        suffix = f"（{detail}）" if detail else ""
+        return f"Dream Engine 本次未執行：{report['skipped_reason']}{suffix}"
 
     # 格式化報告
     duration = report.get("duration_seconds", 0.0)

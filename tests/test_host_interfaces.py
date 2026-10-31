@@ -346,9 +346,11 @@ def test_listener_manual_completed(engine):
     assert result["error"] is None
     assert len(reports) == 1
     r = reports[0]
-    assert set(r) == {"triggered_by", "started_at", "finished_at", "skipped_reason", "error", "status"}
+    assert set(r) == {
+        "triggered_by", "started_at", "finished_at", "skipped_reason", "skipped_detail", "error", "status",
+    }
     assert r["status"] == "completed" and r["triggered_by"] == "manual"
-    assert r["skipped_reason"] is None and r["error"] is None
+    assert r["skipped_reason"] is None and r["skipped_detail"] is None and r["error"] is None
     assert r["started_at"] and r["finished_at"] and r["started_at"] <= r["finished_at"]
 
 
@@ -363,7 +365,8 @@ def test_listener_skipped_when_lease_held_by_other(engine):
     assert len(reports) == 1
     assert reports[0]["status"] == "skipped"
     assert reports[0]["triggered_by"] == "idle"
-    assert reports[0]["skipped_reason"]
+    assert reports[0]["skipped_reason"] == "lease_held"
+    assert reports[0]["skipped_detail"]
     assert reports[0]["finished_at"]
 
 
@@ -405,6 +408,49 @@ def test_listener_concurrent_dream_is_skipped_already_running(engine):
     assert result["skipped_reason"] == "already_running" and result["error"] is None
     assert len(reports) == 1
     assert reports[0]["status"] == "skipped" and reports[0]["error"] is None
+    assert reports[0]["skipped_reason"] == "already_running" and reports[0]["skipped_detail"]
+    assert result["skipped_detail"]
+
+
+def _assert_skip(engine, reports, code, **kw):
+    result = engine.dream(**kw)
+    assert result["skipped_reason"] == code and result["skipped_detail"]
+    assert len(reports) == 1
+    r = reports[0]
+    assert r["status"] == "skipped" and r["skipped_reason"] == code and r["skipped_detail"]
+
+
+def test_listener_skip_code_window_completed(engine):
+    engine.ensure_initialized()
+    de = engine._ensure_dream_engine()
+    reports = _collect(engine)
+    de._lease.try_acquire(owner="cron")
+    de._lease.release(completed=True, completion_keys=("last_cron_completed_at",))
+    _assert_skip(engine, reports, "window_completed", triggered_by="cron")
+
+
+def test_listener_skip_code_lease_timeout(engine, monkeypatch):
+    engine.ensure_initialized()
+    de = engine._ensure_dream_engine()
+    reports = _collect(engine)
+
+    def boom():
+        raise TimeoutError
+
+    monkeypatch.setattr(de._lease, "_guard", boom)
+    _assert_skip(engine, reports, "lease_timeout", triggered_by="idle")
+
+
+def test_listener_skip_code_lease_io_error(engine, monkeypatch):
+    engine.ensure_initialized()
+    de = engine._ensure_dream_engine()
+    reports = _collect(engine)
+
+    def boom():
+        raise OSError("磁碟錯誤")
+
+    monkeypatch.setattr(de._lease, "_guard", boom)
+    _assert_skip(engine, reports, "lease_io_error", triggered_by="idle")
 
 
 def test_listener_none_cancels(engine):

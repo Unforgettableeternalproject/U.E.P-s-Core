@@ -196,7 +196,7 @@ def test_daydream_failure_backs_off_one_idle_period(engine, monkeypatch):
 def test_daydream_lease_skip_backs_off(engine, monkeypatch):
     _seed(engine, 25)
     de = engine._ensure_dream_engine()
-    calls = _recorder(de, monkeypatch, skipped="租約被占用")
+    calls = _recorder(de, monkeypatch, skipped="lease_held")
     assert de.scheduler_tick() == "daydream"
     assert de.scheduler_tick(datetime.now(timezone.utc) + timedelta(minutes=1)) is None
     assert calls == ["daydream"]

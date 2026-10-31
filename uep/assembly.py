@@ -6,6 +6,9 @@
   不存在「沒有 Gate 的 DeliveryManager」。
 - TaskManager 的 ``presence_check``（組裝層以 Presence 權威狀態提供）與 CC-7 ``transition_guard``。
 - ``publisher``、``bus``、``control``（全域停止要用控制通道廣播）。
+- ``tool_resolver``（TG-1：action 的分類只能來自註冊表）。resolver 可列舉（有 ``specs()``，例如靜態註冊表）時另做
+  TG-5：每項的 executor 都在 ``executors`` 映射，且每個 executor 至少被一項引用（``internal_executors`` 明示者除外）；
+  動態 resolver 無法列舉，這項檢查略過。
 
 啟動順序（``CoreAssembly.start``，契約 4.1 core_epoch 列）：
 
@@ -24,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from secrets import token_bytes
@@ -34,7 +37,7 @@ from pydantic import SecretStr
 from sqlalchemy.orm import Session, sessionmaker
 
 from uep.adapters.output import OutputAdapter
-from uep.adapters.tool import ToolExecutor
+from uep.adapters.tool import EnumerableToolSpecResolver, ToolExecutor, ToolSpecResolver
 from uep.config import get_settings
 from uep.contracts.presence import PresenceStatus
 from uep.control.channel import (
@@ -247,6 +250,23 @@ def _assert_wired(tasks: TaskManager, delivery: DeliveryManager) -> None:
         raise AssemblyError("TaskManager 未接上 CC-7 transition_guard")
     if not tasks.action_guard_configured:
         raise AssemblyError("TaskManager 未接上 action_guard（T-10）")
+    if getattr(tasks, "tool_resolver", None) is None:
+        raise AssemblyError("TaskManager 未接上 tool_resolver（TG-1）")
+
+
+def _check_registry_executors(
+    resolver: ToolSpecResolver, executors: Mapping[str, ToolExecutor], internal: Collection[str]
+) -> None:
+    """TG-5：註冊表與 executors 映射雙向一致；只對可列舉的靜態註冊表做。"""
+    if not isinstance(resolver, EnumerableToolSpecResolver):
+        return
+    specs = resolver.specs()
+    unknown = sorted({spec.executor for spec in specs.values()} - set(executors))
+    if unknown:
+        raise AssemblyError(f"註冊表引用了不存在的 executor：{', '.join(unknown)}（TG-5）")
+    unused = sorted(set(executors) - {spec.executor for spec in specs.values()} - set(internal))
+    if unused:
+        raise AssemblyError(f"executors 中沒有任何註冊表項目引用：{', '.join(unused)}（TG-5）")
 
 
 def build_request_verifier(
@@ -282,6 +302,7 @@ def assemble_core(
     control: ControlChannel | None,
     adapter: OutputAdapter | None,
     executors: Mapping[str, ToolExecutor] | None,
+    tool_resolver: ToolSpecResolver | None,
     turn_generation_source: TurnGenerationSource | None,
     presence_audience: AudienceProvider | None,
     epoch_store: HostEpochStore | None = None,
@@ -298,10 +319,12 @@ def assemble_core(
     strict: bool = False,
     memory: MemoryHost | None = None,
     echo: EchoPipelineHost | None = None,
+    internal_executors: Collection[str] = (),
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
     ``stop_api_port`` 為 None 時不建立本機 HTTP API；給 0 由系統配置埠。
+    ``internal_executors`` 為明示不由任何註冊表項目引用的內部 executor（TG-5 豁免）。
     ``strict`` 為 True 時，缺少（或過短的）``UEP_PAYLOAD_HASH_KEY`` 直接拒絕組裝；預設只告警。
     ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
@@ -311,7 +334,7 @@ def assemble_core(
     missing = [
         name for name, value in (
             ("bus", bus), ("publisher", publisher), ("control", control), ("adapter", adapter),
-            ("executors", executors),
+            ("executors", executors), ("tool_resolver", tool_resolver),
         ) if value is None
     ]
     if missing:
@@ -336,7 +359,8 @@ def assemble_core(
                 "Output Gate 的 turn_generation_source 必須是 echo.generation_source，"
                 "否則舊 generation 的輸出不會被 Gate 拒絕（V12）"
             )
-    assert adapter is not None and executors is not None
+    assert adapter is not None and executors is not None and tool_resolver is not None
+    _check_registry_executors(tool_resolver, executors, internal_executors)
     assert turn_generation_source is not None and presence_audience is not None
 
     local_control = control
@@ -370,7 +394,7 @@ def assemble_core(
         return persona == persona_id and presence.current().status is PresenceStatus.ACTIVE
 
     tasks = TaskManager(
-        session_factory, publisher, executors, transition_guard=transition_guard,
+        session_factory, publisher, executors, tool_resolver=tool_resolver, transition_guard=transition_guard,
         presence_check=presence_check, action_guard=state.action_entry_blocked, **clock_kw,
     )
     _assert_wired(tasks, delivery)

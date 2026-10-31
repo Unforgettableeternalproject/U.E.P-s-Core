@@ -3334,3 +3334,15 @@
 
 ---
 
+### feat: Part S 切片0 ToolSpec 註冊表與 create_action 改簽章. 10/31
+
+> Date: Sat, 31 Oct 2026 17:31:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `3391569e79247443d1eedc2aeb6cbcd90a771e47`
+
+---
+

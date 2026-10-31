@@ -11,6 +11,7 @@ from tests.uep.test_assembly import kwargs
 from uep.assembly import CoreAssembly, assemble_core
 from uep.contracts.presence import PresenceStatus
 from uep.fakes.tool import FakeToolExecutor
+from uep.fakes.tool_spec import FakeToolSpecResolver
 from uep.state.coordinator import Axis
 from uep.tasks.manager import TaskManager, TaskPolicy
 from uep.tasks.presence_bridge import PresenceMaintenance, PresenceTaskBridge
@@ -139,6 +140,7 @@ def test_tick_expires_lease_and_failed_bridge_is_compensated_next_tick(session_f
     tasks = TaskManager(
         session_factory, stack.publisher, {"fake": FakeToolExecutor()},
         presence_check=lambda persona: stack.manager.current().status is PresenceStatus.ACTIVE,
+        tool_resolver=FakeToolSpecResolver(),
     )
     bridge = PresenceTaskBridge(stack.bus, tasks, lambda: stack.manager.current().status)  # 不 start Bus：只靠 reconcile
     activate_endpoint(stack.manager)

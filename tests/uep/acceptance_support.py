@@ -6,6 +6,7 @@ DB 與 executor／adapter 是外部世界，跨重啟存活。
 from __future__ import annotations
 
 import time
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from uep.events.models import EventRow
 from uep.events.publisher import EventPublisher
 from uep.fakes.crash import CrashInjector
 from uep.fakes.tool import FakeToolExecutor
+from uep.fakes.tool_spec import FakeToolSpecResolver
 from uep.tasks.manager import TaskManager, TaskPolicy
 from uep.tasks.models import ActionIntentRow, ReceiptRow
 from uep.tasks.states import ActionStatus, InterruptPolicy
@@ -25,6 +27,9 @@ from uep.tasks.states import ActionStatus, InterruptPolicy
 SCOPE = "scope_private_owner"
 POLICY = TaskPolicy(presence_bound=False, interrupt_policy=InterruptPolicy.INTERRUPTIBLE, policy_ref="pol_1")
 T0 = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+
+
+_RESOLVERS: weakref.WeakKeyDictionary[object, FakeToolSpecResolver] = weakref.WeakKeyDictionary()
 
 
 def make_tm(session_factory, executor, *, crash: CrashInjector | None = None, clock=None, bus=None, **kw) -> TaskManager:
@@ -35,7 +40,18 @@ def make_tm(session_factory, executor, *, crash: CrashInjector | None = None, cl
     if clock is not None:
         extra["clock"] = clock
     publisher = EventPublisher(session_factory, bus or EventBus())
-    return TaskManager(session_factory, publisher, {"fake": executor}, **extra)
+    # 註冊表跟著 executor 走（「重啟」建的新 tm 與舊 tm 看到同一份註冊表，如同部署時的設定檔）
+    resolver = extra.pop("tool_resolver", None) or _RESOLVERS.setdefault(executor, FakeToolSpecResolver())
+    return TaskManager(session_factory, publisher, {"fake": executor}, tool_resolver=resolver, **extra)
+
+
+def declare_tool(tm: TaskManager, tool: str, *, executor="fake", side_effect="reversible_local",
+                 idempotency="via_action_id", presence_bound=False, version=1) -> None:
+    """在 tm 的 FakeToolSpecResolver 登記（或覆寫）工具分類；同名工具依案例改分類時重呼叫即可。"""
+    tm.tool_resolver.register(
+        tool, executor=executor, side_effect_class=side_effect, idempotency=idempotency,
+        presence_bound=presence_bound, tool_version=version,
+    )
 
 
 @dataclass(frozen=True)
@@ -56,9 +72,9 @@ def setup_run(tm: TaskManager, count: int = 1, *, idempotency="via_action_id", s
     items = []
     for i in range(count):
         params = {"path": f"f{i}"}
+        declare_tool(tm, tool, side_effect=side_effect, idempotency=idempotency)
         act = tm.create_action(
-            run_id=run.run_id, step_id=step.step_id, tool=tool, executor="fake", params=params,
-            side_effect_class=side_effect, idempotency=idempotency, worker_epoch=run.worker_epoch,
+            run_id=run.run_id, step_id=step.step_id, tool=tool, params=params, worker_epoch=run.worker_epoch,
         )
         items.append(Item(act.action_id, params))
     return task, run, step, items

@@ -201,6 +201,7 @@ class ActionIntentRow(Base):
     params_hash: Mapped[str] = mapped_column(String, nullable=False)
     side_effect_class: Mapped[str] = mapped_column(String, nullable=False)
     idempotency: Mapped[str] = mapped_column(String, nullable=False)
+    tool_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")  # 建立時由註冊表寫入（D55）
     approval_ref: Mapped[str | None] = mapped_column(ForeignKey("approvals.approval_id"))
     presence_bound: Mapped[bool] = mapped_column(Boolean, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)

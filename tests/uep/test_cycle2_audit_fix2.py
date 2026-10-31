@@ -16,7 +16,7 @@ from sqlalchemy import select
 from tests.uep.endpoint_support import SECRET, FakeCore, Mono, wall_now
 from tests.uep.presence_support import activate, make_rig
 from tests.uep.test_cycle2_audit_b import GOOD_STOP, _in_process_api
-from tests.uep.test_task_model import StubExecutor, make_manager, new_task
+from tests.uep.test_task_model import StubExecutor, declare, make_manager, new_task
 from uep.assembly import build_request_verifier
 from uep.contracts.presence import AcquireResult, ConfirmResult, PresenceStatus
 from uep.endpoint.auth import EndpointAuthError, sign_request
@@ -290,9 +290,10 @@ def _setup_action(mgr, *, policy=None):
     run = mgr.start_run(task.task_id, persona_version=1, policy_version=1)
     step = mgr.begin_step(run.run_id, "work", worker_epoch=run.worker_epoch)
     params = {"a": 1}
+    declare(mgr, side_effect="internal_read")
     action = mgr.create_action(
-        run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="stub", params=params,
-        side_effect_class="internal_read", idempotency="via_action_id", worker_epoch=run.worker_epoch,
+        run_id=run.run_id, step_id=step.step_id, tool="files.write", params=params,
+        worker_epoch=run.worker_epoch,
     )
     return run, action, params
 
@@ -385,9 +386,10 @@ def test_presence_required_in_stage1_is_retryable_and_keeps_approval(session_fac
     run = mgr.start_run(task.task_id, persona_version=1, policy_version=1)
     step = mgr.begin_step(run.run_id, "work", worker_epoch=run.worker_epoch)
     params = {"a": 1}
+    declare(mgr, side_effect="external_effect")
     action = mgr.create_action(
-        run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="stub", params=params,
-        side_effect_class="external_effect", idempotency="via_action_id", worker_epoch=run.worker_epoch,
+        run_id=run.run_id, step_id=step.step_id, tool="files.write", params=params,
+        worker_epoch=run.worker_epoch,
     )
     approval = approve(mgr, params)
     with pytest.raises(PresenceRequired) as err:

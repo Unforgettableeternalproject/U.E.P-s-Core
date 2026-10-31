@@ -9,6 +9,7 @@ from tests.uep.state_support import activate_endpoint, journal_events, make_stac
 from uep.adapters.tool import ToolCall
 from uep.contracts.presence import PresenceStatus
 from uep.fakes.tool import FakeToolExecutor
+from uep.fakes.tool_spec import FakeToolSpecResolver
 from uep.tasks.manager import TaskManager, TaskPolicy
 from uep.tasks.presence_bridge import PresenceTaskBridge
 from uep.tasks.states import ActionStatus, InterruptPolicy, RunStatus
@@ -38,6 +39,7 @@ def build(session_factory, tmp_path, executor=None):
     tasks = TaskManager(
         session_factory, stack.publisher, executors,
         presence_check=lambda persona: stack.manager.current().status is PresenceStatus.ACTIVE,
+        tool_resolver=FakeToolSpecResolver(),
     )
     bridge = PresenceTaskBridge(stack.bus, tasks, lambda: stack.manager.current().status)
     return stack, tasks, bridge
@@ -128,9 +130,13 @@ def test_inflight_action_finishes_and_records_receipt_after_pause(session_factor
     activate_endpoint(stack.manager)
     task, run = running_task(tasks, BOUND)
     step = tasks.begin_step(run.run_id, "work", worker_epoch=run.worker_epoch)
+    tasks.tool_resolver.register(
+        "files.read", executor="fake", side_effect_class="internal_read", idempotency="via_action_id",
+        presence_bound=False, tool_version=1,
+    )
     action = tasks.create_action(
-        run_id=run.run_id, step_id=step.step_id, tool="files.read", executor="fake", params={"p": 1},
-        side_effect_class="internal_read", idempotency="via_action_id", worker_epoch=run.worker_epoch,
+        run_id=run.run_id, step_id=step.step_id, tool="files.read", params={"p": 1},
+        worker_epoch=run.worker_epoch,
     )
 
     def leave() -> None:

@@ -25,6 +25,7 @@ from uep.events.bus import EventBus
 from uep.events.models import EventRow
 from uep.events.publisher import EventPublisher
 from uep.fakes.tool import FakeToolExecutor
+from uep.fakes.tool_spec import FakeToolSpecResolver
 from uep.ids import new_id
 from uep.memory.identity import IdentityDirectory
 from uep.output.models import DeliveryRow, OutputIntentRow
@@ -179,7 +180,8 @@ def build_rig(
     )
     core = assemble_core(
         session_factory, bus=bus, publisher=publisher, control=InProcessControlChannel(), adapter=host.adapter,
-        executors={"fake": FakeToolExecutor()}, turn_generation_source=host.generation_source,
+        executors={"fake": FakeToolExecutor()}, tool_resolver=FakeToolSpecResolver(**{"files.read": {}}),
+        turn_generation_source=host.generation_source,
         presence_audience=presence_audience, epoch_store=HostEpochStore(tmp_path / "host_epoch.json"),
         maintenance_interval=None, echo=host, memory=memory_host, **(assemble_over or {}),
     )

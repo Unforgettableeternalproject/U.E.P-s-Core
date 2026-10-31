@@ -17,6 +17,44 @@ Idempotency = Literal["native", "via_action_id", "none"]
 
 
 @dataclass(frozen=True)
+class ToolSpec:
+    """工具宣告（契約 TG-1、D54）：分類由註冊表決定，呼叫端不得自行宣告。
+
+    必要欄位之外的新欄位一律帶預設值（D91 相容約束：只加不改）。``tool_version`` 進 action hash 的域
+    （D55）：升版後舊 approval 與尚未執行的舊版 action 自動失效。
+    """
+
+    executor: str
+    side_effect_class: SideEffectClass
+    idempotency: Idempotency
+    presence_bound: bool
+    tool_version: int
+    origin: str = "builtin"
+    provider: str = "core"
+    targeting: str = "core_local"
+
+
+@runtime_checkable
+class ToolSpecResolver(Protocol):
+    """工具名 -> ToolSpec。每次呼叫都查當前資料，呼叫端不得快取結果。
+
+    可見集合（capability_set 投影）是 Registry／Gateway 的另一個介面，不屬於這個協定。
+    """
+
+    def resolve(self, tool: str) -> ToolSpec:
+        """解析不到拋 ``PolicyViolation``（code 例如 ``tool_unknown``）。"""
+        ...
+
+
+@runtime_checkable
+class EnumerableToolSpecResolver(ToolSpecResolver, Protocol):
+    """可列舉全部宣告的 resolver（靜態註冊表）；組裝層的 TG-5 檢查只對這類 resolver 做。"""
+
+    def specs(self) -> Mapping[str, ToolSpec]:
+        ...
+
+
+@dataclass(frozen=True)
 class ToolCall:
     """交給 executor 的一次呼叫；同一 logical action 重試沿用同一 action_id。"""
 
@@ -27,6 +65,7 @@ class ToolCall:
     side_effect_class: SideEffectClass
     idempotency: Idempotency
     approval_id: str | None = None
+    tool_version: int | None = None
 
 
 @dataclass(frozen=True)

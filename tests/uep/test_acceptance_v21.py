@@ -158,7 +158,7 @@ def test_v21d_retry_of_external_effect_needs_fresh_approval(session_factory):
 
     def approve():
         return tm.record_approval(
-            principal=HUMAN, action_hash=params_hash(item.params), target="files.write",
+            principal=HUMAN, action_hash=params_hash("files.write", 1, item.params), target="files.write",
             scope="scope_private_owner", expiry=datetime.now(UTC) + timedelta(hours=1),
         )
 

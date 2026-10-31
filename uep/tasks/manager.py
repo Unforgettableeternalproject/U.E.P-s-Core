@@ -31,6 +31,8 @@ from uep.adapters.tool import (
     ToolExecutor,
     ToolReceipt,
     ToolResponseLost,
+    ToolSpec,
+    ToolSpecResolver,
 )
 from uep.events.envelope import EventDraft, TrustedContext
 from uep.events.payload_hash import PayloadHasher, resolve_hasher
@@ -220,6 +222,7 @@ class ParamsLimits:
 
 DEFAULT_PARAMS_LIMITS = ParamsLimits()
 PARAMS_NOT_CANONICAL = "params_not_canonical"
+TOOL_VERSION_CHANGED = "tool_version_changed"
 
 
 def _not_canonical(reason: str) -> PolicyViolation:
@@ -250,26 +253,37 @@ def _check_canonical(value: Any, limits: ParamsLimits, depth: int) -> None:
             _check_canonical(item, limits, depth + 1)
 
 
-def canonical_params_hash(params: Mapping[str, Any], limits: ParamsLimits = DEFAULT_PARAMS_LIMITS) -> str:
-    """params_hash 的唯一實作（TG-6）：不合規一律拋 PolicyViolation(code=params_not_canonical)。"""
+def _dumps(value: Any) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, default=_reject
+    ).encode("utf-8")
+
+
+def canonical_params_hash(
+    tool: str, version: int, params: Mapping[str, Any], limits: ParamsLimits = DEFAULT_PARAMS_LIMITS
+) -> str:
+    """action hash 的唯一實作（TG-6、D55）：雜湊輸入是 ``{"tool","v","params"}`` 的 canonical 形式，
+    因此同時綁定工具名與版本。上限只量 params 本身；不合規一律拋 PolicyViolation(code=params_not_canonical)。"""
+    if not isinstance(tool, str) or not tool:
+        raise _not_canonical("工具名必須是非空字串")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise _not_canonical("工具版本必須是整數")
     try:
         _check_canonical(params, limits, 0)
-        canonical = json.dumps(
-            params, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, default=_reject
-        )
-        raw = canonical.encode("utf-8")
+        params_raw = _dumps(params)
+        if len(params_raw) > limits.max_total_bytes:
+            raise _not_canonical("總長過大")
+        raw = _dumps({"tool": tool, "v": version, "params": params})
     except PolicyViolation:
         raise
     except (ValueError, TypeError, UnicodeEncodeError, RecursionError, OverflowError):
         raise _not_canonical("無法序列化") from None  # 不串接原例外，避免訊息帶出參數內容
-    if len(raw) > limits.max_total_bytes:
-        raise _not_canonical("總長過大")
     return hashlib.sha256(raw).hexdigest()
 
 
-def params_hash(params: Mapping[str, Any]) -> str:
-    """canonical 參數雜湊：鍵排序、無空白的 JSON 後取 sha256（以預設上限；規則見 canonical_params_hash）。"""
-    return canonical_params_hash(params)
+def params_hash(tool: str, version: int, params: Mapping[str, Any]) -> str:
+    """action hash（欄位名沿用 params_hash）：以預設上限；規則見 canonical_params_hash。"""
+    return canonical_params_hash(tool, version, params)
 
 
 def _reject(obj: Any) -> Any:
@@ -338,6 +352,7 @@ class TaskManager:
         publisher: EventPublisher,
         executors: Mapping[str, ToolExecutor],
         *,
+        tool_resolver: ToolSpecResolver,
         clock: Callable[[], datetime] = _utcnow,
         transition_guard: TransitionGuard | None = None,
         crash_hook: Callable[[str], None] | None = None,
@@ -349,7 +364,10 @@ class TaskManager:
         payload_hasher: PayloadHasher | None = None,
         params_limits: ParamsLimits = DEFAULT_PARAMS_LIMITS,
     ) -> None:
+        if tool_resolver is None:  # TG-1：分類只能來自註冊表，缺則建構失敗
+            raise TypeError("TaskManager 需要 tool_resolver（TG-1）")
         self._sf = session_factory
+        self._tool_resolver = tool_resolver
         self._params_limits = params_limits  # params canonical 化上限（TG-6）
         self._publisher = publisher
         self._executors = dict(executors)
@@ -374,6 +392,10 @@ class TaskManager:
         # receipt 脫敏雜湊用的 HMAC 雜湊器；None 時於需要時才讀設定，沒有金鑰就 fail-closed（與 payload blob 一致）
         self._payload_hasher = payload_hasher
         self.redaction_count = 0  # receipt 欄位被脫敏的累計次數（N4）
+
+    @property
+    def tool_resolver(self) -> ToolSpecResolver:
+        return self._tool_resolver
 
     # ---- 交易與事件 ----
 
@@ -883,26 +905,32 @@ class TaskManager:
     # ---- Action ----
 
     @staticmethod
-    def params_hash(params: Mapping[str, Any]) -> str:
-        return params_hash(params)
+    def params_hash(tool: str, version: int, params: Mapping[str, Any]) -> str:
+        return params_hash(tool, version, params)
 
     @staticmethod
     def _assert_same_action(
-        existing: ActionIntentRow, run_id: str, tool: str, side_effect_class: str, digest: str
+        existing: ActionIntentRow, run_id: str, tool: str, spec: ToolSpec, digest: str
     ) -> None:
-        """同 action_id 重呼叫只在 run、tool、side_effect_class、params_hash 全相同時冪等回傳既有列。"""
-        if existing.run_id != run_id or existing.tool != tool or existing.side_effect_class != side_effect_class:
+        """同 action_id 重呼叫只在 run、tool、註冊表解析出的 side_effect_class、action hash 全相同時冪等回傳既有列。"""
+        if existing.run_id != run_id or existing.tool != tool or existing.side_effect_class != spec.side_effect_class:
             raise PolicyViolation("同 action_id 已屬於不同的 run／tool／side_effect_class，須建立新 action")
         if existing.params_hash != digest:
             raise ParamsHashMismatch("同 action_id 的參數已變更，須建立新 action")
 
     def create_action(
-        self, *, run_id: str, step_id: str, tool: str, executor: str, params: Mapping[str, Any],
-        side_effect_class: str, idempotency: str, worker_epoch: int,
+        self, *, run_id: str, step_id: str, tool: str, params: Mapping[str, Any], worker_epoch: int,
         presence_bound: bool | None = None, action_id: str | None = None,
     ) -> ActionIntentRow:
-        """建立 INTENDED 的 ActionIntent。同 action_id 重呼叫回傳既有列；參數改變則拒絕（須新 action）。"""
-        digest = canonical_params_hash(params, self._params_limits)  # 在交易之前：不合規不產生 act_ 列
+        """建立 INTENDED 的 ActionIntent。同 action_id 重呼叫回傳既有列；參數改變則拒絕（須新 action）。
+
+        executor／side_effect_class／idempotency／tool_version 一律來自 ``tool_resolver.resolve(tool)``（TG-1）；
+        ``presence_bound`` 只能收緊（TG-3）：註冊表為真時不可傳 False。
+        """
+        spec = self._tool_resolver.resolve(tool)  # 解析不到拋 PolicyViolation；在交易之前
+        if presence_bound is False and spec.presence_bound:
+            raise PolicyViolation("presence_bound 只能收緊，不可放寬註冊表的宣告", code="presence_bound_loosened")
+        digest = canonical_params_hash(tool, spec.tool_version, params, self._params_limits)  # 不合規不產生 act_ 列
         with self._tx() as (s, pending):
             task, run = self._lock_run(s, run_id)
             self._require_epoch(run, worker_epoch)
@@ -914,13 +942,13 @@ class TaskManager:
             if action_id is not None:
                 existing = s.get(ActionIntentRow, action_id, with_for_update=True, populate_existing=True)
                 if existing is not None:
-                    self._assert_same_action(existing, run_id, tool, side_effect_class, digest)
+                    self._assert_same_action(existing, run_id, tool, spec, digest)
                     return existing
             action = ActionIntentRow(
                 action_id=action_id or new_id("act"), run_id=run_id, step_id=step_id, tool=tool,
-                executor=executor, params_hash=digest, side_effect_class=side_effect_class,
-                idempotency=idempotency,
-                presence_bound=task.presence_bound if presence_bound is None else presence_bound,
+                executor=spec.executor, params_hash=digest, side_effect_class=spec.side_effect_class,
+                idempotency=spec.idempotency, tool_version=spec.tool_version,
+                presence_bound=spec.presence_bound or bool(presence_bound),
                 status=ActionStatus.INTENDED.value, version=1,
             )
             try:
@@ -931,7 +959,7 @@ class TaskManager:
                 existing = s.get(ActionIntentRow, action.action_id, populate_existing=True)
                 if existing is None:
                     raise
-                self._assert_same_action(existing, run_id, tool, side_effect_class, digest)
+                self._assert_same_action(existing, run_id, tool, spec, digest)
                 return existing
             self._emit(
                 s, pending, "action.intended", task, aggregate=("action", action.action_id, action.version),
@@ -1071,7 +1099,6 @@ class TaskManager:
           階段 1.5 的 PresenceRequired 帶 ``retryable=False``：action 已是終態，須建新 action 與新核准；
           階段 1 的 PresenceRequired（``retryable=True``）則 action 維持 INTENDED、核准未消耗，可於 Presence 恢復後重試。
         """
-        digest = canonical_params_hash(params, self._params_limits)
         deferred: TaskError | None = None
         call: ToolCall | None = None
         executor: ToolExecutor | None = None
@@ -1080,6 +1107,8 @@ class TaskManager:
         with self._tx() as (s, pending):
             task, run, action = self._lock_action(s, action_id)
             self._require_epoch(run, worker_epoch)
+            # hash 域含工具名與版本（D55）：以 action 建立時的 tool／tool_version 計算
+            digest = canonical_params_hash(action.tool, action.tool_version, params, self._params_limits)
             if digest != action.params_hash:
                 raise ParamsHashMismatch("參數與 action 的 params_hash 不符，須建立新 action")
             status = ActionStatus(action.status)
@@ -1097,6 +1126,9 @@ class TaskManager:
                 raise ActionBlocked(f"task 狀態為 {task.status}，不可執行 action")
             if run.status not in (RunStatus.RUNNING.value, RunStatus.WAITING_APPROVAL.value):
                 raise ActionBlocked(f"run 狀態為 {run.status}，不可執行 action")
+            if self._tool_resolver.resolve(action.tool).tool_version != action.tool_version:
+                # 註冊表升版後 fail-closed：須以新 action 與新 approval 重來，不自動沿用舊版
+                raise ActionBlocked(f"{TOOL_VERSION_CHANGED}：{action.tool} 已升版，須建立新 action")
             executor = self._executors.get(action.executor)
             if executor is None:
                 raise ActionBlocked(f"找不到 executor：{action.executor}")
@@ -1139,7 +1171,7 @@ class TaskManager:
                 call = ToolCall(
                     action_id=action_id, tool=action.tool, params=dict(params), params_hash=action.params_hash,
                     side_effect_class=action.side_effect_class, idempotency=action.idempotency,
-                    approval_id=action.approval_ref,
+                    approval_id=action.approval_ref, tool_version=action.tool_version,
                 )
         if deferred is not None:
             raise deferred

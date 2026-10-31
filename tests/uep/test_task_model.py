@@ -18,6 +18,7 @@ from uep.events.bus import EventBus
 from uep.events.envelope import EventDraft, TrustedContext
 from uep.events.models import EventRow
 from uep.events.publisher import EventPublisher
+from uep.fakes.tool_spec import FakeToolSpecResolver
 from uep.ids import new_id
 from uep.tasks.manager import (
     ActionBlocked,
@@ -109,7 +110,15 @@ def executor() -> StubExecutor:
 
 
 def make_manager(session_factory, executor, **kwargs) -> TaskManager:
+    kwargs.setdefault("tool_resolver", FakeToolSpecResolver())
     return TaskManager(session_factory, EventPublisher(session_factory, EventBus()), {"stub": executor}, **kwargs)
+
+
+def declare(mgr, tool="files.write", *, side_effect="internal_read", idempotency="via_action_id") -> None:
+    """依案例登記（或覆寫）工具分類；同名工具在不同案例有不同分類時，建立 action 前重呼叫。"""
+    mgr.tool_resolver.register(
+        tool, executor="stub", side_effect_class=side_effect, idempotency=idempotency, tool_version=1,
+    )
 
 
 @pytest.fixture
@@ -133,16 +142,17 @@ def running(mgr: TaskManager):
 
 
 def add_action(mgr, run, step, params, *, side_effect="internal_read", **kwargs) -> ActionIntentRow:
+    declare(mgr, side_effect=side_effect)
     return mgr.create_action(
-        run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="stub", params=params,
-        side_effect_class=side_effect, idempotency="via_action_id", worker_epoch=run.worker_epoch, **kwargs,
+        run_id=run.run_id, step_id=step.step_id, tool="files.write", params=params,
+        worker_epoch=run.worker_epoch, **kwargs,
     )
 
 
 def approve(mgr, params, *, target="files.write", scope=SCOPE, delta=timedelta(hours=1), **kwargs) -> ApprovalRow:
     return mgr.record_approval(
         principal=kwargs.pop("principal", HUMAN),
-        action_hash=params_hash(params), target=target, scope=scope,
+        action_hash=params_hash("files.write", 1, params), target=target, scope=scope,
         expiry=datetime.now(UTC) + delta, **kwargs,
     )
 
@@ -278,10 +288,11 @@ def test_stale_epoch_reports_do_not_change_state(mgr):
     with pytest.raises(StaleWorkerEpoch):
         mgr.save_checkpoint(run.run_id, {"completed_steps": ["x"]}, worker_epoch=1)
     assert mgr.get_run(run.run_id).checkpoint is None
+    declare(mgr, "t")
     with pytest.raises(StaleWorkerEpoch):
         mgr.create_action(
-            run_id=run.run_id, step_id=step.step_id, tool="t", executor="stub", params={},
-            side_effect_class="internal_read", idempotency="none", worker_epoch=1,
+            run_id=run.run_id, step_id=step.step_id, tool="t", params={},
+            worker_epoch=1,
         )
 
 
@@ -584,9 +595,10 @@ def test_receipt_unique_per_action_and_models_registered(mgr, session_factory):
 def test_confirmed_not_executed_with_idempotency_none_stays_unknown(mgr, executor):
     _task, run, step = running(mgr)
     params = {"x": 1}
+    declare(mgr, idempotency="none")
     action = mgr.create_action(
-        run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="stub", params=params,
-        side_effect_class="internal_read", idempotency="none", worker_epoch=1,
+        run_id=run.run_id, step_id=step.step_id, tool="files.write", params=params,
+        worker_epoch=1,
     )
     executor.mode = "lose_before"
     mgr.execute_action(action.action_id, params, worker_epoch=1)
@@ -711,7 +723,7 @@ def test_resume_during_execute_fences_old_epoch(session_factory, executor):
 
 def test_record_approval_requires_verified_human_principal(mgr):
     params = {"to": "boss"}
-    kwargs = {"action_hash": params_hash(params), "target": "files.write", "scope": SCOPE,
+    kwargs = {"action_hash": params_hash("files.write", 1, params), "target": "files.write", "scope": SCOPE,
               "expiry": datetime.now(UTC) + timedelta(hours=1)}
     with pytest.raises(PolicyViolation):
         mgr.record_approval(principal="owner", **kwargs)
@@ -799,7 +811,7 @@ def test_dispatch_failure_does_not_break_committed_transition(session_factory, e
         raise RuntimeError("bus down")
 
     publisher.dispatch = boom
-    mgr = TaskManager(session_factory, publisher, {"stub": executor})
+    mgr = TaskManager(session_factory, publisher, {"stub": executor}, tool_resolver=FakeToolSpecResolver())
     task = new_task(mgr)
     assert mgr.transition_task(task.task_id, RunStatus.RUNNING).status == "RUNNING"
     assert event_types(session_factory) == ["task.created"]

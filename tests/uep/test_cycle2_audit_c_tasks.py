@@ -13,6 +13,7 @@ from sqlalchemy import select, update
 
 from tests.uep.test_task_model import (  # noqa: F401  fixture 與輔助函式沿用 test_task_model
     add_action,
+    declare,
     executor,
     mgr,
     new_task,
@@ -37,9 +38,10 @@ from uep.tasks.states import ActionStatus, PauseReason, RunStatus
 def full(mgr, side="internal_read", idem="via_action_id"):
     task, run, step = running(mgr)
     params = {"a": 1}
+    declare(mgr, side_effect=side, idempotency=idem)
     action = mgr.create_action(
-        run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="stub", params=params,
-        side_effect_class=side, idempotency=idem, worker_epoch=run.worker_epoch,
+        run_id=run.run_id, step_id=step.step_id, tool="files.write", params=params,
+        worker_epoch=run.worker_epoch,
     )
     return task, run, step, action, params
 
@@ -349,9 +351,8 @@ def test_create_action_with_existing_id_must_match_run_tool_and_class(mgr):
 
     def again(**over):
         kw = {
-            "run_id": run.run_id, "step_id": step.step_id, "tool": "files.write", "executor": "stub",
-            "params": params, "side_effect_class": "external_effect", "idempotency": "via_action_id",
-            "worker_epoch": run.worker_epoch, "action_id": action.action_id,
+            "run_id": run.run_id, "step_id": step.step_id, "tool": "files.write",
+            "params": params, "worker_epoch": run.worker_epoch, "action_id": action.action_id,
         }
         kw.update(over)
         return mgr.create_action(**kw)
@@ -359,10 +360,12 @@ def test_create_action_with_existing_id_must_match_run_tool_and_class(mgr):
     assert again().action_id == action.action_id  # 完全相同仍冪等
     with pytest.raises(PolicyViolation):
         again(run_id=run2.run_id, step_id=step2.step_id, worker_epoch=run2.worker_epoch)
+    declare(mgr, "OTHER", side_effect="external_effect")
     with pytest.raises(PolicyViolation):
         again(tool="OTHER")
+    declare(mgr, side_effect="internal_read")  # 註冊表解析出的分類與既有 action 不同
     with pytest.raises(PolicyViolation):
-        again(side_effect_class="internal_read")
+        again()
 
 
 def test_stale_epoch_heartbeat_checkpoint_complete_step_raise(mgr):

@@ -6,7 +6,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from tests.uep.acceptance_support import SCOPE, make_tm
+from tests.uep.acceptance_support import SCOPE, declare_tool, make_tm
 from tests.uep.factories import NOW
 from tests.uep.presence_support import activate, count_events, intent_for, make_rig
 from uep.contracts.presence import AuthorizationTuple, GateDecision
@@ -207,9 +207,10 @@ def _foreground_task(tm, *, presence_bound: bool):
     run = tm.start_run(task.task_id, persona_version=1, policy_version=1)
     step = tm.begin_step(run.run_id, "work", worker_epoch=run.worker_epoch)
     params = {"path": "f0"}
+    declare_tool(tm, "files.write")
     act = tm.create_action(
-        run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="fake", params=params,
-        side_effect_class="reversible_local", idempotency="via_action_id", worker_epoch=run.worker_epoch,
+        run_id=run.run_id, step_id=step.step_id, tool="files.write", params=params,
+        worker_epoch=run.worker_epoch,
     )
     return run, act, params
 

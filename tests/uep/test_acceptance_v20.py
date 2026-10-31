@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from tests.uep.acceptance_support import (
     HookedExecutor,
     action_row_count,
+    declare_tool,
     drive,
     event_types,
     make_tm,
@@ -289,6 +290,7 @@ def test_v20_concurrent_create_action_same_id_creates_one_row(session_factory):
     ex = FakeToolExecutor()
     tm = make_tm(session_factory, ex)
     _task, run, step, _ = setup_run(tm, 0)
+    declare_tool(tm, "files.write")
     barrier = Barrier(4)
     params = {"path": "same"}
 
@@ -297,8 +299,8 @@ def test_v20_concurrent_create_action_same_id_creates_one_row(session_factory):
         barrier.wait()
         try:
             return mgr.create_action(
-                run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="fake", params=params,
-                side_effect_class="reversible_local", idempotency="via_action_id", worker_epoch=1,
+                run_id=run.run_id, step_id=step.step_id, tool="files.write", params=params,
+                worker_epoch=1,
                 action_id="act_01ARZ3NDEKTSV4RRFFQ69G5FAV",
             ).action_id
         except IntegrityError:  # 不應再發生：輸家回傳既有列
@@ -336,9 +338,8 @@ def test_v20_create_action_second_layer_integrity_error_still_dedupes(session_fa
 
     monkeypatch.setattr(Session, "get", blind_first_layer)
     kwargs = {
-        "run_id": run.run_id, "step_id": step.step_id, "tool": "files.write", "executor": "fake",
-        "side_effect_class": "reversible_local", "idempotency": "via_action_id", "worker_epoch": 1,
-        "action_id": item.action_id,
+        "run_id": run.run_id, "step_id": step.step_id, "tool": "files.write",
+        "worker_epoch": 1, "action_id": item.action_id,
     }
     for _ in range(3):
         row = make_tm(session_factory, ex).create_action(params=item.params, **kwargs)

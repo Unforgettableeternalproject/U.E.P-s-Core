@@ -33,6 +33,7 @@ from uep.endpoint.endpoint import CliEndpoint, EndpointRejected, ReconnectOutcom
 from uep.endpoint.protocol import RpcCoreApi
 from uep.endpoint.service import EndpointService
 from uep.fakes.tool import FakeToolExecutor
+from uep.fakes.tool_spec import FakeToolSpecResolver
 from uep.output.intent import ControlKind, ControlScope
 from uep.presence.manager import AcquireOutcome
 from uep.stop.service import make_flag_blocker
@@ -280,6 +281,7 @@ def _bridge_stack(session_factory, tmp_path):
     tasks = TaskManager(
         session_factory, stack.publisher, {"fake": FakeToolExecutor()},
         presence_check=lambda persona: stack.manager.current().status is PresenceStatus.ACTIVE,
+        tool_resolver=FakeToolSpecResolver(),
     )
     bridge = PresenceTaskBridge(stack.bus, tasks, lambda: stack.manager.current().status)
     return stack, tasks, bridge

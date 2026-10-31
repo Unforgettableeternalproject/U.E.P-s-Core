@@ -16,6 +16,7 @@ from uep.events.bus import EventBus
 from uep.events.publisher import EventPublisher
 from uep.fakes.output import FakeOutputAdapter
 from uep.fakes.tool import FakeToolExecutor
+from uep.fakes.tool_spec import FakeToolSpecResolver
 from uep.ids import new_id
 from uep.presence.epoch import HostEpochStore
 from uep.presence.gate import ALLOW_ALL
@@ -34,7 +35,7 @@ FREE = TaskPolicy(presence_bound=False, interrupt_policy=InterruptPolicy.INTERRU
 def kwargs(session_factory, tmp_path, **over):
     base = {
         "bus": EventBus(), "control": InProcessControlChannel(), "adapter": FakeOutputAdapter(),
-        "executors": {"fake": FakeToolExecutor()},
+        "executors": {"fake": FakeToolExecutor()}, "tool_resolver": FakeToolSpecResolver(**{"files.write": {}}),
         "turn_generation_source": ALLOW_ALL, "presence_audience": ALLOW_ALL, "allow_gate_bypass": True,
         "epoch_store": HostEpochStore(tmp_path / "host_epoch.json"), "clock": FakeClock(),
         "stop_token": SecretStr(TOKEN), "maintenance_interval": None,  # 測試以手動 tick，不起背景線程
@@ -72,7 +73,7 @@ def test_allow_all_requires_explicit_bypass(session_factory, tmp_path):
         assemble_core(session_factory, **kwargs(session_factory, tmp_path, allow_gate_bypass=False))
 
 
-@pytest.mark.parametrize("missing", ["bus", "publisher", "control", "adapter", "executors"])
+@pytest.mark.parametrize("missing", ["bus", "publisher", "control", "adapter", "executors", "tool_resolver"])
 def test_missing_core_components_refuse_assembly(session_factory, tmp_path, missing):
     with pytest.raises(AssemblyError, match=missing):
         assemble_core(session_factory, **kwargs(session_factory, tmp_path, **{missing: None}))
@@ -205,9 +206,13 @@ def _bg_action(core, executor, *, side_effect: str):
     run = core.tasks.start_run(task.task_id, persona_version=1, policy_version=1)  # stop 之前已 RUNNING
     step = core.tasks.begin_step(run.run_id, "work", worker_epoch=run.worker_epoch)
     params = {"path": "a"}
+    core.tasks.tool_resolver.register(
+        "files.write", executor="fake", side_effect_class=side_effect, idempotency="via_action_id",
+        presence_bound=False, tool_version=1,
+    )
     action = core.tasks.create_action(
-        run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="fake", params=params,
-        side_effect_class=side_effect, idempotency="via_action_id", worker_epoch=run.worker_epoch,
+        run_id=run.run_id, step_id=step.step_id, tool="files.write", params=params,
+        worker_epoch=run.worker_epoch,
     )
     return run, action, params
 
@@ -225,7 +230,7 @@ def test_stop_blocks_new_tool_execution_of_already_running_background_task(build
     run, action, params = _bg_action(core, executor, side_effect="external_effect")
     approval = core.tasks.record_approval(
         principal=AuthenticatedPrincipal(actor_id="owner", kind="human", verified=True),
-        action_hash=params_hash(params), target="files.write", scope="scope_private_owner",
+        action_hash=params_hash("files.write", 1, params), target="files.write", scope="scope_private_owner",
         expiry=FakeClock().now + timedelta(hours=1),
     )
     core.stop.trigger(TOKEN)

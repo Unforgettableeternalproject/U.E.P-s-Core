@@ -324,12 +324,12 @@ def test_v19_action_creation_replay_is_idempotent(session_factory):
 
     ex = FakeToolExecutor()
     tm = make_tm(session_factory, ex)
-    _task, run, step, (item,) = setup_run(tm, 1)
+    _task, run, step, (item,) = setup_run(tm, 1)  # 工具已登記在與 executor 綁定的註冊表
     tm2 = make_tm(session_factory, ex)
     for _ in range(3):
         row = tm2.create_action(
-            run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="fake", params=item.params,
-            side_effect_class="reversible_local", idempotency="via_action_id", worker_epoch=1,
+            run_id=run.run_id, step_id=step.step_id, tool="files.write", params=item.params,
+            worker_epoch=1,
             action_id=item.action_id,
         )
         assert row.action_id == item.action_id
@@ -337,7 +337,7 @@ def test_v19_action_creation_replay_is_idempotent(session_factory):
     assert event_types(session_factory).count("action.intended") == 1
     with pytest.raises(ParamsHashMismatch):
         tm2.create_action(
-            run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="fake", params={"path": "other"},
-            side_effect_class="reversible_local", idempotency="via_action_id", worker_epoch=1,
+            run_id=run.run_id, step_id=step.step_id, tool="files.write", params={"path": "other"},
+            worker_epoch=1,
             action_id=item.action_id,
         )

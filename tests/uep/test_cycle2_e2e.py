@@ -27,6 +27,7 @@ from uep.endpoint.endpoint import CliEndpoint, ReconnectOutcome
 from uep.events.bus import EventBus
 from uep.events.publisher import EventPublisher
 from uep.fakes.tool import FakeToolExecutor
+from uep.fakes.tool_spec import FakeToolSpecResolver
 from uep.output.delivery import DeliveryEvidence
 from uep.output.delivery import DeliveryStatus as S
 from uep.presence.epoch import HostEpochStore
@@ -115,6 +116,7 @@ def _build_core(session_factory, adapter, executor, clock) -> CoreAssembly:
     return assemble_core(
         session_factory, bus=bus, publisher=EventPublisher(session_factory, bus), control=InProcessControlChannel(),
         adapter=adapter, executors={"fake": executor},
+        tool_resolver=FakeToolSpecResolver(**{"files.read": {"side_effect_class": "internal_read"}}),
         turn_generation_source=lambda turn_id: TURN_GEN, presence_audience=lambda: "scope_private_owner",
         epoch_store=HostEpochStore(), clock=clock, stop_token=SecretStr(STOP_TOKEN), maintenance_interval=None,
         stop_api_port=0, endpoint_socket_port=0,  # secrets 取自 UEP_ENDPOINT_SECRETS；epoch 檔取自 UEP_HOST_EPOCH_FILE
@@ -170,8 +172,8 @@ def test_cycle2_end_to_end_assembled_core(session_factory, epoch_env):
 
         def new_action(params: dict):
             return core.tasks.create_action(
-                run_id=run.run_id, step_id=step.step_id, tool="files.read", executor="fake", params=params,
-                side_effect_class="internal_read", idempotency="via_action_id", worker_epoch=run.worker_epoch,
+                run_id=run.run_id, step_id=step.step_id, tool="files.read", params=params,
+                worker_epoch=run.worker_epoch,
             )
 
         params = {"path": "a"}

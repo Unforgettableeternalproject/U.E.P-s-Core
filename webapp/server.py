@@ -1,12 +1,14 @@
-"""通用多候選盲測網站（stdlib only，不需額外依賴）。
+"""A/B 二選一盲測網站（stdlib only，不需額外依賴）。
 
 用法：
     python webapp/server.py [--host 127.0.0.1] [--port 8848] [--sets-dir DIR]
 
-資料來源 outputs/blind_sets/<set>/manifest.json（音檔在同目錄 audio/），
-評分結果寫入 outputs/blind_sets/<set>/reviews/<時間>_<暱稱>.json。
+資料來源 outputs/blind_sets/<set>/manifest.json（音檔在同目錄 audio/）。
+item 剛好 2 個候選即一題；超過 2 個則展開成兩兩配對，或依 item 的
+可選欄位 `pairs: [[cand_id, cand_id], ...]` 指定。
+作答（按下即存）寫入 outputs/blind_sets/<set>/reviews/<時間>_<暱稱>.json。
 
-前端只拿得到 cand_id、音檔 URL、text、lang、emotion；
+前端只拿得到 pair、cand_id、音檔 URL、text、lang、emotion；
 system / params / metrics 永遠不會離開伺服器。
 """
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -26,11 +29,10 @@ WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SETS_DIR = os.path.join(PROJECT_ROOT, "outputs", "blind_sets")
 
 MAX_BODY = 64 * 1024            # 單次寫入上限
-MAX_COMMENT = 1000
+MAX_ELAPSED_MS = 3_600_000     # 單題停留時間上限（1 小時）
 MAX_NICK = 32
 MAX_REVIEWS_PER_SET = 500       # 單一 set 的評分檔數上限，避免被灌爆磁碟
 RATE_LIMIT = (60, 60.0)         # 每個來源 IP 60 秒內最多 60 次寫入
-DIMENSIONS = ("timbre", "naturalness", "emotion", "accent")
 AUDIO_TYPES = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
                ".flac": "audio/flac", ".m4a": "audio/mp4"}
 
@@ -86,30 +88,75 @@ class BlindStore:
         self._cache[name] = (mtime, data)
         return data
 
-    def public_set(self, name: str) -> dict | None:
-        """去識別化的 set 內容；只含 cand_id / 音檔 URL / text / lang / emotion。"""
+    def pairs(self, name: str) -> list[dict] | None:
+        """展開成 A/B 題目（正規順序，不含隨機）。
+
+        item 剛好 2 個有效候選即一題；超過 2 個則依 item 的可選欄位
+        `pairs: [[cand_id, cand_id], ...]` 指定配對，沒有就兩兩展開。
+        """
         data = self.manifest(name)
         if data is None:
             return None
-        items = []
+        out: list[dict] = []
         for it in data["items"]:
             iid = str(it.get("item_id", ""))
             if not SAFE_ID.match(iid):
                 continue
-            cands = []
+            valid: list[str] = []
             for c in it.get("candidates") or []:
                 cid = str(c.get("cand_id", ""))
-                if SAFE_ID.match(cid) and self.audio_path(name, iid, cid):
-                    cands.append({"cand_id": cid,
-                                  "url": f"/audio/{name}/{iid}/{cid}"})
-            if len(cands) < 2:
+                if SAFE_ID.match(cid) and cid not in valid and self.audio_path(name, iid, cid):
+                    valid.append(cid)
+            if len(valid) < 2:
                 continue
-            items.append({"item_id": iid, "text": str(it.get("text", "")),
-                          "lang": str(it.get("lang", "")),
-                          "emotion": str(it.get("emotion", "")),
-                          "candidates": cands})
+            declared = it.get("pairs")
+            combos: list[tuple[str, str]] = []
+            if len(valid) > 2 and isinstance(declared, list):
+                for p in declared:
+                    if (isinstance(p, (list, tuple)) and len(p) == 2
+                            and all(str(x) in valid for x in p) and str(p[0]) != str(p[1])):
+                        combos.append((str(p[0]), str(p[1])))
+            else:
+                combos = [(valid[i], valid[j]) for i in range(len(valid))
+                          for j in range(i + 1, len(valid))]
+            seen: set[frozenset] = set()
+            for a, b in combos:
+                key = frozenset((a, b))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"pair": f"{iid}:{a}:{b}", "item_id": iid,
+                            "text": str(it.get("text", "")),
+                            "lang": str(it.get("lang", "")),
+                            "emotion": str(it.get("emotion", "")),
+                            "cands": [a, b]})
+        return out
+
+    def quiz(self, name: str, sid: str) -> dict | None:
+        """該受測者專屬題目：題序與 A/B 位置由 (set, sid) 決定性亂數產生，續答時不變。
+
+        回應只含 pair / 文本 / 兩個音檔 URL；system、params、metrics 不外流。
+        """
+        pairs = self.pairs(name)
+        if pairs is None:
+            return None
+        data = self.manifest(name) or {}
+        rng = random.Random(f"{name}|{sid}")
+        order = list(pairs)
+        rng.shuffle(order)
+        questions = []
+        for p in order:
+            a, b = p["cands"]
+            if rng.random() < 0.5:
+                a, b = b, a
+            questions.append({
+                "pair": p["pair"], "text": p["text"], "lang": p["lang"],
+                "emotion": p["emotion"],
+                "a": {"cand_id": a, "url": f"/audio/{name}/{p['item_id']}/{a}"},
+                "b": {"cand_id": b, "url": f"/audio/{name}/{p['item_id']}/{b}"}})
+        done = self.load_progress(name, sid).get("choices", {})
         return {"set": name, "description": str(data.get("description", "")),
-                "items": items}
+                "total": len(questions), "done": sorted(done), "questions": questions}
 
     def audio_path(self, name: str, item_id: str, cand_id: str) -> str | None:
         """由 manifest 反查音檔；路徑必須落在 <set>/audio/ 內，否則視為不存在。"""
@@ -169,57 +216,43 @@ class BlindStore:
         with self._lock:
             path = self._find_file(name, sid)
             if not path:
-                return {"responses": {}}
-            with open(path, encoding="utf-8") as fp:
-                data = json.load(fp)
+                return {"choices": {}}
+            try:
+                with open(path, encoding="utf-8") as fp:
+                    data = json.load(fp)
+            except (OSError, ValueError):
+                return {"choices": {}}
+        choices = data.get("choices")
         return {"nickname": data.get("nickname", ""),
-                "responses": data.get("responses", {})}
+                "choices": choices if isinstance(choices, dict) else {}}
 
-    def save_response(self, payload: dict, user_agent: str) -> tuple[int, dict]:
+    def save_choice(self, payload: dict, user_agent: str) -> tuple[int, dict]:
+        """按下即存：每題一筆 {pair, chosen, shown_order, elapsed_ms}。"""
         name = str(payload.get("set") or "")
-        data = self.manifest(name)
-        if data is None:
+        if self.manifest(name) is None:
             return 404, {"error": "unknown set"}
         sid = str(payload.get("sid") or "")
         if not SID_RE.match(sid):
             return 400, {"error": "bad sid"}
-        item_id = str(payload.get("item_id") or "")
-        item = next((i for i in data["items"] if str(i.get("item_id")) == item_id), None)
-        if item is None:
-            return 400, {"error": "unknown item"}
-        cand_ids = [str(c.get("cand_id")) for c in item.get("candidates") or []
-                    if self.audio_path(name, item_id, str(c.get("cand_id")))]
-
-        ratings_in = payload.get("ratings")
-        if not isinstance(ratings_in, dict) or set(ratings_in) != set(cand_ids):
-            return 400, {"error": "ratings must cover every candidate"}
-        ratings = {}
-        for cid in cand_ids:
-            r = ratings_in[cid]
-            if not isinstance(r, dict):
-                return 400, {"error": "bad rating"}
-            row = {}
-            for dim in DIMENSIONS:
-                v = r.get(dim)
-                if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 5:
-                    return 400, {"error": f"bad score {dim}"}
-                row[dim] = v
-            ratings[cid] = row
-
-        best = payload.get("best")
-        if best not in cand_ids:
-            return 400, {"error": "bad best"}
-        order = payload.get("order")
-        if not (isinstance(order, list) and sorted(map(str, order)) == sorted(cand_ids)):
-            order = cand_ids
-        comment = payload.get("comment") or ""
-        if not isinstance(comment, str) or len(comment) > MAX_COMMENT:
-            return 400, {"error": "bad comment"}
+        pair_id = str(payload.get("pair") or "")
+        meta = next((p for p in self.pairs(name) or [] if p["pair"] == pair_id), None)
+        if meta is None:
+            return 400, {"error": "unknown pair"}
+        chosen = payload.get("chosen")
+        if chosen not in meta["cands"]:
+            return 400, {"error": "bad chosen"}
+        shown = payload.get("shown_order")
+        if not (isinstance(shown, list) and sorted(map(str, shown)) == sorted(meta["cands"])):
+            return 400, {"error": "bad shown_order"}
+        elapsed = payload.get("elapsed_ms", 0)
+        if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or elapsed < 0:
+            return 400, {"error": "bad elapsed_ms"}
+        elapsed = int(min(elapsed, MAX_ELAPSED_MS))
         nickname = str(payload.get("nickname") or "anon").strip()[:MAX_NICK] or "anon"
 
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
-        entry = {"order": [str(o) for o in order], "ratings": ratings,
-                 "best": best, "comment": comment, "at": now}
+        entry = {"pair": pair_id, "chosen": chosen,
+                 "shown_order": [str(x) for x in shown], "elapsed_ms": elapsed, "at": now}
 
         with self._lock:
             path = self._find_file(name, sid)
@@ -236,22 +269,24 @@ class BlindStore:
                 while os.path.exists(path):
                     n += 1
                     path = os.path.join(rdir, f"{stem}_{n}.json")
-                doc = {"set": name, "sid": sid, "started": now, "responses": {}}
+                doc = {"set": name, "sid": sid, "started": now}
                 self._sid_files[(name, sid)] = path
+            if not isinstance(doc.get("choices"), dict):
+                doc["choices"] = {}
             doc["nickname"] = nickname
             doc["updated"] = now
             doc["user_agent"] = user_agent[:200]
-            doc["responses"][item_id] = entry
+            doc["choices"][pair_id] = entry
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fp:
                 json.dump(doc, fp, ensure_ascii=False, indent=2)
             os.replace(tmp, path)
-        return 200, {"ok": True, "answered": len(doc["responses"]),
+        return 200, {"ok": True, "answered": len(doc["choices"]),
                      "file": os.path.basename(path)}
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "UEPBlindTest/2.0"
+    server_version = "UEPBlindTest/3.0"
     store: BlindStore
     _hits: dict
     _hits_lock: threading.Lock
@@ -289,24 +324,22 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/sets":
             out = []
             for name in self.store.list_sets():
-                pub = self.store.public_set(name)
-                if pub and pub["items"]:
-                    out.append({"set": name, "description": pub["description"],
-                                "items": len(pub["items"])})
+                pairs = self.store.pairs(name)
+                if pairs:
+                    desc = (self.store.manifest(name) or {}).get("description", "")
+                    out.append({"set": name, "description": str(desc), "pairs": len(pairs)})
             self._json(200, {"sets": out})
-        elif path.startswith("/api/set/"):
-            pub = self.store.public_set(path[len("/api/set/"):])
-            if pub is None:
-                self._json(404, {"error": "not found"})
-            else:
-                self._json(200, pub)
-        elif path == "/api/progress":
+        elif path == "/api/quiz":
             name = (query.get("set") or [""])[0]
             sid = (query.get("sid") or [""])[0]
-            if self.store.manifest(name) is None or not SID_RE.match(sid):
+            if not SID_RE.match(sid):
                 self._json(400, {"error": "bad request"})
+                return
+            quiz = self.store.quiz(name, sid) if SET_NAME.match(name) else None
+            if quiz is None:
+                self._json(404, {"error": "not found"})
             else:
-                self._json(200, self.store.load_progress(name, sid))
+                self._json(200, quiz)
         elif path.startswith("/audio/"):
             seg = path[len("/audio/"):].split("/")
             if len(seg) != 3 or not all(SAFE_ID.match(s) for s in seg):
@@ -360,10 +393,10 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             self._json(400, {"error": "bad json"})
             return
-        code, body = self.store.save_response(payload, self.headers.get("User-Agent") or "")
+        code, body = self.store.save_choice(payload, self.headers.get("User-Agent") or "")
         if code == 200:
-            print(f"[收到評分] {str(payload.get('nickname', ''))[:32]} -> "
-                  f"{payload.get('set')}/{payload.get('item_id')}", flush=True)
+            print(f"[收到作答] {str(payload.get('nickname', ''))[:32]} -> "
+                  f"{payload.get('set')}/{payload.get('pair')}", flush=True)
         self._json(code, body)
 
     # ---- 檔案 ----
@@ -430,7 +463,7 @@ def make_server(sets_dir: str, host: str = "127.0.0.1", port: int = 8848) -> Thr
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="通用多候選盲測網站")
+    parser = argparse.ArgumentParser(description="A/B 二選一盲測網站")
     parser.add_argument("--host", default="127.0.0.1",
                         help="監聽位址（預設只限本機；區網/對外請明確指定 0.0.0.0）")
     parser.add_argument("--port", type=int, default=8848)

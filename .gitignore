@@ -72,3 +72,4 @@ experiments/lora_training_data/
 # VoxCPM 實驗環境與模型
 .venv-voxcpm/
 /models_cache/
+.venv-bluemagpie/

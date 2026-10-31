@@ -9,12 +9,14 @@
 adapter 是 async，Host 擁有一條專屬 event loop 執行緒執行其協程；adapter 的寫入**不在** ``call()`` 的 engine 鎖內執行
 （同一把鎖由 adapter 自己持有，否則舊式 engine 會死結）。
 
-關閉：先 ``stop_dream_scheduler()``，再等在途事件投遞與排隊中的呼叫排空，接著 ``adapter.aclose()``（排空寫入），
+關閉：先停做夢迴圈並有界等進行中的 ``dream()`` 返回，再 ``stop_dream_scheduler()``，再等在途事件投遞與排隊中的呼叫排空，接著 ``adapter.aclose()``（排空寫入），
 最後逐個 ``engine.close(timeout)``（B-4，冪等）。
 
 做夢（Bernie 裁決，取代 D75 (c)）：per-user engine 與 ``scope-g*`` 共享 namespace 一律關閉自己的排程（``configure_dream``
-關 idle／cron，不呼叫 ``start_dream_scheduler``）；全域做夢迴圈由 Host 管（完整迴圈另案，此處只接 ``set_dream_listener``
-收每次 dream 結束的報告：計數、Activity 與 log）。階段 X（D76）：Host 只管 Core 自己的 namespace 與資料目錄，啟動時核對與外部占用不相交。
+關 idle／cron，不呼叫 ``start_dream_scheduler``）；全域做夢迴圈由 Host 管：``dream_loop`` 啟用時最後才啟動單一 daemon 執行緒
+``uep-mem-dream``（``uep/memory/dream_loop.py``），一次一個 namespace，不走 ``call()``；``set_dream_listener`` 收每次 dream 結束的
+報告（計數、Activity 與 log 的單一寫入點）。與 ``enable_dream_scheduler=True`` 互斥。階段 X（D76）：Host 只管 Core 自己的
+namespace 與資料目錄，啟動時核對與外部占用不相交。
 
 併發：每個 namespace 一個單工作緒 executor 加一把 engine 鎖，A namespace 卡住不影響 B。
 """
@@ -42,6 +44,8 @@ from uep.memory.access import (
     MemoryToolBackend,
 )
 from uep.memory.activity import DreamActivityRecorder
+from uep.memory.dream_loop import DreamLoop, DreamTarget, ForegroundProbe, current_job
+from uep.memory.dream_planner import KNOWN_SKIP_CODES, DreamLoopConfig, RestWindowPolicy
 from uep.memory.identity import IdentityDirectory
 from uep.memory.metrics import MemoryMetrics
 from uep.memory.namespaces import (
@@ -62,6 +66,7 @@ logger = logging.getLogger("uep.memory.host")
 
 HEALTH_SOURCE = "core.health"  # State Coordinator 只投影這個來源的 health 事件
 HEALTH_REF = "memory"
+DREAM_HEALTH_REF = "memory.dream"  # 做夢 degraded 與整個 MemoryHost 可用性（HEALTH_REF）分開；不連動 Runtime（D98）
 
 EngineFactory = Callable[[str, Path], MemoryEngineLike]
 InhibitorFactory = Callable[[str], Any]
@@ -146,7 +151,13 @@ class MemoryHost:
         retrieve_timeout_s: float = DEFAULT_RETRIEVE_TIMEOUT_S,
         store_timeout_s: float = DEFAULT_STORE_TIMEOUT_S,
         drain_timeout_s: float = 5.0,
+        dream_loop: DreamLoopConfig | None = None,
+        dream_probe: ForegroundProbe | None = None,
+        dream_rest_policy: RestWindowPolicy | None = None,
     ) -> None:
+        if dream_loop is not None and dream_loop.enabled and enable_dream_scheduler:
+            # 內建排程與 Host 迴圈會對同一 engine 各自觸發，計數與 Activity 會混（D92、VC-DL-1）
+            raise MemoryHostError("enable_dream_scheduler 與 Host 做夢迴圈（dream_loop.enabled）不得同時啟用")
         self._engine_factory = engine_factory
         self._data_root = Path(data_root)
         self._specs = tuple(namespaces)
@@ -160,6 +171,10 @@ class MemoryHost:
         self._adapters: dict[str, MemoryAdapterLike] = {}
         self._runner: _AdapterRunner | None = None
         self._drain_timeout_s = drain_timeout_s
+        self._dream_config = dream_loop
+        self._dream_probe = dream_probe
+        self._dream_rest_policy = dream_rest_policy
+        self._dream_loop: DreamLoop | None = None
         self.metrics = MemoryMetrics()
         self._activity = (
             DreamActivityRecorder(session_factory, persona_id=persona_id) if session_factory is not None else None
@@ -240,6 +255,7 @@ class MemoryHost:
             try:
                 for spec in self._specs:
                     report.namespaces[spec.namespace_id] = self._start_namespace(spec, inhibitors)
+                self._start_dream_loop()  # 最後才啟動：所有 namespace 已完成「建 engine -> 注入 -> set_dream_listener」
             except BaseException:
                 self._stop_locked()
                 raise
@@ -299,6 +315,35 @@ class MemoryHost:
             logger.warning("做夢排程啟動失敗：namespace=%s", ns)
         return {"scheduler": result}
 
+    def _start_dream_loop(self) -> None:
+        cfg = self._dream_config
+        if cfg is None or not cfg.enabled:
+            return
+        self._dream_loop = DreamLoop(
+            cfg, targets=self._dream_targets, probe=self._dream_probe, rest_policy=self._dream_rest_policy,
+            metrics=self.metrics, activity=self._activity, report_sink=self._on_dream_report,
+            health_sink=lambda status: self._publish_health(status, DREAM_HEALTH_REF),
+        )
+        self._dream_loop.start()
+
+    def _dream_targets(self) -> list[DreamTarget]:
+        """目標＝非共享 namespace；``scope-g*`` 沒有自己的 dream（共享投影搭 owner 的 dream 便車）。"""
+        out: list[DreamTarget] = []
+        for ns, engine in list(self._engines.items()):
+            lock = self._locks.get(ns)
+            if lock is not None and not is_scope_namespace_id(ns):
+                out.append(DreamTarget(ns, engine, lock))
+        return out
+
+    @property
+    def dream_loop(self) -> DreamLoop | None:
+        return self._dream_loop
+
+    def dream_status(self) -> Mapping[str, Any]:
+        """診斷用：迴圈狀態（未啟用時只回 ``{"enabled": False}``）。"""
+        loop = self._dream_loop
+        return {"enabled": False} if loop is None else {"enabled": True, **loop.status()}
+
     def _make_sink(self, namespace_id: str, owner_id: str | None) -> Any:
         if self._publisher is None:
             return _NullSink()
@@ -312,6 +357,10 @@ class MemoryHost:
             self._stop_locked()
 
     def _stop_locked(self) -> None:
+        # 先停做夢迴圈並有界等 dream() 返回：dream 結束才發的 memory.dream_completed 必須落在 drain 之前
+        loop, self._dream_loop = self._dream_loop, None
+        if loop is not None:
+            self._safe("dream_loop.stop", loop.stop)
         engines = list(self._engines.items())
         for ns, engine in reversed(engines):
             self._safe(f"stop_dream_scheduler({ns})", engine.stop_dream_scheduler)
@@ -475,8 +524,15 @@ class MemoryHost:
 
     def _on_dream_report(self, namespace_id: str, report: Mapping[str, Any]) -> None:
         """每次 dream_now 結束都會呼叫（含 skipped／error），在觸發 dream 的執行緒上同步執行，絕不拋例外。
-        計數：``memory.dream.runs.<trigger>``、``memory.dream.skipped_lease``（E1／E4）；只有 completed／error 補 Activity。"""
+        這是 metrics／Activity 的**單一寫入點**：``memory.dream.runs.<trigger>``、``memory.dream.skipped_lease``（E1／E4）、
+        ``memory.dream.skipped.<code>``。Host 迴圈觸發的 dream 以 thread-local job 把報告綁回決策：Activity 更新同一列
+        （ACTIVE -> ENDED）；沒有 job（記憶端內建排程、人工）則維持舊行為（completed／error 補記一筆已結束的列）。"""
         try:
+            job = current_job()
+            if job is not None and job.namespace_id != namespace_id:
+                job = None
+            if job is not None:
+                job.reported = True
             status = str(report.get("status") or "")
             trigger = _TRIGGER_SAFE.sub("_", str(report.get("triggered_by") or "unknown").lower()).strip("_") or "unknown"
             if status == "skipped":
@@ -484,7 +540,14 @@ class MemoryHost:
                 reason = str(report.get("skipped_reason") or "")
                 lease = reason.startswith("lease_")
                 self.metrics.inc("memory.dream.skipped_lease" if lease else "memory.dream.skipped")
+                if reason in KNOWN_SKIP_CODES:
+                    self.metrics.inc(f"memory.dream.skipped.{reason}")
+                if reason == "window_completed" and job is not None:
+                    logger.warning("dream 回報 window_completed：同目錄有人以 cron 觸發（Host 不使用 cron）：namespace=%s", namespace_id)
                 logger.info("dream 略過：namespace=%s trigger=%s reason=%s", namespace_id, trigger, reason)
+                if job is not None and job.activity_id is not None and self._activity is not None:
+                    code = _TRIGGER_SAFE.sub("_", reason.lower()).strip("_") or "unknown"
+                    self._activity.finish(job.activity_id, f"skipped_{code}")
                 return
             if status == "error":
                 self.metrics.inc("memory.dream.error")
@@ -492,18 +555,22 @@ class MemoryHost:
             else:
                 self.metrics.inc(f"memory.dream.runs.{trigger}")
             if self._activity is not None:
-                self._activity.record_finished(namespace_id, trigger, "failed" if status == "error" else "completed")
+                outcome = "failed" if status == "error" else "completed"
+                if job is not None and job.activity_id is not None:
+                    self._activity.finish(job.activity_id, outcome)
+                else:
+                    self._activity.record_finished(namespace_id, trigger, outcome)
         except Exception as exc:  # noqa: BLE001 - 在 engine 執行緒上呼叫；補記失敗不得影響 dream
             logger.warning("dream 報告處理失敗（已忽略）：%s", type(exc).__name__)
 
     # ---- health／狀態 ----
 
-    def _publish_health(self, status: str) -> None:
+    def _publish_health(self, status: str, ref_id: str = HEALTH_REF) -> None:
         if self._publisher is None:
             return
         try:
             self._publisher.publish(
-                EventDraft(event_type="core.component_health_changed", payload={"ref_id": HEALTH_REF, "status": status}),
+                EventDraft(event_type="core.component_health_changed", payload={"ref_id": ref_id, "status": status}),
                 TrustedContext(source=HEALTH_SOURCE, actor_id="uep:memory", scope_ref="scope_private_core"),
             )
         except Exception as exc:  # noqa: BLE001 - health 事件失敗不得影響啟停；只記例外類別

@@ -7,6 +7,8 @@
 - ``FakeMemoryAdapter`` 照 ES ``EchoMemoryAdapter`` 的形狀（async ``store``／``execute_tool``／``aclose``），寫入轉呼叫 engine；
   ``FakeAdapterFactory`` 記錄每個 engine 建了幾個 adapter（單一 adapter 約束）。
 - ``emit(draft)`` 透過已注入的 sink 發草稿，模擬記憶端 emitter。
+- 做夢：``readiness`` 為 ``dream_readiness()`` 的回傳（可改）；``dream()`` 與真 engine 一樣在返回前同步呼叫 listener
+  （``notify_listener``）、以 ``dream_hook(triggered_by)`` 可注入阻塞／例外／自訂回傳，並記錄 ``max_dream_concurrency``。
 """
 from __future__ import annotations
 
@@ -119,6 +121,13 @@ class FakeMemoryEngine:
         self.dream_listener: Callable[[dict[str, Any]], None] | None = None
         self.engine_resolver: Callable[[str], Any] | None = None
         self.close_timeouts: list[float] = []
+        self.readiness: dict[str, Any] = {"pending": 0, "min_pending": 5, "daydream_pending": 20, "suggested_trigger": None}
+        self.notify_listener = True
+        self.dream_hook: Callable[[str], dict[str, Any] | None] | None = None
+        self.dream_count = 0
+        self.max_dream_concurrency = 0
+        self._dream_active = 0
+        self._dream_lock = threading.Lock()
 
     def _log(self, name: str, arg: Any = None) -> None:
         self.call_log.append((self.namespace_id, name, arg))
@@ -166,11 +175,26 @@ class FakeMemoryEngine:
         self._log("stop_dream_scheduler")
 
     def dream_readiness(self) -> dict[str, Any]:
-        return {"pending": 0, "min_pending": 5, "daydream_pending": 20, "suggested_trigger": None}
+        self._log("dream_readiness")
+        return dict(self.readiness)
 
     def dream(self, triggered_by: str = "manual") -> dict[str, Any]:
         self._log("dream", triggered_by)
-        return {**self.dream_result, "triggered_by": triggered_by}
+        with self._dream_lock:
+            self.dream_count += 1
+            self._dream_active += 1
+            self.max_dream_concurrency = max(self.max_dream_concurrency, self._dream_active)
+        try:
+            override = self.dream_hook(triggered_by) if self.dream_hook is not None else None
+        finally:
+            with self._dream_lock:
+                self._dream_active -= 1
+        result = {**self.dream_result, **(override or {}), "triggered_by": triggered_by}
+        if "status" not in result:
+            result["status"] = "skipped" if result.get("skipped_reason") else "error" if result.get("error") else "completed"
+        if self.notify_listener and self.dream_listener is not None:
+            self.dream_listener(dict(result))
+        return result
 
     # ---- 讀寫 ----
 

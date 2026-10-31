@@ -1,5 +1,7 @@
 """P3-M MemoryHost：engine registry、啟動／關閉契約、Memory Access Layer、sink 轉譯、做夢 Activity。"""
 from uep.memory.access import GuildMembership, MemoryAccessLayer
+from uep.memory.dream_loop import DreamLoop, ForegroundProbe
+from uep.memory.dream_planner import DreamLoopConfig, DreamPlanner, FixedWindowPolicy
 from uep.memory.host import (
     MemoryHost,
     MemoryHostError,
@@ -17,7 +19,7 @@ from uep.memory.protocol import (
 from uep.memory.sink import MemorySink, translate_draft
 
 __all__ = [
-    "GUEST", "ForeignClaim", "GuildMembership", "IdentityDirectory", "MemoryAccessLayer", "MemoryEngineLike",
+    "GUEST", "DreamLoop", "DreamLoopConfig", "DreamPlanner", "FixedWindowPolicy", "ForegroundProbe", "ForeignClaim", "GuildMembership", "IdentityDirectory", "MemoryAccessLayer", "MemoryEngineLike",
     "MemoryHost", "MemoryHostError", "MemoryPort", "MemorySink", "NamespaceSpec", "ResolvedIdentity",
     "RetrieveResult", "StartReport", "StoreResult", "translate_draft",
 ]

@@ -408,6 +408,13 @@ class SharedContext:
     def is_empty(self) -> bool:
         return not self.items and not self.activity_items
 
+    def about_refs(self) -> dict[int, str]:
+        """旁證序號 -> projection_id，與 to_text 實際渲染的旁證段一致（序號從 1 起，含截斷規則）。
+
+        供 LLM 以序號指定要撤回／糾正的旁證投影（engine.retract_about_me / correct_about_me）。
+        """
+        return {i: it.projection_id for i, it in enumerate(self.about_items[:SHARED_MAX_ITEMS], start=1)}
+
     def _activity_line(self, name: str) -> str:
         """遊玩摘要單行；不以「- 」開頭，避免被 ES 截斷邏輯當成 item 行計數。"""
         parts: list[str] = []
@@ -457,9 +464,10 @@ class SharedContext:
             act = self._activity_line(_name(self.activity_owner_uid))
             if act:
                 lines.append(act)
-        for it in self.about_items[:SHARED_MAX_ITEMS]:
+        for n, it in enumerate(self.about_items[:SHARED_MAX_ITEMS], start=1):
             summary = _one_line(it.summary, SHARED_SUMMARY_MAX_CHARS)
             label = f"（{it.support_label}）" if it.support_label else ""
-            lines.append(f"- {_name(it.owner_uid)} 提到〈{_name(it.about_uid)}〉：{summary}{label}")
+            # 序號標籤供 LLM 指定撤回／糾正對象；仍以「- 」開頭，維持 item 行計數
+            lines.append(f"- 〔旁證{n}〕{_name(it.owner_uid)} 提到〈{_name(it.about_uid)}〉：{summary}{label}")
         lines.append(f"</{SHARED_BLOCK_TAG}>")
         return "\n".join(lines)

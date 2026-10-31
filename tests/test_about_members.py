@@ -201,8 +201,35 @@ class TestRetrieval:
         got = named(scope_engine, BOB)
         text = got.to_text(display_name=lambda uid: NAMES.get(uid, ""))
         assert f"- 乙 在本伺服器提過：{SUMMARY}（僅本人提過，未經他人佐證）" in text
-        assert f"- 甲 提到〈乙〉：{SUMMARY}\n" in text
+        assert f"- 〔旁證1〕甲 提到〈乙〉：{SUMMARY}\n" in text
         assert text.index("乙 在本伺服器提過") < text.index("甲 提到〈乙〉")
+
+    def test_about_refs_numbering(self, world, scope_engine):
+        _, _, about_pid, _ = world
+        got = named(scope_engine, BOB)
+        assert got.about_refs() == {1: about_pid}
+        text = got.to_text(display_name=lambda uid: NAMES.get(uid, ""))
+        assert sum(1 for ln in text.splitlines() if ln.startswith("- ")) == len(got.items)
+        # 本人段不加序號
+        assert "- 乙 在本伺服器提過" in text and text.count("〔旁證") == 1
+
+    def test_about_refs_with_activity_and_cap(self, root, layer, scope_engine):
+        for i in range(5):
+            sayer = make_owner(root, layer, f"70020{i}", AboutLLM(about_names=["乙"]))
+            share_one(sayer, f"乙喜歡爵士樂{i}", f"旁證{i}")
+        got = named(scope_engine, BOB)
+        got.activity_items = [{"name": "遊戲", "last_played": "2026-10-01", "total_minutes": 120}]
+        got.activity_owner_uid = BOB
+        refs = got.about_refs()
+        assert list(refs) == [1, 2, 3] and list(refs.values()) == [it.projection_id for it in got.about_items[:3]]
+        text = got.to_text(display_name=lambda uid: NAMES.get(uid, ""))
+        assert "最近在玩" in text
+        item_lines = [ln for ln in text.splitlines() if ln.startswith("- ")]
+        assert len(item_lines) == 3
+        assert [ln.split("〕")[0] for ln in item_lines] == ["- 〔旁證1", "- 〔旁證2", "- 〔旁證3"]
+
+    def test_about_refs_empty_without_about(self, world, scope_engine):
+        assert named(scope_engine, CAROL).about_refs() == {}
 
     def test_caps_three_each(self, root, layer, scope_engine):
         bob = make_owner(root, layer, BOB, ShareLLM())

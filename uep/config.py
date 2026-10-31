@@ -35,6 +35,30 @@ class UepSettings(BaseSettings):
     memory_embedding_backend: str | None = Field(default=None, validation_alias="UEP_MEMORY_EMBEDDING_BACKEND")
     memory_embedding_model: str | None = Field(default=None, validation_alias="UEP_MEMORY_EMBEDDING_MODEL")
 
+    # 推理 Host 組裝（P3 S6，uep/echo/inference_wiring.py）：子系統 repo 路徑一律由設定明確給（不猜同層目錄；
+    # ES 的同層猜測在非 editable 安裝下指向 site-packages 之上而失效）。未設定時對應的 stage 拒絕組裝。
+    infer_tts_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_TTS_REPO")
+    infer_stt_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_STT_REPO")
+    infer_session_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_SESSION_REPO")
+    infer_tts_device: str = Field(default="cuda", validation_alias="UEP_INFER_TTS_DEVICE")
+    infer_tts_fp16: bool = Field(default=True, validation_alias="UEP_INFER_TTS_FP16")
+    infer_tts_use_accel: bool = Field(default=False, validation_alias="UEP_INFER_TTS_USE_ACCEL")
+    infer_tts_warmup: bool = Field(default=True, validation_alias="UEP_INFER_TTS_WARMUP")
+    infer_tts_lora_scale: float | None = Field(default=None, validation_alias="UEP_INFER_TTS_LORA_SCALE")
+    infer_tts_speed: float | None = Field(default=None, validation_alias="UEP_INFER_TTS_SPEED")
+    infer_tts_language: str | None = Field(default=None, validation_alias="UEP_INFER_TTS_LANGUAGE")
+    infer_stt_mode: str = Field(default="multichannel", validation_alias="UEP_INFER_STT_MODE")
+    infer_stt_language: str | None = Field(default=None, validation_alias="UEP_INFER_STT_LANGUAGE")
+    infer_llm_provider: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_PROVIDER")
+    infer_llm_model: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_MODEL")
+    infer_system_prompt: str = Field(default="", validation_alias="UEP_INFER_SYSTEM_PROMPT")
+    # 各 stage prepare 的逾時（秒）；Host 啟動總上限目前為 60 秒（EchoPipelineHost.start），三者相加須小於它
+    infer_speak_prepare_timeout_s: float = Field(default=40.0, validation_alias="UEP_INFER_SPEAK_PREPARE_TIMEOUT_S")
+    infer_think_prepare_timeout_s: float = Field(default=8.0, validation_alias="UEP_INFER_THINK_PREPARE_TIMEOUT_S")
+    infer_input_prepare_timeout_s: float = Field(default=10.0, validation_alias="UEP_INFER_INPUT_PREPARE_TIMEOUT_S")
+    # 語音／LLM 載入失敗時是否降級（False：沿用原行為，prepare 例外讓 Host 啟動失敗）
+    infer_degrade_on_failure: bool = Field(default=True, validation_alias="UEP_INFER_DEGRADE_ON_FAILURE")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> UepSettings:

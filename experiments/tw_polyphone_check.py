@@ -1,4 +1,4 @@
-"""破音詞逐詞聽測：修正前（commit 5dd1b1a 的字典）vs 修正後（目前字典），TWLORA（step_0000300），ULT。
+"""破音詞逐詞聽測：修正前（commit 5dd1b1a 的字典）vs 修正後（目前字典），TWLORA（step_0000600），ULT。
 輸出 E:/Materials/Voices/UEP/2026-10-31_polyphone_check/pNN/pNN__TWLORA-TWN-{before,after}.wav + README。"""
 import json, os, subprocess, sys, types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,7 +30,7 @@ def main():
     new, old = TaiwanPronunciationNormalizer(), old_normalizer()
     n_path, n_text = T.neutral_ref()
     model = E.load_model(); sr = model.tts_model.sample_rate
-    E.set_tag(model, "step_0000300")
+    E.set_tag(model, E.DEFAULT_LORA_TAG)
     E.synth(model, "你好。", 1, n_path, n_text)
     info = []
     for i, (pid, text, focus) in enumerate(SHORT):

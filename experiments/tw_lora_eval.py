@@ -26,6 +26,7 @@ from taiwan_pronunciation import TaiwanPronunciationNormalizer  # noqa: E402
 
 EV = os.path.join(ROOT, "outputs", "tw_lora_eval")
 CKPT = os.path.join(ROOT, "models_cache", "vox_lora_tw", "checkpoints")
+DEFAULT_LORA_TAG = "step_0000600"  # 預設 LoRA checkpoint（艾斯維爾耳聽裁定）；各腳本一律引用此常數
 TAIMECS = os.path.join(ROOT, "outputs", "tw_lora_data", "taimecs", "metadata.jsonl")
 EN = ["The weather is nice today. I finished organizing everything on my desk. What should we do next?",
       "I'm sorry, I lost the backup files. I promised I would keep them safe, and I let you down."]
@@ -243,6 +244,8 @@ def cmd_final(a):
     sents = {sid: text for sid, text, _, _ in T.SENTENCES}
     sent_log = {}
     for tag, lora in (("TWN", False), ("TWLORA", True)):
+        if a.lora_only and not lora:
+            continue
         set_tag(model, a.tag if lora else "base")
         for i, (sid, text) in enumerate(sents.items()):
             seed = T.SEED + i
@@ -266,5 +269,6 @@ if __name__ == "__main__":
     ap.add_argument("stage", choices=["gen", "score", "report", "final", "foreign"])
     ap.add_argument("--tags", default="base")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--lora-only", action="store_true", dest="lora_only")
     a = ap.parse_args()
     {"gen": cmd_gen, "score": cmd_score, "report": cmd_report, "final": cmd_final, "foreign": cmd_foreign}[a.stage](a)

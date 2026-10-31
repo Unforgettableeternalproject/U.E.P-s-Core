@@ -91,12 +91,12 @@ def main():
     dict_words = {e.word: e for e in ENTRIES}
     rows += ["", "## 破音字候選（TaiMECS 子集 8 句）", "",
              "多音字候選 = 手選的常見破音字（行調校還會重差得率模了都少發乾降量間為種更和覺著長數樂）出現處，附 pypinyin 詞組讀音（大陸語料訓練，非台灣標準）；台灣標準讀法僅字典已收的詞有查證，其餘標待確認，請人工審定。"
-             " 這 8 句只有 base(=TWN) 與 LoRA(step_0000300)+TWN 兩版，無「無前處理」對照。", "",
+             " 這 8 句只有 base(=TWN) 與 LoRA(step_0000600)+TWN 兩版，無「無前處理」對照。", "",
              "| 句 | 字（前後文） | pypinyin 詞組讀音 | base(TWN) 轉寫對位 | LoRA+TWN 轉寫對位 |", "|---|---|---|---|---|"]
     HET = "行調校還會重差得率模了都少發乾降量間為種更和覺著長數樂"
     for key, text in items:
         asr_b = json.load(open(os.path.join(E.EV, "metrics_base.json"), encoding="utf-8"))[key]["asr"]
-        asr_l = json.load(open(os.path.join(E.EV, "metrics_step_0000300.json"), encoding="utf-8"))[key]["asr"]
+        asr_l = json.load(open(os.path.join(E.EV, f"metrics_{E.DEFAULT_LORA_TAG}.json"), encoding="utf-8"))[key]["asr"]
         zh = "".join(c for c in text if "一" <= c <= "鿿")  # 僅漢字，與 lazy_pinyin 一一對齊
         py = lazy_pinyin(zh, style=Style.TONE3)
         cleanz = lambda t: re.sub(r"[^一-鿿]+", "", s2t.convert(t))  # noqa: E731

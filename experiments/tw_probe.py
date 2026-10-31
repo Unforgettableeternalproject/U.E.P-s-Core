@@ -38,7 +38,7 @@ def main(sid):
     model = E.load_model(); sr = model.tts_model.sample_rate
     n_path, n_text = T.neutral_ref()
     res = {}
-    for tag in ("base", "step_0000300"):
+    for tag in ("base", E.DEFAULT_LORA_TAG):
         E.set_tag(model, tag)
         E.synth(model, "你好。", 1, n_path, n_text)
         for name, text in VARIANTS[sid].items():

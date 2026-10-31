@@ -1,5 +1,5 @@
 """盲測素材 uep-voice-1031b：TWLORA-TWN-SPD（ref120 / post120）vs 現行 IndexTTS（V25-L085）。
-1) gen：用修正後的字典重做 8 句 VOX-ULT-TWLORA-TWN 與 -SPD-ref120 / -post120（LoRA=step_0000300，ULT neutral）。
+1) gen：用修正後的字典重做 8 句 VOX-ULT-TWLORA-TWN 與 -SPD-ref120 / -post120（LoRA=step_0000600，ULT neutral）。
    為擋掉單次隨機失誤（如 s03 的「這 P4」），每個輸出用 ES ASR 檢查，字元錯誤率 > GATE 就換 seed 重生（最多 3 次），
    實際 seed 與每次 CER 記在 outputs/tw_lora_eval/final2_log.json。V25 沒有做這種篩選。
 2) build：建 outputs/blind_sets/uep-voice-1031b/（沿用 webapp 契約），解盲 key 放 outputs/blind_keys/ 之外。
@@ -33,7 +33,7 @@ def cmd_gen(a):
     n_path, n_text = T.neutral_ref()
     ref120 = os.path.join(EV, "neutral_ref120.wav")
     model = E.load_model(); sr = model.tts_model.sample_rate
-    E.set_tag(model, "step_0000300")
+    E.set_tag(model, E.DEFAULT_LORA_TAG)
     E.synth(model, "你好。", 1, n_path, n_text)
     raw = os.path.join(EV, "final2_raw"); os.makedirs(raw, exist_ok=True)
     log = {}
@@ -98,7 +98,7 @@ def cmd_build(a):
             e = enc.embed_utterance(preprocess_wav(src))
             sim = float(np.dot(r1, e) / (np.linalg.norm(r1) * np.linalg.norm(e)))
             asr = es_asr.transcribe(src)
-            cands.append({"cand_id": cid, "system": v, "params": {"source": VERS[v], "lora": "step_0000300" if v != "v25" else None},
+            cands.append({"cand_id": cid, "system": v, "params": {"source": VERS[v], "lora": E.DEFAULT_LORA_TAG if v != "v25" else None},
                           "file": rel, "metrics": {"sim_r1": round(sim, 4), "cer": round(cer(text, asr), 4), "rtf": None, "first_chunk_s": None,
                                                     "audio_s": round(len(y) / sr, 3), "lufs": round(meter.integrated_loudness(y), 2)}})
             key[f"{iid}/{cid}"] = {"sentence": sid, "system": v, "source": VERS[v]}

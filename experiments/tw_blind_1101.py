@@ -75,8 +75,12 @@ def cmd_gen(a):
 
     for t in ("你好。", "週末我想去市場買點菜，順便繞去書店逛逛。", T.SENTENCES[1][1], T.SENTENCES[7][1]):  # 暖機：短、中、長
         synth(norm.normalize(t), 1)
-    log = {}
+    log_p = os.path.join(WORK, "gen_log.json")
+    only = [x for x in a.only.split(",") if x]
+    log = json.load(open(log_p, encoding="utf-8")) if only else {}  # --only 時保留其他句的紀錄
     for i, (sid, text, _, _) in enumerate(T.SENTENCES):
+        if only and sid not in only:
+            continue
         twn = norm.normalize(text)
         tries = []
         for k in range(4):
@@ -93,9 +97,11 @@ def cmd_gen(a):
         g = gcd(sr, 44100)
         fin, _ = P._post(resample_poly(w, 44100 // g, sr // g), 44100)
         sf.write(os.path.join(WORK, "zh", f"{sid}.wav"), fin, 44100, subtype="PCM_16")
+        if only:  # 句子改文字時，同步覆蓋 accent_check 資料夾中的對應檔
+            sf.write(os.path.join(T.DEST, sid, f"{sid}__{NEW_ZH}.wav"), fin, 44100, subtype="PCM_16")
         log[sid] = {"sent": twn, "tries": tries, "pick": best, "gate_ok": tries[best]["cer"] <= GATE}
         print(sid, [(t["seed"], t["cer"], t["rtf"], t["first_s"]) for t in tries], flush=True)
-    json.dump(log, open(os.path.join(WORK, "gen_log.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    json.dump(log, open(log_p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
 
 def zh_specs():
@@ -199,6 +205,7 @@ def cmd_check(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("stage", choices=["gen", "build", "check"])
+    ap.add_argument("--only", default="", help="gen 只重生指定句（如 s03）")
     ap.add_argument("--en", default="", help="英文選定版本（foreign_v3 的版本名，如 ULT-R1c）")
     ap.add_argument("--ja", default="", help="日文選定版本")
     a = ap.parse_args()

@@ -327,7 +327,7 @@ def test_distillation_triggers_contradiction_check(
         salience_score=0.8,
         is_dreamed=False,
     )
-    mock_episodic.list_episodes.return_value = [episode]
+    mock_episodic.list_pending.return_value = [episode]
     mock_episodic.mark_as_dreamed.return_value = 1
     # 蒸餾寫回前會以 episodic.get 比對過期，mock 需回傳同一個 Episode
     mock_episodic.get.side_effect = lambda ep_id: episode if ep_id == episode.id else None
@@ -380,7 +380,7 @@ def test_distillation_no_contradiction_detector(
         salience_score=0.8,
         is_dreamed=False,
     )
-    mock_episodic.list_episodes.return_value = [episode]
+    mock_episodic.list_pending.return_value = [episode]
     mock_episodic.mark_as_dreamed.return_value = 1
     # 蒸餾寫回前會以 episodic.get 比對過期，mock 需回傳同一個 Episode
     mock_episodic.get.side_effect = lambda ep_id: episode if ep_id == episode.id else None

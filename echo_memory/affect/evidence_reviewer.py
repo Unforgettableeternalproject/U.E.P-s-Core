@@ -178,6 +178,8 @@ corroborating_projection_ids 只能填上面列出的 id；沒有就留空陣列
 SHARE_SUMMARY_MAX_CHARS = 120
 # 分享判定專用的輸出 token 上限（逐字稿長、cited id 多時預設上限容易截斷成無效 JSON）
 SHARE_LLM_MAX_TOKENS = 2048
+# 隱私類 hold 的 reason 前綴：Dream 遇到這類 hold 且概念已有投影時 fail-closed 先撤回
+PRIVACY_HELD_PREFIX = "privacy_unknown_restrict_id"
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1161,7 +1163,7 @@ class EvidenceReviewer:
         for x in restrict_raw:
             n = _norm_evidence_id(x)
             if n not in norm_shown:
-                return held(f"unknown_evidence_id: {x}")
+                return held(f"{PRIVACY_HELD_PREFIX}: {x}")
             if norm_shown[n] not in restrict:
                 restrict.append(norm_shown[n])
         corro_class = parsed.get("corroboration_class")

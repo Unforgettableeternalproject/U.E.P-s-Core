@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from echo_memory.affect.evidence_reviewer import PRIVACY_HELD_PREFIX
 from echo_memory.schemas.evidence_review import (
     SP_PREFIX,
     compute_basis_digest,
@@ -311,6 +312,12 @@ class SharingPhase:
                 rep.held += 1  # held 不佔批次名額，但計次，超過上限放棄（內容改變才重來）
                 rep.held_reasons.append(f"{cid[:12]}:{j.reason}")
                 self._note_held(cid, digest, j.reason)
+                if (
+                    str(j.reason).startswith(PRIVACY_HELD_PREFIX)
+                    and entry is not None and entry.projection_id
+                ):
+                    # 隱私類 hold：無法確認隱私意圖，fail-closed 先撤回既有投影
+                    self._revoke_then_retract(cid, scope_id, entry.projection_id, "privacy_intent", rep)
                 all_final = False
                 continue
             if j.outcome != "judged":

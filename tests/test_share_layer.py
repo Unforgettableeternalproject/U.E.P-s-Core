@@ -1054,7 +1054,7 @@ class TestSharingIdNormalization:
         one_concept(owner)
         rep = owner.phase.run()
         assert rep.projected == 0 and rep.held == 1
-        assert rep.held_reasons and "unknown_evidence_id" in rep.held_reasons[0]
+        assert rep.held_reasons and "privacy_unknown_restrict_id" in rep.held_reasons[0]
         assert layer.list_projections(G42) == []
 
     def test_held_reason_recorded_in_registry(self, root, layer):
@@ -1090,3 +1090,49 @@ class TestSharingIdNormalization:
         one_concept(owner)
         owner.phase.run()
         assert seen["max_tokens"] == 2048
+
+
+class TestPrivacyHeldRevokes:
+    """隱私類 hold 且已有投影 -> fail-closed 撤回；非隱私 hold 不動投影。"""
+
+    @staticmethod
+    def _project_then_rejudge(root, layer, bad_llm):
+        owner = Owner(root, "1001", layer, ShareLLM())
+        cid = one_concept(owner)
+        assert owner.phase.run().projected == 1
+        assert len(layer.list_projections(G42)) == 1
+        owner.reviewer._llm_fn = bad_llm
+        owner.phase._forget_judged(cid)  # 強制下次 Dream 重判
+        return owner, cid
+
+    @staticmethod
+    def _unknown_restrict(prompt):
+        import re
+
+        ids = re.findall(r"^\[([^\]]+)\] ", prompt, re.M)
+        return json.dumps({
+            "sensitivity": "none", "claim_kind": "fact", "cited_unit_ids": ids,
+            "supports_summary_from_cited_only": True, "shareable_summary": SUMMARY,
+            "privacy_restrict_unit_ids": ["ghost_id"], "reason": "stub",
+        })
+
+    def test_privacy_held_with_projection_is_revoked(self, root, layer):
+        owner, cid = self._project_then_rejudge(root, layer, self._unknown_restrict)
+        rep = owner.phase.run()
+        assert rep.held == 1 and rep.revoked == 1
+        assert layer.list_projections(G42) == []
+        assert owner.sharing_entry(cid).get("projection_id", "") == ""
+
+    def test_non_privacy_held_keeps_projection(self, root, layer):
+        owner, cid = self._project_then_rejudge(root, layer, lambda p: "not json")
+        rep = owner.phase.run()
+        assert rep.held == 1 and rep.revoked == 0
+        assert len(layer.list_projections(G42)) == 1
+        assert owner.sharing_entry(cid)["projection_id"]
+
+    def test_privacy_held_without_projection_no_side_effect(self, root, layer):
+        owner = Owner(root, "1001", layer, self._unknown_restrict)
+        one_concept(owner)
+        rep = owner.phase.run()
+        assert rep.held == 1 and rep.revoked == 0 and rep.retracted == 0
+        assert layer.list_projections(G42) == []

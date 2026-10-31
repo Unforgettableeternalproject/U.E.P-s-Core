@@ -463,3 +463,37 @@ def test_prompt_keeps_public_proper_nouns():
     from echo_memory.dream.distillation import _DISTILLATION_PROMPT
 
     assert "公開專有名詞照原文保留" in _DISTILLATION_PROMPT
+
+
+class TestCollectCandidatesWindow:
+    """候選須先濾未 dream 再截斷，已 dreamed 高 salience 不得佔滿視窗。"""
+
+    def test_pending_not_starved_by_dreamed(self, storage):
+        episodic, semantic, graph = storage
+        for i in range(210):
+            episodic.write(Episode(
+                user_input=f"done{i}", agent_response="r", session_id="t",
+                content_summary=f"done{i}", salience_score=0.9, is_dreamed=True,
+            ))
+        pending = []
+        for i, sal in enumerate([0.5, 0.62, 0.55]):
+            ep = Episode(
+                user_input=f"p{i}", agent_response="r", session_id="t",
+                content_summary=f"p{i}", salience_score=sal,
+            )
+            episodic.write(ep)
+            pending.append(ep)
+        episodic.write(Episode(
+            user_input="low", agent_response="r", session_id="t",
+            content_summary="low", salience_score=0.49,
+        ))
+
+        distiller = KnowledgeDistillation(
+            episodic=episodic, semantic=semantic, graph=graph,
+            llm_fn=_mock_llm_fn_good,
+        )
+        got = distiller._collect_candidates(0.5, 10)
+
+        # salience 降序排序不變，門檻 0.5 不變
+        assert [e.salience_score for e in got] == [0.62, 0.55, 0.5]
+        assert {e.id for e in got} == {e.id for e in pending}

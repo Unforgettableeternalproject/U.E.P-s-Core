@@ -378,16 +378,8 @@ class KnowledgeDistillation:
 
         排序：salience 降序（最重要的先處理）
         """
-        all_episodes = self.episodic.list_episodes(
-            limit=200,
-            sort_by="salience",
-            ascending=False,
-        )
-
-        candidates = [
-            ep for ep in all_episodes
-            if ep.salience_score >= min_salience and not ep.is_dreamed
-        ]
+        # 先篩未 dream 且達門檻者再截斷（salience 降序），避免已 dreamed 者佔滿視窗
+        candidates = self.episodic.list_pending(min_salience)
 
         return candidates[:max_count]
 

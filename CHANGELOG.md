@@ -3298,3 +3298,15 @@
 
 ---
 
+### fix: S6 dream 略過改用固定代碼並補測試 stub. 10/31
+
+> Date: Sat, 31 Oct 2026 17:13:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `9f2c574e5486cc4dcec484b1444c3e85542e1828`
+
+---
+

@@ -87,8 +87,8 @@ def test_dream_listener_installed_on_user_engine_and_counts_reports(wired):
     assert "set_dream_listener" in factory.calls(OWNER_NS)
     engine = factory.engines[OWNER_NS]
     engine.report_dream({"status": "completed", "triggered_by": "host-loop"})
-    engine.report_dream({"status": "skipped", "triggered_by": "host-loop", "skipped_reason": "lease held by pid=1"})
-    engine.report_dream({"status": "skipped", "triggered_by": "host-loop", "skipped_reason": "pending 不足"})
+    engine.report_dream({"status": "skipped", "triggered_by": "host-loop", "skipped_reason": "lease_held"})
+    engine.report_dream({"status": "skipped", "triggered_by": "host-loop", "skipped_reason": "already_running"})
     engine.report_dream({"status": "error", "triggered_by": "host-loop", "error": "boom"})
     assert host.metrics.get("memory.dream.runs.host_loop") == 1
     assert host.metrics.get("memory.dream.skipped_lease") == 1

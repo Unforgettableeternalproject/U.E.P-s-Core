@@ -480,10 +480,11 @@ class MemoryHost:
             status = str(report.get("status") or "")
             trigger = _TRIGGER_SAFE.sub("_", str(report.get("triggered_by") or "unknown").lower()).strip("_") or "unknown"
             if status == "skipped":
+                # 記憶端 cb36629 起 skipped_reason 為固定代碼，租約類皆以 lease_ 開頭
                 reason = str(report.get("skipped_reason") or "")
-                lease = "lease" in reason.lower() or "租約" in reason
+                lease = reason.startswith("lease_")
                 self.metrics.inc("memory.dream.skipped_lease" if lease else "memory.dream.skipped")
-                logger.info("dream 略過：namespace=%s trigger=%s lease=%s", namespace_id, trigger, lease)
+                logger.info("dream 略過：namespace=%s trigger=%s reason=%s", namespace_id, trigger, reason)
                 return
             if status == "error":
                 self.metrics.inc("memory.dream.error")

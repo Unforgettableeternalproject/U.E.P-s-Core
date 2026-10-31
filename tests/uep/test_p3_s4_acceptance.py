@@ -561,6 +561,9 @@ class _Runtime:
     def call(self, namespace_id, fn, *, timeout_s, on_late=None):
         return fn(self.engines[namespace_id])
 
+    def adapter(self, namespace_id):
+        return None  # 最小組裝：沒有 adapter，工具退回 backend.execute
+
 
 class _Backend:
     def __init__(self) -> None:

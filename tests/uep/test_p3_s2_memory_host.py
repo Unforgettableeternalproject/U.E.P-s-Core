@@ -517,7 +517,7 @@ def test_dream_listener_report_adds_finished_activity_and_counts(wired):
     with sf() as s:
         assert s.query(ActivityRow).filter(ActivityRow.kind == "maintenance").count() == 0
     engine.report_dream({"status": "completed", "triggered_by": "scheduler"})
-    engine.report_dream({"status": "skipped", "triggered_by": "scheduler", "skipped_reason": "租約由 pid=1 持有"})
+    engine.report_dream({"status": "skipped", "triggered_by": "scheduler", "skipped_reason": "lease_held", "skipped_detail": "租約由 pid=1 持有"})
     with sf() as s:
         rows = list(s.query(ActivityRow).filter(ActivityRow.kind == "maintenance"))
     assert len(rows) == 1 and rows[0].origin_ref["triggered_by"] == "scheduler" and rows[0].status == "ENDED"

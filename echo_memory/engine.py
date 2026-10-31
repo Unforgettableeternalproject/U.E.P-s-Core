@@ -1538,7 +1538,7 @@ class MemoryEngine:
         projection_id: str,
         correction_text: str,
         *,
-        evidence: Sequence[EvidenceInput] | None = None,
+        evidence: Sequence[EvidenceInput | dict[str, Any]] | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
         """當事人糾正一則旁證：該則對 actor 轉為 contradicted（之後不再當旁證回傳），
@@ -1546,8 +1546,12 @@ class MemoryEngine:
 
         actor_uid 只信任宿主傳入的值，且必須 ∈ 該投影的 subject_uids。寫入目標：本 engine 就是
         actor 的 engine 時直接寫；否則經 ``set_engine_resolver`` 找 actor 的 engine（找不到＝拒絕，
-        沒有任何副作用）。evidence 缺省時以「私有」的使用者陳述寫入（不推測頻道屬性）；宿主若要
-        讓糾正內容像一般發言一樣被分享，傳入帶 channel_kind／audience_size／scope 的 EvidenceInput。
+        沒有任何副作用）。evidence 只用來提供頻道與場域屬性，內容不會被採用：糾正內容永遠另建一個
+        user EvidenceInput（content=correction_text、speaker_id=actor），並從 evidence 的第一個
+        user unit 複製情境欄位（scope、source_ref 的 kind／channel、attrs 內的 channel_kind／
+        audience_size 等；不含 occurred_at、text_span、ref_ids 與任何內容欄位）。evidence 可為
+        EvidenceInput 清單或同欄位 dict；缺省或找不到 user unit 時以「私有」的使用者陳述寫入
+        （不推測頻道屬性）。宿主要讓糾正內容像一般發言一樣被分享，就傳入帶這些屬性的本輪使用者 unit。
 
         回傳 ``{"ok", "reason", "projection_id", "correction_stored", "episode_id"}``。
         遮蔽已生效但 episode 寫入失敗時 ok=True、correction_stored=False（請宿主重送糾正內容）。
@@ -1583,9 +1587,7 @@ class MemoryEngine:
             return out
         out["ok"] = True
         try:
-            ev = list(evidence) if evidence else [
-                EvidenceInput(source_type="user", content=text, speaker_id=actor)
-            ]
+            ev = [self._build_correction_evidence(text, actor, evidence)]
             out["episode_id"] = target.store_episode(
                 text, "", session_id or "about_correction",
                 evidence=ev,
@@ -1596,6 +1598,38 @@ class MemoryEngine:
             logger.warning(f"[MemoryEngine] 糾正內容寫入失敗（遮蔽已生效）: {exc}")
             out["reason"] = "correction_store_failed"
         return out
+
+    @staticmethod
+    def _build_correction_evidence(
+        text: str, actor: str, host_evidence: Sequence[Any] | None,
+    ) -> EvidenceInput:
+        """糾正內容專用的 user EvidenceInput：內容取 text，情境欄位繼承宿主第一個 user unit。"""
+
+        def field(unit: Any, name: str, default: Any = None) -> Any:
+            if isinstance(unit, dict):
+                return unit.get(name, default)
+            return getattr(unit, name, default)
+
+        host = next(
+            (u for u in (host_evidence or ()) if field(u, "source_type") == "user"), None
+        )
+        if host is None:
+            return EvidenceInput(source_type="user", content=text, speaker_id=actor)
+        ref = field(host, "source_ref")
+        if isinstance(ref, dict):
+            ref = SourceRef(kind=str(ref.get("kind") or "legacy"), channel=ref.get("channel"))
+        elif ref is not None:
+            # ref_ids／name 指向宿主那則訊息，不屬於糾正內容，不複製
+            ref = SourceRef(kind=ref.kind, channel=ref.channel)
+        attrs = {
+            k: v for k, v in dict(field(host, "attrs") or {}).items()
+            if k != "occurred_at_fallback"
+        }
+        return EvidenceInput(
+            source_type="user", content=text, speaker_id=actor,
+            source_ref=ref, scope=field(host, "scope", "namespace") or "namespace",
+            attrs=attrs,
+        )
 
     # ── 撤回（擁有者端）──────────────────────────────────────────
 

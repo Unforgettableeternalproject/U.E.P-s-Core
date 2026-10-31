@@ -400,6 +400,62 @@ class TestSubjectRights:
         assert res["ok"] and res["correction_stored"]
         assert named(scope_engine, BOB).about_items == []
 
+    def test_correct_inherits_channel_attrs_from_host_user_unit(self, world, scope_engine):
+        from echo_memory.schemas.evidence import EvidenceInput, SourceRef
+
+        _, bob, about_pid, _ = world
+        text = "我其實不喜歡爵士樂"
+        host = [
+            EvidenceInput(
+                source_type="user", content="本輪使用者實際說的話", speaker_id=BOB,
+                scope="guild:42",
+                source_ref=SourceRef(kind="discord_message", channel="text", ref_ids=("m1",)),
+                attrs={"channel_kind": "text", "audience_size": 3},
+            ),
+        ]
+        res = bob.engine.correct_about_me(GUILD42, BOB, about_pid, text, evidence=host)
+        assert res["ok"] and res["correction_stored"] and res["episode_id"]
+        ep = bob.engine.episodic.get(res["episode_id"])
+        assert ep.user_input == text
+        (u,) = bob.engine.evidence.get(ep.evidence_ids)
+        assert (u.source_type, u.speaker_id, u.content) == ("user", BOB, text)
+        assert u.scope == "guild:42"
+        assert u.attrs["channel_kind"] == "text" and u.attrs["audience_size"] == 3
+        assert (u.source_ref.kind, u.source_ref.channel, u.source_ref.ref_ids) == (
+            "discord_message", "text", ()
+        )
+
+    def test_correct_accepts_dict_evidence(self, world, scope_engine):
+        _, bob, about_pid, _ = world
+        text = "那不是真的"
+        host = [
+            {"source_type": "agent", "content": "助理回覆"},
+            {
+                "source_type": "user", "content": "別的內容", "scope": "guild:42",
+                "source_ref": {"kind": "discord_voice", "channel": "voice"},
+                "attrs": {"channel_kind": "voice", "audience_size": 2},
+            },
+        ]
+        res = bob.engine.correct_about_me(GUILD42, BOB, about_pid, text, evidence=host)
+        assert res["ok"] and res["correction_stored"]
+        ep = bob.engine.episodic.get(res["episode_id"])
+        (u,) = bob.engine.evidence.get(ep.evidence_ids)
+        assert u.content == text and u.speaker_id == BOB and u.scope == "guild:42"
+        assert u.attrs["channel_kind"] == "voice" and u.attrs["audience_size"] == 2
+        assert u.source_ref.kind == "discord_voice" and u.source_ref.channel == "voice"
+
+    def test_correct_without_user_unit_falls_back_to_private(self, world, scope_engine):
+        from echo_memory.schemas.evidence import EvidenceInput
+
+        _, bob, about_pid, _ = world
+        host = [EvidenceInput(source_type="agent", content="助理回覆", attrs={"channel_kind": "text"})]
+        res = bob.engine.correct_about_me(GUILD42, BOB, about_pid, "那不是真的", evidence=host)
+        assert res["ok"] and res["correction_stored"]
+        ep = bob.engine.episodic.get(res["episode_id"])
+        (u,) = bob.engine.evidence.get(ep.evidence_ids)
+        assert u.content == "那不是真的" and u.scope == "namespace"
+        assert "channel_kind" not in u.attrs and u.source_ref is None
+
     def test_correct_without_actor_engine_has_no_side_effect(self, world, scope_engine):
         _, _, about_pid, _ = world
         res = scope_engine.correct_about_me(GUILD42, BOB, about_pid, "那不是真的")

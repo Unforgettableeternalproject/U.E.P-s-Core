@@ -44,11 +44,11 @@ def eval_items():
     return items
 
 
-def load_model(first_tag=None):
+def load_model(first_tag=None, optimize=False):
     from voxcpm import VoxCPM
     from voxcpm.model.voxcpm2 import LoRAConfig
     cfg = LoRAConfig(enable_lm=True, enable_dit=True, enable_proj=False, r=32, alpha=32, dropout=0.0)
-    return VoxCPM.from_pretrained(T.MODEL_DIR, load_denoiser=False, optimize=False, local_files_only=True, lora_config=cfg)
+    return VoxCPM.from_pretrained(T.MODEL_DIR, load_denoiser=False, optimize=optimize, local_files_only=True, lora_config=cfg)
 
 
 def set_tag(model, tag):

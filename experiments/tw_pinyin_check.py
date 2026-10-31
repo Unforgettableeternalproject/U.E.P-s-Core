@@ -128,12 +128,12 @@ def _stretch_wsola(y, sr, rate):
     return w.data[0].astype(np.float64)
 
 
-def _post(y, sr_t):
+def _post(y, sr_t, top_db=40):
     """與 build 相同的修靜音、補頭尾、-23 LUFS；回傳 (音訊, 語音段秒數)。"""
     import librosa
     import numpy as np
     import pyloudnorm as pyln
-    yt, _ = librosa.effects.trim(y, top_db=40, frame_length=1024, hop_length=256)
+    yt, _ = librosa.effects.trim(y, top_db=top_db, frame_length=1024, hop_length=256)
     speech_s = len(yt) / sr_t
     y = np.concatenate([np.zeros(int(sr_t * T.PAD_HEAD_S)), yt, np.zeros(int(sr_t * T.PAD_TAIL_S))])
     y = pyln.normalize.loudness(y, pyln.Meter(sr_t).integrated_loudness(y), T.TARGET_LUFS)

@@ -398,6 +398,7 @@ def _process_namespace(
             _append_audit(ns_dir, {
                 "event": "result", "concept_id": cid, "outcomes": per_scope,
                 "judged": rep.judged, "projected": rep.projected, "held": rep.held,
+                "held_reasons": list(rep.held_reasons),
             }, rejudge_all)
             if any(v in _DONE_OUTCOMES for v in per_scope.values()):
                 prev = ledger.get(cid) if isinstance(ledger.get(cid), dict) else {}

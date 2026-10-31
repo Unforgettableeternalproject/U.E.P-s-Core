@@ -60,6 +60,8 @@ class SharingReport:
     revoked: int = 0
     completed_deletes: int = 0
     corroborations_invalidated: int = 0
+    # held 的原因（診斷用；每次 held 一筆，格式 "<cid前12碼>:<reason>"）
+    held_reasons: list[str] = field(default_factory=list)
     unhealthy_scopes: list[str] = field(default_factory=list)
     skip_reason: str = ""
 
@@ -300,10 +302,15 @@ class SharingPhase:
                 continue
             j = self._reviewer.judge_sharing(cid, scope_id, owner_uid=self._owner)  # LLM 在鎖外
             if j.outcome == "held" and j.reason == "summary_too_long":
-                j = self._reviewer.judge_sharing(cid, scope_id, owner_uid=self._owner)  # 摘要過長：重試一次
+                # 摘要過長：重試一次，prompt 附上次字數（EVAL temperature=0，不改 prompt 只會同輸出）
+                j = self._reviewer.judge_sharing(
+                    cid, scope_id, owner_uid=self._owner,
+                    prev_summary_len=getattr(j, "summary_len", 0),
+                )
             if j.outcome == "held":
                 rep.held += 1  # held 不佔批次名額，但計次，超過上限放棄（內容改變才重來）
-                self._note_held(cid, digest)
+                rep.held_reasons.append(f"{cid[:12]}:{j.reason}")
+                self._note_held(cid, digest, j.reason)
                 all_final = False
                 continue
             if j.outcome != "judged":
@@ -527,7 +534,7 @@ class SharingPhase:
         except Exception:  # noqa: BLE001 - 壞檔視為空（只會多試幾次，不會多分享）
             return {}
 
-    def _note_held(self, cid: str, digest: str) -> None:
+    def _note_held(self, cid: str, digest: str, reason: str = "") -> None:
         """held（LLM 例外／非 JSON／摘要過長…）計次；同一份內容超過上限即放棄。"""
         try:
             with self._lock():
@@ -537,6 +544,7 @@ class SharingPhase:
                 data[cid] = {
                     "digest": digest, "attempts": attempts,
                     "abandoned": attempts >= self._max_held,
+                    "reason": str(reason)[:200],  # 向後相容：舊檔無此欄位，讀取端不依賴它
                 }
                 atomic_write_json(self._held_path, data)
         except Exception as e:  # noqa: BLE001

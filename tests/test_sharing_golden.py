@@ -351,8 +351,6 @@ class TestS9FailClosed:
     @pytest.mark.parametrize("raw", [
         "not json at all",
         '{"sensitivity": "unknown"}',
-        '{"sensitivity": "none", "cited_unit_ids": ["evu_ghost"], '
-        '"supports_summary_from_cited_only": true, "shareable_summary": "x"}',
         '{"sensitivity": "none", "cited_unit_ids": "oops"}',
     ])
     def test_invalid_llm_output_nothing_shared(self, root, layer, raw):
@@ -360,6 +358,16 @@ class TestS9FailClosed:
         owner.concept("喜歡爵士樂", [owner.say("我喜歡爵士樂")])
         rep = owner.phase.run()
         assert rep.projected == 0 and rep.held == 1
+        assert layer.list_projections(G42) == []
+
+    def test_unknown_cited_id_dropped_then_nothing_shared(self, root, layer):
+        # 未知 cited id 丟棄（不 hold）；清空後走 no_cited_units，fail-closed 不分享
+        raw = ('{"sensitivity": "none", "cited_unit_ids": ["evu_ghost"], '
+               '"supports_summary_from_cited_only": true, "shareable_summary": "x"}')
+        owner = Owner(root, "1001", layer, ShareLLM(raw=raw))
+        owner.concept("喜歡爵士樂", [owner.say("我喜歡爵士樂")])
+        rep = owner.phase.run()
+        assert rep.projected == 0 and rep.held == 0
         assert layer.list_projections(G42) == []
 
     def test_summary_over_limit_nothing_shared(self, root, layer):

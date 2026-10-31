@@ -1000,3 +1000,93 @@ class TestPhaseRobustness:
         assert layer.list_projections(G42) == []
         owner.phase.run()
         assert len(owner.llm.share_calls) == 2  # 未記入 judged -> 下次 Dream 重判
+
+
+class TestSharingIdNormalization:
+    """分享判定 id 正規化與 hold 診斷（D87）。"""
+
+    @staticmethod
+    def _llm(cited_fn, restrict_fn=lambda ids: [], summary=SUMMARY):
+        import re
+
+        calls: list[str] = []
+
+        def llm(prompt):
+            calls.append(prompt)
+            ids = re.findall(r"^\[([^\]]+)\] ", prompt, re.M)
+            return json.dumps({
+                "sensitivity": "none", "claim_kind": "fact",
+                "cited_unit_ids": cited_fn(ids),
+                "supports_summary_from_cited_only": True,
+                "shareable_summary": summary,
+                "privacy_restrict_unit_ids": restrict_fn(ids),
+                "reason": "stub",
+            }, ensure_ascii=False)
+
+        llm.calls = calls
+        return llm
+
+    def test_bracketed_ids_are_normalized(self, root, layer):
+        llm = self._llm(lambda ids: [f" [{i.upper()}] " for i in ids])
+        owner = Owner(root, "1001", layer, llm)
+        one_concept(owner)
+        rep = owner.phase.run()
+        assert rep.projected == 1 and rep.held == 0
+
+    def test_mixed_valid_and_unknown_cited_ids_drop_unknown(self, root, layer):
+        llm = self._llm(lambda ids: [*ids, "[ghost_id]"])
+        owner = Owner(root, "1001", layer, llm)
+        one_concept(owner)
+        rep = owner.phase.run()
+        assert rep.projected == 1 and rep.held == 0
+
+    def test_all_unknown_cited_ids_fail_closed_no_cited_units(self, root, layer):
+        llm = self._llm(lambda ids: ["ghost_a", "[ghost_b]"])
+        owner = Owner(root, "1001", layer, llm)
+        one_concept(owner)
+        rep = owner.phase.run()
+        assert rep.projected == 0 and rep.held == 0
+        assert layer.list_projections(G42) == []
+
+    def test_unknown_restrict_id_still_held(self, root, layer):
+        llm = self._llm(lambda ids: ids, lambda ids: [*ids[:1], "ghost_id"])
+        owner = Owner(root, "1001", layer, llm)
+        one_concept(owner)
+        rep = owner.phase.run()
+        assert rep.projected == 0 and rep.held == 1
+        assert rep.held_reasons and "unknown_evidence_id" in rep.held_reasons[0]
+        assert layer.list_projections(G42) == []
+
+    def test_held_reason_recorded_in_registry(self, root, layer):
+        owner = Owner(root, "1001", layer, ShareLLM(raw="not json"))
+        cid = one_concept(owner)
+        owner.phase.run()
+        rec = json.loads(owner.phase._held_path.read_text(encoding="utf-8"))[cid]
+        assert rec["reason"] == "llm_invalid_json"
+        # 向後相容：舊檔沒有 reason 欄位仍可讀
+        rec.pop("reason")
+        owner.phase._held_path.write_text(json.dumps({cid: rec}), encoding="utf-8")
+        assert owner.phase._load_held()[cid]["attempts"] == 1
+
+    def test_retry_prompt_includes_length_hint(self, root, layer):
+        answers = iter(["字" * 150, SUMMARY])
+        llm = ShareLLM(summary=lambda p: next(answers))
+        owner = Owner(root, "1001", layer, llm)
+        one_concept(owner)
+        rep = owner.phase.run()
+        assert rep.projected == 1
+        first, second = llm.share_calls
+        assert "上次摘要" not in first
+        assert "上次摘要 150 字" in second and "30 字內" in second
+
+    def test_share_llm_gets_max_tokens_only_when_supported(self, root, layer):
+        seen: dict = {}
+
+        def llm(prompt, max_tokens=None):
+            seen["max_tokens"] = max_tokens
+            return ShareLLM()(prompt)
+
+        owner = Owner(root, "1001", layer, llm)
+        one_concept(owner)
+        owner.phase.run()
+        assert seen["max_tokens"] == 2048

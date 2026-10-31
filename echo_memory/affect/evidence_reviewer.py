@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import inspect
 import json
 import logging
 from collections.abc import Callable
@@ -132,7 +133,8 @@ _SHARE_PROMPT = """你是記憶系統的分享審核員。下列「證據」都�
   保留公開專有名詞：遊戲、作品、話題、團體、公開地點（城市以上）等照證據原樣寫出，不要抽象化成「某款遊戲」之類的泛稱；
   只去掉人名（提到成員時以「某成員」表示，不寫名字）與私密細節。
 - privacy_restrict_unit_ids：說話者表達了「不希望被轉述、別說出去」意圖的證據 id（沒有就留空陣列）。
-
+- reason：一句話，30 字內。
+{length_hint}
 以純 JSON 回覆：
 {{"sensitivity": "none|personal|sensitive", "claim_kind": "fact|preference|state|intention", "corroboration_class": "identity|general|self_fact", "cited_unit_ids": ["..."], "supports_summary_from_cited_only": true, "shareable_summary": "...", "privacy_restrict_unit_ids": ["..."]{about_json}, "reason": "..."}}"""
 
@@ -174,6 +176,8 @@ corroborating_projection_ids 只能填上面列出的 id；沒有就留空陣列
 以純 JSON 回覆：{{"corroborating_projection_ids": ["..."], "reason": "..."}}"""
 
 SHARE_SUMMARY_MAX_CHARS = 120
+# 分享判定專用的輸出 token 上限（逐字稿長、cited id 多時預設上限容易截斷成無效 JSON）
+SHARE_LLM_MAX_TOKENS = 2048
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -235,6 +239,11 @@ class EvidenceSnapshot:
     scope: dict[str, Any] = field(default_factory=dict)
 
 
+def _norm_evidence_id(x: Any) -> str:
+    """證據 id 正規化：去空白、`[]` 與引號、轉小寫（LLM 常連括號一起回傳）。"""
+    return str(x).strip().strip("[]\"'` 	").lower()
+
+
 @dataclass
 class SharingJudgement:
     """一次分享判定（只讀判定，不寫任何東西）。outcome：judged｜skipped｜held。
@@ -258,6 +267,8 @@ class SharingJudgement:
     corroboration_class: str = ""
     # D87：這則概念在講誰（名冊成員 uid；已由臨時代號對回，名冊以外與擁有者本人已丟棄）
     about_members: list[str] = field(default_factory=list)
+    # summary_too_long 時 LLM 摘要的實際字數（供重試 prompt 附字數提示；其他情況為 0）
+    summary_len: int = 0
 
 
 def _roster_text(value: Any) -> str:
@@ -1010,12 +1021,24 @@ class EvidenceReviewer:
             logger.warning("[EvidenceReviewer] 取得名冊失敗（本次不標 about_members）: %s", e)
             return "", {}
 
+    def _call_share_llm(self, prompt: str) -> str:
+        """分享判定專用 LLM 呼叫：host 的 llm_fn 接受 max_tokens 時才帶（只限這條呼叫）。"""
+        fn = self._llm_fn
+        try:
+            params = inspect.signature(fn).parameters  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            params = {}
+        if "max_tokens" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return fn(prompt, max_tokens=SHARE_LLM_MAX_TOKENS)  # type: ignore[misc]
+        return fn(prompt)  # type: ignore[misc]
+
     def judge_sharing(
-        self, concept_id: str, scope_id: str, owner_uid: str = "",
+        self, concept_id: str, scope_id: str, owner_uid: str = "", prev_summary_len: int = 0,
     ) -> SharingJudgement:
         """判定概念能否在 scope_id 分享（不寫入）。fail-closed：任何缺漏／例外都不分享。
 
         owner_uid：概念擁有者（名冊排除本人；about_members 不含本人）。
+        prev_summary_len：上次 summary_too_long 的字數；>0 時重試 prompt 附字數提示。
 
         步驟 1 鎖內：快照、算 U_S 與 digest；步驟 2 鎖外：LLM 只看 U_S；
         步驟 3 結構驗證（欄位層級，不看文字內容）。
@@ -1064,9 +1087,13 @@ class EvidenceReviewer:
             legend=SOURCE_LEGEND, evidence=evidence_text, max_chars=SHARE_SUMMARY_MAX_CHARS,
             roster_block=roster_block,
             about_json=', "about_members": ["m1"]' if code_map else "",
+            length_hint=(
+                f"- 注意：上次摘要 {prev_summary_len} 字，請縮到 {SHARE_SUMMARY_MAX_CHARS} 字內。\n"
+                if prev_summary_len > 0 else ""
+            ),
         )
         try:
-            raw = self._llm_fn(prompt)
+            raw = self._call_share_llm(prompt)
         except Exception as e:  # noqa: BLE001
             logger.warning("[EvidenceReviewer] 分享判定 LLM 失敗 %s: %s", concept_id[:12], e)
             return dataclasses.replace(base, outcome="held", reason=f"llm_error: {e}")
@@ -1124,18 +1151,28 @@ class EvidenceReviewer:
         restrict_raw = parsed.get("privacy_restrict_unit_ids", [])
         if not isinstance(cited_raw, list) or not isinstance(restrict_raw, list):
             return held("llm_invalid_id_list")
-        cited = list(dict.fromkeys(str(x) for x in cited_raw))
-        restrict = list(dict.fromkeys(str(x) for x in restrict_raw))
-        unknown = [i for i in cited + restrict if i not in shown]
-        if unknown:
-            return held(f"unknown_evidence_id: {unknown[0]}")
+        norm_shown = {_norm_evidence_id(k): k for k in shown}
+        # cited：正規化後不在 shown 的直接丟棄（空了走 no_cited_units，fail-closed）
+        cited = list(dict.fromkeys(
+            norm_shown[n] for n in (_norm_evidence_id(x) for x in cited_raw) if n in norm_shown
+        ))
+        # restrict：未知 id 不可丟棄後放行，維持 hold
+        restrict: list[str] = []
+        for x in restrict_raw:
+            n = _norm_evidence_id(x)
+            if n not in norm_shown:
+                return held(f"unknown_evidence_id: {x}")
+            if norm_shown[n] not in restrict:
+                restrict.append(norm_shown[n])
         corro_class = parsed.get("corroboration_class")
         if corro_class not in CORROBORATION_CLASSES:
             corro_class = ""  # 缺漏或無效＝未分類，後續保守處理
         summary = parsed.get("shareable_summary")
         summary = summary.strip() if isinstance(summary, str) else ""
         if len(summary) > SHARE_SUMMARY_MAX_CHARS:
-            return held("summary_too_long")
+            out = held("summary_too_long")
+            out.summary_len = len(summary)
+            return out
         supports = parsed.get("supports_summary_from_cited_only") is True
         about: list[str] = []
         about_raw = parsed.get("about_members")

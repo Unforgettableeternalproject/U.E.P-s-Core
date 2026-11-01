@@ -425,6 +425,11 @@ deprecated/*
 .github/instructions/codacy.instructions.md
 **/.github/prompts/*
 
+# Claude Code 專案文件（含敏感的專案記憶與路徑）
+CLAUDE.md
+AGENTS.md
+.claude/
+
 # Builds
 build/*
 release/*
@@ -433,3 +438,11 @@ dist/*
 *.spec
 *.exe
 *.zip
+# 任務層：change 工作內容以 Lore Vault 服務端為準（TASK_LAYER_MCP §5.4）
+openspec/changes/
+
+# uv 虛擬環境
+.venv/
+
+# 推理環境（Python 3.12，P3 S6）
+.venv-infer/

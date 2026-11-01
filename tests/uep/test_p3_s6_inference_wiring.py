@@ -1,0 +1,467 @@
+"""P3 S6：推理 Host 組裝入口（uep/echo/inference_wiring.py）。
+
+只用 fake backend：不載模型、不碰 GPU、不連資料庫、不啟動 Host。
+涵蓋：建構不載模型、warmup 旗標、backend 注入共用、設定載入與 fail-closed、prepare 成功／失敗／逾時的降級、
+關閉降級時沿用原行為、指標與 attach_metrics。
+"""
+from __future__ import annotations
+
+import asyncio
+import threading
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("echo_stream")
+
+from echo_stream.contracts.cancellation import CancellationToken
+from echo_stream.contracts.types import Sentence
+
+from uep.config import UepSettings
+from uep.echo.inference_wiring import (
+    InferenceConfig,
+    InferenceWiringError,
+    StageNotReady,
+    StageReadiness,
+    _InputGuard,
+    _ThinkGuard,
+    build_inference_wiring,
+)
+from uep.echo.metrics import Metrics
+
+
+class FakeTtsBackend:
+    """只記錄 load／generate 次數；``load_error`` 例外、``block`` 阻塞到事件被設定（模擬載入過慢）。"""
+
+    def __init__(self, *, load_error: Exception | None = None, block: threading.Event | None = None) -> None:
+        self.load_calls = 0
+        self.generate_calls = 0
+        self.emotion_vector = None
+        self._load_error = load_error
+        self._block = block
+
+    def load(self) -> None:
+        self.load_calls += 1
+        if self._block is not None:
+            self._block.wait(timeout=5)
+        if self._load_error is not None:
+            raise self._load_error
+
+    def generate(self, text, path, on_segment_audio=None, language=None, emotion_overrides=None):
+        self.generate_calls += 1
+
+
+class FakeLlm:
+    async def stream_query(self, messages, system_instruction=None, **kwargs):
+        yield "好"
+
+
+class FakeStt:
+    def transcribe(self, pcm, sample_rate):
+        return None
+
+
+def build(*, tts=None, cfg=None, **kw):
+    cfg = cfg or InferenceConfig(stt_mode="single")
+    return build_inference_wiring(
+        cfg, tts_backend=tts or FakeTtsBackend(), think_backend=FakeLlm(), stt_backend=FakeStt(), **kw
+    )
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+async def _drain(wiring_speak, texts=("你好。", "再見。")):
+    async def sentences():
+        for i, t in enumerate(texts):
+            yield Sentence(text=t, turn_id="t1", index=i, is_first=i == 0, is_last=i == len(texts) - 1)
+
+    return [c async for c in wiring_speak.stream(sentences(), CancellationToken())]
+
+
+# ---- 建構 ----
+
+def test_建構不載模型且共用同一個預建_backend():
+    tts = FakeTtsBackend()
+    w = build(tts=tts)
+    assert tts.load_calls == 0 and tts.generate_calls == 0
+    assert w.speak._backend is tts  # 預建一次、注入（所有 turn 共用）
+    assert w.speak.warmup is True  # 預設在 prepare（Host 啟動）做暖機
+    assert {k: r.ready for k, r in w.readiness.items()} == {"speak": None, "think": None, "input": None}
+    assert set(w.host_kwargs()) == {"think", "speak", "input_stage", "start_timeout_s"}
+    assert not w.voice_ready
+
+
+def test_設定傳到_speak_stage():
+    cfg = InferenceConfig(
+        stt_mode="single", tts_device="cpu", tts_fp16=False, tts_warmup=False, tts_speed=0.2, tts_lora_scale=0.5,
+        tts_language="zh", system_prompt="你是 UEP",
+    )
+    w = build(cfg=cfg)
+    assert (w.speak.device, w.speak.use_fp16, w.speak.warmup) == ("cpu", False, False)
+    assert (w.speak.speed, w.speak.lora_scale, w.speak.language) == (0.2, 0.5, "zh")
+
+
+def test_stt_模式選擇():
+    from echo_stream.adapters.input_multichannel import MultiChannelSttInputStage
+    from echo_stream.adapters.input_stt import SttInputStage
+
+    assert isinstance(build(cfg=InferenceConfig(stt_mode="multichannel")).input_stage, MultiChannelSttInputStage)
+    assert isinstance(build(cfg=InferenceConfig(stt_mode="single")).input_stage, SttInputStage)
+    with pytest.raises(InferenceWiringError):
+        InferenceConfig(stt_mode="bogus")
+
+
+def test_缺子系統路徑_fail_closed():
+    # 沒注入 backend 且沒設路徑：不猜同層目錄，直接拒絕組裝
+    with pytest.raises(InferenceWiringError, match="UEP_INFER_TTS_REPO"):
+        build_inference_wiring(InferenceConfig(), think_backend=FakeLlm(), stt_backend=FakeStt())
+    with pytest.raises(InferenceWiringError, match="UEP_INFER_STT_REPO"):
+        build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+    with pytest.raises(InferenceWiringError, match="UEP_INFER_SESSION_REPO"):
+        build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), stt_backend=FakeStt())
+    with pytest.raises(InferenceWiringError, match="不存在"):
+        build_inference_wiring(
+            InferenceConfig(tts_repo=Path("Z:/不存在的路徑")), think_backend=FakeLlm(), stt_backend=FakeStt(),
+        )
+
+
+def test_from_settings_讀環境變數(monkeypatch, tmp_path):
+    monkeypatch.setenv("UEP_INFER_TTS_REPO", str(tmp_path))
+    monkeypatch.setenv("UEP_INFER_STT_MODE", "single")
+    monkeypatch.setenv("UEP_INFER_TTS_WARMUP", "false")
+    monkeypatch.setenv("UEP_INFER_SPEAK_PREPARE_TIMEOUT_S", "12.5")
+    monkeypatch.setenv("UEP_INFER_DEGRADE_ON_FAILURE", "0")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.tts_repo == tmp_path and cfg.stt_mode == "single"
+    assert cfg.tts_warmup is False and cfg.speak_prepare_timeout_s == 12.5 and cfg.degrade_on_failure is False
+    assert cfg.stt_repo is None and cfg.tts_device == "cuda"
+
+
+# ---- prepare 與降級 ----
+
+def test_speak_prepare_成功只載入一次():
+    tts = FakeTtsBackend()
+    w = build(tts=tts)
+
+    async def go():
+        await w.speak.prepare()
+        await w.speak.prepare()
+
+    run(go())
+    assert tts.load_calls == 1
+    assert tts.generate_calls == 1  # warmup 在 prepare 內做一次
+    assert w.voice_ready and w.readiness["speak"].elapsed_s is not None
+    assert w.metrics["echo.speak_prepare_ok"] == 1
+
+
+def test_speak_載入失敗_降級為無聲_不讓啟動失敗():
+    tts = FakeTtsBackend(load_error=RuntimeError("CUDA OOM"))
+    w = build(tts=tts)
+
+    async def go():
+        await w.speak.prepare()  # 不拋
+        await w.speak.prepare()  # 失敗後不重試
+        return await _drain(w.speak)
+
+    chunks = run(go())
+    assert chunks == []  # 句子被消耗、沒有音訊
+    assert tts.load_calls == 1
+    r = w.readiness["speak"]
+    assert r.ready is False and "CUDA OOM" in (r.error or "") and not r.timed_out
+    assert not w.voice_ready
+    assert w.metrics["echo.speak_prepare_failed"] == 1 and w.metrics["echo.speak_not_ready_turns"] == 1
+
+
+def test_speak_載入逾時_降級():
+    gate = threading.Event()
+    tts = FakeTtsBackend(block=gate)
+    w = build(tts=tts, cfg=InferenceConfig(stt_mode="single", speak_prepare_timeout_s=0.05))
+
+    async def go():
+        try:
+            await w.speak.prepare()
+        finally:
+            gate.set()  # 放行背景工作緒，測試才能乾淨結束
+        return await _drain(w.speak)
+
+    assert run(go()) == []
+    r = w.readiness["speak"]
+    assert r.ready is False and r.timed_out
+    assert w.metrics["echo.speak_prepare_timeout"] == 1
+
+
+def test_關閉降級_沿用原行為_例外上拋():
+    w = build(
+        tts=FakeTtsBackend(load_error=RuntimeError("boom")),
+        cfg=InferenceConfig(stt_mode="single", degrade_on_failure=False),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        run(w.speak.prepare())
+    assert w.readiness["speak"].ready is False  # 仍有紀錄與指標
+    assert w.metrics["echo.speak_prepare_failed"] == 1
+
+
+def test_取消不被當成失敗吞掉():
+    gate = threading.Event()
+    w = build(tts=FakeTtsBackend(block=gate))
+
+    async def go():
+        task = asyncio.ensure_future(w.speak.prepare())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        finally:
+            gate.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        run(go())
+    assert w.readiness["speak"].ready is None  # 沒有被標成失敗，可再 prepare
+
+
+class _BrokenStage:
+    """think／input 的最小 stand-in：prepare 失敗。"""
+
+    def __init__(self) -> None:
+        self.prewarmed = False
+
+    async def prepare(self) -> None:
+        raise ConnectionError("no network")
+
+    async def prewarm(self, prompt=None) -> bool:
+        self.prewarmed = True
+        return True
+
+
+def test_think_prepare_失敗_stream_明確失敗_prewarm_略過():
+    m = Metrics()
+    stage = _BrokenStage()
+    guard = _ThinkGuard(stage, StageReadiness("think"), timeout_s=1, metrics=lambda: m, degrade=True)
+
+    async def go():
+        await stage.prepare()
+        assert await stage.prewarm("x") is False
+        with pytest.raises(StageNotReady):
+            async for _ in stage.stream(object(), CancellationToken()):
+                pass
+
+    run(go())
+    assert not stage.prewarmed and guard.readiness.ready is False
+    assert m["echo.think_prepare_failed"] == 1 and m["echo.think_not_ready_turns"] == 1
+
+
+def test_input_prepare_失敗_open_明確失敗_交給_host_的輸入重啟():
+    m = Metrics()
+    stage = _BrokenStage()
+    guard = _InputGuard(stage, StageReadiness("input"), timeout_s=1, metrics=lambda: m, degrade=True)
+
+    async def go():
+        await stage.prepare()
+        with pytest.raises(StageNotReady):
+            async for _ in stage.open(CancellationToken()):
+                pass
+
+    run(go())
+    assert guard.readiness.ready is False and m["echo.input_not_ready_turns"] == 1
+
+
+def test_attach_metrics_之後的指標進_host_metrics():
+    w = build(tts=FakeTtsBackend(load_error=RuntimeError("x")))
+    host_metrics = Metrics()
+    w.attach_metrics(host_metrics)
+    run(w.speak.prepare())
+    assert host_metrics["echo.speak_prepare_failed"] == 1
+    assert w.status()["speak"]["ready"] is False
+
+
+# ---- TTS 引擎選擇（indextts2／vox）與 prepare 逾時設定 ----
+
+def _install_fake_vox(monkeypatch, captured):
+    """注入假的 ``echo_stream.adapters.speak_vox``：記錄建構參數，不載 GPU。"""
+    import sys
+    import types
+
+    class FakeVoxSpeakStage:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.kwargs = kwargs
+
+        async def prepare(self):
+            return None
+
+        async def stream(self, sentences, token):
+            async for _ in sentences:
+                pass
+            return
+            yield
+
+    mod = types.ModuleType("echo_stream.adapters.speak_vox")
+    mod.VoxSpeakStage = FakeVoxSpeakStage
+    monkeypatch.setitem(sys.modules, "echo_stream.adapters.speak_vox", mod)
+    return FakeVoxSpeakStage
+
+
+def _block_vox_import(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "echo_stream.adapters.speak_vox", None)  # None＝import 會拋 ImportError
+
+
+def test_tts_engine_預設_indextts2_且逾時_40():
+    from echo_stream.adapters.speak_indextts import IndexTTS2SpeakStage
+
+    cfg = InferenceConfig(stt_mode="single")
+    assert cfg.tts_engine == "indextts2" and cfg.speak_prepare_timeout_s == 40.0
+    assert isinstance(build(cfg=cfg).speak, IndexTTS2SpeakStage)
+    with pytest.raises(InferenceWiringError, match="tts_engine"):
+        InferenceConfig(tts_engine="bogus")
+
+
+def test_vox_引擎_逾時預設_240_可覆寫():
+    assert InferenceConfig(tts_engine="vox").speak_prepare_timeout_s == 240.0
+    assert InferenceConfig(tts_engine="vox", speak_prepare_timeout_s=400.0).speak_prepare_timeout_s == 400.0
+
+
+def test_vox_引擎_參數映射_不傳_lora_與_warmup(monkeypatch, tmp_path):
+    captured: dict = {}
+    fake_cls = _install_fake_vox(monkeypatch, captured)
+    cfg = InferenceConfig(
+        stt_mode="single", tts_engine="vox", tts_repo=tmp_path, tts_lora_scale=0.5, tts_warmup=False,
+        vox_config={"cache_dir": "x"},
+    )
+    # vox 不建 IndexTTS2 backend：即使 factory 會炸也不該被呼叫
+    def boom(_cfg):
+        raise AssertionError("vox 不應建 IndexTTS2 backend")
+
+    w = build_inference_wiring(
+        cfg, tts_backend_factory=boom, think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert isinstance(w.speak, fake_cls)
+    assert captured == {"tts_repo": str(tmp_path), "backend_config": {"cache_dir": "x"}}
+    assert "lora_scale" not in captured and "warmup" not in captured
+    # tts_speed／language 明確設定才傳
+    captured.clear()
+    cfg2 = InferenceConfig(stt_mode="single", tts_engine="vox", tts_speed=1.1, tts_language="zh")
+    build_inference_wiring(cfg2, think_backend=FakeLlm(), stt_backend=FakeStt())
+    assert captured == {"speed": 1.1, "language": "zh"}
+
+
+def test_vox_adapter_缺失_降級為_not_ready_不拋出(monkeypatch):
+    _block_vox_import(monkeypatch)
+    cfg = InferenceConfig(stt_mode="single", tts_engine="vox")
+    w = build_inference_wiring(cfg, think_backend=FakeLlm(), stt_backend=FakeStt())  # 組裝不拋出
+
+    async def go():
+        await w.speak.prepare()
+        return await _drain(w.speak)
+
+    assert run(go()) == []  # 降級後句子被消耗、不產音訊
+    r = w.readiness["speak"]
+    assert r.ready is False and "vox_adapter_missing" in r.error and not w.voice_ready
+    assert w.metrics["echo.speak_prepare_failed"] == 1
+
+
+def test_vox_adapter_缺失_關閉降級時_prepare_上拋(monkeypatch):
+    _block_vox_import(monkeypatch)
+    cfg = InferenceConfig(stt_mode="single", tts_engine="vox", degrade_on_failure=False)
+    w = build_inference_wiring(cfg, think_backend=FakeLlm(), stt_backend=FakeStt())
+    with pytest.raises(StageNotReady, match="vox_adapter_missing"):
+        run(w.speak.prepare())
+
+
+def test_vox_config_解析(monkeypatch):
+    from uep.echo.inference_wiring import _parse_vox_config
+
+    assert _parse_vox_config(None) is None and _parse_vox_config("  ") is None
+    assert _parse_vox_config('{"a": 1}') == {"a": 1}
+    for bad in ("{oops", "[1]"):
+        with pytest.raises(InferenceWiringError, match="UEP_INFER_VOX_CONFIG"):
+            _parse_vox_config(bad)
+
+
+def test_from_settings_引擎與三個_prepare_逾時環境變數(monkeypatch):
+    monkeypatch.setenv("UEP_INFER_TTS_ENGINE", "vox")
+    monkeypatch.setenv("UEP_INFER_VOX_CONFIG", '{"k": "v"}')
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.tts_engine == "vox" and cfg.vox_config == {"k": "v"}
+    assert (cfg.speak_prepare_timeout_s, cfg.think_prepare_timeout_s, cfg.input_prepare_timeout_s) == (240.0, 8.0, 10.0)
+    monkeypatch.setenv("UEP_INFER_SPEAK_PREPARE_TIMEOUT_S", "240")
+    monkeypatch.setenv("UEP_INFER_THINK_PREPARE_TIMEOUT_S", "3")
+    monkeypatch.setenv("UEP_INFER_INPUT_PREPARE_TIMEOUT_S", "4")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert (cfg.speak_prepare_timeout_s, cfg.think_prepare_timeout_s, cfg.input_prepare_timeout_s) == (240.0, 3.0, 4.0)
+    monkeypatch.delenv("UEP_INFER_TTS_ENGINE")
+    monkeypatch.delenv("UEP_INFER_SPEAK_PREPARE_TIMEOUT_S")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.tts_engine == "indextts2" and cfg.speak_prepare_timeout_s == 40.0
+
+
+# ---- Host 啟動總上限 ----
+
+def test_host_start_timeout_預設由加總推得_vox_240_能過():
+    c = InferenceConfig(stt_mode="single")
+    assert c.host_start_timeout_s == 68.0  # 40+8+10 加餘裕 10
+    v = InferenceConfig(stt_mode="single", tts_engine="vox")
+    assert v.host_start_timeout_s == 240 + 8 + 10 + 10 >= v.speak_prepare_timeout_s + 18
+    assert build(cfg=v).host_kwargs()["start_timeout_s"] == v.host_start_timeout_s
+    # 加總很小時不低於原固定上限 60
+    s = InferenceConfig(speak_prepare_timeout_s=1, think_prepare_timeout_s=1, input_prepare_timeout_s=1)
+    assert s.host_start_timeout_s == 60.0
+
+
+def test_host_start_timeout_環境變數覆寫與不足警告(monkeypatch, caplog):
+    monkeypatch.setenv("UEP_INFER_HOST_START_TIMEOUT_S", "30")
+    with caplog.at_level("WARNING", logger="uep.echo.inference_wiring"):
+        cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.host_start_timeout_s == 30.0 and "host_start_timeout_s" in caplog.text
+    with pytest.raises(InferenceWiringError):
+        InferenceConfig(host_start_timeout_s=0)
+
+
+def test_host_start_走設定的上限而非固定_60():
+    from uep.echo.host import EchoPipelineHost
+
+    assert EchoPipelineHost.__init__.__kwdefaults__["start_timeout_s"] == 60.0
+
+
+# ---- VOX 切句建議值 ----
+
+def test_vox_有建議值_傳到_think_的_split_policy(monkeypatch):
+    from echo_stream.core.splitter import SplitPolicy
+
+    recommended = SplitPolicy(first_min_weight=10.0, first_max_weight=24.0, min_weight=30.0, max_weight=80.0)
+    fake_cls = _install_fake_vox(monkeypatch, {})
+    fake_cls.recommended_split_policy = classmethod(lambda cls: recommended)
+    w = build_inference_wiring(
+        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert w.think.split_policy is recommended
+
+
+def test_vox_無建議值方法_維持預設_split_policy(monkeypatch):
+    from echo_stream.core.splitter import SplitPolicy
+
+    _install_fake_vox(monkeypatch, {})  # 假 stage 沒有 recommended_split_policy
+    w = build_inference_wiring(
+        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert w.think.split_policy == SplitPolicy()
+
+
+def test_vox_佔位_stage_不取建議值(monkeypatch):
+    from echo_stream.core.splitter import SplitPolicy
+
+    _block_vox_import(monkeypatch)
+    w = build_inference_wiring(
+        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert w.think.split_policy == SplitPolicy()
+
+
+def test_非_vox_引擎不取建議值(monkeypatch):
+    from echo_stream.core.splitter import SplitPolicy
+
+    w = build()
+    assert w.think.split_policy == SplitPolicy()

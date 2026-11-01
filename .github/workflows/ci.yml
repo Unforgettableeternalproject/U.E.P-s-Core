@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, staging]
+  pull_request:
+    branches: [main, develop, staging]
+
+jobs:
+  ci:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.10']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # 安裝主要依賴（跳過 GPU 相關的套件）
+          pip install pydantic pyyaml requests aiohttp websockets
+          pip install flake8 pytest
+
+      - name: Lint (flake8)
+        run: python -m flake8 core/ modules/ utils/ --max-line-length=120 --count --show-source --statistics
+        # PR 時必須通過，普通 push 可以暫時跳過
+        continue-on-error: ${{ github.event_name != 'pull_request' }}
+
+      - name: Unit tests
+        run: |
+          python -m pytest unit_tests/ -v --tb=short --no-header \
+            --ignore=unit_tests/test_stt_module.py \
+            --ignore=unit_tests/test_tts_module.py \
+            --ignore=unit_tests/test_llm_module.py \
+            --ignore=unit_tests/test_mem_module.py \
+            -k "not gpu and not cuda and not whisper and not faiss"
+        # 排除需要 GPU/模型的測試；PR 時其餘測試必須通過
+        continue-on-error: ${{ github.event_name != 'pull_request' }}
+
+  # 注意：版本 tagging 由以下現有 workflow 處理：
+  #   - auto-version-tag.yml → develop 分支 config.yaml 版本變更時
+  #   - hotfix-tag.yml → hotfix/* 分支推送時
+  #   - release.yml → release/* PR 合併到 main 時
+  #   - update-version-history.yml → 任何 tag 建立時

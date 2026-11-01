@@ -1,0 +1,153 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "uep"
+version = "0.0.0"
+description = "U.E.P 新 Core（頂層 uep/ 套件；舊碼 core/、modules/ 原地保留）"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# core：新 Core 本體，不含 torch
+dependencies = [
+    "pydantic>=2.12",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+    "google-genai>=2,<3",
+    "openai>=2",
+    "sqlalchemy>=2.0",
+    "alembic>=1.16",
+    "psycopg[binary]>=3.2",
+    "python-ulid>=3.0",
+]
+
+[project.optional-dependencies]
+# 候選 Agent SDK：評估期間獨立，確定採用後再併入 core
+agent-candidates = [
+    "openai-agents",
+    "google-adk",
+]
+# inference：STT／TTS 等重型推論依賴（3.12 推理 Host，T-20；GPU 行為待基準比對）
+# 不收 fairseq、pyworld：只服務 deprecated/ 的 RVC，RVC 工具留在 Python 3.10 的 env/（A14）
+inference = [
+    "torch==2.7.0",
+    "torchaudio==2.7.0",
+    "torchvision==0.22.0",
+    "faster-whisper==1.2.1",
+    "ctranslate2==4.8.0",
+    "numpy==2.0.0",
+    "scipy==1.15.1",
+    "librosa==0.11.0",
+    "soundfile==0.13.1",
+    "onnxruntime==1.21.1",
+    "transformers==4.48.1",
+    "tokenizers==0.21.0",
+    "huggingface-hub>=0.27",
+    "safetensors==0.5.2",
+    "accelerate==1.1.0",
+    "sentence-transformers==3.3.1",
+    # 1.9.0.post1 的 cp312 wheel 載入時 DLL 失敗
+    "faiss-cpu>=1.12,<1.16",
+    "pyannote.audio==3.3.2",
+    "speechbrain==1.0.3",
+    "openai-whisper==20250625",
+    "edge-tts>=7.2",
+    "pydub==0.25.1",
+    "opencc-python-reimplemented==0.1.7",
+    "jieba==0.42.1",
+    "scikit-learn==1.6.1",
+    "pandas==2.2.3",
+    # 間接依賴對齊 env/，避免解到新大版
+    "pyannote.core==5.0.0",
+    "pyannote.pipeline==3.0.1",
+    "pyannote.database==5.1.3",
+    "lightning==2.5.2",
+    "pytorch-lightning==2.5.2",
+    "numba==0.61.2",
+    "llvmlite==0.44.0",
+    # TTS／STT 路徑實際 import、先前漏列
+    "einops>=0.8",
+    "json5>=0.12",
+    "munch>=4",
+    "wetext>=0.1",
+    "noisereduce>=3",
+    # TTS LoRA 合併（lora_merge）需要
+    "peft==0.19.1",
+    # 原排除套件的 3.12 方案
+    "PyAudio==0.2.14",
+    "py-cord[voice]",
+    "triton-windows>=3.3,<3.4; sys_platform == 'win32'",
+    "flash-attn; sys_platform == 'win32'",
+    # VOX TTS：在現行 torch 2.7／transformers 4.48 下驗證；訓練與 WebUI 依賴由 override-dependencies 排除
+    "voxcpm==2.0.3",
+    "inflect==7.6.0",
+    # bot 成員名讀音容錯（延遲 import）
+    "pypinyin==0.55.0",
+    # VOX 日文假名化（fugashi 讀音有誤，改用 pyopenjtalk-plus）
+    "pyopenjtalk-plus==0.4.1.post10",
+    "sudachipy==0.7.0",
+    "sudachidict-core==20261015",
+    # 記憶子系統（echo-memory）以 --no-deps 安裝，其純 Python 依賴由此鎖定
+    "networkx==3.7",
+    "python-dotenv==1.2.4",
+    "apscheduler==3.11.2",
+    "rich==15.0.0",
+    "tiktoken==0.14.0",
+    # TTS 日語 G2P（echo_tts ja_g2p，惰性 import）
+    "fugashi==1.5.2",
+    "unidic-lite==1.0.8",
+    # echo_tts 的英文分句
+    "pysbd>=0.3.4",
+]
+# desktop：PyQt5 桌面寵物與系統互動
+desktop = [
+    "PyQt5==5.15.11",
+    "PyQt5-Qt5==5.15.2",
+    "PyAutoGUI==0.9.54",
+    "pyperclip==1.11.0",
+    "pywin32==310; sys_platform == 'win32'",
+    "pyinstaller==6.17.0",
+    "APScheduler==3.11.2",
+    "psutil==6.1.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.26", "ruff"]
+
+[tool.uv]
+package = true
+default-groups = ["dev"]
+# voxcpm 的訓練／WebUI 依賴不進環境：marker 恆為 false 即移除該依賴（uv 0.9.0 無 exclude-dependencies）
+# transformers、huggingface-hub 維持現行鎖定版本
+override-dependencies = [
+    "transformers==4.48.1",
+    "huggingface-hub==0.36.2",
+    "datasets; python_version < '3'",
+    "gradio; python_version < '3'",
+    "funasr; python_version < '3'",
+    "modelscope; python_version < '3'",
+    "argbind; python_version < '3'",
+    "spaces; python_version < '3'",
+    "torchcodec; python_version < '3'",
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", extra = "inference" }]
+torchaudio = [{ index = "pytorch-cu128", extra = "inference" }]
+torchvision = [{ index = "pytorch-cu128", extra = "inference" }]
+# 第三方預編 wheel（mjun0812，含 sm_100／sm_120，適用 RTX 5070 Ti）；官方無 Windows wheel
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.10/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" }
+# DAVE 支援的 py-cord（PR #3159），與 env/ 對齊；正式版 2.8.1 缺 Sink.__sink_listeners__
+py-cord = { git = "https://github.com/Pycord-Development/pycord", rev = "05cf65fa6d81567a8a4347ac961a093981554137", extra = "inference" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["uep"]
+
+[tool.pytest.ini_options]
+# 新 Core 測試；legacy 測試仍以 unit_tests/、integration_tests/ 明確指定路徑執行
+testpaths = ["tests/uep"]

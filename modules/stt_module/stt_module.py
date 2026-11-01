@@ -86,9 +86,9 @@ class STTModule(BaseModule):
         debug_log(2, f"[STT] 麥克風裝置索引: {self.device_index} (來源: {'user_settings' if user_mic_index is not None else 'stt_module'})")
         self.sample_rate = 16000  # Whisper 標準採樣率
         
-        # Transformers Whisper 模型配置
-        self.whisper_model_id = self.config.get("whisper_model_id", "openai/whisper-large-v3")
-        self.whisper_local_path = self.config.get("whisper_local_path", "models/stt/whisper/whisper-large-v3")
+        # Transformers Whisper 模型配置（已切換到輕量級模型）
+        self.whisper_model_id = self.config.get("whisper_model_id", "openai/whisper-base")
+        self.whisper_local_path = self.config.get("whisper_local_path", "models/stt/whisper/whisper-base")
         self.use_local_model = self.config.get("use_local_model", True)
         
         # 設備配置
@@ -177,8 +177,11 @@ class STTModule(BaseModule):
             )
             self.model.to(self.device)
             
-            # 清除 forced_decoder_ids 以避免與 task="translate" 衝突
-            self.model.config.forced_decoder_ids = None
+            # 🔧 明確清除模型配置中的 forced_decoder_ids
+            # Whisper 模型預設有此設定，但會與 task="translate" 衝突
+            if hasattr(self.model.config, 'forced_decoder_ids'):
+                self.model.config.forced_decoder_ids = None
+                debug_log(3, "[STT] 已清除模型的 forced_decoder_ids 設定")
             
             # 載入處理器
             info_log("[STT] 載入處理器...")
@@ -490,9 +493,9 @@ class STTModule(BaseModule):
                 "compression_ratio_threshold": 1.35,
                 "temperature": (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
                 "logprob_threshold": -1.0,
-                "no_speech_threshold": 0.4,  # 降低閾值以提高敏感度
+                "no_speech_threshold": 0.4,
                 "return_timestamps": True,
-                "task": "translate",  # 翻譯任務：將所有語言翻譯成英文
+                "task": "translate",  # 翻譯成英文（系統內部運作需要）
             }
             
             # 檢查音頻數據是否有語音內容
@@ -504,10 +507,14 @@ class STTModule(BaseModule):
                 error_log("[STT] Pipeline 未初始化")
                 return STTOutput(text="", confidence=0.0, error="Pipeline 未初始化").model_dump()
             
+            # 🔧 使用 pipeline 進行識別，新版 transformers 會自動處理 input_features
             result = self.pipe(
                 audio_float,
                 generate_kwargs=generate_kwargs
             )
+            
+            # 🔍 調試：輸出原始結果
+            debug_log(2, f"[STT] Pipeline 原始結果: {result}")
             
             # 類型轉換 - Transformers pipeline 返回 dict
             result_dict = cast(Dict[str, Any], result)
@@ -910,7 +917,13 @@ class STTModule(BaseModule):
                 except Exception as e:
                     error_log(f"[STT] 發送識別結果失敗: {e}")
             else:
-                debug_log(2, "[STT] 未設定結果回調函數")
+                debug_log(2, "[STT] 未設定結果回調函數（minimal 模式）")
+            
+            # 🔧 在 console 輸出結果（用於 debugger 和 minimal 模式）
+            speaker_id = speaker_info.speaker_id if speaker_info else "unknown"
+            print(f"\n🎤 [{speaker_id}] {text}")
+            if confidence < 0.7:
+                print(f"   ⚠️  低置信度: {confidence:.2f}")
             
         except Exception as e:
             error_log(f"[STT] 處理音頻緩衝區失敗: {str(e)}")

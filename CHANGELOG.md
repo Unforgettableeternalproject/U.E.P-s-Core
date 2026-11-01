@@ -2638,3 +2638,891 @@
 
 ---
 
+### refactor: integrated some principles from other projects into here, also made some preparations for the refactor. 06/11
+
+> Date: Thu, 11 Jun 2026 11:46:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `fea1f9d7a12d6fde118006681e7ffe32c2d52d5d`
+
+---
+
+### [chore]: 建立 Python 3.12 與 uv 環境基線. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:42 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `0646b76b5cb473c6ccffd118ab56119df6aec0c5`
+
+---
+
+### [feat]: 建立新 Core 頂層套件 uep 與 import 邊界測試. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:43 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `b6525249ce0b5025530d0ac74ef587976859be5f`
+
+---
+
+### [docs]: 新增 Core 現況對照表與新 Core 契約草案. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `aba08ac3f87da576bd46eb881fa09e80f3ad0db5`
+
+---
+
+### [docs]: 新增重構 Index／Tracking 與一致性檢查腳本. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:45 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `94552716d42ca6228710bc6112729b0ebf8625c5`
+
+---
+
+### [chore]: 啟用 openspec 任務層設定. 10/26
+
+> Date: Mon, 26 Oct 2026 13:35:46 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `1e088913a42c85de00e4bfe6314e41559837b17a`
+
+---
+
+### [feat]: 新增 uep 持久層與事件 journal／outbox／inbox. 10/26
+
+> Date: Mon, 26 Oct 2026 13:59:45 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `17f3937569c120854605eee0d4e8df6cac6b97dc`
+
+---
+
+### [docs]: 依持久層實作回寫 CC-1 契約與索引. 10/26
+
+> Date: Mon, 26 Oct 2026 13:59:46 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7e1c8048de3902d91b97ddd5509f953aba31a527`
+
+---
+
+### [feat]: 新增 Task／Run／Action 持久模型與 Task Manager. 10/26
+
+> Date: Mon, 26 Oct 2026 14:54:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `0d835966ee4a1841b6db52ce6655649a09a35493`
+
+---
+
+### [feat]: 新增 Context／Output 模型、Delivery Manager 與 fake Adapters. 10/26
+
+> Date: Mon, 26 Oct 2026 14:54:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `3ee0d535b2170d0e03485e2f8ae4324db03d4ab5`
+
+---
+
+### [docs]: 依 Task／Output 實作與審查回寫契約與索引. 10/26
+
+> Date: Mon, 26 Oct 2026 14:54:29 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `b1ea2957fc34435590bc08624d56e3d48ed0a0e8`
+
+---
+
+### [fix]: Task 終局事件同交易寫入 outbox. 10/26
+
+> Date: Mon, 26 Oct 2026 15:11:19 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `6cb0ced832eda4e1c1d2ccdfe4480d8a95144160`
+
+---
+
+### [test]: 新增 V19–V21 驗收測試. 10/26
+
+> Date: Mon, 26 Oct 2026 15:11:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `1f92886caba60543ccf0d19f9ec6bebaacb190df`
+
+---
+
+### feat: 新 Core 實作 Presence、Lease、Output Gate 與控制通道. 10/26
+
+> Date: Mon, 26 Oct 2026 20:04:45 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `6fcb36f8b106f17b1bdf6f9fe1cf0112700d219a`
+
+---
+
+### docs: 回寫 Presence 契約與 Index／Tracking 決策紀錄. 10/26
+
+> Date: Mon, 26 Oct 2026 20:04:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `130475c2e19332104189ef389a1edc9215f10c9d`
+
+---
+
+### feat: 新 Core 最小本機 CLI 端點與 watchdog. 10/26
+
+> Date: Mon, 26 Oct 2026 21:09:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `559f732906bb417de16e2014a487ab1a5ad0e829`
+
+---
+
+### feat: 新 Core 實作 State Coordinator 與全域停止. 10/26
+
+> Date: Mon, 26 Oct 2026 21:09:36 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5de05ffbe45977c739ede5b90d238e5c73e8bfae`
+
+---
+
+### docs: 回寫 State Coordinator、全域停止與端點的 Index. 10/26
+
+> Date: Mon, 26 Oct 2026 21:09:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `a1470e5f5361bc654119af7ec76f9f56cafd0f14`
+
+---
+
+### test: 新 Core P2 驗收 V11、V12、V15 與審查轉入項. 10/26
+
+> Date: Mon, 26 Oct 2026 22:03:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `fbe430d220f6a40ef59ff53a0fa0d3f8575b9eef`
+
+---
+
+### docs: 回寫 P2 驗收結果、裁決狀態與 D44. 10/26
+
+> Date: Mon, 26 Oct 2026 22:03:16 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `c085d45525266363ed51356e1f31eae2e4d89a73`
+
+---
+
+### test: 新增週期 2 組裝端到端測試並修正 D24、D29 狀態. 10/26
+
+> Date: Mon, 26 Oct 2026 22:50:46 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `67af33c7be0463a3d9ed7a099eaa0d5f31d81ee0`
+
+---
+
+### chore: 推理組遷移 Python 3.12 依賴調整並重新 lock. 10/26
+
+> Date: Mon, 26 Oct 2026 23:24:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `d35f7a84022e0936c856fc7646c541684606c465`
+
+---
+
+### chore: 推理組補 peft，Tracking 改指向 Part S. 10/27
+
+> Date: Tue, 27 Oct 2026 00:07:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5b1a70c4b06b924140fde16f7463b566eaf9c1ec`
+
+---
+
+### feat: 新 Core P3 前置修整（Bus、journal 水位、HMAC）. 10/27
+
+> Date: Tue, 27 Oct 2026 00:57:16 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5624167ceb2f70cf890001a54ade01bf50f4910e`
+
+---
+
+### docs: 回寫 T-23 契約與 Index／Tracking. 10/27
+
+> Date: Tue, 27 Oct 2026 00:57:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `4a580e817851f65caca511e7d557317909b02a16`
+
+---
+
+### fix: 新 Core 週期 2 追加驗證修補（三區稽核與 D43）. 10/27
+
+> Date: Tue, 27 Oct 2026 11:32:25 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `a81c1b11c64d8013079b3088868008e71fcf419f`
+
+---
+
+### docs: 回寫 T-24 契約與 Index／Tracking. 10/27
+
+> Date: Tue, 27 Oct 2026 11:32:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `42ce730c9025e427a7e2885c7dd390062fb6c344`
+
+---
+
+### docs: 新架構研究資料改存 hidden_docs 並更新引用. 10/27
+
+> Date: Tue, 27 Oct 2026 11:33:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7043e7889aab5f5f3490b766847cec7bbae94b24`
+
+---
+
+### chore: 新增舊 RVC 管線語音產生工具. 10/27
+
+> Date: Tue, 27 Oct 2026 11:33:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7f659e2c683ebb99bd128d651f5548e6937b7c08`
+
+---
+
+### docs: 新增 Part S SYS 契約草案並回寫決策索引. 10/27
+
+> Date: Tue, 27 Oct 2026 17:16:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7c8e47db011f9f9d2968c4d8b34e5efb2d4e21fb`
+
+---
+
+### fix: 推理組 py-cord 改釘 DAVE PR commit. 10/27
+
+> Date: Tue, 27 Oct 2026 20:19:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `a957e238ee7c2336f67b8736fc9d71736a1ca2c0`
+
+---
+
+### docs: P3 契約修訂與方案文件, 同步裁決狀態. 10/30
+
+> Date: Fri, 30 Oct 2026 13:04:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `46d5f1a151c2aeac83d2886eee9ed0e75d779675`
+
+---
+
+### feat: P3 S1 事件註冊表擴充與 report_evidence. 10/30
+
+> Date: Fri, 30 Oct 2026 13:04:27 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `78384c4ef4806d1885b589049dc9f95085cf679b`
+
+---
+
+### fix: report_evidence 進度推進、鎖定讀取與白名單疊加. 10/30
+
+> Date: Fri, 30 Oct 2026 13:20:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `85f9ffaf06bf383667172835e8a9faf93f75642d`
+
+---
+
+### feat: P3 S2 記憶 Protocol、sink 轉譯與 fake engine. 10/30
+
+> Date: Fri, 30 Oct 2026 13:44:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `2eb257a3e6b37ab3f8968ec23245b55f16b464c7`
+
+---
+
+### feat: P3 S2 MemoryHost、Access Layer 與組裝接線. 10/30
+
+> Date: Fri, 30 Oct 2026 13:44:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `c0fd0cc53600ce0f33bc2ec089435e65497665b9`
+
+---
+
+### test: P3 S2 MemoryHost 驗收測試與方案註記. 10/30
+
+> Date: Fri, 30 Oct 2026 13:44:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `9bac22526ea9ea2dfbe2b70777ca43f8d615bd8f`
+
+---
+
+### fix: P3 S2 審查修正，Gate 分離、namespace 隔離與成員資格. 10/30
+
+> Date: Fri, 30 Oct 2026 13:56:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `90b43c8b8368ba58b5adadb3de01ae570a97d02e`
+
+---
+
+### feat: P3 S3 ES 綁定，EchoPipelineHost 與 Turn Orchestrator. 10/30
+
+> Date: Fri, 30 Oct 2026 15:59:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `1d18da3256bcf4c9e2caaf43e99523fd4ac7079e`
+
+---
+
+### test: P3 S3 驗收與轉接層測試，echo_stream 邊界. 10/30
+
+> Date: Fri, 30 Oct 2026 15:59:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `cf0c9494f1555be3333a3ad38afcbf3e2e618a45`
+
+---
+
+### docs: P3 S3 實作註記，R10、stale 語意與 CC-5 墊片音. 10/30
+
+> Date: Fri, 30 Oct 2026 15:59:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `c7411425d75e56c571f947b29069ebaaf7f4ccb8`
+
+---
+
+### fix: P3 S3 審查修正，audience 切換、輸出被拒、寫入回收與關閉窗口. 10/30
+
+> Date: Fri, 30 Oct 2026 16:20:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5b9b979b5bbb06066a864914614ba36ba65ea7e1`
+
+---
+
+### feat: P3 S5 決策插槽，Aggregator 與 Proposer Port 及預設規則實作. 10/30
+
+> Date: Fri, 30 Oct 2026 17:54:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7cb14f7294c98d9ded3312299d99482c95ddd5de`
+
+---
+
+### test: P3 S5 決策插槽驗收，bot 案例資料表與整合測試. 10/30
+
+> Date: Fri, 30 Oct 2026 17:54:14 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `5f1ed30c01dff94358e8b330ee41e43db63b6b88`
+
+---
+
+### docs: P3 S5 實作註記，bot 對照表、D80 暫定值與偏離. 10/30
+
+> Date: Fri, 30 Oct 2026 17:54:16 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `eb4b81264df8185ca8e539b0919e100905e09469`
+
+---
+
+### fix: P3 S5 審查修正，否決先於 propose、採用時機、audience 清狀態與卡住的 proposer. 10/30
+
+> Date: Fri, 30 Oct 2026 18:40:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `784820b80b01734fe1b53f7ba3a4a1141f48e518`
+
+---
+
+### fix: 修正兩個間歇失敗測試的根因. 10/30
+
+> Date: Fri, 30 Oct 2026 18:56:21 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `b0b02234b44e381f3e0e1f60dd65f5fdf9c76519`
+
+---
+
+### feat: P3 S4 播放證據、cancel_turn 與工具白名單. 10/30
+
+> Date: Fri, 30 Oct 2026 19:43:08 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `91ba5f8e6751838932bdd1cded68b605465a7f0a`
+
+---
+
+### test: P3 S4 驗收，V06／V08／VC-4-5／VC-5-2 與 D5／D79／D82. 10/30
+
+> Date: Fri, 30 Oct 2026 19:43:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `453bbd909df7ca901906a82f5fe787d761597cd0`
+
+---
+
+### docs: P3 S4 實作註記，D5／D79／D82 與已知限制更新. 10/30
+
+> Date: Fri, 30 Oct 2026 19:43:24 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `d1acd1b227b83c5924c478430706e01433ab9cc9`
+
+---
+
+### fix: P3 S4 審查修正，member_recall 直接實作與撤回路徑補強. 10/30
+
+> Date: Fri, 30 Oct 2026 20:20:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `bd6ef4336e6a9c1bfb6bcf93ff7a63bf5ab1a7a1`
+
+---
+
+### feat: P3 S6 記憶端真實 EngineFactory 與 EchoMemoryAdapter 接線. 10/31
+
+> Date: Sat, 31 Oct 2026 16:24:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `c389777f38021be306501137c8d36cb60d49fa32`
+
+---
+
+### feat: P3 S6 MemoryHost 生命週期與寫入經 adapter. 10/31
+
+> Date: Sat, 31 Oct 2026 16:24:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `395dcb6964bb8221808960a4e0b711e7cebda482`
+
+---
+
+### docs: SYS 契約增補，平台宣告與遠端執行. 10/31
+
+> Date: Sat, 31 Oct 2026 16:28:52 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `9333bc3f58e0f62ee8b1632995461e63a7003faf`
+
+---
+
+### feat: Part S 切片0 params_hash 強化（TG-6）. 10/31
+
+> Date: Sat, 31 Oct 2026 17:04:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `467338b0f02464f031411c7a5d1a90d9ad0fdd64`
+
+---
+
+### fix: S6 dream 略過改用固定代碼並補測試 stub. 10/31
+
+> Date: Sat, 31 Oct 2026 17:13:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `9f2c574e5486cc4dcec484b1444c3e85542e1828`
+
+---
+
+### docs: Host 全域做夢迴圈設計與 P3 方案註記. 10/31
+
+> Date: Sat, 31 Oct 2026 17:28:43 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `83fa58901e0d14601b1c069ce5128163b9bb181e`
+
+---
+
+### feat: Part S 切片0 fake Runtime submit_tool_result. 10/31
+
+> Date: Sat, 31 Oct 2026 17:30:57 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `89bd04c0a3aaa44478fcde216997e3742d819c2b`
+
+---
+
+### feat: Part S 切片0 ToolSpec 註冊表與 create_action 改簽章. 10/31
+
+> Date: Sat, 31 Oct 2026 17:31:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `3391569e79247443d1eedc2aeb6cbcd90a771e47`
+
+---
+
+### feat: Part S 切片0 Agent Core 最小單步迴圈與 Gateway. 10/31
+
+> Date: Sat, 31 Oct 2026 17:45:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `bd92e1b5a7a1affd5b8865e6b3425dbbc60f93ec`
+
+---
+
+### fix: Part S 切片0 審查修正，presence_bound 執行與冪等重送. 10/31
+
+> Date: Sat, 31 Oct 2026 17:45:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `65d34571ad40eccecb682c8931055dbb796822f7`
+
+---
+
+### chore: 新增 .venv-infer 推理環境設定. 10/31
+
+> Date: Sat, 31 Oct 2026 17:57:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `27fc48bc6a566e68aaae92d4804981c88bfca4ab`
+
+---
+
+### feat: P3 S6 推理環境與真 stage 組裝入口. 10/31
+
+> Date: Sat, 31 Oct 2026 17:57:46 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `757b509c7c30d23a3d660656fe69bd1daaed6c9f`
+
+---
+
+### feat: Host 全域做夢迴圈 DL-0／DL-1. 10/31
+
+> Date: Sat, 31 Oct 2026 18:07:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `1965408f57771f5b8f83739b3a8916286a335fbd`
+
+---
+
+### [feat]: 推論接線加入 TTS 引擎切換與啟動上限設定. 11/01
+
+> Date: Sun, 01 Nov 2026 17:16:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `6a4a880f08dd37a7af891e4a086ee65c33d6fc41`
+
+---
+
+### [chore]: 推理環境加入 VOX 依賴並升級 ES 快照. 11/01
+
+> Date: Sun, 01 Nov 2026 17:28:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `b02c6f951a76e1f55070ebd20a2e9809f5103b8c`
+
+---
+
+### [chore]: inference extra 加入 bot 用的 pypinyin. 11/01
+
+> Date: Sun, 01 Nov 2026 17:39:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7dc55591caf22d10dcd152a798c236da20fad0ee`
+
+---
+
+### [chore]: inference extra 加入 VOX 日文假名化依賴. 11/01
+
+> Date: Sun, 01 Nov 2026 18:04:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `008d86efca089c3e4e12f1da9ac103c312fbcefc`
+
+---
+
+### [chore]: 推理環境改為共用環境並以 editable 接子系統. 11/01
+
+> Date: Sun, 01 Nov 2026 18:42:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `748f4bb50e57a314cb12b17e757d1a5dd77f0d33`
+
+---
+
+### [fix]: vox speak prepare 逾時預設改為 240 秒. 11/01
+
+> Date: Sun, 01 Nov 2026 18:49:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `a8cd73e2063b0774fd8db05de56489ab51c4e13e`
+
+---
+
+### [docs]: 索引檢查指令改用共用環境. 11/01
+
+> Date: Sun, 01 Nov 2026 19:14:18 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `835473c8315c8771c56dc4077987c92d3151e9ee`
+
+---
+
+### [docs]: 新增 Mac mini Host 模型與推論部署評估. 11/01
+
+> Date: Sun, 01 Nov 2026 19:15:41 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `830a75eb01fd798b539bf302549fff66c750407d`
+
+---
+
+### [feat]: VOX 引擎改用 ES 建議切句策略. 11/01
+
+> Date: Sun, 01 Nov 2026 20:45:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `4482eb352b89990a04cde1e07159b8bef2fc2804`
+
+---
+
+### [docs]: 新增子系統遷入 Core 計畫. 11/01
+
+> Date: Sun, 01 Nov 2026 22:08:29 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `45915bd158e10d7312634826873122bbc1e7e98d`
+
+---
+

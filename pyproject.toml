@@ -83,6 +83,10 @@ inference = [
     "inflect==7.6.0",
     # bot 成員名讀音容錯（延遲 import）
     "pypinyin==0.55.0",
+    # VOX 日文假名化（fugashi 讀音有誤，改用 pyopenjtalk-plus）
+    "pyopenjtalk-plus==0.4.1.post10",
+    "sudachipy==0.7.0",
+    "sudachidict-core==20261015",
 ]
 # desktop：PyQt5 桌面寵物與系統互動
 desktop = [

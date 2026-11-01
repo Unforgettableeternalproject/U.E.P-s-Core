@@ -3442,3 +3442,15 @@
 
 ---
 
+### [chore]: inference extra 加入 VOX 日文假名化依賴. 11/01
+
+> Date: Sun, 01 Nov 2026 18:04:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `008d86efca089c3e4e12f1da9ac103c312fbcefc`
+
+---
+

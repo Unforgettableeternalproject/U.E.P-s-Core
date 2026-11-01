@@ -76,3 +76,47 @@ def test_close_midway_then_unload(backend):
     backend.unload()
     print(f"unload_s={time.perf_counter() - t0:.2f}")
     assert not backend.prepared
+
+
+def test_cross_thread_stream_raises_clear_error():
+    """thread A prepare、thread B stream：要得到清楚的 RuntimeError，而不是 inductor 的 AssertionError。
+    獨立建立 backend（不用模組共用的）；thread A 保持存活，最後由它 unload。"""
+    import threading
+
+    from echo_tts.runtime.vox_backend import VoxBackend
+
+    b = VoxBackend({"model_dir": os.environ["VOX_MODEL_DIR"], "lora_dir": os.environ["VOX_LORA_DIR"]})
+    prepared, finish = threading.Event(), threading.Event()
+    errors = []
+
+    def thread_a():
+        try:
+            b.prepare()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        prepared.set()
+        finish.wait(60)
+        try:
+            b.unload()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    ta = threading.Thread(target=thread_a)
+    ta.start()
+    assert prepared.wait(600) and not errors and b.prepared
+
+    result = {}
+
+    def thread_b():
+        try:
+            list(b.stream(SENT["zh"]))
+        except BaseException as exc:  # noqa: BLE001
+            result["err"] = exc
+
+    tb = threading.Thread(target=thread_b)
+    tb.start()
+    tb.join()
+    finish.set()
+    ta.join()
+    assert not errors
+    assert isinstance(result.get("err"), RuntimeError) and "同一條執行緒" in str(result["err"])

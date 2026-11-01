@@ -44,6 +44,7 @@ config：
 
 - `lang=None` 時自動判斷：含假名為 ja，含漢字為 zh，其餘 en。
 - `speed` 取最接近的檔位 1.0 / 1.1 / 1.2；zh 三個檔位各有一份加速參考音，en / ja 目前只有 1.0 檔，其他速度會落到 1.0。
+- 執行緒契約：`optimize=True` 時 torch.compile 的 CUDA graph 綁定執行緒，`prepare()`、`stream()`、`unload()` 必須在同一條執行緒呼叫（Echo Stream 端請用單執行緒 executor）。不同執行緒會立即丟 `RuntimeError`，不會等到 inductor assert；`optimize=False` 不檢查；`unload()` 後重新 `prepare()` 會重設記錄的執行緒。
 - 同時只服務一個請求（內部 lock）；消費端在同一執行緒對 generator `close()` 即可釋放。
 
 情緒（目前只有 zh 套用，en / ja 收到 emotion 會忽略並以 debug 記錄一次）：

@@ -423,3 +423,71 @@ def test_en_ja_ignore_emotion(text, caplog):
     assert b.opened[-1][1] == {"lang": lang, "tier": 1.0}
     assert b.scale_calls == []
     assert len([r for r in caplog.records if "忽略 emotion" in r.getMessage()]) == 1  # 只記錄一次
+
+
+# ---------------------------------------------------------------- 執行緒契約（torch.compile CUDA graph 綁定執行緒）
+def _in_thread(fn):
+    box = {}
+
+    def run():
+        try:
+            box["ok"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            box["err"] = exc
+
+    t = threading.Thread(target=run)
+    t.start()
+    t.join()
+    return box
+
+
+def test_same_thread_ok():
+    b = FakeBackend()
+    b._owner_thread = threading.get_ident()
+    assert len(list(b.stream("你好"))) == 5
+    b.unload()
+    assert b._owner_thread is None
+
+
+def test_cross_thread_stream_raises_and_releases_lock():
+    b = FakeBackend()
+    b._owner_thread = threading.get_ident()
+    box = _in_thread(lambda: list(b.stream("你好")))
+    assert isinstance(box.get("err"), RuntimeError) and "同一條執行緒" in str(box["err"])
+    assert b.opened == [] and _lock_free(b)
+    assert len(list(b.stream("你好"))) == 5  # 原執行緒仍可用
+
+
+def test_cross_thread_unload_raises_and_releases_lock():
+    b = FakeBackend()
+    b._owner_thread = threading.get_ident()
+    box = _in_thread(b.unload)
+    assert isinstance(box.get("err"), RuntimeError) and "同一條執行緒" in str(box["err"])
+    assert b._model is not None and _lock_free(b)
+    b.unload()
+    assert b._model is None and b._owner_thread is None
+
+
+def test_no_thread_check_when_not_optimized():
+    b = FakeBackend()
+    b.optimize = False
+    b._owner_thread = None  # optimize=False 時 prepare 不記錄
+    assert "err" not in _in_thread(lambda: list(b.stream("你好")))
+    assert "err" not in _in_thread(b.unload)
+
+
+@pytest.mark.parametrize("optimize,recorded", [(True, True), (False, False)])
+def test_prepare_records_owner_thread(optimize, recorded):
+    """prepare 在載入模型前記錄執行緒（optimize=False 不記）；失敗 release 後重設，可換執行緒重新 prepare。"""
+    owners = []
+
+    class B(VoxBackend):
+        def _load_model(self):
+            owners.append(self._owner_thread)
+            raise RuntimeError("stop")
+
+    b = B({"model_dir": ".", "lora_dir": ".", "optimize": optimize})
+    with pytest.raises(RuntimeError):
+        b.prepare()
+    assert owners == [threading.get_ident() if recorded else None]
+    assert b._owner_thread is None

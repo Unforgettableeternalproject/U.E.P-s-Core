@@ -4,6 +4,9 @@
 - ``VoxBackend(config)``、``prepare()``（同步）、``stream(text, *, lang=None, speed=None, emotion=None, intensity=None)``、
   ``unload()``、``sample_rate``。
 - ``stream`` 是同步 generator，yield 1-D float32 numpy chunk（48 kHz）。消費端在同一執行緒 ``close()``。
+- 執行緒契約：optimize=True（torch.compile CUDA graph 綁定執行緒）時，prepare / stream / unload 必須在同一條執行緒；
+  prepare 記下執行緒 id，stream 開始生成與 unload 若發現不同執行緒，立即丟 RuntimeError（不等 inductor assert）。
+  Echo Stream 端請用單執行緒 executor。optimize=False 不檢查。
 - 同時只服務一個請求：內部 lock 在 generator 的 ``with`` 內持有，close / GeneratorExit / 例外都會釋放。
 
 各語言定案設定（照實驗結果）：
@@ -215,6 +218,7 @@ class VoxBackend:
         self._tw: Any = None
         self._kana: Any = None
         self._lora_on: bool | None = None
+        self._owner_thread: int | None = None  # prepare 所在執行緒（optimize=True 時才記錄）
         self._lora_scale: float = 1.0
         self._emotion_clips: dict[str, dict[float, dict[str, str]]] = {}
         self._zh_refs: dict[float, dict[str, str]] = {}
@@ -237,6 +241,7 @@ class VoxBackend:
                 raise
 
     def _prepare_locked(self) -> None:
+        self._owner_thread = threading.get_ident() if self.optimize else None
         manifest = load_manifest(self.assets_dir)
         for lang in LANGS:
             if lang not in manifest:
@@ -300,11 +305,20 @@ class VoxBackend:
         if not self._lock.acquire(timeout=UNLOAD_TIMEOUT_S):
             raise TimeoutError("VoxBackend.unload 等不到 lock：有 stream 尚未結束或 generator 未 close")
         try:
+            self._check_thread("unload")
             self._release_locked()
         finally:
             self._lock.release()
 
+    def _check_thread(self, op: str) -> None:
+        if self._owner_thread is not None and self._owner_thread != threading.get_ident():
+            raise RuntimeError(
+                f"VoxBackend 必須在 prepare 的同一條執行緒呼叫 stream／unload（torch.compile CUDA graph 綁定執行緒）；"
+                f"目前在執行緒 {threading.get_ident()} 呼叫 {op}，prepare 在執行緒 {self._owner_thread}"
+            )
+
     def _release_locked(self) -> None:
+        self._owner_thread = None
         self._model = None
         self._caches.clear()
         self._tiers.clear()
@@ -344,6 +358,7 @@ class VoxBackend:
         with self._lock:
             if self._model is None:
                 raise RuntimeError("VoxBackend 尚未 prepare 或已 unload")
+            self._check_thread("stream")
             yield from self._generate(text, lang, speed, emotion, intensity)
 
     def _preprocess(self, text: str, lang: str) -> str:

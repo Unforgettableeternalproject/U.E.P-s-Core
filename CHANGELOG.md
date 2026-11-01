@@ -3490,3 +3490,15 @@
 
 ---
 
+### [docs]: 新增 Mac mini Host 模型與推論部署評估. 11/01
+
+> Date: Sun, 01 Nov 2026 19:15:41 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `830a75eb01fd798b539bf302549fff66c750407d`
+
+---
+

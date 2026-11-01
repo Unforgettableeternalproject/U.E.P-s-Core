@@ -78,6 +78,9 @@ inference = [
     "py-cord[voice]",
     "triton-windows>=3.3,<3.4; sys_platform == 'win32'",
     "flash-attn; sys_platform == 'win32'",
+    # VOX TTS：在現行 torch 2.7／transformers 4.48 下驗證；訓練與 WebUI 依賴由 override-dependencies 排除
+    "voxcpm==2.0.3",
+    "inflect==7.6.0",
 ]
 # desktop：PyQt5 桌面寵物與系統互動
 desktop = [
@@ -97,6 +100,19 @@ dev = ["pytest>=8", "pytest-asyncio>=0.26", "ruff"]
 [tool.uv]
 package = true
 default-groups = ["dev"]
+# voxcpm 的訓練／WebUI 依賴不進環境：marker 恆為 false 即移除該依賴（uv 0.9.0 無 exclude-dependencies）
+# transformers、huggingface-hub 維持現行鎖定版本
+override-dependencies = [
+    "transformers==4.48.1",
+    "huggingface-hub==0.36.2",
+    "datasets; python_version < '3'",
+    "gradio; python_version < '3'",
+    "funasr; python_version < '3'",
+    "modelscope; python_version < '3'",
+    "argbind; python_version < '3'",
+    "spaces; python_version < '3'",
+    "torchcodec; python_version < '3'",
+]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128", extra = "inference" }]

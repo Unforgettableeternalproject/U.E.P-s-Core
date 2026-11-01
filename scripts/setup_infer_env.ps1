@@ -1,11 +1,11 @@
 # 建置推理環境 .venv-infer（Python 3.12，P3 S6；不動 .venv）。
-# 用法：scripts/setup_infer_env.ps1 -Es <Echo-Stream 路徑> -Memory <記憶子系統路徑> [-EsRef 9912dce] [-MemoryRef cb36629]
+# 用法：scripts/setup_infer_env.ps1 -Es <Echo-Stream 路徑> -Memory <記憶子系統路徑> [-EsRef df357b2] [-MemoryRef cb36629]
 # ES 與記憶子系統以 git archive 取指定 commit 的快照後非 editable 安裝（不在原 repo 內建置，避免寫入對方目錄）；
 # TTS／STT／Session 子系統不安裝，由 ES adapter 依 UEP_INFER_*_REPO 加入 sys.path。
 param(
     [Parameter(Mandatory)][string]$Es,
     [Parameter(Mandatory)][string]$Memory,
-    [string]$EsRef = "9912dce",
+    [string]$EsRef = "df357b2",
     [string]$MemoryRef = "cb36629"
 )
 $ErrorActionPreference = "Stop"
@@ -28,4 +28,7 @@ try {
 }
 # 記憶端的純 Python 依賴（子系統 pyproject 的相依，--no-deps 未帶入的部分）與日文 G2P
 uv pip install --python $py networkx python-dotenv apscheduler rich tiktoken fugashi unidic-lite
-uv pip check --python $py
+# voxcpm 宣告的訓練／WebUI 依賴由 pyproject override 刻意排除，check 時略過這些；其餘不相容仍視為失敗
+$excluded = "torchcodec|gradio|modelscope|datasets|funasr|spaces|argbind"
+$issues = uv pip check --python $py 2>&1 | Where-Object { "$_" -match "requires" -and "$_" -notmatch "``voxcpm`` requires ``($excluded)" }
+if ($issues) { $issues; throw "uv pip check 失敗" }

@@ -1,5 +1,5 @@
 [project]
-name = "test-separate-tts-system"
+name = "echo-tts"
 version = "0.1.0"
 description = "Standalone U.E.P TTS latency and IndexTTS2 optimization experiment project"
 authors = [{name = "U.E.P Team"}]
@@ -45,6 +45,12 @@ tts = [
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["echo_tts*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.yaml", "*.wav", "*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

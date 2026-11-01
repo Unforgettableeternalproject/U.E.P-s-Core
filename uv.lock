@@ -697,6 +697,20 @@ http = [
 ]
 
 [[package]]
+name = "fugashi"
+version = "1.5.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/ec/b2e5aeba9438551ee4ae5275e95da506a279f53432e618daa1d4bd14c7d5/fugashi-1.5.2.tar.gz", hash = "sha256:a7959eab95bb37a6a934fc2314d3ff888664d11b88d0e1c596260a5785d5880e", size = 339768, upload-time = "2025-10-24T07:24:27.581Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f8/83/8674714722862cf7cbdc351ecacf0e0714daa1ae3afc48755d1349f92632/fugashi-1.5.2-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:4ed199a931c1d9f7d55c606d90a06323d1a60164ec222ea70af74c0c9d236faa", size = 513185, upload-time = "2025-10-24T07:27:08.134Z" },
+    { url = "https://files.pythonhosted.org/packages/65/e2/d8fbb71b3e04fe8e99bd7b2653ac638484d8ab46b22cab6ea64250a020ce/fugashi-1.5.2-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:3d2bb28cc6c6eec1c50729bb2dda44007a45599f0471b14c8fda57b0dde36d50", size = 457118, upload-time = "2025-10-24T07:27:09.185Z" },
+    { url = "https://files.pythonhosted.org/packages/42/63/e5e02d885d3ea3eeba7f3be371164eb35f618155faa473f0950cbba2d276/fugashi-1.5.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:8c1f64345a7a13b229fb755b567cbc993adb43b5b617ad4089521e5dd4d27b91", size = 455098, upload-time = "2025-10-24T07:27:10.139Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/5f/549fdaa359e1983927cf1febd8d6b4b31e2312475048a73138b53af8cb6c/fugashi-1.5.2-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:ffe760c93e21896cc74066bc5e7dbee6e41a26199807c850b486e2e29b8a3131", size = 677940, upload-time = "2025-10-24T07:48:53.995Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/30/436dd468ac8e08940f0414384a5808596c2ed8cbfd721dde09d5b78e8ec5/fugashi-1.5.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:83bc7bf08f81a3c3992bf10b8c681720898a826c6c3dffa80e1296e005f4bfb8", size = 694924, upload-time = "2025-10-24T07:25:39.112Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/ce/b18879c94c6267981a65792045321a1d71b849893b40d7e8356e0b55542c/fugashi-1.5.2-cp312-cp312-win_amd64.whl", hash = "sha256:936d710166c5b05064ec2ce0eb347fff7a0cf102c33989012fad205346943402", size = 508407, upload-time = "2025-10-24T07:24:25.409Z" },
+]
+
+[[package]]
 name = "google-adk"
 version = "2.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2476,6 +2490,14 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cb/04/2ba023d5f771b645f7be0c281cdacdcd939fe13d1deb331fc5ed1a6b3a98/PyRect-0.2.0.tar.gz", hash = "sha256:f65155f6df9b929b67caffbd57c0947c5ae5449d3b580d178074bffb47a09b78", size = 17219, upload-time = "2022-03-16T04:45:52.36Z" }
 
 [[package]]
+name = "pysbd"
+version = "0.3.4"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/0a/c99fb7d7e176f8b176ef19704a32e6a9c6aafdf19ef75a187f701fc15801/pysbd-0.3.4-py3-none-any.whl", hash = "sha256:cd838939b7b0b185fcf86b0baf6636667dfb6e474743beeff878e9f42e022953", size = 71082, upload-time = "2021-02-11T16:36:33.351Z" },
+]
+
+[[package]]
 name = "pyscreeze"
 version = "1.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3526,12 +3548,14 @@ desktop = [
 ]
 inference = [
     { name = "accelerate" },
+    { name = "apscheduler" },
     { name = "ctranslate2" },
     { name = "edge-tts" },
     { name = "einops" },
     { name = "faiss-cpu" },
     { name = "faster-whisper" },
     { name = "flash-attn", marker = "sys_platform == 'win32'" },
+    { name = "fugashi" },
     { name = "huggingface-hub" },
     { name = "inflect" },
     { name = "jieba" },
@@ -3540,6 +3564,7 @@ inference = [
     { name = "lightning" },
     { name = "llvmlite" },
     { name = "munch" },
+    { name = "networkx" },
     { name = "noisereduce" },
     { name = "numba" },
     { name = "numpy" },
@@ -3557,7 +3582,10 @@ inference = [
     { name = "pydub" },
     { name = "pyopenjtalk-plus" },
     { name = "pypinyin" },
+    { name = "pysbd" },
+    { name = "python-dotenv" },
     { name = "pytorch-lightning" },
+    { name = "rich" },
     { name = "safetensors" },
     { name = "scikit-learn" },
     { name = "scipy" },
@@ -3566,6 +3594,7 @@ inference = [
     { name = "speechbrain" },
     { name = "sudachidict-core" },
     { name = "sudachipy" },
+    { name = "tiktoken" },
     { name = "tokenizers" },
     { name = "torch" },
     { name = "torchaudio", version = "2.7.0", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'" },
@@ -3574,6 +3603,7 @@ inference = [
     { name = "torchvision", version = "0.22.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "platform_machine != 'aarch64' or platform_python_implementation != 'CPython' or sys_platform != 'linux'" },
     { name = "transformers" },
     { name = "triton-windows", marker = "sys_platform == 'win32'" },
+    { name = "unidic-lite" },
     { name = "voxcpm" },
     { name = "wetext" },
 ]
@@ -3590,12 +3620,14 @@ requires-dist = [
     { name = "accelerate", marker = "extra == 'inference'", specifier = "==1.1.0" },
     { name = "alembic", specifier = ">=1.16" },
     { name = "apscheduler", marker = "extra == 'desktop'", specifier = "==3.11.2" },
+    { name = "apscheduler", marker = "extra == 'inference'", specifier = "==3.11.2" },
     { name = "ctranslate2", marker = "extra == 'inference'", specifier = "==4.8.0" },
     { name = "edge-tts", marker = "extra == 'inference'", specifier = ">=7.2" },
     { name = "einops", marker = "extra == 'inference'", specifier = ">=0.8" },
     { name = "faiss-cpu", marker = "extra == 'inference'", specifier = ">=1.12,<1.16" },
     { name = "faster-whisper", marker = "extra == 'inference'", specifier = "==1.2.1" },
     { name = "flash-attn", marker = "sys_platform == 'win32' and extra == 'inference'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.10/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-win_amd64.whl" },
+    { name = "fugashi", marker = "extra == 'inference'", specifier = "==1.5.2" },
     { name = "google-adk", marker = "extra == 'agent-candidates'" },
     { name = "google-genai", specifier = ">=2,<3" },
     { name = "huggingface-hub", marker = "extra == 'inference'", specifier = ">=0.27" },
@@ -3606,6 +3638,7 @@ requires-dist = [
     { name = "lightning", marker = "extra == 'inference'", specifier = "==2.5.2" },
     { name = "llvmlite", marker = "extra == 'inference'", specifier = "==0.44.0" },
     { name = "munch", marker = "extra == 'inference'", specifier = ">=4" },
+    { name = "networkx", marker = "extra == 'inference'", specifier = "==3.7" },
     { name = "noisereduce", marker = "extra == 'inference'", specifier = ">=3" },
     { name = "numba", marker = "extra == 'inference'", specifier = "==0.61.2" },
     { name = "numpy", marker = "extra == 'inference'", specifier = "==2.0.0" },
@@ -3634,10 +3667,13 @@ requires-dist = [
     { name = "pypinyin", marker = "extra == 'inference'", specifier = "==0.55.0" },
     { name = "pyqt5", marker = "extra == 'desktop'", specifier = "==5.15.11" },
     { name = "pyqt5-qt5", marker = "extra == 'desktop'", specifier = "==5.15.2" },
+    { name = "pysbd", marker = "extra == 'inference'", specifier = ">=0.3.4" },
+    { name = "python-dotenv", marker = "extra == 'inference'", specifier = "==1.2.4" },
     { name = "python-ulid", specifier = ">=3.0" },
     { name = "pytorch-lightning", marker = "extra == 'inference'", specifier = "==2.5.2" },
     { name = "pywin32", marker = "sys_platform == 'win32' and extra == 'desktop'", specifier = "==310" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", marker = "extra == 'inference'", specifier = "==15.0.0" },
     { name = "safetensors", marker = "extra == 'inference'", specifier = "==0.5.2" },
     { name = "scikit-learn", marker = "extra == 'inference'", specifier = "==1.6.1" },
     { name = "scipy", marker = "extra == 'inference'", specifier = "==1.15.1" },
@@ -3647,12 +3683,14 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "sudachidict-core", marker = "extra == 'inference'", specifier = "==20261015" },
     { name = "sudachipy", marker = "extra == 'inference'", specifier = "==0.7.0" },
+    { name = "tiktoken", marker = "extra == 'inference'", specifier = "==0.14.0" },
     { name = "tokenizers", marker = "extra == 'inference'", specifier = "==0.21.0" },
     { name = "torch", marker = "extra == 'inference'", specifier = "==2.7.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "uep", extra = "inference" } },
     { name = "torchaudio", marker = "extra == 'inference'", specifier = "==2.7.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "uep", extra = "inference" } },
     { name = "torchvision", marker = "extra == 'inference'", specifier = "==0.22.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "uep", extra = "inference" } },
     { name = "transformers", marker = "extra == 'inference'", specifier = "==4.48.1" },
     { name = "triton-windows", marker = "sys_platform == 'win32' and extra == 'inference'", specifier = ">=3.3,<3.4" },
+    { name = "unidic-lite", marker = "extra == 'inference'", specifier = "==1.0.8" },
     { name = "voxcpm", marker = "extra == 'inference'", specifier = "==2.0.3" },
     { name = "wetext", marker = "extra == 'inference'", specifier = ">=0.1" },
 ]
@@ -3664,6 +3702,12 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.26" },
     { name = "ruff" },
 ]
+
+[[package]]
+name = "unidic-lite"
+version = "1.0.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/55/2b/8cf7514cb57d028abcef625afa847d60ff1ffbf0049c36b78faa7c35046f/unidic-lite-1.0.8.tar.gz", hash = "sha256:db9d4572d9fdd4d00a97949d4b0741ec480ee05a7e7e2e32f547500dae27b245", size = 47356746, upload-time = "2021-01-25T06:07:54.719Z" }
 
 [[package]]
 name = "urllib3"

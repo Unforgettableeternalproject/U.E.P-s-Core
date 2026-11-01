@@ -7,6 +7,10 @@
 - 執行緒契約：optimize=True（torch.compile CUDA graph 綁定執行緒）時，prepare / stream / unload 必須在同一條執行緒；
   prepare 記下執行緒 id，stream 開始生成與 unload 若發現不同執行緒，立即丟 RuntimeError（不等 inductor assert）。
   Echo Stream 端請用單執行緒 executor。optimize=False 不檢查。
+- unload 會 ``torch._dynamo.reset()`` 清編譯快取；之後換一條執行緒重新 prepare 必須重編譯，而 torch 2.7 的
+  cudagraph tree 容器只存在於「第一個 import cudagraph_trees 的執行緒」，其他執行緒會在 inductor 內
+  AssertionError。prepare 開頭會為目前執行緒補上容器（``_ensure_cudagraph_tls``），所以 unload 後可在任何一條執行緒重載，
+  之後 stream／unload 仍須與該次 prepare 同一條執行緒。
 - 同時只服務一個請求：內部 lock 在 generator 的 ``with`` 內持有，close / GeneratorExit / 例外都會釋放。
 
 各語言定案設定（照實驗結果）：
@@ -25,6 +29,7 @@ import logging
 import re
 import sys
 import threading
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -242,6 +247,8 @@ class VoxBackend:
 
     def _prepare_locked(self) -> None:
         self._owner_thread = threading.get_ident() if self.optimize else None
+        if self.optimize:
+            _ensure_cudagraph_tls()
         manifest = load_manifest(self.assets_dir)
         for lang in LANGS:
             if lang not in manifest:
@@ -460,6 +467,23 @@ class VoxBackend:
             streaming=True,
         )
         return _to_numpy(raw)
+
+
+def _ensure_cudagraph_tls() -> None:
+    """讓目前執行緒擁有 inductor cudagraph tree 的容器（等同這條執行緒是第一個 import 的）。
+
+    容器是 ``threading.local`` 屬性，只在 import cudagraph_trees 的那條執行緒上存在；其他執行緒一旦需要編譯
+    （例如 unload 的 dynamo reset 清掉快取後換執行緒重載）就會在 ``get_obj`` 的 assert 失敗。已存在則不動。
+    """
+    try:
+        from torch._inductor import cudagraph_trees as trees
+    except Exception:  # noqa: BLE001 - 沒有 inductor／cuda 時不影響 prepare
+        return
+    local = trees.local
+    if not hasattr(local, "tree_manager_containers"):
+        local.tree_manager_containers = {}
+    if not hasattr(local, "tree_manager_locks"):
+        local.tree_manager_locks = defaultdict(threading.Lock)
 
 
 def _to_numpy(raw: Any) -> Iterator[np.ndarray]:

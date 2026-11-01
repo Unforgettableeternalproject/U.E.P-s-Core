@@ -80,7 +80,9 @@ def test_close_midway_then_unload(backend):
 
 def test_cross_thread_stream_raises_clear_error():
     """thread A prepare、thread B stream：要得到清楚的 RuntimeError，而不是 inductor 的 AssertionError。
-    獨立建立 backend（不用模組共用的）；thread A 保持存活，最後由它 unload。"""
+    獨立建立 backend（不用模組共用的）；thread A 保持存活，最後由它 unload。
+    整檔連跑時，這個案例在前一個 backend（主執行緒 prepare 後 unload，dynamo reset）之後才在 thread A prepare，
+    同時也是「unload 後換執行緒重載」的回歸測試（修正前 A 的 prepare 會在 inductor cudagraph_trees.get_obj 斷言失敗）。"""
     import threading
 
     from echo_tts.runtime.vox_backend import VoxBackend

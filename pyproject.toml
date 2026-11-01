@@ -19,6 +19,12 @@ dependencies = [
     "alembic>=1.16",
     "psycopg[binary]>=3.2",
     "python-ulid>=3.0",
+    # 子系統 echo_thought_core（Session）的執行期依賴
+    "python-dotenv>=1.0",
+    "rich>=13.7",
+    "tiktoken>=0.7",
+    # hatch dev-mode-exact 的 editable 載入器（.pth 執行期需要）
+    "editables~=0.3",
 ]
 
 [project.optional-dependencies]
@@ -146,7 +152,12 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["uep"]
+packages = [
+    "uep",
+    "subsystems/echo_thought_core/echo_thought_core",
+]
+# editable 只暴露各套件本身，不把 subsystems/<name>/ 放進 sys.path（避免 tests／configs／Entry 同名遮蔽）
+dev-mode-exact = true
 
 [tool.pytest.ini_options]
 # 新 Core 測試；legacy 測試仍以 unit_tests/、integration_tests/ 明確指定路徑執行

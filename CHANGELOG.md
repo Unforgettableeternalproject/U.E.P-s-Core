@@ -3550,3 +3550,15 @@
 
 ---
 
+### [chore]: Core 以 hatch editable 提供 Session. 11/02
+
+> Date: Mon, 02 Nov 2026 01:04:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `c3455a6f979e9be8a9cae783bf3f1b7e668a511e`
+
+---
+

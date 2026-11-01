@@ -12,4 +12,4 @@ if not exist "%UEP_PYTHON%" (
     exit /b 1
 )
 
-"%UEP_PYTHON%" Entry.py %*
+"%UEP_PYTHON%" -m echo_thought_core.cli %*

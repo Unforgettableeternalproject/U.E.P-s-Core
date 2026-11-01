@@ -545,6 +545,15 @@ wheels = [
 ]
 
 [[package]]
+name = "editables"
+version = "0.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/82/f8/02a4e9a0cb961b0feeb431ac96b231c157ecdcbbeacafe9e2fdb4b1dde39/editables-0.6.tar.gz", hash = "sha256:1163834902381c4613787951c5914800fdf155ae08848a373b8ea5006780977c", size = 16763, upload-time = "2026-04-14T10:39:04.677Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cc/0e/d095533037fc9468f947b19f2da53f869804632b508808de41e86e801797/editables-0.6-py3-none-any.whl", hash = "sha256:d70e4698078a1d033e7786d9c64e5be070d058a67c21417024d38a58ac20aa43", size = 5438, upload-time = "2026-04-14T10:39:03.663Z" },
+]
+
+[[package]]
 name = "einops"
 version = "0.8.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3521,14 +3530,18 @@ version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "editables" },
     { name = "google-genai" },
     { name = "openai" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "python-dotenv" },
     { name = "python-ulid" },
     { name = "pyyaml" },
+    { name = "rich" },
     { name = "sqlalchemy" },
+    { name = "tiktoken" },
 ]
 
 [package.optional-dependencies]
@@ -3623,6 +3636,7 @@ requires-dist = [
     { name = "apscheduler", marker = "extra == 'inference'", specifier = "==3.11.2" },
     { name = "ctranslate2", marker = "extra == 'inference'", specifier = "==4.8.0" },
     { name = "edge-tts", marker = "extra == 'inference'", specifier = ">=7.2" },
+    { name = "editables", specifier = "~=0.3" },
     { name = "einops", marker = "extra == 'inference'", specifier = ">=0.8" },
     { name = "faiss-cpu", marker = "extra == 'inference'", specifier = ">=1.12,<1.16" },
     { name = "faster-whisper", marker = "extra == 'inference'", specifier = "==1.2.1" },
@@ -3668,11 +3682,13 @@ requires-dist = [
     { name = "pyqt5", marker = "extra == 'desktop'", specifier = "==5.15.11" },
     { name = "pyqt5-qt5", marker = "extra == 'desktop'", specifier = "==5.15.2" },
     { name = "pysbd", marker = "extra == 'inference'", specifier = ">=0.3.4" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "python-dotenv", marker = "extra == 'inference'", specifier = "==1.2.4" },
     { name = "python-ulid", specifier = ">=3.0" },
     { name = "pytorch-lightning", marker = "extra == 'inference'", specifier = "==2.5.2" },
     { name = "pywin32", marker = "sys_platform == 'win32' and extra == 'desktop'", specifier = "==310" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.7" },
     { name = "rich", marker = "extra == 'inference'", specifier = "==15.0.0" },
     { name = "safetensors", marker = "extra == 'inference'", specifier = "==0.5.2" },
     { name = "scikit-learn", marker = "extra == 'inference'", specifier = "==1.6.1" },
@@ -3683,6 +3699,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "sudachidict-core", marker = "extra == 'inference'", specifier = "==20261015" },
     { name = "sudachipy", marker = "extra == 'inference'", specifier = "==0.7.0" },
+    { name = "tiktoken", specifier = ">=0.7" },
     { name = "tiktoken", marker = "extra == 'inference'", specifier = "==0.14.0" },
     { name = "tokenizers", marker = "extra == 'inference'", specifier = "==0.21.0" },
     { name = "torch", marker = "extra == 'inference'", specifier = "==2.7.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "uep", extra = "inference" } },

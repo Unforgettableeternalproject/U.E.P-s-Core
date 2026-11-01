@@ -48,9 +48,9 @@
 ## 執行檢查
 
 ```bash
-.venv/Scripts/python.exe scripts/check_index.py            # 檢查，有錯誤回傳 1
-.venv/Scripts/python.exe scripts/check_index.py --json     # 機器可讀輸出
-.venv/Scripts/python.exe -m unittest scripts.test_check_index
+~/.uep/venv-inference-312/Scripts/python.exe scripts/check_index.py            # 檢查，有錯誤回傳 1
+~/.uep/venv-inference-312/Scripts/python.exe scripts/check_index.py --json     # 機器可讀輸出
+~/.uep/venv-inference-312/Scripts/python.exe -m unittest scripts.test_check_index
 ```
 
 接 CI（待 uep/ 穩定後；本任務未改 `ci.yml`）：

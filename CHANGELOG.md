@@ -3478,3 +3478,15 @@
 
 ---
 
+### [docs]: 索引檢查指令改用共用環境. 11/01
+
+> Date: Sun, 01 Nov 2026 19:14:18 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `835473c8315c8771c56dc4077987c92d3151e9ee`
+
+---
+

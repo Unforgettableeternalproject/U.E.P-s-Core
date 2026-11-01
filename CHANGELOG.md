@@ -3514,3 +3514,15 @@
 
 ---
 
+### [docs]: 新增子系統遷入 Core 計畫. 11/01
+
+> Date: Sun, 01 Nov 2026 22:08:29 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `45915bd158e10d7312634826873122bbc1e7e98d`
+
+---
+

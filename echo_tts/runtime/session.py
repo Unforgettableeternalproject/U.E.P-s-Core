@@ -70,7 +70,7 @@ class TTSInteractiveSession:
 
         The vector held by the backend is already scaled to this value; this
         keeps the number around so the shell can report it and so callers can
-        tell 0.57 from 0.73 without re-deriving it from the vector sum
+        tell 0.57 from 0.65 without re-deriving it from the vector sum
         (which the calm bias makes lossy).
         """
         self._emotion_strength = clamp_strength(strength)

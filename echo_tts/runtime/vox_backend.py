@@ -1,7 +1,8 @@
 """VoxCPM2 串流後端（供 Echo Stream 的 VoxSpeakStage 使用）。
 
 介面契約：
-- ``VoxBackend(config)``、``prepare()``（同步）、``stream(text, *, lang=None, speed=None)``、``unload()``、``sample_rate``。
+- ``VoxBackend(config)``、``prepare()``（同步）、``stream(text, *, lang=None, speed=None, emotion=None, intensity=None)``、
+  ``unload()``、``sample_rate``。
 - ``stream`` 是同步 generator，yield 1-D float32 numpy chunk（48 kHz）。消費端在同一執行緒 ``close()``。
 - 同時只服務一個請求：內部 lock 在 generator 的 ``with`` 內持有，close / GeneratorExit / 例外都會釋放。
 
@@ -9,12 +10,15 @@
 - zh：ULT（加速參考音 + 逐字稿）、LoRA 開、台灣讀音前處理（normalize=False）
 - en：REF（只給參考音 EV25b）、LoRA 關、不前處理
 - ja：REF（只給參考音 JV25b）、LoRA 關、先轉假名
+情緒（僅 zh）：reference 用 zh 中性參考音鎖音色，prompt 用情緒片段（含逐字稿）帶入情緒，LoRA scale 調為 0.85；
+中性（emotion 為 None / 全 0 / "neutral"）走既有路徑，行為不變。en、ja 忽略 emotion。
 生成參數 cfg 2.0、steps 10，不載入 denoiser，streaming 不做 badcase 重試。
 """
 from __future__ import annotations
 
 import gc
 import json
+import logging
 import re
 import sys
 import threading
@@ -24,12 +28,20 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from ..config.emotion_presets import EMOTION_LABELS, user_to_strength
+
+logger = logging.getLogger(__name__)
+
 SAMPLE_RATE = 48000
 SPEED_TIERS = (1.0, 1.1, 1.2)
 CFG_VALUE = 2.0
 INFERENCE_TIMESTEPS = 10
 DEFAULT_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "vox"
 UNLOAD_TIMEOUT_S = 30.0
+# 情緒：強度檔位（實際尺度）、有情緒時的 LoRA scale（中性為 1.0）
+EMOTION_TIERS = (0.57, 0.61, 0.65)
+EMOTION_LORA_SCALE = 0.85
+EMOTION_LANGS = ("zh",)
 
 
 @dataclass(frozen=True)
@@ -122,6 +134,67 @@ def load_manifest(assets_dir: str | Path) -> dict[str, Any]:
     return out
 
 
+def load_emotion_clips(assets_dir: str | Path) -> dict[str, dict[float, dict[str, str]]]:
+    """讀取 manifest 的 emotion 區段；回傳 {情緒: {強度檔位: {wav(絕對路徑), transcript}}}。
+
+    沒有 emotion 區段回傳空 dict（全部走中性）；列出但檔案不存在的片段直接報錯。
+    """
+    root = Path(assets_dir)
+    data = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    out: dict[str, dict[float, dict[str, str]]] = {}
+    for clip in (data.get("emotion") or {}).get("clips", []):
+        label = str(clip["emotion"]).lower()
+        if label not in EMOTION_LABELS:
+            raise ValueError(f"manifest 情緒標籤無效：{label!r}")
+        wav = root / clip["wav"]
+        if not wav.is_file():
+            raise FileNotFoundError(f"manifest 指向的情緒片段不存在：{wav}")
+        if not clip.get("transcript"):
+            raise ValueError(f"情緒片段 {label} {clip['strength']} 必須有 transcript")
+        out.setdefault(label, {})[float(clip["strength"])] = {"wav": str(wav), "transcript": clip["transcript"]}
+    return out
+
+
+def resolve_emotion(emotion: Any) -> str | None:
+    """把 8 維向量 / 標籤字串 / None 解析成情緒標籤；中性、未知或格式不符回傳 None（不拋例外）。
+
+    向量順序同 EMOTION_LABELS；取最大值，同值取靠前者；全部 <= 0 視為中性。
+    """
+    if emotion is None:
+        return None
+    if isinstance(emotion, str):
+        label = emotion.strip().lower()
+        if label in EMOTION_LABELS:
+            return label
+        if label not in ("", "neutral"):
+            logger.warning("未知的情緒標籤 %r，改走中性", emotion)
+        return None
+    try:
+        values = [float(v) for v in emotion]
+    except (TypeError, ValueError):
+        logger.warning("無法解析的 emotion：%r，改走中性", emotion)
+        return None
+    if len(values) != len(EMOTION_LABELS):
+        logger.warning("emotion 向量長度 %d 不是 %d，改走中性", len(values), len(EMOTION_LABELS))
+        return None
+    top = max(values)
+    if not top > 0:  # 全 0 或含 NaN
+        return None
+    return EMOTION_LABELS[values.index(top)]
+
+
+def pick_emotion_tier(intensity: float | None, available: Any) -> float | None:
+    """intensity（0~1 user 刻度）→ 實際強度 → 最接近的可用檔位；平手取較強者。無可用檔位回傳 None。"""
+    tiers = sorted(float(t) for t in available)
+    if not tiers:
+        return None
+    try:
+        strength = round(user_to_strength(intensity), 4)
+    except (TypeError, ValueError):
+        strength = round(user_to_strength(None), 4)
+    return min(tiers, key=lambda t: (round(abs(t - strength), 4), -t))
+
+
 class VoxBackend:
     sample_rate = SAMPLE_RATE
 
@@ -142,6 +215,11 @@ class VoxBackend:
         self._tw: Any = None
         self._kana: Any = None
         self._lora_on: bool | None = None
+        self._lora_scale: float = 1.0
+        self._emotion_clips: dict[str, dict[float, dict[str, str]]] = {}
+        self._zh_refs: dict[float, dict[str, str]] = {}
+        self._emotion_caches: dict[tuple[str, float, float], dict] = {}
+        self._ignored_emotion_logged: set[str] = set()
 
     # ------------------------------------------------------------------ 生命週期
     @property
@@ -180,11 +258,18 @@ class VoxBackend:
             self._tiers[lang] = tuple(sorted(spec["speeds"]))
             for tier, item in spec["speeds"].items():
                 self._caches[(lang, tier)] = self._build_cache(spec["mode"], item)
+        self._zh_refs = dict(manifest["zh"]["speeds"])
+        self._emotion_clips = load_emotion_clips(self.assets_dir)
         # 暖機：每種語言短、中、長；zh 走 ULT（預設檔位 1.2）
         for lang in LANGS:
             for text in WARMUP_TEXTS[lang]:
                 for _ in self._generate(text, lang, None):
                     pass
+        # zh 情緒路徑暖機一次（含 LoRA 0.85）；沒有情緒片段就略過
+        if self._emotion_clips:
+            label = "calm" if "calm" in self._emotion_clips else next(iter(self._emotion_clips))
+            for _ in self._generate(WARMUP_TEXTS["zh"][1], "zh", None, label, None):
+                pass
 
     def _load_model(self) -> Any:
         from voxcpm import VoxCPM
@@ -226,6 +311,11 @@ class VoxBackend:
         self._tw = None
         self._kana = None
         self._lora_on = None
+        self._lora_scale = 1.0
+        self._emotion_clips.clear()
+        self._zh_refs.clear()
+        self._emotion_caches.clear()
+        self._ignored_emotion_logged.clear()
         gc.collect()
         torch = sys.modules.get("torch")
         if torch is not None and torch.cuda.is_available():
@@ -237,12 +327,24 @@ class VoxBackend:
             torch.cuda.empty_cache()
 
     # ------------------------------------------------------------------ 串流
-    def stream(self, text: str, *, lang: str | None = None, speed: float | None = None) -> Iterator[np.ndarray]:
-        """yield 1-D float32 chunk。lock 在 with 內，close / GeneratorExit 時一定釋放。"""
+    def stream(
+        self,
+        text: str,
+        *,
+        lang: str | None = None,
+        speed: float | None = None,
+        emotion: Any = None,
+        intensity: float | None = None,
+    ) -> Iterator[np.ndarray]:
+        """yield 1-D float32 chunk。lock 在 with 內，close / GeneratorExit 時一定釋放。
+
+        emotion：8 維向量（順序同 EMOTION_LABELS）、標籤字串或 None；intensity：0~1 user 刻度（None = 0.5）。
+        只有 zh 套用情緒，其他語言忽略。
+        """
         with self._lock:
             if self._model is None:
                 raise RuntimeError("VoxBackend 尚未 prepare 或已 unload")
-            yield from self._generate(text, lang, speed)
+            yield from self._generate(text, lang, speed, emotion, intensity)
 
     def _preprocess(self, text: str, lang: str) -> str:
         kind = LANGS[lang].preprocess
@@ -252,29 +354,77 @@ class VoxBackend:
             text = self._kana.normalize(text)
         return re.sub(r"\s+", " ", text.replace("\n", " ")).strip()
 
-    def _generate(self, text: str, lang: str | None, speed: float | None) -> Iterator[np.ndarray]:
+    def _generate(
+        self, text: str, lang: str | None, speed: float | None, emotion: Any = None, intensity: float | None = None
+    ) -> Iterator[np.ndarray]:
         """呼叫端須已持有 lock。"""
         lang = normalize_lang(lang, text)
         tier = snap_speed(speed, lang, self._tiers[lang])
         body = self._preprocess(text, lang)
         if not body:
             return
+        cache = self._caches[(lang, tier)]
+        label = resolve_emotion(emotion)
+        scale = 1.0
+        if label is not None and lang not in EMOTION_LANGS:
+            if lang not in self._ignored_emotion_logged:
+                self._ignored_emotion_logged.add(lang)
+                logger.debug("VOX %s 尚未支援情緒，忽略 emotion=%r", lang, emotion)
+            label = None
+        if label is not None:
+            emo_cache = self._emotion_cache(label, intensity, tier)
+            if emo_cache is not None:
+                cache, scale = emo_cache, EMOTION_LORA_SCALE
         self._set_lora(LANGS[lang].lora)
-        gen = self._open_stream(body, self._caches[(lang, tier)])
         try:
-            for wav in gen:
-                chunk = np.asarray(wav, dtype=np.float32).reshape(-1)
-                if chunk.size:
-                    yield chunk
+            if scale != 1.0:
+                self._set_lora_scale(scale)
+            gen = self._open_stream(body, cache)
+            try:
+                for wav in gen:
+                    chunk = np.asarray(wav, dtype=np.float32).reshape(-1)
+                    if chunk.size:
+                        yield chunk
+            finally:
+                close = getattr(gen, "close", None)
+                if close is not None:
+                    close()
         finally:
-            close = getattr(gen, "close", None)
-            if close is not None:
-                close()
+            if self._lora_scale != 1.0:
+                self._set_lora_scale(1.0)  # 例外 / close 也要還原，不殘留
+
+    def _emotion_cache(self, label: str, intensity: float | None, speed_tier: float) -> dict | None:
+        """找 (情緒, 檔位) 的 prompt cache；缺檔位退到最接近者，完全沒有片段回傳 None（走中性）。"""
+        clips = self._emotion_clips.get(label)
+        ref = self._zh_refs.get(speed_tier)
+        if not clips or ref is None:
+            return None
+        strength = pick_emotion_tier(intensity, clips)
+        key = (label, strength, speed_tier)
+        if key not in self._emotion_caches:
+            self._emotion_caches[key] = self._build_emotion_cache(clips[strength], ref)
+        return self._emotion_caches[key]
+
+    def _build_emotion_cache(self, clip: dict[str, str], ref: dict[str, str]) -> dict:
+        """reference = zh 中性參考音（鎖音色），prompt = 情緒片段 + 逐字稿（帶入情緒）。"""
+        return self._model.tts_model.build_prompt_cache(
+            prompt_text=clip["transcript"], prompt_wav_path=clip["wav"], reference_wav_path=ref["wav"]
+        )
 
     def _set_lora(self, on: bool) -> None:
         if self._lora_on is not on:
             self._model.set_lora_enabled(on)
             self._lora_on = on
+            self._lora_scale = 1.0  # set_lora_enabled 會把 scaling 重設為 alpha/r
+
+    def _set_lora_scale(self, scale: float) -> None:
+        """直接改 LoRALinear 的 scaling buffer（fill_ 不觸發 torch.compile 重編譯）；1.0 = alpha/r。"""
+        from voxcpm.modules.layers.lora import LoRALinear
+
+        for m in self._model.tts_model.modules():
+            if isinstance(m, LoRALinear):
+                m.scaling.fill_(m._base_scaling * scale)
+        self._lora_scale = scale
 
     def _open_stream(self, text: str, cache: dict) -> Iterator[np.ndarray]:
         raw = self._model.tts_model._generate_with_prompt_cache(
@@ -298,4 +448,4 @@ def _to_numpy(raw: Any) -> Iterator[np.ndarray]:
         raw.close()
 
 
-__all__ = ["VoxBackend", "detect_lang", "normalize_lang", "snap_speed", "load_manifest", "SAMPLE_RATE"]
+__all__ = ["VoxBackend", "detect_lang", "normalize_lang", "snap_speed", "load_manifest", "load_emotion_clips", "resolve_emotion", "pick_emotion_tier", "SAMPLE_RATE"]

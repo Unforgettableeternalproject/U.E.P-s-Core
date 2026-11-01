@@ -54,7 +54,7 @@ class EmotionMapper:
         
         Args:
             max_strength: 情感向量的最大總和 (保留原始聲音特徵)。
-                      0.65 為 2.5 聽感定案值，可用區間 0.57 ~ 0.73
+                      0.65 為引擎預設值，可用區間 0.57 ~ 0.65
             default_neutral: 當輸入為空時是否使用中性向量
         """
         self.max_strength = max_strength

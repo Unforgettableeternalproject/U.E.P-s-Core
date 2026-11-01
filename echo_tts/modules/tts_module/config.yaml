@@ -54,7 +54,7 @@ chunking:
 # 數值由 IndexTTS 2.5 聽感測試定案（艾斯維爾 2026-08-19，
 #    experiments/v25_emotion_combos.py，參考音 slice_04）。
 emotion:
-  max_strength: 0.65  # 情感向量總和目標。0.65 為聽感甜蜜點，可用區間 0.57 ~ 0.73
+  max_strength: 0.65  # 情感向量總和目標。0.65 為引擎預設總和，可用區間 0.57 ~ 0.65（user 0.5 = 0.61）
   default: null  # 預設情感向量 (null = 使用角色原聲，也可設置為 8D 列表)
   # 例如: default: [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2]  # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
 

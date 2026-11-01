@@ -1459,7 +1459,7 @@ class IndexTTSLite:
 
         # 語言別情感增益（保留機制，預設不啟用）
         # 2.5 盲測定案（2026-08-19）：0.65 是以「最終送進模型的總和」定義，
-        # 日文梯度 0.57/0.65/0.73 與中英同值即通過聽感，不再需要 1.3x 補償。
+        # 日文梯度與中英同值即通過聽感，不再需要 1.3x 補償。
         # 且增益若在 normalize 之前套，等分量情況下會被 normalize 完全抵銷。
         # 要重新啟用請在 config.yaml 的 emotion.lang_gain 明寫（如 ja: 1.2）。
         _lang_gain_cfg = self.cfg.get('emotion', {}).get('lang_gain', {}) or {}
@@ -1470,7 +1470,7 @@ class IndexTTSLite:
                 debug_log(3, f"   🌐 語言情感增益 ({language}): ×{_lang_gain}")
 
         # ① 先歸一化到目標強度：preset 定義的是「情緒配方」（比例），
-        #    實際強度由 max_strength 決定（定案 0.65，可用區間 0.57~0.73）
+        #    實際強度由 max_strength 決定（預設 0.65，可用區間 0.57~0.65）
         emotion_vector = self.normalize_emotion_vector(emotion_vector, max_emotion_strength, verbose)
 
         # ② 再套 emo_bias（壓制容易出怪聲的維度，目前只有 calm 0.5625）

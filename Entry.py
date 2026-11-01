@@ -374,10 +374,10 @@ def _cmd_emotion(session: TTSInteractiveSession, args: list[str]) -> None:
     """顯示或設定情緒。
 
     Preset 與手動向量都只定義「情緒配方」（比例），強度用直覺的 0~1 刻度，
-    內部線性映射到定案區間 [0.57, 0.73]（0.5 → 甜蜜點 0.65）：
+    內部線性映射到定案區間 [0.57, 0.65]（0.5 → 0.61）：
         emotion sad                  → 0.5（預設，= 0.65）
         emotion sad 0                → 最弱（= 0.57）
-        emotion sad 1                → 最強（= 0.73）
+        emotion sad 1                → 最強（= 0.65）
         emotion 0 0 1 0 0 0 0 0 0.8  → 手動向量 + 強度 0.8
     """
     if not args:

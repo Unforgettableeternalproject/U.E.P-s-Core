@@ -67,7 +67,7 @@ def apply_engine_pipeline(vector: list[float], cfg: dict) -> list[float]:
 def test_strength_band_is_the_tuned_one():
     assert STRENGTH_DEFAULT == pytest.approx(0.65)
     assert STRENGTH_MIN == pytest.approx(0.57)
-    assert STRENGTH_MAX == pytest.approx(0.73)
+    assert STRENGTH_MAX == pytest.approx(0.65)
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -75,7 +75,7 @@ def test_strength_band_is_the_tuned_one():
     (0.4, STRENGTH_MIN),
     (0.57, 0.57),
     (0.65, 0.65),
-    (0.73, 0.73),
+    (0.73, STRENGTH_MAX),
     (0.9, STRENGTH_MAX),
     (5.0, STRENGTH_MAX),
 ])
@@ -87,18 +87,18 @@ def test_clamp_strength_maps_into_band(value, expected):
 
 @pytest.mark.parametrize("user,expected", [
     (0.0, STRENGTH_MIN),
-    (0.5, STRENGTH_DEFAULT),   # 甜蜜點剛好是區間中點
+    (0.5, 0.61),               # 區間中點
     (1.0, STRENGTH_MAX),
-    (0.25, 0.61),
-    (0.75, 0.69),
+    (0.25, 0.59),
+    (0.75, 0.63),
 ])
 def test_user_scale_maps_linearly(user, expected):
     assert user_to_strength(user) == pytest.approx(expected)
 
 
-def test_default_user_strength_hits_sweet_spot():
-    assert user_to_strength(None) == pytest.approx(STRENGTH_DEFAULT)
-    assert user_to_strength(USER_STRENGTH_DEFAULT) == pytest.approx(STRENGTH_DEFAULT)
+def test_default_user_strength_is_band_midpoint():
+    assert user_to_strength(None) == pytest.approx(0.61)
+    assert user_to_strength(USER_STRENGTH_DEFAULT) == pytest.approx(0.61)
 
 
 @pytest.mark.parametrize("user", [-1.0, -0.01, 1.01, 99.0])

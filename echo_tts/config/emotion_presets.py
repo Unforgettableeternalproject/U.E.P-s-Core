@@ -25,31 +25,32 @@ import yaml
 # 8 基礎情緒維度名稱
 EMOTION_LABELS = ["happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm"]
 
-# ── 情緒強度區間（2.5 聽感定案，艾斯維爾 2026-08-19）──
+# ── 情緒強度區間（2.5 聽感定案 2026-08-19；2026-11-01 上緣由 0.73 收斂到 0.65）──
 # preset 的 vector 定義的是「情緒配方」（各維度的相對比例），
-# 實際送進模型的強度由這裡的區間決定。0.65 為甜蜜點，±0.08 為可用範圍：
-# 低於 0.57 情緒表現不足，高於 0.73 開始蓋掉角色音色。
+# 實際送進模型的強度由這裡的區間決定。可用範圍 0.57 ~ 0.65：
+# 低於 0.57 情緒表現不足，高於 0.65 開始蓋掉角色音色。
+# STRENGTH_DEFAULT（0.65）是引擎預設總和（max_strength），不等於 user 0.5 的對應值。
 STRENGTH_DEFAULT = 0.65
 STRENGTH_MIN = 0.57
-STRENGTH_MAX = 0.73
+STRENGTH_MAX = 0.65
 
 # 使用者面向的刻度：0.0 ~ 1.0 線性映射到上面的區間。
-# 0.5 剛好落在甜蜜點（0.57 與 0.73 的中點正是 0.65），所以預設 0.5。
+# 0.5 落在區間中點 0.61（0.57 與 0.65 的中點），所以預設 0.5。
 USER_STRENGTH_DEFAULT = 0.5
 
 
 def clamp_strength(value: float) -> float:
-    """把任意強度值夾進定案區間 [0.57, 0.73]。"""
+    """把任意強度值夾進定案區間 [0.57, 0.65]。"""
     return max(STRENGTH_MIN, min(STRENGTH_MAX, float(value)))
 
 
 def user_to_strength(user_value: float | None = None) -> float:
-    """把使用者輸入的 0~1 刻度映射到實際區間 [0.57, 0.73]。
+    """把使用者輸入的 0~1 刻度映射到實際區間 [0.57, 0.65]。
 
-    使用者不需要知道 0.57/0.73 這種數字，只要想「情緒要多強」：
+    使用者不需要知道 0.57/0.65 這種數字，只要想「情緒要多強」：
         0.0 → 0.57（最弱）
-        0.5 → 0.65（甜蜜點，預設）
-        1.0 → 0.73（最強）
+        0.5 → 0.61（區間中點，預設）
+        1.0 → 0.65（最強）
 
     超出 0~1 的值會先被夾住，所以結果保證落在區間內。
     """
@@ -75,7 +76,7 @@ def scale_to_strength(vector: list[float], strength: float | None = None) -> lis
     Args:
         vector: 8 維情緒向量
         strength: 目標總和（實際尺度，非 0~1 使用者刻度），None 用甜蜜點；
-                  會夾進 [0.57, 0.73]。使用者輸入請先過 user_to_strength()。
+                  會夾進 [0.57, 0.65]。使用者輸入請先過 user_to_strength()。
 
     Returns:
         總和等於 strength 的新向量（neutral 例外，仍為全零）

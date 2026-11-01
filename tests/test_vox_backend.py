@@ -248,3 +248,178 @@ def test_unload_waits_for_active_stream():
     g.close()
     assert done.wait(2)
     assert b._model is None
+
+
+# ---------------------------------------------------------------- 情緒（組合模式）
+from echo_tts.config import emotion_presets as ep  # noqa: E402
+from echo_tts.runtime.vox_backend import (  # noqa: E402
+    EMOTION_LORA_SCALE,
+    load_emotion_clips,
+    pick_emotion_tier,
+    resolve_emotion,
+)
+
+
+def test_taiwan_xi2():
+    assert TaiwanPronunciationNormalizer().normalize("把燈熄掉") == "把燈{xi2}掉"
+
+
+def test_strength_band_is_057_to_065():
+    assert (ep.STRENGTH_MIN, ep.STRENGTH_MAX) == (0.57, 0.65)
+    assert ep.user_to_strength(0.0) == pytest.approx(0.57)
+    assert ep.user_to_strength(0.5) == pytest.approx(0.61)
+    assert ep.user_to_strength(None) == pytest.approx(0.61)
+    assert ep.user_to_strength(1.0) == pytest.approx(0.65)
+    assert ep.strength_to_user(0.61) == pytest.approx(0.5)
+
+
+def _vec(i, v=1.0):
+    out = [0.0] * 8
+    out[i] = v
+    return out
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (_vec(0), "happy"),
+        (_vec(7, 0.3), "calm"),
+        (tuple(_vec(2)), "sad"),
+        ([0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5], "surprised"),  # 同值取靠前者
+        ("Angry", "angry"),
+        (" sad ", "sad"),
+        (None, None),
+        ([0.0] * 8, None),
+        ("neutral", None),
+        ("", None),
+        ("furious", None),  # 未知標籤
+        ([0.1, 0.2], None),  # 長度不符
+        (["a"] * 8, None),
+        (123, None),
+    ],
+)
+def test_resolve_emotion(value, expected):
+    assert resolve_emotion(value) == expected
+
+
+def test_pick_emotion_tier():
+    full = (0.57, 0.61, 0.65)
+    assert pick_emotion_tier(None, full) == 0.61
+    assert pick_emotion_tier(0.0, full) == 0.57
+    assert pick_emotion_tier(0.2, full) == 0.57
+    assert pick_emotion_tier(0.5, full) == 0.61
+    assert pick_emotion_tier(1.0, full) == 0.65
+    # 缺 0.61：0.5 平手取較強者，其餘取最近
+    two = (0.57, 0.65)
+    assert pick_emotion_tier(0.5, two) == 0.65
+    assert pick_emotion_tier(0.3, two) == 0.57
+    assert pick_emotion_tier(0.9, two) == 0.65
+    assert pick_emotion_tier(0.5, (0.57,)) == 0.57
+    assert pick_emotion_tier(0.5, ()) is None
+
+
+def test_load_emotion_clips_real_assets():
+    clips = load_emotion_clips(vb.DEFAULT_ASSETS_DIR)
+    assert set(clips) == set(ep.EMOTION_LABELS)
+    for label, tiers in clips.items():
+        assert sorted(tiers) == [0.57, 0.65], label  # 0.61 待生成；0.73 不放
+        assert all(c["transcript"] for c in tiers.values())
+
+
+class EmoBackend(FakeBackend):
+    """假模型：記錄 LoRA scale 與送進 generate 的 reference / prompt。"""
+
+    def __init__(self, tiers=(0.57, 0.65), **kw):
+        super().__init__(**kw)
+        self.scale_calls = []
+        self._kana = type("K", (), {"normalize": staticmethod(lambda t: t)})()  # 假名化不是這裡要測的
+        self._zh_refs = {t: {"wav": f"ref{t}.wav", "transcript": "中性"} for t in (1.0, 1.1, 1.2)}
+        self._emotion_clips = {
+            e: {t: {"wav": f"{e}_{t}.wav", "transcript": f"{e}逐字稿{t}"} for t in tiers} for e in ("happy", "sad")
+        }
+
+    def _set_lora_scale(self, scale):
+        self.scale_calls.append(scale)
+        self._lora_scale = scale
+
+    def _build_emotion_cache(self, clip, ref):
+        return {"reference": ref["wav"], "prompt": clip["wav"], "prompt_text": clip["transcript"]}
+
+
+def test_emotion_uses_reference_and_prompt_and_lora_scale():
+    b = EmoBackend()
+    list(b.stream("你好", emotion="happy", intensity=1.0, speed=1.1))
+    cache = b.opened[-1][1]
+    assert cache == {"reference": "ref1.1.wav", "prompt": "happy_0.65.wav", "prompt_text": "happy逐字稿0.65"}
+    assert b.scale_calls == [EMOTION_LORA_SCALE, 1.0] and EMOTION_LORA_SCALE == 0.85
+    assert b._lora_scale == 1.0
+    # 向量 + 預設 intensity（0.5 → 0.61 缺檔，平手取 0.65）+ 預設語速 1.2
+    list(b.stream("你好", emotion=_vec(2, 0.4)))
+    assert b.opened[-1][1] == {"reference": "ref1.2.wav", "prompt": "sad_0.65.wav", "prompt_text": "sad逐字稿0.65"}
+    list(b.stream("你好", emotion="sad", intensity=0.0))
+    assert b.opened[-1][1]["prompt"] == "sad_0.57.wav"
+
+
+def test_emotion_falls_back_to_nearest_available_tier():
+    b = EmoBackend(tiers=(0.57,))
+    list(b.stream("你好", emotion="happy", intensity=1.0))
+    assert b.opened[-1][1]["prompt"] == "happy_0.57.wav"
+
+
+def test_neutral_paths_keep_existing_behavior():
+    b = EmoBackend()
+    for emo in (None, "neutral", [0.0] * 8, "furious"):
+        list(b.stream("你好", emotion=emo))
+        assert b.opened[-1][1] == {"lang": "zh", "tier": 1.2}
+    assert b.scale_calls == []
+    # 情緒沒有任何片段（例如 calm）：退回中性，不套 0.85
+    list(b.stream("你好", emotion="calm"))
+    assert b.opened[-1][1] == {"lang": "zh", "tier": 1.2} and b.scale_calls == []
+    b._emotion_clips = {}
+    list(b.stream("你好", emotion="happy"))
+    assert b.opened[-1][1] == {"lang": "zh", "tier": 1.2} and b.scale_calls == []
+
+
+def test_lora_scale_returns_to_neutral_after_emotion():
+    b = EmoBackend()
+    list(b.stream("你好", emotion="happy"))
+    list(b.stream("你好"))
+    assert b._lora_scale == 1.0 and b.scale_calls == [0.85, 1.0]
+
+
+def test_lora_scale_restored_on_close_and_exception():
+    b = EmoBackend()
+    g = b.stream("你好", emotion="happy")
+    next(g)
+    assert b._lora_scale == 0.85
+    g.close()
+    assert b._lora_scale == 1.0 and _lock_free(b)
+    g = b.stream("你好", emotion="happy")
+    next(g)
+    with pytest.raises(RuntimeError):
+        g.throw(RuntimeError("boom"))
+    assert b._lora_scale == 1.0 and _lock_free(b)
+
+
+def test_lora_scale_restored_when_open_stream_fails():
+    b = EmoBackend()
+
+    def boom(text, cache):
+        raise RuntimeError("open failed")
+
+    b._open_stream = boom
+    with pytest.raises(RuntimeError):
+        list(b.stream("你好", emotion="happy"))
+    assert b._lora_scale == 1.0 and _lock_free(b)
+
+
+@pytest.mark.parametrize("text", ["hello world", "こんにちは"])
+def test_en_ja_ignore_emotion(text, caplog):
+    b = EmoBackend()
+    with caplog.at_level("DEBUG", logger=vb.logger.name):
+        list(b.stream(text, emotion="happy", intensity=1.0))
+        list(b.stream(text, emotion="sad"))
+    lang = "en" if text == "hello world" else "ja"
+    assert b.opened[-1][1] == {"lang": lang, "tier": 1.0}
+    assert b.scale_calls == []
+    assert len([r for r in caplog.records if "忽略 emotion" in r.getMessage()]) == 1  # 只記錄一次

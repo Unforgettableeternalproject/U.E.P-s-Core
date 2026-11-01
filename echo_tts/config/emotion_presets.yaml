@@ -10,7 +10,7 @@
 #   [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
 #
 # 向量只定義「配方」（維度間比例），實際強度由 emotion_presets.py 的區間決定
-# （0.65 甜蜜點、0.57~0.73，2026-08-19 定案）。這裡的數字已按總和 0.65 寫，
+# （引擎預設 0.65、可用區間 0.57~0.65）。這裡的數字已按總和 0.65 寫，
 # 方便對照；改比例即可，改絕對值沒有效果。
 #
 # overrides 可用欄位：

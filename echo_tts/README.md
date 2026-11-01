@@ -19,7 +19,7 @@ Keep large model artifacts outside Git and configure their paths through local s
 ```python
 b = VoxBackend({"model_dir": "...", "lora_dir": "..."})
 b.prepare()                                  # 同步：載入模型與 LoRA、建 prompt cache、暖機
-for chunk in b.stream("你好", lang=None, speed=None):   # 1-D float32，48 kHz
+for chunk in b.stream("你好", lang=None, speed=None, emotion=None, intensity=None):   # 1-D float32，48 kHz
     ...
 b.unload()
 ```
@@ -45,6 +45,20 @@ config：
 - `lang=None` 時自動判斷：含假名為 ja，含漢字為 zh，其餘 en。
 - `speed` 取最接近的檔位 1.0 / 1.1 / 1.2；zh 三個檔位各有一份加速參考音，en / ja 目前只有 1.0 檔，其他速度會落到 1.0。
 - 同時只服務一個請求（內部 lock）；消費端在同一執行緒對 generator `close()` 即可釋放。
+
+情緒（目前只有 zh 套用，en / ja 收到 emotion 會忽略並以 debug 記錄一次）：
+
+```python
+for chunk in b.stream("太好了！", emotion="happy", intensity=0.5):   # 標籤
+    ...
+b.stream("太好了！", emotion=[0.6, 0, 0, 0, 0, 0, 0.1, 0])         # 8 維向量：happy, angry, sad, afraid, disgusted, melancholic, surprised, calm
+```
+
+- `emotion`：8 維 list / tuple（取最大值）、標籤字串或 `None`；全 0、`None`、`"neutral"`、未知標籤都走中性（行為與未傳時完全一致）。
+- `intensity`：0~1 user 刻度（`None` = 0.5），經 `emotion_presets.user_to_strength` 換算成 0.57~0.65，取最接近的片段檔位（0.57 / 0.61 / 0.65）。
+- 組合模式：`reference_wav_path` 用 zh 中性參考音（依 speed 檔位）鎖音色，`prompt_wav_path` + `prompt_text` 用情緒片段帶入情緒；有情緒時 LoRA scale 調為 0.85（直接改 `LoRALinear.scaling` buffer，不觸發重編譯），結束後（含例外 / close）還原為 1.0。
+- 片段在 `echo_tts/assets/vox/emotion/`，由 `manifest.json` 的 `emotion.clips` 描述（情緒、強度、wav、逐字稿、來源）。目前有 8 種情緒的 0.57 與 0.65 兩檔；0.61 檔待補，缺檔位時自動退回最接近的檔位（強度平手取較強者），整個情緒都沒有片段則走中性，不會拋例外。補片段只需放 wav 並在 manifest 加一筆。
+- `prepare()` 會用 zh 情緒路徑暖機一次。
 
 assets 結構（`echo_tts/assets/vox/`）：`manifest.json` 記錄每語言、每檔位的 wav、逐字稿與製作方式。
 zh 的 1.1 / 1.2 版本由 `neutral.wav` 重取樣為 16 kHz 單聲道後，以 WSOLA（audiotsm，保音高）加速，逐字稿不變。

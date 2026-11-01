@@ -364,7 +364,7 @@ class InteractiveShell:
         """Handle the emotion command: show, set preset, or set raw 8D vector.
 
         Preset 與手動向量都只定義「情緒配方」（比例），強度用直覺的 0~1 刻度，
-        內部線性映射到定案區間 [0.57, 0.73]（0.5 → 甜蜜點 0.65）：
+        內部線性映射到定案區間 [0.57, 0.65]（0.5 → 0.61）：
             emotion sad                  → 0.5（預設）
             emotion sad 0                → 最弱
             emotion sad 1                → 最強

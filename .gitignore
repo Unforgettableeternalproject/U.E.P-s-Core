@@ -71,3 +71,7 @@ experiments/lora_training_data/
 
 # VOX 後端內建參考音素材（小檔，需進版控）
 !/echo_tts/assets/vox/*.wav
+
+# VoxCPM 實驗環境與模型
+.venv-voxcpm/
+/models_cache/

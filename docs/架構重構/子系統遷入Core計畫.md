@@ -509,13 +509,37 @@ Core 側已有：`uep/endpoint/`（`CoreApi` 協定、`RpcCoreApi`、HMAC hello�
 | 步驟 | 內容 | 前置修正（在來源 repo 以 `feature/prep-core-migration` 先合入其 develop，或遷入 PR 的第一個 commit） | 完成條件 | 驗證 | 回退 |
 |---|---|---|---|---|---|
 | **M0 準備**（不搬碼） | 決定基線分支（Q1）；建立 `subsystems/` 骨架與 pyproject spike（hatch editable 只暴露套件）；補 boundary 反向測試；記錄五個子系統目前的**實跑基線**（pass／skip／fail 與耗時，含機器標註）；訂定本地閘門腳本 `scripts/run_all_tests.ps1`（§7.4）；發出凍結預告 | 無 | spike 在一次性 venv 證明 ADR-M1 的通過條件（sys.path 不含 `subsystems/<name>/`、`tests`／`configs` 仍解析到 Core 根）；基線表填完 | 基線腳本連跑兩次結果一致（排除 flaky） | 刪 spike 分支 |
-| **M1 Session**（`echo_thought_core`，9.1k 行／327 測試） | 以 subtree 導入；移除 `py-modules=["Entry"]` 與頂層 `Entry.py`（避免與 Core 根的 `Entry` 重名）；pyproject pytest 設定移除預設 `--cov` | `.env` 查找改為 `UEP_ENV_FILE`／cwd 優先，退回 `parent.parent`；`llm_config.yaml` 在套件內不需改 | `pytest -o addopts=""` 在 `subsystems/echo_thought_core` 得 327 收集、pass 數同基線；ES 的 `think_llm`（仍指舊路徑時）與新路徑兩種情況下 ES 測試不變 | 在共用環境 `pip uninstall echo-thought-core` 後 `import echo_thought_core` 指向 Core；Core `tests/uep/test_p3_s6_inference_wiring.py` 綠 | revert merge；`uv pip install --no-deps -e ../TestSeparateSessionControl` |
+| **M1 Session**（`echo_thought_core`，9.1k 行／327 測試；**已完成 2026-11-02，見 §5.2.1**） | 以 subtree 導入；移除 `py-modules=["Entry"]` 與頂層 `Entry.py`（避免與 Core 根的 `Entry` 重名）；pyproject pytest 設定移除預設 `--cov` | `.env` 查找改為 `UEP_ENV_FILE`／cwd 優先，退回 `parent.parent`；`llm_config.yaml` 在套件內不需改 | `pytest -o addopts=""` 在 `subsystems/echo_thought_core` 得 327 收集、pass 數同基線；ES 的 `think_llm`（仍指舊路徑時）與新路徑兩種情況下 ES 測試不變 | 在共用環境 `pip uninstall echo-thought-core` 後 `import echo_thought_core` 指向 Core；Core `tests/uep/test_p3_s6_inference_wiring.py` 綠 | revert merge；`uv pip install --no-deps -e ../TestSeparateSessionControl` |
 | **M2 EM 三包**（`echo_memory`＋`llm_integration`＋`mcp_server`，2,167 測試） | 以 subtree 導入整個 repo；`agent_memory_spike`、`examples`、`probe_*` 在導入後的第一個 commit 刪除（歷史仍在；`env/` 若被追蹤才刪，多半已 gitignore）；三包同一步（`llm_integration`、`mcp_server` 依賴 echo_memory） | `MEMORY_STORAGE_PATH`／log 預設改讀 `UEP_DATA_DIR`；`.env` 查找同 M1；`mcp_server/server.py:26` 的 `sys.path.insert` 移除 | 2,167 收集／12 deselect 不變；pass 數同基線；Core `tests/uep/test_p3_s6_memory_wiring.py`、`test_p3_s2_memory_host.py` 綠；資料目錄**未被觸碰**（比對 `UEP_DATA_DIR` 內容雜湊或 mtime） | `llm_integration`、`mcp_server` 的 import 可用；`echo-mcp` 入口決定去留（Q8） | revert；重裝 editable；資料無需回復 |
 | **M3 STT**（`echo_stt`，271 測試） | subtree；`echo_stt/test_files/`（2.8 MB 音檔）移到 `tests/data/`（避免進 wheel） | `configs/stt_config.yaml` 路徑支援 `UEP_STT_CONFIG`；whisper 路徑支援 `UEP_MODELS_DIR`（預設仍讀既有 `models/stt/whisper`，用連結／環境變數指向現有 2.9 GB，不複製） | 271 收集、pass 同基線；`MultiChannelSTTEngine` 能以新路徑 `prepare`（單次，不跑 GPU 長測，只驗載入）；bot `cogs/stt.py` 的 `echo_stt` import 解析到 Core | `UEP_INFER_STT_REPO` 設定被忽略並警告一次 | revert；重裝 editable |
 | **M4 ES**（`echo_stream`，999 測試） | 凍結窗口短（建議 ≤ 3 天）；subtree；`config.subsystem_path`／`ensure_importable` 改為 `find_spec`；`UEP_INFER_*_REPO` 對已遷子系統失效；`web/`、`cli.py` 依 Q7 處理 | `_project_root()` 與 `.env`／`echo_stream.toml` 查找改為可由 `UEP_ENV_FILE`、`UEP_ES_TOML` 指定；ES 對 TTS 仍用 `UEP_INFER_TTS_REPO`（TTS 未遷） | 999 收集（扣除 Q7 移走的 `test_web*`，另列基線）；`tests/uep` 全綠（含 `test_import_boundary`、`test_p3_s3_*`）；bot 測試同基線；`python -m echo_stream demo --fake`（零依賴，不啟動伺服器、不吃 GPU）可跑 | boundary 反向測試綠：`echo_stream` 不 import `uep` | revert；重裝 editable；bot 設回舊 `ECHO_STREAM_*_REPO` |
 | **M5 TTS**（`echo_tts`，384 測試） | 先合 `tts-model-eval`、`vox-emotion`（見 Q4）；subtree；`experiments/`、`webapp/`、`benchmarks/`（若不需要）導入後刪除 | **§2.3 的 import 修正**（`echo_tts.modules.*`、拿掉 `sys.path.insert`、`utils.debug_helper`→`logging`）；`default_generation_paths` 接受 `UEP_TTS_MODEL_ROOT`；VOX 資產路徑已是套件相對，不動 | 384 收集、**在有 GPU 的目標機器**上 pass／skip 與基線一致；`validate_generation_paths` 通過（指到既有 9 GB 目錄）；`python -c "import modules"` **不得**解析到 echo_tts（驗證不再污染頂層）；`UEP_INFER_TTS_ENGINE=indextts2|vox` 兩種都 `prepare` 成功（人工，GPU，一次） | 以 `-X importtime`／`sys.modules` 檢查 `utils`、`modules` 未被 echo_tts 佔用 | revert；重裝 editable（舊 repo 仍有 9 GB 權重原位） |
 | **M6 收尾** | 刪 `UEP_INFER_*_REPO`；`setup_infer_env.ps1` 移除五個 editable 與五個路徑參數（§7.3）；舊 repo 打 `migrated-to-core/<sha>` tag 並在 GitHub 設為 archived（**觀察期後**）；README／CLAUDE.md／DECISIONS 更新；清掉 `*.egg-info` | — | 全新機器／全新 venv 只靠 Core repo 與 `uv sync` 能還原環境；七個套件解析位置全在 Core；觀察期 7 天（沿用 D76 習慣）無回退 | `scripts/run_all_tests.ps1` 全綠 | 還原 setup 腳本；舊 repo 取消 archived |
 | **F 系列（融合，M4 後獨立排程）** | F1 設定合併（ES `ECHO_STREAM_*` 相容層）；F2 member_recall／schema 去重（TL1）；F3 Addressing／authority 合併到 `uep/turn`；F4 DreamScheduler 退場；F5 Model Gateway（Q6）；F6 Core 常駐入口 | 各自另開 | 各自驗收 | | |
+
+### 5.2.1 M1 Session 完成紀錄（2026-11-02，THEFANTASIAS，CPU-only）
+
+**狀態：完成，未 push。** 分支 `feature/subsystem-migration`，三個簽章 commit：
+
+| commit | 內容 |
+|---|---|
+| `842c6dc` | `git subtree add --prefix=subsystems/echo_thought_core ../TestSeparateSessionControl develop`（不 squash；來源 `8c0e950`）。subtree 以 commit-tree 產生 merge，不吃 `commit.gpgsign`，導入後以 `git commit --amend -S` 補簽章（本地、未推送，未動 parents／tree） |
+| `01f90df` | hatch `packages` 加入 `subsystems/echo_thought_core/echo_thought_core` 與 `dev-mode-exact = true`；dependencies 補 `editables~=0.3` 與 Session 的 `python-dotenv`、`rich`、`tiktoken`（pydantic、pyyaml 已在 core）；`uv lock` 只新增 `editables 0.6`，既有版本無變動；`setup_infer_env.ps1` 移除 `-Session` 與舊 Session repo 的 `-e`、新增 `import editables` 檢查；Session 子系統移除 `Entry.py`／`py-modules`、pytest addopts 移除 `--cov`、`run.bat` 改 `-m echo_thought_core.cli` |
+| `05aacf5` | `default_think_backend` 不再強制 `UEP_INFER_SESSION_REPO`（未設時傳 `None`，由 ES `ensure_subsystem` 走環境已裝的套件；設了仍須存在，保留為可選覆寫）；`run_all_tests.ps1` 新增 `$migrated` 清單，session 不論 Layout 一律走 `subsystems/echo_thought_core`；對應測試改寫並新增 1 個 |
+
+環境切換（共用環境 `~/.uep/venv-inference-312`）：`uv pip uninstall echo-thought-core` → `uv pip install --no-deps -e .`（Core 以 hatch exact 重裝）→ `uv pip install --no-deps editables==0.6`。**重裝 Core 後、補 editables 前，環境內任何 python 啟動都會印 `.pth` 的 `ModuleNotFoundError: editables`**（與 spike 預測一致；setup 腳本已把檢查放在 `uv sync` 之後、其他安裝之前）。
+
+證據：`echo_thought_core.__file__` 指向 `U.E.P-s-Core/subsystems/echo_thought_core/echo_thought_core/__init__.py`（從 `/tmp` 與 `Echo-Stream` 目錄啟動皆同）；`sys.path` 無含 `subsystems` 的項目；在 Core 根 `import tests` 指向 Core 的 `tests/`；`echo_stream`、`echo_memory`、`llm_integration`、`mcp_server`、`echo_stt`、`echo_tts` 仍各指向舊 repo。
+
+驗收數字：
+
+| 套件 | 結果 | 基線 | 備註 |
+|---|---|---|---|
+| Session（`subsystems/echo_thought_core`） | 294／18／0（15 deselect），3.9 s | 294／18／0 | 與基線一致 |
+| Core `tests/uep` | 1,493 pass／0 skip／1 fail，615 s | 1,491～1,492 pass | 唯一失敗為已知的 `test_real_engine_smoke_through_host`；pass 多 1 是新增的 `test_think_backend_預設不需_session_路徑` |
+| ES（`07e3ff8`） | 1,003／0／0，202 s | 1,001／0／0 | ES 於 M0 後有新 commit，收集數隨之增加；全過 |
+
+行為變化須知：hatch `dev-mode-exact` 後，**Core 根目錄不再因 editable 而進入 `sys.path`**（原本會放）。從 Core 根以外的工作目錄 `import configs`、`import Entry` 不再成功。`uep/` 沒有這類 import，Core、ES、Session 測試皆不受影響；舊 `core/`、`modules/`、`Entry.py` 與 bot 若從別的目錄 import 這些名稱需注意，bot 的 `bot.bat` 路徑未在本步驗證（§5.3 bot 基線仍待補）。
 
 ### 5.3 驗收基線（M0 實跑結果）
 

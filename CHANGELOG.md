@@ -3574,3 +3574,15 @@
 
 ---
 
+### [docs]: 記錄 M1 Session 遷入完成狀態. 11/02
+
+> Date: Mon, 02 Nov 2026 01:19:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `8478f4ce9f867e401ad60ac788eca923e1ecbcd6`
+
+---
+

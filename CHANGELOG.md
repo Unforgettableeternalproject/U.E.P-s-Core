@@ -3526,3 +3526,15 @@
 
 ---
 
+### [chore]: 子系統遷移 M0 準備. 11/01
+
+> Date: Sun, 01 Nov 2026 23:54:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `63a4101b2a69a45cb1ad6d3fdf0f6739e0335bb8`
+
+---
+

@@ -517,17 +517,67 @@ Core 側已有：`uep/endpoint/`（`CoreApi` 協定、`RpcCoreApi`、HMAC hello�
 | **M6 收尾** | 刪 `UEP_INFER_*_REPO`；`setup_infer_env.ps1` 移除五個 editable 與五個路徑參數（§7.3）；舊 repo 打 `migrated-to-core/<sha>` tag 並在 GitHub 設為 archived（**觀察期後**）；README／CLAUDE.md／DECISIONS 更新；清掉 `*.egg-info` | — | 全新機器／全新 venv 只靠 Core repo 與 `uv sync` 能還原環境；七個套件解析位置全在 Core；觀察期 7 天（沿用 D76 習慣）無回退 | `scripts/run_all_tests.ps1` 全綠 | 還原 setup 腳本；舊 repo 取消 archived |
 | **F 系列（融合，M4 後獨立排程）** | F1 設定合併（ES `ECHO_STREAM_*` 相容層）；F2 member_recall／schema 去重（TL1）；F3 Addressing／authority 合併到 `uep/turn`；F4 DreamScheduler 退場；F5 Model Gateway（Q6）；F6 Core 常駐入口 | 各自另開 | 各自驗收 | | |
 
-### 5.3 驗收基線（M0 填寫；以下為各自原本的命令與已觀察到的收集數）
+### 5.3 驗收基線（M0 實跑結果）
 
-| 子系統 | 工作目錄 | 命令（共用環境 Python） | 收集數 [執行] | 備註 |
-|---|---|---|---|---|
-| ES | `subsystems/echo_stream` | `pytest`（`PYTHONIOENCODING=utf-8`） | 999 | Q7 之後扣除 `test_web*` |
-| EM 三包 | `subsystems/echo_memory` | `pytest` | 2,167（12 deselect） | `live_api`／`slow` 排除 |
-| STT | `subsystems/echo_stt` | `pytest` | 271 | 需 torch |
-| Session | `subsystems/echo_thought_core` | `pytest -o addopts=""` | 327 | 遷入時移除 `--cov` 預設後可直接 `pytest` |
-| TTS | `subsystems/echo_tts` | `pytest` | 384 | GPU／套件 skip，基線記 pass／skip |
-| Core | repo 根 | `pytest tests/uep` | 1,490（MIN：1,486 passed） | |
-| bot | bot repo | `pytest tests/ -q`（bot CLAUDE.md） | — | 需記基線 |
+實跑條件：機器 THEFANTASIAS（Windows 11）、2026-11-01 22:53–23:55、共用環境 `~/.uep/venv-inference-312`（Python 3.12.7）、`scripts/run_all_tests.ps1`（Sibling 佈局）。
+**`CUDA_VISIBLE_DEVICES=""`：全程不佔用 GPU**，GPU 測試自動 skip；因此表內 pass／skip 是「CPU-only」基線，**不等於** M5 驗收所需的有 GPU 基線（TTS 的 GPU 項目仍須在目標機器另記）。
+連跑兩次（第 1 次逐項、第 2 次整支腳本一次跑完）；兩次的 pass／skip 一致處標「一致」。
+
+| 子系統 | 工作目錄（遷入後） | 命令（共用環境 Python；腳本額外加 `-p no:cacheprovider`） | 當時 commit（兄弟 repo） | 第 1 次 pass／skip／fail，耗時 | 第 2 次 pass／skip／fail，耗時 | 備註 |
+|---|---|---|---|---|---|---|
+| ES | `subsystems/echo_stream` | `pytest`（`PYTHONIOENCODING=utf-8`） | 第 1 次 `414fe54`；第 2 次 `cbbb5b8`（ES 於兩次之間有新 commit） | 997／0／1（+1 xfailed），199 s | 1001／0／0，201 s | 收集數隨 ES 變動（第 1 次 998 含 1 xfailed，第 2 次 1,001）；第 1 次失敗的 `tests/test_web.py::test_語音_start_會頂掉舊_session` 為本機 loopback 的 `ConnectionAbortedError [WinError 10053]`，第 2 次同類錯誤改出現在 Core 的 `test_cycle2_audit_b`，見下方 flaky 說明 |
+| EM 三包 | `subsystems/echo_memory` | `pytest`（pyproject addopts 原樣） | `f0c62e9` | 2,166／1／0（12 deselect），465 s | 2,166／1／0（12 deselect），469 s | 一致；總收集 2,179，與 §1.1 的 2,167＋12 對得上 |
+| STT | `subsystems/echo_stt` | `pytest` | `6d3ae9a` | 271／0／0，83 s | 271／0／0，48 s | 一致 |
+| Session | `subsystems/echo_thought_core` | `pytest -o addopts= -m "not e2e"`（保留 e2e 排除、去掉 `--cov`） | `8c0e950` | 294／18／0（15 deselect），9 s | 294／18／0（15 deselect），9 s | 一致；294＋18＋15＝327 |
+| TTS | `subsystems/echo_tts` | `pytest` | `100f214`（工作樹僅 `.claude/settings.local.json` 未提交） | 384／7／0，43 s | 384／7／0，47 s | 一致；GPU 被隱藏，7 個 skip 含 GPU 與 importorskip；pass 384＋skip 7＝391，比 §1.1 的收集數 384 多 7，原因未追查（可能是之後新增測試） |
+| Core | repo 根（`feature/subsystem-migration`，`21f8660`） | `pytest tests/uep` | `21f8660` | 1,492／0／1，602 s | 1,491／0／2，610 s | 收集 1,493（§1.1 寫 1,490，已增）；**不穩定，見下** |
+| bot | bot repo | `pytest tests/ -q` | `a215ee0` | 未測 | 未測 | M0 派遣範圍只含五個子系統與 Core；M1 前補 |
+
+Core 的兩類失敗（非遷移造成，M1 起須當作「已知基線雜訊」處理）：
+
+1. `tests/uep/test_p3_s6_memory_wiring.py::test_real_engine_smoke_through_host`：**兩次都失敗**（`store` 回 `timeout` 而非 `stored`）。該測試載入真實 echo_memory embedding；`CUDA_VISIBLE_DEVICES=""` 下改走 CPU，冷啟動超過 MemoryHost 逾時。[推論] 與隱藏 GPU 有關，未在有 GPU 條件下驗證（本次不得佔用 GPU）。M2 的驗收要在有 GPU 的條件下再確認一次。
+2. `test_cycle2_audit_b.py::test_resolve_recovery_api_requires_token_and_records_operator`（第 2 次）與 ES `test_web`（第 1 次）：同一個 `ConnectionAbortedError [WinError 10053]`，本機 loopback HTTP 連線被中止，隨機出現、重跑通過，視為 flaky。
+3. Core 整套約 10 分鐘，貼近 600 秒的單項上限；腳本因此給 Core 獨立的 `-CoreTimeoutSec`（預設 1800）。曾有一次 Core 在 `test_acceptance_v21` 附近停滯 50 分鐘以上（被我手動中止，單獨重跑該檔 9 秒完成），原因未查明，疑為共用 PostgreSQL 側的鎖或連線殘留；之後兩次完整跑都正常。
+
+| 子系統（舊表保留） | 收集數 [執行] |
+|---|---|
+| ES | 999（M0 前）；現 1,001 |
+| EM 三包 | 2,167（12 deselect） |
+| STT | 271 |
+| Session | 327 |
+| TTS | 384 |
+| Core | 1,490（現 1,493） |
+
+#### M0 佈局 spike 結論（ADR-M1 通過條件）
+
+**結論：可行。** 在一次性空殼專案（scratchpad，共用環境未動）上，Core `pyproject.toml` 以 hatch `dev-mode-exact = true` 並把 `packages` 列為「套件本身的路徑」，`uv pip install -e .` 後：
+
+- `sys.path` 不含任何 `subsystems/<name>/`（`.pth` 只有一行 `import _editable_impl_uep`，由 `editables` 的 `RedirectingFinder` 逐個套件名映射到實際位置）。
+- `import tests`、`import configs`、`import Entry` 仍解析到 Core 根；子系統內的同名 `tests/`、`configs/`、`Entry.py` 不外洩。
+- `echo_stream`、`echo_memory`、`llm_integration`、`mcp_server`、`echo_stt`、`echo_thought_core`、`echo_tts` 全部解析到 `subsystems/<name>/<pkg>/__init__.py`；子模組（`echo_stream.sub`）也可 import。
+
+M1 起 Core `pyproject.toml` 的對應設定（本步只記錄，未改）：
+
+```toml
+[tool.hatch.build.targets.wheel]
+packages = [
+    "uep",
+    "subsystems/echo_stream/echo_stream",
+    "subsystems/echo_memory/echo_memory",
+    "subsystems/echo_memory/llm_integration",
+    "subsystems/echo_memory/mcp_server",
+    "subsystems/echo_stt/echo_stt",
+    "subsystems/echo_thought_core/echo_thought_core",
+    "subsystems/echo_tts/echo_tts",
+]
+dev-mode-exact = true
+```
+
+注意事項：
+
+- `dev-mode-exact` 在執行期依賴 `editables`（hatch 已把 `editables~=0.3` 寫入 wheel 的 `Requires-Dist`），但 spike 中 `uv pip install -e .` **沒有自動裝進去**，導致 `.pth` 載入失敗（`ModuleNotFoundError: editables`）、套件不可 import。M1 須把 `editables` 加進 Core 的 dependencies／`uv.lock` 並確認 `uv sync` 會裝；setup 腳本也要驗證 `import editables`。
+- 子系統的 `tests/` 在 pytest 內仍會因 rootdir／`tests/__init__.py` 把 `subsystems/<name>/` 在該行程內 prepend 到 `sys.path`（現在兄弟 repo 就是如此）；各自獨立行程跑即不互相影響，這是 §5.3 下方「獨立進程」的另一個理由。
+- 以上僅驗證空殼；真實子系統內部的路徑假設（`.env`、`configs/`、`parent.parent`）仍須在各步驟處理。未測 hatch 預設（非 exact）模式的 `.pth` 內容，因 exact 已通過，不需要退回攤平佈局（B 變體）。
 
 > 為什麼要各自獨立進程：五個子系統的 `tests/` 都叫 `tests`（且 Core 還有 `tests/__init__.py`），每個有自己的 `conftest.py`；同進程混跑會互相遮蔽或覆蓋 fixture。獨立進程也讓各自的 `addopts` 與標記保持原樣。
 

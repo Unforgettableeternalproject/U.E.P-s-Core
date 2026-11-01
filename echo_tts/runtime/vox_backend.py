@@ -381,19 +381,26 @@ class VoxBackend:
         cache = self._caches[(lang, tier)]
         label = resolve_emotion(emotion)
         scale = 1.0
+        emo_tier = None
         if label is not None and lang not in EMOTION_LANGS:
             if lang not in self._ignored_emotion_logged:
                 self._ignored_emotion_logged.add(lang)
                 logger.debug("VOX %s 尚未支援情緒，忽略 emotion=%r", lang, emotion)
             label = None
         if label is not None:
-            emo_cache = self._emotion_cache(label, intensity, tier)
-            if emo_cache is not None:
-                cache, scale = emo_cache, EMOTION_LORA_SCALE
+            found = self._emotion_cache(label, intensity, tier)
+            if found is not None:
+                (cache, emo_tier), scale = found, EMOTION_LORA_SCALE
         self._set_lora(LANGS[lang].lora)
         try:
             if scale != 1.0:
                 self._set_lora_scale(scale)
+            mode = "COMBO" if emo_tier is not None else ("ULT" if lang == "zh" else "REF")
+            logger.info(
+                "VOX 生成 lang=%s mode=%s lora=%s scale=%s speed=%s emotion=%s intensity_tier=%s text=%r",
+                lang, mode, "on" if LANGS[lang].lora else "off", scale if LANGS[lang].lora else 0.0, tier,
+                label if emo_tier is not None else None, emo_tier, body,
+            )
             gen = self._open_stream(body, cache)
             try:
                 for wav in gen:
@@ -408,7 +415,7 @@ class VoxBackend:
             if self._lora_scale != 1.0:
                 self._set_lora_scale(1.0)  # 例外 / close 也要還原，不殘留
 
-    def _emotion_cache(self, label: str, intensity: float | None, speed_tier: float) -> dict | None:
+    def _emotion_cache(self, label: str, intensity: float | None, speed_tier: float) -> tuple[dict, float] | None:
         """找 (情緒, 檔位) 的 prompt cache；缺檔位退到最接近者，完全沒有片段回傳 None（走中性）。"""
         clips = self._emotion_clips.get(label)
         ref = self._zh_refs.get(speed_tier)
@@ -418,7 +425,7 @@ class VoxBackend:
         key = (label, strength, speed_tier)
         if key not in self._emotion_caches:
             self._emotion_caches[key] = self._build_emotion_cache(clips[strength], ref)
-        return self._emotion_caches[key]
+        return self._emotion_caches[key], strength
 
     def _build_emotion_cache(self, clip: dict[str, str], ref: dict[str, str]) -> dict:
         """reference = zh 中性參考音（鎖音色），prompt = 情緒片段 + 逐字稿（帶入情緒）。"""

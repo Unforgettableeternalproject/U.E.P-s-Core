@@ -491,3 +491,17 @@ def test_prepare_records_owner_thread(optimize, recorded):
         b.prepare()
     assert owners == [threading.get_ident() if recorded else None]
     assert b._owner_thread is None
+
+
+def test_info_log_shows_normalized_text_and_settings(caplog):
+    b = EmoBackend()
+    with caplog.at_level("INFO", logger=vb.logger.name):
+        list(b.stream("週末步驟", emotion="happy", intensity=1.0, speed=1.1))
+        list(b.stream("步驟"))
+        list(b.stream("hello world"))
+    msgs = [r.getMessage() for r in caplog.records if r.getMessage().startswith("VOX 生成")]
+    assert len(msgs) == 3
+    assert "lang=zh mode=COMBO lora=on scale=0.85 speed=1.1 emotion=happy intensity_tier=0.65" in msgs[0]
+    assert "'{zhou1}末步{zou4}'" in msgs[0]  # 正規化後（含 pinyin）的文字
+    assert "mode=ULT lora=on scale=1.0 speed=1.2 emotion=None" in msgs[1] and "步{zou4}" in msgs[1]
+    assert "lang=en mode=REF lora=off" in msgs[2] and "hello world" in msgs[2]

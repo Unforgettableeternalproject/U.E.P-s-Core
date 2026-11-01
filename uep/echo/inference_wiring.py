@@ -40,11 +40,11 @@ logger = logging.getLogger("uep.echo.inference_wiring")
 
 STT_MODES = ("multichannel", "single")
 TTS_ENGINES = ("indextts2", "vox")
-# speak prepare 逾時的引擎預設（秒）。vox 熱編譯快取下 prepare 約 37 秒，取 90 秒涵蓋熱啟動；
-# 全新（冷）編譯約 205 秒，需另以 UEP_INFER_SPEAK_PREPARE_TIMEOUT_S 調高（Host 啟動總上限也要一併放寬）。
+# speak prepare 逾時的引擎預設（秒）。vox backend 實測 prepare 約 110–180 秒（含各語言與 zh ULT 暖機），取 240 秒；
+# 全新（冷）編譯會更久，需另以 UEP_INFER_SPEAK_PREPARE_TIMEOUT_S 調高（Host 啟動總上限會隨加總放寬）。
 HOST_START_TIMEOUT_FLOOR_S = 60.0  # 與 EchoPipelineHost 原固定上限一致
 HOST_START_MARGIN_S = 10.0
-SPEAK_PREPARE_TIMEOUT_DEFAULTS = {"indextts2": 40.0, "vox": 90.0}
+SPEAK_PREPARE_TIMEOUT_DEFAULTS = {"indextts2": 40.0, "vox": 240.0}
 VOX_ADAPTER_MISSING = "vox_adapter_missing"
 
 

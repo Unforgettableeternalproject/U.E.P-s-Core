@@ -3466,3 +3466,15 @@
 
 ---
 
+### [fix]: vox speak prepare 逾時預設改為 240 秒. 11/01
+
+> Date: Sun, 01 Nov 2026 18:49:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `a8cd73e2063b0774fd8db05de56489ab51c4e13e`
+
+---
+

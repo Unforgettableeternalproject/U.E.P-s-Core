@@ -319,9 +319,9 @@ def test_tts_engine_預設_indextts2_且逾時_40():
         InferenceConfig(tts_engine="bogus")
 
 
-def test_vox_引擎_逾時預設_90_可覆寫():
-    assert InferenceConfig(tts_engine="vox").speak_prepare_timeout_s == 90.0
-    assert InferenceConfig(tts_engine="vox", speak_prepare_timeout_s=240.0).speak_prepare_timeout_s == 240.0
+def test_vox_引擎_逾時預設_240_可覆寫():
+    assert InferenceConfig(tts_engine="vox").speak_prepare_timeout_s == 240.0
+    assert InferenceConfig(tts_engine="vox", speak_prepare_timeout_s=400.0).speak_prepare_timeout_s == 400.0
 
 
 def test_vox_引擎_參數映射_不傳_lora_與_warmup(monkeypatch, tmp_path):
@@ -386,7 +386,7 @@ def test_from_settings_引擎與三個_prepare_逾時環境變數(monkeypatch):
     monkeypatch.setenv("UEP_INFER_VOX_CONFIG", '{"k": "v"}')
     cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
     assert cfg.tts_engine == "vox" and cfg.vox_config == {"k": "v"}
-    assert (cfg.speak_prepare_timeout_s, cfg.think_prepare_timeout_s, cfg.input_prepare_timeout_s) == (90.0, 8.0, 10.0)
+    assert (cfg.speak_prepare_timeout_s, cfg.think_prepare_timeout_s, cfg.input_prepare_timeout_s) == (240.0, 8.0, 10.0)
     monkeypatch.setenv("UEP_INFER_SPEAK_PREPARE_TIMEOUT_S", "240")
     monkeypatch.setenv("UEP_INFER_THINK_PREPARE_TIMEOUT_S", "3")
     monkeypatch.setenv("UEP_INFER_INPUT_PREPARE_TIMEOUT_S", "4")
@@ -400,11 +400,11 @@ def test_from_settings_引擎與三個_prepare_逾時環境變數(monkeypatch):
 
 # ---- Host 啟動總上限 ----
 
-def test_host_start_timeout_預設由加總推得_vox_90_能過():
+def test_host_start_timeout_預設由加總推得_vox_240_能過():
     c = InferenceConfig(stt_mode="single")
     assert c.host_start_timeout_s == 68.0  # 40+8+10 加餘裕 10
     v = InferenceConfig(stt_mode="single", tts_engine="vox")
-    assert v.host_start_timeout_s == 90 + 8 + 10 + 10 >= v.speak_prepare_timeout_s + 18
+    assert v.host_start_timeout_s == 240 + 8 + 10 + 10 >= v.speak_prepare_timeout_s + 18
     assert build(cfg=v).host_kwargs()["start_timeout_s"] == v.host_start_timeout_s
     # 加總很小時不低於原固定上限 60
     s = InferenceConfig(speak_prepare_timeout_s=1, think_prepare_timeout_s=1, input_prepare_timeout_s=1)

@@ -81,6 +81,8 @@ inference = [
     # VOX TTS：在現行 torch 2.7／transformers 4.48 下驗證；訓練與 WebUI 依賴由 override-dependencies 排除
     "voxcpm==2.0.3",
     "inflect==7.6.0",
+    # bot 成員名讀音容錯（延遲 import）
+    "pypinyin==0.55.0",
 ]
 # desktop：PyQt5 桌面寵物與系統互動
 desktop = [

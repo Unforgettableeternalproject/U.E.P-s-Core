@@ -3430,3 +3430,15 @@
 
 ---
 
+### [chore]: inference extra 加入 bot 用的 pypinyin. 11/01
+
+> Date: Sun, 01 Nov 2026 17:39:33 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `7dc55591caf22d10dcd152a798c236da20fad0ee`
+
+---
+

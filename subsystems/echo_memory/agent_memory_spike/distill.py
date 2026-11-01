@@ -1,0 +1,644 @@
+#!/usr/bin/env python3
+"""Phase 1.5：從語料蒸餾出 concept 候選。
+
+骨架抄自 ``echo_memory/dream/distillation.py``（溯源、去重、空結果不標記），
+但**判準整個換掉**，因為 Echo 的蒸餾在 coding agent 情境下有三處會直接出錯：
+
+1. ``_collect_candidates`` 用 ``salience_score >= 0.5`` 篩候選。
+   Phase 0 已經推翻這根軸——記憶價值取決於 surprisal（模型不知道的程度），
+   不是 salience（重要性）。而且 spike 的 episode 根本沒有 salience 欄位。
+2. prompt 是對話取向的（``entity（人/地/物）``、「跨多個對話出現的模式」），
+   抽出來會是對話式概念，不是「這個 repo 的 X 慣例與模型預設相反」。
+3. 沒有 surprisal 校準環節——蒸餾完直接寫進 SemanticMemory，
+   沒有任何機制驗證模型本來就知不知道。校準在 ``calibrate.py``。
+
+## 為什麼不直接 import echo_memory
+
+刻意複製而非依賴，維持 spike 完全獨立（艾斯維爾裁決）。
+代價是 Echo 那邊的修復不會同步過來，兩份會分岔。
+
+## 為什麼 LLM 是外部注入的
+
+spike 維持零第三方依賴。蒸餾用 ``--emit`` 產出任務檔、``--ingest`` 收結果，
+中間那步交給 coding agent 自己做——它本來就是 LLM，不必再接一個 provider。
+
+## 用法
+
+    python distill.py --stats                # 只看粗篩結果的分布
+    python distill.py --emit                 # 產出蒸餾任務檔
+    python distill.py --ingest <concepts.json>   # 收回蒸餾結果
+
+輸出一律寫在 repo 外（理由同 hook_stop.py 的 DEFAULT_EPISODE_DIR：
+語料含商業專案原文，放 repo 內遲早外洩）。
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parent))
+from hook_stop import DEFAULT_EPISODE_DIR, load_deduped  # noqa: E402
+from transcript import ORIGIN_HUMAN, file_key, file_keys  # noqa: E402
+
+WORK_DIR = DEFAULT_EPISODE_DIR.parent
+DEFAULT_TASK_PATH = WORK_DIR / "distill_tasks.json"
+DEFAULT_CONCEPT_PATH = WORK_DIR / "concepts.json"
+# 已蒸餾過的 task id。增量蒸餾靠它跳過重複工作，所以它必須用穩定 id 當鍵
+DEFAULT_WATERMARK_PATH = WORK_DIR / "distilled.json"
+
+# 一輪使用者輸入超過這個長度就不算「短」。
+# 語料實測 human 輪的 user_text 中位數只有 58 字元、p75 是 150——
+# 艾斯維爾本來就講得短，所以「短輸入」單獨用完全沒有鑑別力
+# （1374 輪裡命中 304 輪）。它只能當附加條件，不能當主訊號。
+SHORT_INPUT_CHARS = 200
+
+
+def load_episodes(episode_dir: Path) -> list[dict[str, Any]]:
+    """讀出去重後的語料，按 session 內順序排好。"""
+    episodes, _ = load_deduped(episode_dir)
+    episodes.sort(key=lambda e: (e.get("session_id") or "", e.get("turn_index") or 0))
+    return episodes
+
+
+def find_candidates(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """粗篩：找出「同一個檔案在相鄰的 human 輪被重複修改」的輪次對。
+
+    這是結構訊號，不是 keyword matching——不看說了什麼詞，只看做了什麼事。
+    （Echo 的架構禁令同樣適用於這裡：用關鍵字清單決定什麼值得記住，
+    是對記憶形成的廉價模仿。）
+
+    **為什麼是「重複修改」**：一個檔案在前一輪剛改完、下一輪又被碰，
+    代表第一次沒改對。而「模型第一次會做錯的地方」正是 surprisal 高的地方——
+    它按自己的預設信念做了，然後被修正。
+
+    **只當粗篩，不當判準**。實測這個訊號會撈到大量「同意繼續」的輪次
+    （「這個可以，換下一個」「那你繼續做吧」），那不是糾正。
+    篩不掉它們是預期的——判斷交給後面看得到內容的 LLM，
+    這裡的職責只是把 1374 輪縮到可負擔的數量。
+    """
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for episode in episodes:
+        by_session.setdefault(episode.get("session_id") or "", []).append(episode)
+
+    candidates: list[dict[str, Any]] = []
+    for session_id, sequence in by_session.items():
+        human_turns = [e for e in sequence if e.get("origin") == ORIGIN_HUMAN]
+        for index in range(1, len(human_turns)):
+            previous, current = human_turns[index - 1], human_turns[index]
+            # 比對走 file_key 而不是原始路徑：nested git repo + 浮動 cwd 會讓
+            # 同一個檔案有三種寫法，直接比字串必然漏判（見 transcript.file_key）
+            overlap_keys = file_keys(previous.get("files_edited")) & file_keys(current.get("files_edited"))
+            if not overlap_keys:
+                continue
+            # 回報時仍給原始路徑（人要看得懂），只是挑出鍵有命中的那些
+            overlap = {f for f in (current.get("files_edited") or []) if file_key(f) in overlap_keys}
+            candidates.append({
+                "session_id": session_id,
+                "repo": current.get("repo"),
+                "overlap_files": sorted(overlap),
+                "short_followup": len(current.get("user_text") or "") < SHORT_INPUT_CHARS,
+                "turns": [previous, current],
+            })
+    return candidates
+
+
+def find_control_pairs(episodes: list[dict[str, Any]], sample_size: int, seed: int) -> list[dict[str, Any]]:
+    """對照組：相鄰的 human 輪對，但**沒有**檔案重疊。
+
+    存在的理由是量粗篩訊號的召回率。目前只知道 78 組候選裡蒸餾出 55 條，
+    但不知道剩下的一千多輪裡漏掉多少——**精確率有數字，召回率完全未知**。
+
+    如果對照組的產出率跟候選組差不多，那這個訊號等於隨機抽樣，
+    整個粗篩步驟只是在省 token，沒有在做篩選。
+
+    固定 seed 是為了可重現：這個數字會被拿來做決策，換一次抽樣就變一次結論不行。
+    """
+    import random
+
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for episode in episodes:
+        by_session.setdefault(episode.get("session_id") or "", []).append(episode)
+
+    pool: list[dict[str, Any]] = []
+    for session_id, sequence in by_session.items():
+        human_turns = [e for e in sequence if e.get("origin") == ORIGIN_HUMAN]
+        for index in range(1, len(human_turns)):
+            previous, current = human_turns[index - 1], human_turns[index]
+            if file_keys(previous.get("files_edited")) & file_keys(current.get("files_edited")):
+                continue  # 這是候選，不是對照
+            # 兩輪都毫無內容的話連人也蒸餾不出東西，放進對照組只會虛低產出率，
+            # 讓訊號看起來比實際更有鑑別力
+            if not (current.get("assistant_text") or previous.get("assistant_text")):
+                continue
+            pool.append({
+                "session_id": session_id,
+                "repo": current.get("repo"),
+                "overlap_files": [],
+                "short_followup": len(current.get("user_text") or "") < SHORT_INPUT_CHARS,
+                "turns": [previous, current],
+            })
+
+    random.Random(seed).shuffle(pool)
+    print(f"[distill] 對照組母體 {len(pool)} 組，抽樣 {min(sample_size, len(pool))} 組",
+          file=sys.stderr)
+    return pool[:sample_size]
+
+
+def find_all_pairs(episodes: list[dict[str, Any]], seed: int) -> list[dict[str, Any]]:
+    """全語料：所有相鄰 human 輪對，不論檔案有沒有重疊。
+
+    存在的理由是粗篩訊號**實測沒有鑑別力**（候選組 0.705 條/組 vs 隨機對照 0.692），
+    而它只涵蓋約 16% 的語料。篩選既然無效，剩下的選擇就只有全跑或接受低覆蓋——
+    艾斯維爾裁決全跑。
+
+    候選排在前面（``cand-000`` 起算，順序與 ``find_candidates`` 一致），
+    對照接在後面。這樣事後可以直接切開兩段比產出率，
+    **用全量數據把粗篩鑑別力的問題一次回答掉**，不必再另外抽樣。
+    """
+    candidates = find_candidates(episodes)
+    # 沿用對照組的建構邏輯（含「兩輪都無內容就跳過」的排除），取全部而非抽樣。
+    # sample_size 給一個大於母體的數，等於不截斷。
+    rest = find_control_pairs(episodes, len(episodes) + 1, seed)
+    for pair in candidates:
+        pair["from_signal"] = True
+    for pair in rest:
+        pair["from_signal"] = False
+    return candidates + rest
+
+
+def _turn_key(episode: dict[str, Any]) -> list[Any]:
+    return [episode.get("prompt_id"), episode.get("turn_index")]
+
+
+def stable_task_id(candidate: dict[str, Any]) -> str:
+    """由來源輪次派生的穩定 id。
+
+    **原本是按位置編號的 ``cand-000``，那在增量蒸餾下必定出錯。**
+    語料每長一輪，同一組候選的序號就可能位移，而 ``--ingest`` 靠 id 對回 task
+    拿溯源——位移之後就會把 A 組的 concept 掛到 B 組的來源輪次上，
+    而且完全靜默：欄位都在、格式都對，只是溯源全錯。
+
+    一次性全量跑碰不到這個問題（task 檔固定），所以先前沒暴露出來。
+    但定期自動蒸餾必然是增量的，這是接自動化前必須先擋掉的坑。
+    """
+    payload = json.dumps([_turn_key(t) for t in candidate["turns"]], sort_keys=True)
+    return "c-" + hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _trim(text: str | None, limit: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n…（截斷，原長 {len(text)} 字元）"
+
+
+def load_watermark(path: Path) -> set[str]:
+    """讀出已經蒸餾過的 task id。
+
+    **含空手的組**：那些也花過一次判斷成本，重跑只會再得到一次空手。
+    只記「有產出的」等於每次增量都把所有空手組重跑一遍，
+    而空手率實測 19%，那是白付的成本。
+    """
+    if not path.exists():
+        return set()
+    try:
+        return set(json.loads(path.read_text(encoding="utf-8")).get("task_ids") or [])
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+
+def save_watermark(path: Path, task_ids: set[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"task_ids": sorted(task_ids)}, indent=2), encoding="utf-8")
+
+
+def build_task(candidate: dict[str, Any]) -> dict[str, Any]:
+    """把一組候選整理成蒸餾任務。
+
+    **assistant_text 給的額度比 user_text 大。** 初版反過來，理由是「使用者說的話
+    才是糾正的證據」——實測是錯的。使用者的糾正往往只有一句（「這個可以，換下一個」），
+    真正可蒸餾的事實幾乎都在助手的回覆裡：它踩到專案特有的陷阱、講出根因，
+    那才是模型下次不會再犯所需要的東西。實測 cand-000 的關鍵事實
+    （既有 profile 走 cache-only 路徑，新欄位不會回填）落在第 400 字元之後，
+    原本的 800 字元上限差點把它截掉。
+    """
+    previous, current = candidate["turns"]
+    return {
+        "id": stable_task_id(candidate),
+        "repo": candidate["repo"],
+        # 這組是粗篩訊號撈到的，還是全語料才涵蓋到的。
+        # 全跑時靠它切開兩段比產出率，量粗篩訊號到底有沒有鑑別力
+        "from_signal": candidate.get("from_signal", True),
+        "overlap_files": candidate["overlap_files"],
+        "source_turns": [_turn_key(previous), _turn_key(current)],
+        "before": {
+            "user": _trim(previous.get("user_text"), 1200),
+            "assistant": _trim(previous.get("assistant_text"), 2500),
+            "files_edited": previous.get("files_edited") or [],
+        },
+        "after": {
+            "user": _trim(current.get("user_text"), 1200),
+            "assistant": _trim(current.get("assistant_text"), 2500),
+            "files_edited": current.get("files_edited") or [],
+        },
+    }
+
+
+# 蒸餾指示。與 Echo 的 _DISTILLATION_PROMPT 差在判準：
+# 那邊問「可複用的抽象概念」，這邊問「模型本來不會知道的事」。
+DISTILL_INSTRUCTIONS = """\
+你在為 coding agent 的記憶層做知識蒸餾。
+
+輸入是一組相鄰兩輪的對話片段。
+
+有些組別會標記「同一個檔案被重複修改」——那個結構通常代表第一次沒做對、
+第二次被修正，但**不一定**，也可能只是使用者同意繼續做下一項。
+沒有標記的組別一樣要認真看：實測這個結構訊號沒有鑑別力，
+**有沒有價值跟有沒有重疊檔案無關**，判準完全以下面那條為準。
+
+## 你要判斷的唯一問題
+
+這組片段裡，有沒有一件**一個沒讀過這個專案的強力模型不會知道、或會猜錯**的事？
+
+有價值的三類：
+- `project-fact`：專案特有事實，尤其是文件或慣例會把人導向錯誤答案的那種
+- `belief-correction`：模型的預設信念是錯的，這裡有反例
+- `user-stance`：使用者的立場與模型預設相反
+
+沒有價值的（**必須輸出空陣列**）：
+- 通用最佳實踐——模型本來就會，注入只是浪費 context
+- 一次性的除錯過程、這次改了什麼
+- 使用者只是說「繼續」「可以」「換下一個」——那不是糾正
+- 你不確定的時候。**寧可空手，不要湊數**。
+
+## 輸出格式
+
+只輸出 JSON，不要其他文字：
+
+```json
+{
+  "concepts": [
+    {
+      "statement": "一句話陳述這件事。必須具體到可以被驗證對錯，而且只講一件事。",
+      "kind": "project-fact | belief-correction | user-stance",
+      "scope": "repo 名稱，跨專案通用則填 null",
+      "anchors": ["這條記憶真正關於的具體對象：檔案路徑、函式名、欄位名。沒有就給空陣列"],
+      "cue": "什麼情況下該想起這條——用觸發情境的措辭，不是答案的措辭",
+      "probe": "一個開發問題，用來測試模型會不會主動講出這一點",
+      "why": "為什麼你認為模型不會知道這件事"
+    }
+  ]
+}
+```
+
+`statement` 必須**原子化：一條只講一件事**。把「A 成立，而且還要注意 B」拆成兩條。
+複合陳述在驗證時會得到一個既不能保留也不能剔除的中間值（實測 42% 落在這個灰帶），
+因為模型往往知道其中一半、不知道另一半。
+
+`cue` 是檢索用的提取線索，**這條寫得好不好直接決定這條記憶會不會被想起**。
+實測索引 cue 比索引 statement 讓召回率高 8–10 個百分點，比換檢索演算法有效得多。
+原因是 `statement` 是**答案**的措辭，而檢索時手上只有**問題**的措辭：
+
+- statement：「反查 users 要一併帶 companyid 過濾」（答案）
+- 實際情境：「建立者顯示的是 ID，我想看到操作者名稱」（問題）
+
+兩者語意重心不同，直接比對會落榜。所以 cue 要寫成**觸發情境**：
+
+- ✅「要在後端依 userid 反查使用者名稱、或做任何跨集合查詢的時候」
+- ❌「多租戶查詢必須帶 companyid」（這是答案，不是線索）
+
+寫 cue 的規則：
+- 用「當你正在做 X 的時候」的形式描述**情境**，不要寫結論
+- 帶上會實際出現在需求或程式碼裡的具體詞彙：檔案名、函式名、功能名詞
+- 想像的是「一個人**還沒犯這個錯之前**在做什麼」，不是「犯錯之後學到什麼」
+
+`anchors` 決定這條記憶會在**碰到什麼東西時**被喚起，所以要**盡可能具體**。
+
+只寫檔案路徑是不夠的：同一個檔案往往承載多個彼此無關的功能區塊，
+只靠檔案比對，實測有 70% 的召回是雜訊——抓到的是「同檔案裡另一段邏輯的舊筆記」。
+真正有用的召回，共同特徵是**函式名、欄位名跟當下要改的東西同名同源**。
+
+- ✅ `["apps/uep/src/islands/DraggableIsland.tsx", "z-index", "--uep-island-z"]`
+- ❌ `["apps/uep"]`（整個目錄，等於沒有錨點）
+
+**只寫這條記憶真正談論的對象**，不要把這一輪順手碰過的檔案都列上去。
+
+`probe` 是關鍵，出題規則：
+- 問的是**開發任務**，不是問「你知不知道 X」——後者會觸發後見之明，模型看到
+  答案幾乎都會說知道
+- 不可在題目裡洩漏答案
+- 題目要自然到「一個模型如果真的知道這件事，回答時就會自己提到它」
+
+如果這組片段沒有這種東西，輸出 `{"concepts": []}`。這是常態，不是失敗。
+"""
+
+
+def emit(episodes: list[dict[str, Any]], task_path: Path, *, control: int = 0,
+         all_pairs: bool = False, incremental: bool = False,
+         watermark_path: Path | None = None, seed: int = 20260807) -> int:
+    if all_pairs:
+        candidates = find_all_pairs(episodes, seed)
+    elif control:
+        candidates = find_control_pairs(episodes, control, seed)
+    else:
+        candidates = find_candidates(episodes)
+    tasks = [build_task(c) for c in candidates]
+
+    if incremental:
+        done = load_watermark(watermark_path or DEFAULT_WATERMARK_PATH)
+        before = len(tasks)
+        tasks = [t for t in tasks if t["id"] not in done]
+        print(f"[distill] 增量：{before} 組候選中 {before - len(tasks)} 組已蒸餾過，跳過",
+              file=sys.stderr)
+
+    payload = {
+        "instructions": DISTILL_INSTRUCTIONS,
+        "task_count": len(tasks),
+        "tasks": tasks,
+    }
+    task_path.parent.mkdir(parents=True, exist_ok=True)
+    task_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[distill] 從 {len(episodes)} 輪語料粗篩出 {len(tasks)} 組候選 → {task_path}",
+          file=sys.stderr)
+    return 0
+
+
+# 蒸餾者用來表達「跨專案通用」的字面值。收料端一律正規化成 None——
+# 三條注入路徑裡只有 hook_session_start 認得 "global"/"*" 字串，
+# 另外兩條判斷的是 falsy，留著字串會讓同一條記憶在不同路徑有不同行為
+GLOBAL_LITERALS = {"null", "none", "global", "*"}
+
+
+def resolve_scope(concept: dict[str, Any], task: dict[str, Any]) -> str | None:
+    """決定一條 concept 的 scope，區分「填了 null」與「沒有這個鍵」。
+
+    蒸餾指示要求「跨專案通用則填 null」，所以 `scope: null` 是**明確表態**，
+    而缺這個鍵才是「沒說」。原本這裡是 `concept.get("scope") or task.get("repo")`，
+    `None` 是假值 → 每一條通用知識都被靜默改標成當時觀察到的那個 repo
+    （實測 780 條原始輸出裡 47 條中招，池子裡 global 的數量因此是精確的零）。
+    """
+    if "scope" not in concept:
+        # 沒說 → 退回觀察到它的 repo。這是保守的一邊：標窄了只是召不到，
+        # 標成 global 則會把單一專案的事實散播到所有專案
+        return task.get("repo")
+    scope = concept.get("scope")
+    if not isinstance(scope, str):
+        # 明確的 null（或任何非字串）→ 跨專案通用
+        return None
+    scope = scope.strip()
+    if not scope:
+        # 空字串不是表態，是填壞了——當成沒說
+        return task.get("repo")
+    if scope.lower() in GLOBAL_LITERALS:
+        return None
+    return scope
+
+
+def statement_key(statement: str | None) -> str:
+    """concept 的比對鍵。與 ingest 的去重鍵是同一個定義，兩邊不可分岔。"""
+    return " ".join((statement or "").split()).lower()
+
+
+def backfill_scope(result_path: Path, concept_path: Path, *, apply_changes: bool = False) -> int:
+    """把被 `or` 錯貼成單一 repo 的通用記憶改回 scope=None。
+
+    只回填**蒸餾原始輸出裡明確表態為通用**的條目，比對鍵是正規化過的 statement
+    （與 ingest 的去重鍵同一定義）。修好收料端不會追溯既有資料，所以要跑這一次。
+
+    讀取端三條路對 `scope=None` 的處理已經一致（都放行），所以設回 None 就會生效，
+    不需要引入 "global" 字串。
+    """
+    sources = sorted(result_path.glob("*.json")) if result_path.is_dir() else [result_path]
+    # 同一條記憶會從多組候選被抽出來，所以一個 statement 可能有多筆表態。
+    # 用集合收齊再判斷，不要用 dict 讓後寫者贏——那會讓結果取決於檔案順序
+    declared: dict[str, set[str | None]] = {}
+    for source in sources:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        entries = payload if isinstance(payload, list) else payload.get("results", [])
+        for entry in entries:
+            for concept in entry.get("concepts") or []:
+                key = statement_key(concept.get("statement"))
+                if not key:
+                    continue
+                # 這裡只問「表態是不是通用」，所以 task 給空的就夠——
+                # 缺鍵與空字串都會落到 None 以外的分支
+                declared.setdefault(key, set()).add(resolve_scope(concept, {}))
+
+    global_keys = {k for k, tags in declared.items() if None in tags}
+    conflicts = {k for k, tags in declared.items() if None in tags and len(tags) > 1}
+
+    concepts = json.loads(concept_path.read_text(encoding="utf-8"))
+    changed = [c for c in concepts
+               if statement_key(c.get("statement")) in global_keys and c.get("scope") is not None]
+
+    out = sys.stderr
+    print(f"[backfill] 蒸餾輸出 {len(declared)} 個 statement，表態為通用 {len(global_keys)}", file=out)
+    if conflicts:
+        # 同一條記憶在不同批被標成通用又標成某 repo。沒有客觀依據選邊，
+        # 現行做法是通用優先（漏標 repo 只是多注入，漏標通用是完全召不到）
+        print(f"  ⚠ {len(conflicts)} 個 statement 的表態互相衝突，一律採通用", file=out)
+    print(f"[backfill] 池子 {len(concepts)} 條，需要改回 None 的 {len(changed)}", file=out)
+    for concept in changed:
+        surprisal = concept.get("surprisal")
+        flag = " ✅通過門檻" if (surprisal or 0) >= 0.8 else ""
+        print(f"    {concept['id']} [{concept.get('scope')} → None]{flag} "
+              f"{concept['statement'][:60]}", file=out)
+
+    if not changed:
+        print("[backfill] 沒有需要處理的條目", file=out)
+        return 0
+    if not apply_changes:
+        print(f"\n[backfill] 共 {len(changed)} 條可回填。加 --apply 才會寫入。", file=out)
+        return 0
+
+    for concept in changed:
+        concept["scope"] = None
+    concept_path.write_text(json.dumps(concepts, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\n[backfill] {len(changed)} 條已改回 scope=None → {concept_path}", file=out)
+    return 0
+
+
+def ingest(result_path: Path, concept_path: Path, task_path: Path,
+           watermark_path: Path | None = None, *, append: bool = False) -> int:
+    """收回蒸餾結果，加上溯源後存檔。
+
+    溯源（哪些輪次生出這條）對應 Echo 的 DERIVED_FROM 邊。這裡不建圖，
+    但欄位先留著——Phase 2 接檢索時需要它回頭驗證記憶是否仍然成立。
+    """
+    # 蒸餾是分批平行跑的，結果散在多個檔案裡，所以也接受目錄
+    sources = sorted(result_path.glob("*.json")) if result_path.is_dir() else [result_path]
+    entries: list[dict[str, Any]] = []
+    for source in sources:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        entries.extend(payload if isinstance(payload, list) else payload.get("results", []))
+
+    tasks = {t["id"]: t for t in json.loads(task_path.read_text(encoding="utf-8"))["tasks"]}
+    print(f"[distill] 讀入 {len(sources)} 個結果檔、{len(entries)} 組判定", file=sys.stderr)
+
+    concepts: list[dict[str, Any]] = []
+    seen_statements: set[str] = set()
+    # 已處理過的 task id，含空手的組——它們也花過判斷成本，不該被重跑
+    processed: set[str] = set()
+    unmatched = 0
+
+    if append and concept_path.exists():
+        # 增量收回：接在既有 concept 之後，並把既有的陳述納入去重比對，
+        # 否則同一件事會在每次增量各進一條
+        concepts = json.loads(concept_path.read_text(encoding="utf-8"))
+        seen_statements = {statement_key(c.get("statement")) for c in concepts}
+        print(f"[distill] 增量模式：既有 {len(concepts)} 條", file=sys.stderr)
+
+    for entry in entries:
+        task = tasks.get(entry.get("id"))
+        if task is None:
+            # 對不上多半代表結果檔與 tasks 檔不同批（例如 tasks 重新 emit 過）。
+            # 原本這裡靜默 continue，整批對不上時只會看到「收回 0 條」，
+            # 看起來像蒸餾者什麼都沒找到——而不是資料配錯了
+            unmatched += 1
+            continue
+        processed.add(entry["id"])
+        for concept in entry.get("concepts") or []:
+            statement = (concept.get("statement") or "").strip()
+            # 去重比對正規化過的陳述——同一件事會從多組候選被抽出來
+            key = statement_key(statement)
+            if not statement or key in seen_statements:
+                continue
+            seen_statements.add(key)
+            concepts.append({
+                "id": f"c-{len(concepts):03d}",
+                "statement": statement,
+                "kind": concept.get("kind"),
+                # None 代表跨專案通用，三條注入路徑都會放行。
+                # 不可寫成 `concept.get("scope") or task.get("repo")`——見 resolve_scope
+                "scope": resolve_scope(concept, task),
+                # 檢索索引的是 cue 不是 statement——見 experiment/phase2-retrieval.md。
+                # 舊語料沒有這個欄位，退回 probe（形狀相近，是當初驗證這個方向時用的代理）
+                "cue": concept.get("cue") or concept.get("probe"),
+                "probe": concept.get("probe"),
+                "why": concept.get("why"),
+                # 溯源：Phase 2 要靠它判斷記憶是否已經失效
+                "source_candidate": task["id"],
+                # 這條是粗篩訊號撈到的、還是全跑才涵蓋到的——切開比產出率用
+                "from_signal": task.get("from_signal", True),
+                "source_turns": task["source_turns"],
+                # source_files 是「產生這條記憶那一輪碰過的檔案」，屬於溯源資訊。
+                # **不要拿它當檢索錨點**——那些檔案多半只是順手碰到的，
+                # 實測用它做檔案召回的 precision 只有 30%。錨點要用 anchors。
+                "source_files": task["overlap_files"],
+                "anchors": concept.get("anchors") or [],
+                # 行為測試填這兩欄，蒸餾階段一律留空。
+                # LLM 自評不可靠（實測準確率 60-70%，且在最有價值的條目上系統性失準），
+                # 所以這裡沒有任何自評欄位可以先填。
+                "surprisal": None,
+                "probe_result": None,
+            })
+
+    concept_path.write_text(json.dumps(concepts, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    watermark = watermark_path or DEFAULT_WATERMARK_PATH
+    save_watermark(watermark, load_watermark(watermark) | processed)
+
+    kinds: dict[str, int] = {}
+    for c in concepts:
+        kinds[c.get("kind") or "?"] = kinds.get(c.get("kind") or "?", 0) + 1
+    print(f"[distill] 收回 {len(concepts)} 條 concept（去重後）→ {concept_path}", file=sys.stderr)
+    print(f"  kind 分布: {kinds}", file=sys.stderr)
+    print(f"  已蒸餾組數 {len(processed)} 寫入 watermark → {watermark}", file=sys.stderr)
+    if unmatched:
+        print(f"  ⚠ {unmatched} 組結果在 tasks 檔裡找不到對應的 id——"
+              f"結果檔與 tasks 檔可能不同批", file=sys.stderr)
+    return 0
+
+
+def show(task_path: Path, spec: str) -> int:
+    """印出指定範圍的任務（``--show 0-12``），供蒸餾者讀取。
+
+    存在的理由：整份任務檔 646 KB，一次讀進 context 會吃掉大半額度。
+    分批才能平行處理。
+    """
+    payload = json.loads(task_path.read_text(encoding="utf-8"))
+    start, _, end = spec.partition("-")
+    tasks = payload["tasks"][int(start):int(end or start) + 1]
+
+    print(payload["instructions"])
+    print(f"\n{'=' * 70}\n以下是 {len(tasks)} 組候選。\n{'=' * 70}")
+    for task in tasks:
+        print(f"\n{'=' * 70}\nID: {task['id']} | repo: {task['repo']}")
+        if task.get("overlap_files"):
+            print(f"重疊檔案（同一檔案被連續兩輪修改）: {', '.join(task['overlap_files'])}")
+        for phase in ("before", "after"):
+            block = task[phase]
+            print(f"\n--- {phase.upper()} 使用者 ---\n{block['user']}")
+            print(f"\n--- {phase.upper()} 助手 ---\n{block['assistant']}")
+            if block.get("files_edited"):
+                print(f"\n--- {phase.upper()} 改動檔案 ---\n{', '.join(block['files_edited'])}")
+    return 0
+
+
+def stats(episodes: list[dict[str, Any]]) -> int:
+    candidates = find_candidates(episodes)
+    repos: dict[str, int] = {}
+    short = 0
+    for c in candidates:
+        repos[c["repo"] or "?"] = repos.get(c["repo"] or "?", 0) + 1
+        short += bool(c["short_followup"])
+    print(f"[distill] 語料 {len(episodes)} 輪 → 粗篩 {len(candidates)} 組候選", file=sys.stderr)
+    print(f"  repo 分布: {repos}", file=sys.stderr)
+    print(f"  其中後續輪輸入很短（<{SHORT_INPUT_CHARS} 字元）: {short}", file=sys.stderr)
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Phase 1.5 concept 蒸餾")
+    parser.add_argument("--stats", action="store_true", help="只看粗篩結果分布")
+    parser.add_argument("--emit", action="store_true", help="產出蒸餾任務檔")
+    parser.add_argument("--ingest", type=Path, help="收回蒸餾結果（JSON）")
+    parser.add_argument("--show", type=str, help="印出指定範圍的任務，例如 0-12")
+    parser.add_argument("--backfill-scope", type=Path, metavar="RESULT_DIR",
+                        help="用蒸餾原始輸出把被錯貼 repo 的通用記憶改回 scope=None（預設 dry-run）")
+    parser.add_argument("--apply", action="store_true", help="backfill 時實際寫入")
+    parser.add_argument("--all", dest="all_pairs", action="store_true",
+                        help="全語料：所有相鄰 human 輪對，不只粗篩候選")
+    parser.add_argument("--incremental", action="store_true",
+                        help="emit 時跳過已蒸餾過的組；ingest 時接在既有 concept 之後")
+    parser.add_argument("--watermark-path", type=Path, default=DEFAULT_WATERMARK_PATH)
+    parser.add_argument("--control", type=int, default=0,
+                        help="改抽 N 組『無檔案重疊』的對照輪對，用來量粗篩訊號的召回率")
+    parser.add_argument("--seed", type=int, default=20260807, help="對照組抽樣種子（可重現）")
+    parser.add_argument("--episode-dir", type=Path, default=DEFAULT_EPISODE_DIR)
+    parser.add_argument("--task-path", type=Path, default=DEFAULT_TASK_PATH)
+    parser.add_argument("--concept-path", type=Path, default=DEFAULT_CONCEPT_PATH)
+    args = parser.parse_args()
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError):
+            pass
+
+    if args.backfill_scope:
+        return backfill_scope(args.backfill_scope, args.concept_path,
+                              apply_changes=args.apply)
+
+    if args.ingest:
+        return ingest(args.ingest, args.concept_path, args.task_path,
+                      args.watermark_path, append=args.incremental)
+
+    if args.show:
+        return show(args.task_path, args.show)
+
+    episodes = load_episodes(args.episode_dir)
+    if args.emit:
+        return emit(episodes, args.task_path, control=args.control,
+                    all_pairs=args.all_pairs, incremental=args.incremental,
+                    watermark_path=args.watermark_path, seed=args.seed)
+    return stats(episodes)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

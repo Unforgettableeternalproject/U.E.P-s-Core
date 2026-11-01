@@ -3586,3 +3586,15 @@
 
 ---
 
+### [chore]: 遷入 EM 子系統（subtree）. 11/02
+
+> Date: Mon, 02 Nov 2026 01:21:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `cac6677be17988d11af013f864083224fafc4bf3`
+
+---
+

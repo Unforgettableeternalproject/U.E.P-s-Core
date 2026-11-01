@@ -1,0 +1,84 @@
+{
+  "exact_coffee_episode": {
+    "query": "使用者迷上手沖咖啡",
+    "top_k": 5,
+    "min_similarity": 0.3,
+    "episode_ids": [
+      "ep_base_001"
+    ],
+    "concept_names": []
+  },
+  "exact_cat_episode": {
+    "query": "使用者養了一隻叫小橘的貓",
+    "top_k": 5,
+    "min_similarity": 0.3,
+    "episode_ids": [
+      "ep_base_003"
+    ],
+    "concept_names": []
+  },
+  "exact_sister_episode": {
+    "query": "使用者的妹妹考上筑波大學",
+    "top_k": 5,
+    "min_similarity": 0.3,
+    "episode_ids": [
+      "ep_base_005"
+    ],
+    "concept_names": []
+  },
+  "exact_concept_text": {
+    "query": "筑波大學: 使用者妹妹考上並將就讀的日本大學",
+    "top_k": 5,
+    "min_similarity": 0.3,
+    "episode_ids": [],
+    "concept_names": [
+      "台北工作",
+      "筑波大學"
+    ]
+  },
+  "permissive_work": {
+    "query": "工作",
+    "top_k": 5,
+    "min_similarity": -1.0,
+    "episode_ids": [
+      "ep_base_007",
+      "ep_base_008",
+      "ep_base_010",
+      "ep_base_005",
+      "ep_base_006"
+    ],
+    "concept_names": []
+  },
+  "permissive_sleep": {
+    "query": "睡眠作息",
+    "top_k": 6,
+    "min_similarity": -1.0,
+    "episode_ids": [
+      "ep_base_003",
+      "ep_base_005",
+      "ep_base_002",
+      "ep_base_001",
+      "ep_base_004",
+      "ep_base_009"
+    ],
+    "concept_names": []
+  },
+  "permissive_with_exclusion": {
+    "query": "工作",
+    "top_k": 5,
+    "min_similarity": -1.0,
+    "episode_ids": [
+      "ep_base_002",
+      "ep_base_006",
+      "ep_base_009"
+    ],
+    "concept_names": []
+  },
+  "no_match": {
+    "query": "完全無關的量子力學",
+    "top_k": 5,
+    "min_similarity": 0.3,
+    "episode_ids": [],
+    "concept_names": []
+  }
+}

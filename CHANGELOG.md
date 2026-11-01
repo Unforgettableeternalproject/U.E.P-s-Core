@@ -3538,3 +3538,15 @@
 
 ---
 
+### [chore]: 遷入 Session 子系統（subtree）. 11/02
+
+> Date: Mon, 02 Nov 2026 01:00:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `0b1fa709de37a8e299f3f7476de2f2f610010483`
+
+---
+

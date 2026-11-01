@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: ["master", "develop", "fix/**", "feat/**", "feature/**"]
+  pull_request:
+    branches: ["master", "develop"]
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 設定 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安裝 ruff
+        run: pip install "ruff>=0.1.9"
+
+      - name: 執行 ruff lint
+        run: ruff check . --select E,F --ignore E501,E402
+
+  test:
+    name: 測試 (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 設定 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 快取 pip 依賴
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+
+      - name: 安裝專案（含開發依賴）
+        run: pip install -e ".[dev]"
+
+      - name: 執行測試
+        env:
+          ANTHROPIC_API_KEY: "ci-placeholder-not-real"
+          OPENAI_API_KEY: "ci-placeholder-not-real"
+          GOOGLE_API_KEY: "ci-placeholder-not-real"
+        run: |
+          pytest \
+            --cov=echo_thought_core \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            -v
+
+      - name: 上傳覆蓋率報告
+        uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.11'
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  packaging-smoke:
+    name: Packaging Smoke Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 設定 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: pip install . smoke test
+        run: pip install .
+
+      - name: 驗證核心模組可匯入
+        run: |
+          python -c "
+          from echo_thought_core import ContextManager, CompactionConfig, PersonaContext
+          from echo_thought_core import SessionState, CompactionResult, Message
+          from echo_thought_core import create_backend, create_context_manager
+          from echo_thought_core import load_llm_config, build_persona_from_config, build_system_instruction
+          from echo_thought_core.schemas.message import Message
+          from echo_thought_core.schemas.session import SessionState, CompactionResult
+          from echo_thought_core.accounting.counter import TokenCounter
+          from echo_thought_core.accounting.budget import TokenBudget
+          print('所有核心模組匯入成功')
+          "

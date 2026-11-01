@@ -224,8 +224,8 @@ class Config:
         # 隱私意圖掃描時機：post_turn（群組輪次回覆後非同步）| dream（只在 Dream 內）
         _scan = os.getenv("SHARING_INTENT_SCAN", "post_turn").strip().lower()
         self.sharing_intent_scan = _scan if _scan in ("post_turn", "dream") else "post_turn"
-        # shareable_summary 長度上限（字元）
-        self.sharing_summary_max_chars = int(os.getenv("SHARING_SUMMARY_MAX_CHARS", "120"))
+        # shareable_summary 硬上限（字元；與 schemas.sharing.SHARE_SUMMARY_MAX_CHARS 同值，供檢索渲染截斷）
+        self.sharing_summary_max_chars = int(os.getenv("SHARING_SUMMARY_MAX_CHARS", "160"))
         # retrieve_shared：上限筆數與最低相似度（高於一般檢索，避免亂帶）
         self.sharing_retrieve_top_k = int(os.getenv("SHARING_RETRIEVE_TOP_K", "3"))
         self.sharing_retrieve_min_similarity = float(

@@ -33,6 +33,10 @@ SENSITIVITIES = ("none", "personal", "sensitive")
 # 只有這些敏感度可以投影；sensitive 維持 private
 SHAREABLE_SENSITIVITIES = ("none", "personal")
 
+# shareable_summary 字數：目標寫進 prompt 給 LLM；硬上限用於 gate、寫入驗證與檢索渲染截斷
+SHARE_SUMMARY_TARGET_CHARS = 120
+SHARE_SUMMARY_MAX_CHARS = 160
+
 DECIDED_BY = ("default", "llm", "user")
 
 # 可成為 scope_shared 來源的頻道類型（dm／cli／mcp 一律 private）

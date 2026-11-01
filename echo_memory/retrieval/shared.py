@@ -31,6 +31,7 @@ from echo_memory.schemas.memory_context import (
     SharedItem,
 )
 from echo_memory.schemas.sharing import (
+    SHARE_SUMMARY_MAX_CHARS,
     SHAREABLE_SENSITIVITIES,
     parse_guild_scope,
     scope_to_namespace_id,
@@ -87,7 +88,7 @@ def _retrieve_shared_context(
     present_uids: Iterable[Any] = (),
     top_k: int = SHARED_MAX_ITEMS,
     min_similarity: float = 0.45,
-    summary_max_chars: int = 120,
+    summary_max_chars: int = SHARE_SUMMARY_MAX_CHARS,
     owner_uid: str | None = None,
     activity_fn: Any = None,
 ) -> SharedContext:

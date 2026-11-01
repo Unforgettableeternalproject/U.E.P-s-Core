@@ -117,6 +117,12 @@ class TestProject:
         assert not res.ok and res.reason == reason
         assert layer.list_projections(G42) == []
 
+    def test_summary_between_121_and_160_projects(self, layer):
+        # 硬上限放寬到 160：120 是 prompt 目標，121-160 仍可寫入
+        for n in (121, SUMMARY_MAX_CHARS):
+            res = project(layer, summary="字" * n)
+            assert res.ok, n
+
     def test_invalid_scope_rejected(self, layer):
         res = layer.project(
             "namespace", owner_uid="1", source_concept_id="c", source_digest=DIGEST, summary="x",
@@ -981,7 +987,7 @@ class TestPhaseRobustness:
         assert rep.held == 1 and rep.projected == 1
 
     def test_summary_too_long_retried_once(self, root, layer):
-        answers = iter(["字" * 150, SUMMARY])
+        answers = iter(["字" * (SUMMARY_MAX_CHARS + 1), SUMMARY])
 
         def llm(prompt):
             return ShareLLM(summary=next(answers))(prompt)
@@ -990,6 +996,22 @@ class TestPhaseRobustness:
         one_concept(owner)
         rep = owner.phase.run()
         assert rep.projected == 1 and rep.held == 0
+
+    @pytest.mark.parametrize("n", [121, 160])
+    def test_summary_121_to_160_passes_gate(self, root, layer, n):
+        owner = Owner(root, "1001", layer, ShareLLM(summary="字" * n))
+        one_concept(owner)
+        rep = owner.phase.run()
+        assert rep.projected == 1 and rep.held == 0
+        assert len(owner.llm.share_calls) == 1  # 不需重試
+
+    def test_summary_over_160_held_after_retry(self, root, layer):
+        owner = Owner(root, "1001", layer, ShareLLM(summary="字" * (SUMMARY_MAX_CHARS + 1)))
+        one_concept(owner)
+        rep = owner.phase.run()
+        assert rep.projected == 0 and rep.held == 1
+        assert rep.held_reasons and "summary_too_long" in rep.held_reasons[0]
+        assert layer.list_projections(G42) == []
 
     def test_restrict_failure_is_not_final(self, root, layer, monkeypatch):
         owner = Owner(root, "1001", layer, ShareLLM(restrict_all=True))
@@ -1069,7 +1091,7 @@ class TestSharingIdNormalization:
         assert owner.phase._load_held()[cid]["attempts"] == 1
 
     def test_retry_prompt_includes_length_hint(self, root, layer):
-        answers = iter(["字" * 150, SUMMARY])
+        answers = iter(["字" * (SUMMARY_MAX_CHARS + 1), SUMMARY])
         llm = ShareLLM(summary=lambda p: next(answers))
         owner = Owner(root, "1001", layer, llm)
         one_concept(owner)
@@ -1077,7 +1099,7 @@ class TestSharingIdNormalization:
         assert rep.projected == 1
         first, second = llm.share_calls
         assert "上次摘要" not in first
-        assert "上次摘要 150 字" in second and "30 字內" in second
+        assert f"上次摘要 {SUMMARY_MAX_CHARS + 1} 字" in second and "請縮到 120 字內" in second
 
     def test_share_llm_gets_max_tokens_only_when_supported(self, root, layer):
         seen: dict = {}

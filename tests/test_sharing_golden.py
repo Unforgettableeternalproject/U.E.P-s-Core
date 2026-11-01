@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from echo_memory.schemas.evidence_review import EvidenceReview
+from echo_memory.schemas.sharing import SHARE_SUMMARY_MAX_CHARS
 from echo_memory.storage.share_layer import REVOCATIONS_FILENAME, ScopeShareLayer
 from tests.conftest import _deterministic_embedding
 from tests.sharing_support import (
@@ -371,7 +372,7 @@ class TestS9FailClosed:
         assert layer.list_projections(G42) == []
 
     def test_summary_over_limit_nothing_shared(self, root, layer):
-        owner = Owner(root, "1001", layer, ShareLLM(summary="字" * 121))
+        owner = Owner(root, "1001", layer, ShareLLM(summary="字" * (SHARE_SUMMARY_MAX_CHARS + 1)))
         owner.concept("喜歡爵士樂", [owner.say("我喜歡爵士樂")])
         rep = owner.phase.run()
         assert rep.projected == 0 and rep.held == 1

@@ -38,6 +38,7 @@ from typing import Any
 from echo_memory.namespace import resolve_namespace_path
 from echo_memory.schemas.evidence_review import SP_PREFIX, make_sp_ref, parse_sp_ref  # noqa: F401
 from echo_memory.schemas.sharing import (
+    SHARE_SUMMARY_MAX_CHARS,
     SHAREABLE_SENSITIVITIES,
     namespace_to_scope,
     parse_guild_scope,
@@ -57,7 +58,7 @@ SEMANTIC_DIRNAME = "semantic"
 
 PROJECTION_KIND = "projection"
 PROJECTION_NAME_PREFIX = "proj:"
-SUMMARY_MAX_CHARS = 120
+SUMMARY_MAX_CHARS = SHARE_SUMMARY_MAX_CHARS
 
 _INDEX_RECORD_TYPES = ("init", "revoke", "owner_block", "owner_unblock")
 _OPTOUT_RECORD_TYPES = ("init", "retract", "correct", "opt_out")

@@ -64,6 +64,8 @@ from echo_memory.schemas.evidence_review import (
     noisy_or,
 )
 from echo_memory.schemas.sharing import (
+    SHARE_SUMMARY_MAX_CHARS,
+    SHARE_SUMMARY_TARGET_CHARS,
     SHAREABLE_SENSITIVITIES,
     SENSITIVITIES,
     parse_guild_scope,
@@ -175,7 +177,6 @@ _CORROBORATION_PROMPT = """你是記憶系統的交叉佐證審核員。判斷�
 corroborating_projection_ids 只能填上面列出的 id；沒有就留空陣列。
 以純 JSON 回覆：{{"corroborating_projection_ids": ["..."], "reason": "..."}}"""
 
-SHARE_SUMMARY_MAX_CHARS = 120
 # 分享判定專用的輸出 token 上限（逐字稿長、cited id 多時預設上限容易截斷成無效 JSON）
 SHARE_LLM_MAX_TOKENS = 2048
 # 隱私類 hold 的 reason 前綴：Dream 遇到這類 hold 且概念已有投影時 fail-closed 先撤回
@@ -1086,11 +1087,11 @@ class EvidenceReviewer:
 
         roster_block, code_map = self._roster_for_scope(scope_id, owner_uid)
         prompt = _SHARE_PROMPT.format(
-            legend=SOURCE_LEGEND, evidence=evidence_text, max_chars=SHARE_SUMMARY_MAX_CHARS,
+            legend=SOURCE_LEGEND, evidence=evidence_text, max_chars=SHARE_SUMMARY_TARGET_CHARS,
             roster_block=roster_block,
             about_json=', "about_members": ["m1"]' if code_map else "",
             length_hint=(
-                f"- 注意：上次摘要 {prev_summary_len} 字，請縮到 {SHARE_SUMMARY_MAX_CHARS} 字內。\n"
+                f"- 注意：上次摘要 {prev_summary_len} 字，請縮到 {SHARE_SUMMARY_TARGET_CHARS} 字內。\n"
                 if prev_summary_len > 0 else ""
             ),
         )

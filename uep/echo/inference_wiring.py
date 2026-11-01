@@ -342,6 +342,14 @@ def _build_vox_speak(cfg: InferenceConfig, extra: Mapping[str, Any]) -> Any:
     return VoxSpeakStage(**vox_kwargs)
 
 
+def _vox_recommended_split_policy(cfg: InferenceConfig, speak: Any) -> Any | None:
+    """引擎為 vox 時取 ES 提供的切句建議值；佔位 stage 或 ES 尚無該方法時回傳 None（沿用 SplitPolicy 預設）。"""
+    if cfg.tts_engine != "vox" or isinstance(speak, _VoxUnavailableStage):
+        return None
+    getter = getattr(type(speak), "recommended_split_policy", None)
+    return getter() if callable(getter) else None
+
+
 @dataclass
 class InferenceWiring:
     """三個已守衛的 stage 與其就緒狀態。``host_kwargs()`` 併入 ``EchoPipelineHost(...)``。"""
@@ -420,6 +428,9 @@ def build_inference_wiring(
     llm = think_backend if think_backend is not None else (think_backend_factory or default_think_backend)(cfg)
     think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt}
     think_kwargs.update(extra.get("think", {}))
+    recommended = _vox_recommended_split_policy(cfg, speak)
+    if recommended is not None:
+        think_kwargs.setdefault("split_policy", recommended)
     think = LLMThinkStage(llm, **think_kwargs)
 
     wiring.speak, wiring.think, wiring.input_stage = speak, think, input_stage

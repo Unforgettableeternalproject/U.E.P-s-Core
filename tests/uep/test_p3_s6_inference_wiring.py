@@ -424,3 +424,44 @@ def test_host_start_走設定的上限而非固定_60():
     from uep.echo.host import EchoPipelineHost
 
     assert EchoPipelineHost.__init__.__kwdefaults__["start_timeout_s"] == 60.0
+
+
+# ---- VOX 切句建議值 ----
+
+def test_vox_有建議值_傳到_think_的_split_policy(monkeypatch):
+    from echo_stream.core.splitter import SplitPolicy
+
+    recommended = SplitPolicy(first_min_weight=10.0, first_max_weight=24.0, min_weight=30.0, max_weight=80.0)
+    fake_cls = _install_fake_vox(monkeypatch, {})
+    fake_cls.recommended_split_policy = classmethod(lambda cls: recommended)
+    w = build_inference_wiring(
+        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert w.think.split_policy is recommended
+
+
+def test_vox_無建議值方法_維持預設_split_policy(monkeypatch):
+    from echo_stream.core.splitter import SplitPolicy
+
+    _install_fake_vox(monkeypatch, {})  # 假 stage 沒有 recommended_split_policy
+    w = build_inference_wiring(
+        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert w.think.split_policy == SplitPolicy()
+
+
+def test_vox_佔位_stage_不取建議值(monkeypatch):
+    from echo_stream.core.splitter import SplitPolicy
+
+    _block_vox_import(monkeypatch)
+    w = build_inference_wiring(
+        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert w.think.split_policy == SplitPolicy()
+
+
+def test_非_vox_引擎不取建議值(monkeypatch):
+    from echo_stream.core.splitter import SplitPolicy
+
+    w = build()
+    assert w.think.split_policy == SplitPolicy()

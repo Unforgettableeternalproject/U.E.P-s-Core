@@ -3502,3 +3502,15 @@
 
 ---
 
+### [feat]: VOX 引擎改用 ES 建議切句策略. 11/01
+
+> Date: Sun, 01 Nov 2026 20:45:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `4482eb352b89990a04cde1e07159b8bef2fc2804`
+
+---
+

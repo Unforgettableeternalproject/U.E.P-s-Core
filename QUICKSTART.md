@@ -1,13 +1,13 @@
 # Echo Memory System - 快速開始
 
 Echo Memory 刻意不維護自己的 `venv` 或 `.venv`。所有 Python 依賴由同層主專案
-`U.E.P-s-Core\env` 統一提供；正式 embedding 後端為 Ollama `bge-m3`。
+`~/.uep/venv-inference-312` 統一提供（由 U.E.P-s-Core 的 uv.lock 管理）；正式 embedding 後端為 Ollama `bge-m3`。
 
 ## 1. 確認共用環境
 
 ```powershell
 cd C:\Users\Bernie\source\repos\Unforgettableeternalproject\TestSeperateMemorySystem
-$UEP_PYTHON = "..\U.E.P-s-Core\env\Scripts\python.exe"
+$UEP_PYTHON = "$env:USERPROFILE\.uep\venv-inference-312\Scripts\python.exe"
 
 & $UEP_PYTHON --version
 & $UEP_PYTHON -m pip check
@@ -65,7 +65,7 @@ notepad .env
 .\run.bat
 ```
 
-`run.bat` 會固定使用 `U.E.P-s-Core\env\Scripts\python.exe`。
+`run.bat` 會固定使用 `%USERPROFILE%\.uep\venv-inference-312\Scripts\python.exe`。
 
 ## 6. 啟動 MCP Server
 
@@ -79,8 +79,8 @@ MCP 使用 stdio 通訊，直接啟動時沒有互動式畫面是正常行為。
 
 ## 常見問題
 
-- `U.E.P Core Python not found`：確認兩個 repo 位於同一層，且主環境路徑為
-  `U.E.P-s-Core\env\Scripts\python.exe`。
+- `U.E.P Core Python not found`：確認共用環境存在於
+  `%USERPROFILE%\.uep\venv-inference-312\Scripts\python.exe`。
 - `Ollama embedding failed`：確認 Ollama 服務已啟動、`OLLAMA_BASE_URL` 正確，並且
   `ollama list` 包含 `bge-m3`。
 - 模型切換後召回異常：確認 query prefix 與模型匹配，並讓 manifest 機制完成索引重建。

@@ -109,14 +109,14 @@ TestSeperateMemorySystem/
 
 ### Prerequisites
 
-This project intentionally shares the virtual environment from the sibling `U.E.P-s-Core` project rather than maintaining its own. The canonical embedding backend is Ollama `bge-m3` (1024-dim multilingual).
+This project intentionally uses the shared U.E.P environment `~/.uep/venv-inference-312` (managed by the `U.E.P-s-Core` uv.lock, with echo-memory installed editable) rather than maintaining its own. The canonical embedding backend is Ollama `bge-m3` (1024-dim multilingual).
 
-- Python 3.10+ (via `U.E.P-s-Core\env`)
+- Python 3.12 (via `~/.uep/venv-inference-312`)
 - Ollama running locally with `bge-m3` pulled
 - Google API key for Gemini
 
 ```powershell
-$UEP_PYTHON = "..\U.E.P-s-Core\env\Scripts\python.exe"
+$UEP_PYTHON = "$env:USERPROFILE\.uep\venv-inference-312\Scripts\python.exe"
 
 # 1. Configure environment variables
 Copy-Item .env.example .env

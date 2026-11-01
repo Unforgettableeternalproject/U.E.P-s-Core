@@ -11,6 +11,7 @@
 
 .PARAMETER Layout
     Sibling：子系統在 Core 的兄弟 repo（遷入前，預設）。Core：子系統在 <Core>/subsystems/<name>（遷入後）。
+    已遷入的子系統（見 $migrated；目前為 session）不看此參數，一律走 <Core>/subsystems/<name>。
     也可用環境變數 UEP_GATE_LAYOUT 指定。
 
 .PARAMETER Only
@@ -57,8 +58,11 @@ if (-not (Test-Path $Python)) { throw "找不到共用環境 Python：$Python" }
 if (-not $LogDir) { $LogDir = Join-Path $env:TEMP ("uep-gate\" + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
+# 已遷入 Core 的子系統：不論 Layout 一律走 subsystems/<name>（M1：Session）。後續里程碑遷入時在此追加
+$migrated = @('session')
+
 # 子系統名稱 -> 兄弟 repo 目錄名 / 遷入後 subsystems 下的目錄名 / 原本的 pytest 參數
-# Session 的 pyproject addopts 帶 --cov（共用環境沒有 pytest-cov），改以 -o addopts= 清掉並保留 e2e 排除
+# Session 的 addopts 在遷入後已移除 --cov；此處仍以 -o addopts= 清掉並顯式保留 e2e 排除，與 M0 基線命令一致
 $items = @(
     [pscustomobject]@{ Key = 'es';      Label = 'ES (echo_stream)';              Sibling = 'Echo-Stream';              Sub = 'echo_stream';       PytestArgs = '' }
     [pscustomobject]@{ Key = 'em';      Label = 'EM (echo_memory 三包)';         Sibling = 'TestSeperateMemorySystem'; Sub = 'echo_memory';       PytestArgs = '' }
@@ -71,7 +75,7 @@ if ($Only) { $items = $items | Where-Object { $Only -contains $_.Key } }
 
 function Resolve-WorkDir($item) {
     if ($item.Key -eq 'core') { return $coreRoot }
-    if ($Layout -eq 'Core') { return Join-Path $coreRoot (Join-Path 'subsystems' $item.Sub) }
+    if ($Layout -eq 'Core' -or $migrated -contains $item.Key) { return Join-Path $coreRoot (Join-Path 'subsystems' $item.Sub) }
     return Join-Path $SiblingRoot $item.Sibling
 }
 

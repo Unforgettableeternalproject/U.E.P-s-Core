@@ -39,6 +39,7 @@ class UepSettings(BaseSettings):
     # ES 的同層猜測在非 editable 安裝下指向 site-packages 之上而失效）。未設定時對應的 stage 拒絕組裝。
     infer_tts_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_TTS_REPO")
     infer_stt_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_STT_REPO")
+    # Session 已遷入 Core（subsystems/echo_thought_core）：預設不設，由 Core 的 editable 安裝提供；僅作可選覆寫
     infer_session_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_SESSION_REPO")
     # TTS 引擎：indextts2（預設，V25）或 vox；兩者不能同時常駐，由此單選
     infer_tts_engine: str = Field(default="indextts2", validation_alias="UEP_INFER_TTS_ENGINE")

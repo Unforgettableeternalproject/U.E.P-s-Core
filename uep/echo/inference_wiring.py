@@ -272,14 +272,20 @@ def default_tts_backend(cfg: InferenceConfig) -> Any:
 
 
 def default_think_backend(cfg: InferenceConfig) -> Any:
-    """從 SessionControl 的 registry 建 LLM backend（API client，無本地模型）。"""
-    repo = _require_repo(cfg.session_repo, "UEP_INFER_SESSION_REPO", "Session")
+    """從 SessionControl 的 registry 建 LLM backend（API client，無本地模型）。
+
+    Session（echo_thought_core）已遷入 Core（subsystems/echo_thought_core），由 Core 的 editable 安裝提供，
+    預設不需路徑；``UEP_INFER_SESSION_REPO`` 僅作可選覆寫（指向舊 repo 回退時用），設了就必須存在。
+    """
+    repo = None
+    if cfg.session_repo is not None:
+        repo = _require_repo(cfg.session_repo, "UEP_INFER_SESSION_REPO", "Session")
     from echo_stream.adapters.think_llm import build_backend
 
     overrides: dict[str, Any] = {}
     if cfg.llm_model:
         overrides["model"] = cfg.llm_model
-    return build_backend(cfg.llm_provider, session_repo=str(repo), **overrides)
+    return build_backend(cfg.llm_provider, session_repo=str(repo) if repo is not None else None, **overrides)
 
 
 class _VoxUnavailableStage:

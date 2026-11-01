@@ -3562,3 +3562,15 @@
 
 ---
 
+### [chore]: Session 入口改走 Core 內路徑. 11/02
+
+> Date: Mon, 02 Nov 2026 01:04:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `2c38117c19123361e1f348fc518130644cf50644`
+
+---
+

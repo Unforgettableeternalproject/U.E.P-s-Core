@@ -26,6 +26,7 @@ from uep.echo.inference_wiring import (
     _InputGuard,
     _ThinkGuard,
     build_inference_wiring,
+    default_think_backend,
 )
 from uep.echo.metrics import Metrics
 
@@ -119,12 +120,24 @@ def test_缺子系統路徑_fail_closed():
         build_inference_wiring(InferenceConfig(), think_backend=FakeLlm(), stt_backend=FakeStt())
     with pytest.raises(InferenceWiringError, match="UEP_INFER_STT_REPO"):
         build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
-    with pytest.raises(InferenceWiringError, match="UEP_INFER_SESSION_REPO"):
-        build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), stt_backend=FakeStt())
+    # Session 已遷入 Core：不設 UEP_INFER_SESSION_REPO 不再被拒絕（見 test_think_backend_預設不需_session_路徑）
+    with pytest.raises(InferenceWiringError, match="UEP_INFER_SESSION_REPO.*不存在"):
+        default_think_backend(InferenceConfig(session_repo=Path("Z:/不存在的路徑")))
     with pytest.raises(InferenceWiringError, match="不存在"):
         build_inference_wiring(
             InferenceConfig(tts_repo=Path("Z:/不存在的路徑")), think_backend=FakeLlm(), stt_backend=FakeStt(),
         )
+
+
+def test_think_backend_預設不需_session_路徑(monkeypatch, tmp_path):
+    import echo_stream.adapters.think_llm as think_llm
+
+    seen: dict = {}
+    monkeypatch.setattr(think_llm, "build_backend", lambda provider, **kw: seen.update(provider=provider, **kw) or "backend")
+    assert default_think_backend(InferenceConfig(llm_provider="openai")) == "backend"
+    assert seen["session_repo"] is None  # 交給環境（Core 的 editable）解析 echo_thought_core
+    default_think_backend(InferenceConfig(llm_provider="openai", session_repo=tmp_path))
+    assert seen["session_repo"] == str(tmp_path)  # 明確指定仍可覆寫
 
 
 def test_from_settings_讀環境變數(monkeypatch, tmp_path):

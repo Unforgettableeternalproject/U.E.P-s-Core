@@ -322,7 +322,7 @@ def test_load_emotion_clips_real_assets():
     clips = load_emotion_clips(vb.DEFAULT_ASSETS_DIR)
     assert set(clips) == set(ep.EMOTION_LABELS)
     for label, tiers in clips.items():
-        assert sorted(tiers) == [0.57, 0.65], label  # 0.61 待生成；0.73 不放
+        assert sorted(tiers) == [0.57, 0.61, 0.65], label  # 0.73 不放
         assert all(c["transcript"] for c in tiers.values())
 
 

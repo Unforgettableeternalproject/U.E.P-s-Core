@@ -51,9 +51,7 @@
       0.61,
       0.65
     ],
-    "missing_tiers": {
-      "0.61": "待 GPU 空出後生成，補進 clips 即生效，程式不需修改"
-    },
+    "missing_tiers": {},
     "clips": [
       {
         "emotion": "happy",
@@ -61,6 +59,13 @@
         "wav": "emotion/zh_happy_057.wav",
         "transcript": "太好了，我們終於成功了！這個月的努力總算有回報，我真的超開心，今晚一定要慶祝一下！",
         "source": "TTS-wt-model-eval outputs/emotion_v1 candidates/happy_057_t2.wav（IndexTTS2 V25 合成，CER 0.0，SIM 0.9399）"
+      },
+      {
+        "emotion": "happy",
+        "strength": 0.61,
+        "wav": "emotion/zh_happy_061.wav",
+        "transcript": "太好了，我們終於成功了！這個月的努力總算有回報，我真的超開心，今晚一定要慶祝一下！",
+        "source": "TTS-wt-model-eval outputs/emotion_v1 refs061/candidates/happy_061_t1.wav（IndexTTS2 V25 合成，CER 0.0，SIM 0.896）"
       },
       {
         "emotion": "happy",
@@ -78,6 +83,13 @@
       },
       {
         "emotion": "angry",
+        "strength": 0.61,
+        "wav": "emotion/zh_angry_061.wav",
+        "transcript": "你到底有沒有在聽我說話？這已經是第三次了，我明明交代過很多遍，你還是照自己的想法亂來！",
+        "source": "TTS-wt-model-eval outputs/emotion_v1 refs061/candidates/angry_061_t2.wav（IndexTTS2 V25 合成，CER 0.0，SIM 0.9281）"
+      },
+      {
+        "emotion": "angry",
         "strength": 0.65,
         "wav": "emotion/zh_angry_065.wav",
         "transcript": "你到底有沒有在聽我說話？這已經是第三次了，我明明交代過很多遍，你還是照自己的想法亂來！",
@@ -89,6 +101,13 @@
         "wav": "emotion/zh_sad_057.wav",
         "transcript": "我一直想著那天晚上的事，心裡就好難過。早知道，我就多陪陪她了。",
         "source": "TTS-wt-model-eval outputs/emotion_v1 candidates/sad_057_t2.wav（IndexTTS2 V25 合成，CER 0.037，SIM 0.9559）"
+      },
+      {
+        "emotion": "sad",
+        "strength": 0.61,
+        "wav": "emotion/zh_sad_061.wav",
+        "transcript": "我一直想著那天晚上的事，心裡就好難過。早知道，我就多陪陪她了。",
+        "source": "TTS-wt-model-eval outputs/emotion_v1 refs061/candidates/sad_061_t1.wav（IndexTTS2 V25 合成，CER 0.037，SIM 0.951）"
       },
       {
         "emotion": "sad",
@@ -106,6 +125,13 @@
       },
       {
         "emotion": "afraid",
+        "strength": 0.61,
+        "wav": "emotion/zh_afraid_061.wav",
+        "transcript": "你有聽到嗎？樓上好像有人在走動……可是這間房子明明只有我一個人。我不敢回頭。",
+        "source": "TTS-wt-model-eval outputs/emotion_v1 refs061/candidates/afraid_061_t2.wav（IndexTTS2 V25 合成，CER 0.0，SIM 0.9511）"
+      },
+      {
+        "emotion": "afraid",
         "strength": 0.65,
         "wav": "emotion/zh_afraid_065.wav",
         "transcript": "你有聽到嗎？樓上好像有人在走動……可是這間房子明明只有我一個人。我不敢回頭。",
@@ -117,6 +143,13 @@
         "wav": "emotion/zh_disgusted_057.wav",
         "transcript": "噁，這是什麼味道啊？冰箱裡的剩菜居然放到發霉了，上面還長了一堆奇怪的東西，我看了都快吐了。",
         "source": "TTS-wt-model-eval outputs/emotion_v1 candidates/disgusted_057_t2.wav（IndexTTS2 V25 合成，CER 0.025，SIM 0.9389）"
+      },
+      {
+        "emotion": "disgusted",
+        "strength": 0.61,
+        "wav": "emotion/zh_disgusted_061.wav",
+        "transcript": "噁，這是什麼味道啊？冰箱裡的剩菜居然放到發霉了，上面還長了一堆奇怪的東西，我看了都快吐了。",
+        "source": "TTS-wt-model-eval outputs/emotion_v1 refs061/candidates/disgusted_061_t1.wav（IndexTTS2 V25 合成，CER 0.025，SIM 0.9442）"
       },
       {
         "emotion": "disgusted",
@@ -134,6 +167,13 @@
       },
       {
         "emotion": "melancholic",
+        "strength": 0.61,
+        "wav": "emotion/zh_melancholic_061.wav",
+        "transcript": "雨一直下，窗外的路燈都變得模糊了。翻著舊照片，日子過得好快。",
+        "source": "TTS-wt-model-eval outputs/emotion_v1 refs061/candidates/melancholic_061_t2.wav（IndexTTS2 V25 合成，CER 0.0769，SIM 0.9273）"
+      },
+      {
+        "emotion": "melancholic",
         "strength": 0.65,
         "wav": "emotion/zh_melancholic_065.wav",
         "transcript": "雨一直下，窗外的路燈都變得模糊了。翻著舊照片，日子過得好快。",
@@ -148,6 +188,13 @@
       },
       {
         "emotion": "surprised",
+        "strength": 0.61,
+        "wav": "emotion/zh_surprised_061.wav",
+        "transcript": "咦？等一下，你說什麼？真的假的，他居然就這樣突然出現在門口！我完全沒有想到，嚇了我一大跳耶！",
+        "source": "TTS-wt-model-eval outputs/emotion_v1 refs061/candidates/surprised_061_t1.wav（IndexTTS2 V25 合成，CER 0.0，SIM 0.8947）"
+      },
+      {
+        "emotion": "surprised",
         "strength": 0.65,
         "wav": "emotion/zh_surprised_065.wav",
         "transcript": "咦？等一下，你說什麼？真的假的，他居然就這樣突然出現在門口！我完全沒有想到，嚇了我一大跳耶！",
@@ -159,6 +206,13 @@
         "wav": "emotion/zh_calm_057.wav",
         "transcript": "沒關係，慢慢來就好。先深呼吸一下，把手邊的事情一件一件做完，不用著急，時間還很充裕。",
         "source": "TTS-wt-model-eval outputs/emotion_v1 candidates/calm_057_t1.wav（IndexTTS2 V25 合成，CER 0.0，SIM 0.9503）"
+      },
+      {
+        "emotion": "calm",
+        "strength": 0.61,
+        "wav": "emotion/zh_calm_061.wav",
+        "transcript": "沒關係，慢慢來就好。先深呼吸一下，把手邊的事情一件一件做完，不用著急，時間還很充裕。",
+        "source": "TTS-wt-model-eval outputs/emotion_v1 refs061/candidates/calm_061_t1.wav（IndexTTS2 V25 合成，CER 0.0，SIM 0.9505）"
       },
       {
         "emotion": "calm",

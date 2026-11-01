@@ -155,6 +155,11 @@ explicit = true
 packages = [
     "uep",
     "subsystems/echo_thought_core/echo_thought_core",
+    # 子系統 EM（echo-memory 同一個 dist 的三個頂層套件）
+    # echo-mcp 等 entry points 暫不放進 Core 的 scripts，待 Q8 決定
+    "subsystems/echo_memory/echo_memory",
+    "subsystems/echo_memory/llm_integration",
+    "subsystems/echo_memory/mcp_server",
 ]
 # editable 只暴露各套件本身，不把 subsystems/<name>/ 放進 sys.path（避免 tests／configs／Entry 同名遮蔽）
 dev-mode-exact = true

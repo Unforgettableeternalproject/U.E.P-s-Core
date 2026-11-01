@@ -3598,3 +3598,15 @@
 
 ---
 
+### [chore]: Core 以 hatch editable 提供 EM 三包. 11/02
+
+> Date: Mon, 02 Nov 2026 01:26:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `373e027b6093a2a734ed802c0ff942db7c371c87`
+
+---
+

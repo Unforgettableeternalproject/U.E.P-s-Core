@@ -89,7 +89,7 @@ def test_建構不載模型且共用同一個預建_backend():
     assert w.speak._backend is tts  # 預建一次、注入（所有 turn 共用）
     assert w.speak.warmup is True  # 預設在 prepare（Host 啟動）做暖機
     assert {k: r.ready for k, r in w.readiness.items()} == {"speak": None, "think": None, "input": None}
-    assert set(w.host_kwargs()) == {"think", "speak", "input_stage"}
+    assert set(w.host_kwargs()) == {"think", "speak", "input_stage", "start_timeout_s"}
     assert not w.voice_ready
 
 
@@ -274,3 +274,153 @@ def test_attach_metrics_之後的指標進_host_metrics():
     run(w.speak.prepare())
     assert host_metrics["echo.speak_prepare_failed"] == 1
     assert w.status()["speak"]["ready"] is False
+
+
+# ---- TTS 引擎選擇（indextts2／vox）與 prepare 逾時設定 ----
+
+def _install_fake_vox(monkeypatch, captured):
+    """注入假的 ``echo_stream.adapters.speak_vox``：記錄建構參數，不載 GPU。"""
+    import sys
+    import types
+
+    class FakeVoxSpeakStage:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.kwargs = kwargs
+
+        async def prepare(self):
+            return None
+
+        async def stream(self, sentences, token):
+            async for _ in sentences:
+                pass
+            return
+            yield
+
+    mod = types.ModuleType("echo_stream.adapters.speak_vox")
+    mod.VoxSpeakStage = FakeVoxSpeakStage
+    monkeypatch.setitem(sys.modules, "echo_stream.adapters.speak_vox", mod)
+    return FakeVoxSpeakStage
+
+
+def _block_vox_import(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "echo_stream.adapters.speak_vox", None)  # None＝import 會拋 ImportError
+
+
+def test_tts_engine_預設_indextts2_且逾時_40():
+    from echo_stream.adapters.speak_indextts import IndexTTS2SpeakStage
+
+    cfg = InferenceConfig(stt_mode="single")
+    assert cfg.tts_engine == "indextts2" and cfg.speak_prepare_timeout_s == 40.0
+    assert isinstance(build(cfg=cfg).speak, IndexTTS2SpeakStage)
+    with pytest.raises(InferenceWiringError, match="tts_engine"):
+        InferenceConfig(tts_engine="bogus")
+
+
+def test_vox_引擎_逾時預設_90_可覆寫():
+    assert InferenceConfig(tts_engine="vox").speak_prepare_timeout_s == 90.0
+    assert InferenceConfig(tts_engine="vox", speak_prepare_timeout_s=240.0).speak_prepare_timeout_s == 240.0
+
+
+def test_vox_引擎_參數映射_不傳_lora_與_warmup(monkeypatch, tmp_path):
+    captured: dict = {}
+    fake_cls = _install_fake_vox(monkeypatch, captured)
+    cfg = InferenceConfig(
+        stt_mode="single", tts_engine="vox", tts_repo=tmp_path, tts_lora_scale=0.5, tts_warmup=False,
+        vox_config={"cache_dir": "x"},
+    )
+    # vox 不建 IndexTTS2 backend：即使 factory 會炸也不該被呼叫
+    def boom(_cfg):
+        raise AssertionError("vox 不應建 IndexTTS2 backend")
+
+    w = build_inference_wiring(
+        cfg, tts_backend_factory=boom, think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert isinstance(w.speak, fake_cls)
+    assert captured == {"tts_repo": str(tmp_path), "backend_config": {"cache_dir": "x"}}
+    assert "lora_scale" not in captured and "warmup" not in captured
+    # tts_speed／language 明確設定才傳
+    captured.clear()
+    cfg2 = InferenceConfig(stt_mode="single", tts_engine="vox", tts_speed=1.1, tts_language="zh")
+    build_inference_wiring(cfg2, think_backend=FakeLlm(), stt_backend=FakeStt())
+    assert captured == {"speed": 1.1, "language": "zh"}
+
+
+def test_vox_adapter_缺失_降級為_not_ready_不拋出(monkeypatch):
+    _block_vox_import(monkeypatch)
+    cfg = InferenceConfig(stt_mode="single", tts_engine="vox")
+    w = build_inference_wiring(cfg, think_backend=FakeLlm(), stt_backend=FakeStt())  # 組裝不拋出
+
+    async def go():
+        await w.speak.prepare()
+        return await _drain(w.speak)
+
+    assert run(go()) == []  # 降級後句子被消耗、不產音訊
+    r = w.readiness["speak"]
+    assert r.ready is False and "vox_adapter_missing" in r.error and not w.voice_ready
+    assert w.metrics["echo.speak_prepare_failed"] == 1
+
+
+def test_vox_adapter_缺失_關閉降級時_prepare_上拋(monkeypatch):
+    _block_vox_import(monkeypatch)
+    cfg = InferenceConfig(stt_mode="single", tts_engine="vox", degrade_on_failure=False)
+    w = build_inference_wiring(cfg, think_backend=FakeLlm(), stt_backend=FakeStt())
+    with pytest.raises(StageNotReady, match="vox_adapter_missing"):
+        run(w.speak.prepare())
+
+
+def test_vox_config_解析(monkeypatch):
+    from uep.echo.inference_wiring import _parse_vox_config
+
+    assert _parse_vox_config(None) is None and _parse_vox_config("  ") is None
+    assert _parse_vox_config('{"a": 1}') == {"a": 1}
+    for bad in ("{oops", "[1]"):
+        with pytest.raises(InferenceWiringError, match="UEP_INFER_VOX_CONFIG"):
+            _parse_vox_config(bad)
+
+
+def test_from_settings_引擎與三個_prepare_逾時環境變數(monkeypatch):
+    monkeypatch.setenv("UEP_INFER_TTS_ENGINE", "vox")
+    monkeypatch.setenv("UEP_INFER_VOX_CONFIG", '{"k": "v"}')
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.tts_engine == "vox" and cfg.vox_config == {"k": "v"}
+    assert (cfg.speak_prepare_timeout_s, cfg.think_prepare_timeout_s, cfg.input_prepare_timeout_s) == (90.0, 8.0, 10.0)
+    monkeypatch.setenv("UEP_INFER_SPEAK_PREPARE_TIMEOUT_S", "240")
+    monkeypatch.setenv("UEP_INFER_THINK_PREPARE_TIMEOUT_S", "3")
+    monkeypatch.setenv("UEP_INFER_INPUT_PREPARE_TIMEOUT_S", "4")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert (cfg.speak_prepare_timeout_s, cfg.think_prepare_timeout_s, cfg.input_prepare_timeout_s) == (240.0, 3.0, 4.0)
+    monkeypatch.delenv("UEP_INFER_TTS_ENGINE")
+    monkeypatch.delenv("UEP_INFER_SPEAK_PREPARE_TIMEOUT_S")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.tts_engine == "indextts2" and cfg.speak_prepare_timeout_s == 40.0
+
+
+# ---- Host 啟動總上限 ----
+
+def test_host_start_timeout_預設由加總推得_vox_90_能過():
+    c = InferenceConfig(stt_mode="single")
+    assert c.host_start_timeout_s == 68.0  # 40+8+10 加餘裕 10
+    v = InferenceConfig(stt_mode="single", tts_engine="vox")
+    assert v.host_start_timeout_s == 90 + 8 + 10 + 10 >= v.speak_prepare_timeout_s + 18
+    assert build(cfg=v).host_kwargs()["start_timeout_s"] == v.host_start_timeout_s
+    # 加總很小時不低於原固定上限 60
+    s = InferenceConfig(speak_prepare_timeout_s=1, think_prepare_timeout_s=1, input_prepare_timeout_s=1)
+    assert s.host_start_timeout_s == 60.0
+
+
+def test_host_start_timeout_環境變數覆寫與不足警告(monkeypatch, caplog):
+    monkeypatch.setenv("UEP_INFER_HOST_START_TIMEOUT_S", "30")
+    with caplog.at_level("WARNING", logger="uep.echo.inference_wiring"):
+        cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.host_start_timeout_s == 30.0 and "host_start_timeout_s" in caplog.text
+    with pytest.raises(InferenceWiringError):
+        InferenceConfig(host_start_timeout_s=0)
+
+
+def test_host_start_走設定的上限而非固定_60():
+    from uep.echo.host import EchoPipelineHost
+
+    assert EchoPipelineHost.__init__.__kwdefaults__["start_timeout_s"] == 60.0

@@ -3406,3 +3406,15 @@
 
 ---
 
+### [feat]: 推論接線加入 TTS 引擎切換與啟動上限設定. 11/01
+
+> Date: Sun, 01 Nov 2026 17:16:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/complete_revamp`
+
+> Commit: `6a4a880f08dd37a7af891e4a086ee65c33d6fc41`
+
+---
+

@@ -104,6 +104,7 @@ logger = logging.getLogger("uep.echo.host")
 
 InnerSinkFactory = Callable[[Any, CoreTicket], "AudioSink | str"]
 _STOP_TIMEOUT_S = 10.0
+_START_TIMEOUT_S = 60.0  # Host 啟動（_startup：各 stage prepare）總上限的預設；推理組裝會依 prepare 逾時加總覆寫
 _SPEAKER_REF = re.compile(r"[A-Za-z0-9_:.\-]{1,128}")
 _ROLE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 _DISPATCH_REFUSED = frozenset({DS.REJECTED, DS.CANCELLED, DS.FAILED})
@@ -171,6 +172,7 @@ class EchoPipelineHost:
         output: EchoOutputConfig | None = None,
         prewarm_prompt: str | None = None,
         stop_timeout_s: float = _STOP_TIMEOUT_S,
+        start_timeout_s: float = _START_TIMEOUT_S,
         endpoint_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self.publisher = publisher
@@ -201,6 +203,7 @@ class EchoPipelineHost:
         self._profile_provider = profile_provider
         self._prewarm_prompt = prewarm_prompt
         self._stop_timeout_s = stop_timeout_s
+        self._start_timeout_s = start_timeout_s
         self._deferred_core = DeferredCoreApi()
         self.endpoint = endpoint or EchoEndpoint(
             endpoint_id, self._deferred_core, location=location, **(endpoint_kwargs or {})
@@ -383,7 +386,7 @@ class EchoPipelineHost:
             self._es.start()
             if self._memory is not None:
                 self._memory.set_session(self._session.segment_id)  # 記憶 episode 標記與 exclude 自我回聲用
-            self._es.run(self._startup(), timeout=60.0)
+            self._es.run(self._startup(), timeout=self._start_timeout_s)
             self._intake_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uep-echo-intake")
             if self.needs_tick:
                 self._tick_stop.clear()

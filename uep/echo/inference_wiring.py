@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 import time
@@ -38,6 +39,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger("uep.echo.inference_wiring")
 
 STT_MODES = ("multichannel", "single")
+TTS_ENGINES = ("indextts2", "vox")
+# speak prepare 逾時的引擎預設（秒）。vox 熱編譯快取下 prepare 約 37 秒，取 90 秒涵蓋熱啟動；
+# 全新（冷）編譯約 205 秒，需另以 UEP_INFER_SPEAK_PREPARE_TIMEOUT_S 調高（Host 啟動總上限也要一併放寬）。
+HOST_START_TIMEOUT_FLOOR_S = 60.0  # 與 EchoPipelineHost 原固定上限一致
+HOST_START_MARGIN_S = 10.0
+SPEAK_PREPARE_TIMEOUT_DEFAULTS = {"indextts2": 40.0, "vox": 90.0}
+VOX_ADAPTER_MISSING = "vox_adapter_missing"
 
 
 class InferenceWiringError(RuntimeError):
@@ -46,6 +54,19 @@ class InferenceWiringError(RuntimeError):
 
 class StageNotReady(RuntimeError):
     """stage 的 prepare 失敗或逾時，之後的使用一律明確失敗。"""
+
+
+def _parse_vox_config(raw: str | None) -> dict[str, Any] | None:
+    """``UEP_INFER_VOX_CONFIG`` 為 JSON 物件字串；空值回 None，格式錯誤 fail-closed。"""
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise InferenceWiringError(f"UEP_INFER_VOX_CONFIG 不是合法 JSON：{exc}") from exc
+    if not isinstance(value, dict):
+        raise InferenceWiringError("UEP_INFER_VOX_CONFIG 必須是 JSON 物件")
+    return value
 
 
 @dataclass(frozen=True)
@@ -65,17 +86,37 @@ class InferenceConfig:
     llm_provider: str | None = None
     llm_model: str | None = None
     system_prompt: str = ""
-    speak_prepare_timeout_s: float = 40.0
+    tts_engine: str = "indextts2"
+    vox_config: Mapping[str, Any] | None = None  # 原樣轉給 VoxBackend(config)；None＝不傳
+    speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
     think_prepare_timeout_s: float = 8.0
     input_prepare_timeout_s: float = 10.0
+    # Host 啟動總上限；None＝三個 prepare 逾時加總加 HOST_START_MARGIN_S（下限 60 秒）。
+    # 理由：_startup 依序 prepare，總上限不隨 prepare 逾時放寬就會先於 stage 守衛逾時而讓 Host 啟動失敗，
+    # 與其要使用者同步調兩個值，不如由加總推得；明確設定時尊重設定（不足加總時只警告）。
+    host_start_timeout_s: float | None = None
     degrade_on_failure: bool = True
 
     def __post_init__(self) -> None:
         if self.stt_mode not in STT_MODES:
             raise InferenceWiringError(f"stt_mode 必須是 {STT_MODES} 之一：{self.stt_mode!r}")
+        if self.tts_engine not in TTS_ENGINES:
+            raise InferenceWiringError(f"tts_engine 必須是 {TTS_ENGINES} 之一：{self.tts_engine!r}")
+        if self.speak_prepare_timeout_s is None:
+            object.__setattr__(self, "speak_prepare_timeout_s", SPEAK_PREPARE_TIMEOUT_DEFAULTS[self.tts_engine])
         for name in ("speak_prepare_timeout_s", "think_prepare_timeout_s", "input_prepare_timeout_s"):
             if getattr(self, name) <= 0:
                 raise InferenceWiringError(f"{name} 必須為正數")
+        total = self.speak_prepare_timeout_s + self.think_prepare_timeout_s + self.input_prepare_timeout_s
+        if self.host_start_timeout_s is None:
+            object.__setattr__(self, "host_start_timeout_s", max(HOST_START_TIMEOUT_FLOOR_S, total + HOST_START_MARGIN_S))
+        elif self.host_start_timeout_s <= 0:
+            raise InferenceWiringError("host_start_timeout_s 必須為正數")
+        elif self.host_start_timeout_s < total:
+            logger.warning(
+                "host_start_timeout_s（%.0fs）小於三個 prepare 逾時加總（%.0fs）：慢載入時 Host 啟動會先逾時",
+                self.host_start_timeout_s, total,
+            )
 
     @classmethod
     def from_settings(cls, settings: UepSettings | None = None) -> InferenceConfig:
@@ -84,6 +125,7 @@ class InferenceConfig:
 
             settings = get_settings()
         return cls(
+            tts_engine=settings.infer_tts_engine, vox_config=_parse_vox_config(settings.infer_vox_config),
             tts_repo=settings.infer_tts_repo, stt_repo=settings.infer_stt_repo,
             session_repo=settings.infer_session_repo, tts_device=settings.infer_tts_device,
             tts_fp16=settings.infer_tts_fp16, tts_use_accel=settings.infer_tts_use_accel,
@@ -95,6 +137,7 @@ class InferenceConfig:
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
             think_prepare_timeout_s=settings.infer_think_prepare_timeout_s,
             input_prepare_timeout_s=settings.infer_input_prepare_timeout_s,
+            host_start_timeout_s=settings.infer_host_start_timeout_s,
             degrade_on_failure=settings.infer_degrade_on_failure,
         )
 
@@ -239,6 +282,66 @@ def default_think_backend(cfg: InferenceConfig) -> Any:
     return build_backend(cfg.llm_provider, session_repo=str(repo), **overrides)
 
 
+class _VoxUnavailableStage:
+    """VOX adapter 無法使用時的佔位 speak stage：``prepare`` 明確失敗，由 _SpeakGuard 降級（標 not ready、之後無聲）。"""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    async def prepare(self) -> None:
+        raise StageNotReady(self.reason)
+
+    async def stream(self, sentences: AsyncIterator[Any], token: Any) -> AsyncIterator[Any]:
+        async for _ in sentences:
+            pass
+        return
+        yield  # pragma: no cover
+
+
+def _build_indextts2_speak(
+    cfg: InferenceConfig, tts_backend: Any | None,
+    tts_backend_factory: Callable[[InferenceConfig], Any] | None, extra: Mapping[str, Any],
+) -> Any:
+    """IndexTTS2（V25）路徑：backend 預建一次、所有 turn 共用。"""
+    from echo_stream.adapters.speak_indextts import IndexTTS2SpeakStage
+
+    backend = tts_backend if tts_backend is not None else (tts_backend_factory or default_tts_backend)(cfg)
+    speak_kwargs: dict[str, Any] = {
+        "backend": backend, "device": cfg.tts_device, "use_fp16": cfg.tts_fp16, "use_accel": cfg.tts_use_accel,
+        "warmup": cfg.tts_warmup, "lora_scale": cfg.tts_lora_scale, "speed": cfg.tts_speed,
+        "language": cfg.tts_language,
+    }
+    speak_kwargs.update(extra)
+    return IndexTTS2SpeakStage(**speak_kwargs)
+
+
+def _build_vox_speak(cfg: InferenceConfig, extra: Mapping[str, Any]) -> Any:
+    """VOX 路徑：lazy import adapter；import 失敗不拋出，回傳佔位 stage 讓 speak 標成 not ready。
+
+    不建 IndexTTS2 backend（V25 與 VOX 不能同時常駐），也不傳 ``lora_scale``。
+    """
+    try:
+        from echo_stream.adapters.speak_vox import VoxSpeakStage
+    except ImportError as exc:
+        reason = f"{VOX_ADAPTER_MISSING}: {type(exc).__name__}: {exc}"
+        logger.error("VOX adapter 無法載入，speak 標為 not ready：%s", reason)
+        return _VoxUnavailableStage(reason)
+    # 簽章（ES 暫定）：VoxSpeakStage(*, backend, tts_repo, backend_config, sample_rate, language, speed, ...)。
+    # 不傳 lora_scale／emotion_*／use_accel／warmup（暖機固定在 prepare）；language、speed 只在明確設定時才傳，
+    # 其餘交給 backend 決定（zh 預設 1.2、en／ja 1.0）。
+    vox_kwargs: dict[str, Any] = {}
+    if cfg.tts_repo is not None:
+        vox_kwargs["tts_repo"] = str(cfg.tts_repo)
+    if cfg.vox_config:
+        vox_kwargs["backend_config"] = dict(cfg.vox_config)
+    if cfg.tts_language is not None:
+        vox_kwargs["language"] = cfg.tts_language
+    if cfg.tts_speed is not None:
+        vox_kwargs["speed"] = cfg.tts_speed
+    vox_kwargs.update(extra)
+    return VoxSpeakStage(**vox_kwargs)
+
+
 @dataclass
 class InferenceWiring:
     """三個已守衛的 stage 與其就緒狀態。``host_kwargs()`` 併入 ``EchoPipelineHost(...)``。"""
@@ -251,7 +354,10 @@ class InferenceWiring:
     readiness: dict[str, StageReadiness] = field(default_factory=dict)
 
     def host_kwargs(self) -> dict[str, Any]:
-        return {"think": self.think, "speak": self.speak, "input_stage": self.input_stage}
+        return {
+            "think": self.think, "speak": self.speak, "input_stage": self.input_stage,
+            "start_timeout_s": self.config.host_start_timeout_s,
+        }
 
     def attach_metrics(self, metrics: Metrics) -> None:
         """之後的指標寫進 Host 的 ``metrics``（prepare 在 Host 啟動時才發生，建構後 attach 即可）。"""
@@ -288,17 +394,11 @@ def build_inference_wiring(
     def metrics_now() -> Metrics:
         return wiring.metrics
 
-    # --- TTS：backend 預建一次、所有 turn 共用 ---
-    from echo_stream.adapters.speak_indextts import IndexTTS2SpeakStage
-
-    backend = tts_backend if tts_backend is not None else (tts_backend_factory or default_tts_backend)(cfg)
-    speak_kwargs: dict[str, Any] = {
-        "backend": backend, "device": cfg.tts_device, "use_fp16": cfg.tts_fp16, "use_accel": cfg.tts_use_accel,
-        "warmup": cfg.tts_warmup, "lora_scale": cfg.tts_lora_scale, "speed": cfg.tts_speed,
-        "language": cfg.tts_language,
-    }
-    speak_kwargs.update(extra.get("speak", {}))
-    speak = IndexTTS2SpeakStage(**speak_kwargs)
+    # --- TTS：依引擎建 speak stage ---
+    if cfg.tts_engine == "vox":
+        speak = _build_vox_speak(cfg, extra.get("speak", {}))
+    else:
+        speak = _build_indextts2_speak(cfg, tts_backend, tts_backend_factory, extra.get("speak", {}))
 
     # --- STT：backend 在 prepare 才建（載 faster-whisper） ---
     if cfg.stt_mode == "multichannel":

@@ -32,8 +32,12 @@ class UepSettings(BaseSettings):
     # 未設定時不組裝真記憶（fail-closed，不猜預設位置）
     memory_data_root: Path | None = Field(default=None, validation_alias="UEP_MEMORY_DATA_ROOT")
     memory_device: str = Field(default="cpu", validation_alias="UEP_MEMORY_DEVICE")
-    memory_embedding_backend: str | None = Field(default=None, validation_alias="UEP_MEMORY_EMBEDDING_BACKEND")
-    memory_embedding_model: str | None = Field(default=None, validation_alias="UEP_MEMORY_EMBEDDING_MODEL")
+    # EM 已遷入 Core（subsystems/echo_memory），其 ``.env`` 查找不再落在舊 EM repo 根。真 engine 的 embedding 後端與模型
+    # 本來就只認建構參數（MemoryEngine 的參數預設，不讀 EMBEDDING_* 環境變數），所以這裡明確給出遷入前實際生效的值，
+    # 讓行為不隨 ``.env`` 位置改變而漂移。這是 Q8 裁決前的維持現狀做法；要改用 ollama 請設 UEP_MEMORY_EMBEDDING_*，
+    # 並注意 embedding 維度變動會讓既有資料目錄的索引判定需重建。API 金鑰不在此處，照舊由行程環境變數提供。
+    memory_embedding_backend: str | None = Field(default="sentence-transformers", validation_alias="UEP_MEMORY_EMBEDDING_BACKEND")
+    memory_embedding_model: str | None = Field(default="BAAI/bge-small-zh-v1.5", validation_alias="UEP_MEMORY_EMBEDDING_MODEL")
 
     # 推理 Host 組裝（P3 S6，uep/echo/inference_wiring.py）：子系統 repo 路徑一律由設定明確給（不猜同層目錄；
     # ES 的同層猜測在非 editable 安裝下指向 site-packages 之上而失效）。未設定時對應的 stage 拒絕組裝。

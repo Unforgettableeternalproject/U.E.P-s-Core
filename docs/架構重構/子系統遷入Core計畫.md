@@ -510,7 +510,7 @@ Core 側已有：`uep/endpoint/`（`CoreApi` 協定、`RpcCoreApi`、HMAC hello�
 |---|---|---|---|---|---|
 | **M0 準備**（不搬碼） | 決定基線分支（Q1）；建立 `subsystems/` 骨架與 pyproject spike（hatch editable 只暴露套件）；補 boundary 反向測試；記錄五個子系統目前的**實跑基線**（pass／skip／fail 與耗時，含機器標註）；訂定本地閘門腳本 `scripts/run_all_tests.ps1`（§7.4）；發出凍結預告 | 無 | spike 在一次性 venv 證明 ADR-M1 的通過條件（sys.path 不含 `subsystems/<name>/`、`tests`／`configs` 仍解析到 Core 根）；基線表填完 | 基線腳本連跑兩次結果一致（排除 flaky） | 刪 spike 分支 |
 | **M1 Session**（`echo_thought_core`，9.1k 行／327 測試；**已完成 2026-11-02，見 §5.2.1**） | 以 subtree 導入；移除 `py-modules=["Entry"]` 與頂層 `Entry.py`（避免與 Core 根的 `Entry` 重名）；pyproject pytest 設定移除預設 `--cov` | `.env` 查找改為 `UEP_ENV_FILE`／cwd 優先，退回 `parent.parent`；`llm_config.yaml` 在套件內不需改 | `pytest -o addopts=""` 在 `subsystems/echo_thought_core` 得 327 收集、pass 數同基線；ES 的 `think_llm`（仍指舊路徑時）與新路徑兩種情況下 ES 測試不變 | 在共用環境 `pip uninstall echo-thought-core` 後 `import echo_thought_core` 指向 Core；Core `tests/uep/test_p3_s6_inference_wiring.py` 綠 | revert merge；`uv pip install --no-deps -e ../TestSeparateSessionControl` |
-| **M2 EM 三包**（`echo_memory`＋`llm_integration`＋`mcp_server`，2,167 測試） | 以 subtree 導入整個 repo；`agent_memory_spike`、`examples`、`probe_*` 在導入後的第一個 commit 刪除（歷史仍在；`env/` 若被追蹤才刪，多半已 gitignore）；三包同一步（`llm_integration`、`mcp_server` 依賴 echo_memory） | `MEMORY_STORAGE_PATH`／log 預設改讀 `UEP_DATA_DIR`；`.env` 查找同 M1；`mcp_server/server.py:26` 的 `sys.path.insert` 移除 | 2,167 收集／12 deselect 不變；pass 數同基線；Core `tests/uep/test_p3_s6_memory_wiring.py`、`test_p3_s2_memory_host.py` 綠；資料目錄**未被觸碰**（比對 `UEP_DATA_DIR` 內容雜湊或 mtime） | `llm_integration`、`mcp_server` 的 import 可用；`echo-mcp` 入口決定去留（Q8） | revert；重裝 editable；資料無需回復 |
+| **M2 EM 三包**（`echo_memory`＋`llm_integration`＋`mcp_server`，2,167 測試；**已完成 2026-11-02，見 §5.2.2**） | 以 subtree 導入整個 repo；`agent_memory_spike`、`examples`、`probe_*` 在導入後的第一個 commit 刪除（歷史仍在；`env/` 若被追蹤才刪，多半已 gitignore）；三包同一步（`llm_integration`、`mcp_server` 依賴 echo_memory） | `MEMORY_STORAGE_PATH`／log 預設改讀 `UEP_DATA_DIR`；`.env` 查找同 M1；`mcp_server/server.py:26` 的 `sys.path.insert` 移除 | 2,167 收集／12 deselect 不變；pass 數同基線；Core `tests/uep/test_p3_s6_memory_wiring.py`、`test_p3_s2_memory_host.py` 綠；資料目錄**未被觸碰**（比對 `UEP_DATA_DIR` 內容雜湊或 mtime） | `llm_integration`、`mcp_server` 的 import 可用；`echo-mcp` 入口決定去留（Q8） | revert；重裝 editable；資料無需回復 |
 | **M3 STT**（`echo_stt`，271 測試） | subtree；`echo_stt/test_files/`（2.8 MB 音檔）移到 `tests/data/`（避免進 wheel） | `configs/stt_config.yaml` 路徑支援 `UEP_STT_CONFIG`；whisper 路徑支援 `UEP_MODELS_DIR`（預設仍讀既有 `models/stt/whisper`，用連結／環境變數指向現有 2.9 GB，不複製） | 271 收集、pass 同基線；`MultiChannelSTTEngine` 能以新路徑 `prepare`（單次，不跑 GPU 長測，只驗載入）；bot `cogs/stt.py` 的 `echo_stt` import 解析到 Core | `UEP_INFER_STT_REPO` 設定被忽略並警告一次 | revert；重裝 editable |
 | **M4 ES**（`echo_stream`，999 測試） | 凍結窗口短（建議 ≤ 3 天）；subtree；`config.subsystem_path`／`ensure_importable` 改為 `find_spec`；`UEP_INFER_*_REPO` 對已遷子系統失效；`web/`、`cli.py` 依 Q7 處理 | `_project_root()` 與 `.env`／`echo_stream.toml` 查找改為可由 `UEP_ENV_FILE`、`UEP_ES_TOML` 指定；ES 對 TTS 仍用 `UEP_INFER_TTS_REPO`（TTS 未遷） | 999 收集（扣除 Q7 移走的 `test_web*`，另列基線）；`tests/uep` 全綠（含 `test_import_boundary`、`test_p3_s3_*`）；bot 測試同基線；`python -m echo_stream demo --fake`（零依賴，不啟動伺服器、不吃 GPU）可跑 | boundary 反向測試綠：`echo_stream` 不 import `uep` | revert；重裝 editable；bot 設回舊 `ECHO_STREAM_*_REPO` |
 | **M5 TTS**（`echo_tts`，384 測試） | 先合 `tts-model-eval`、`vox-emotion`（見 Q4）；subtree；`experiments/`、`webapp/`、`benchmarks/`（若不需要）導入後刪除 | **§2.3 的 import 修正**（`echo_tts.modules.*`、拿掉 `sys.path.insert`、`utils.debug_helper`→`logging`）；`default_generation_paths` 接受 `UEP_TTS_MODEL_ROOT`；VOX 資產路徑已是套件相對，不動 | 384 收集、**在有 GPU 的目標機器**上 pass／skip 與基線一致；`validate_generation_paths` 通過（指到既有 9 GB 目錄）；`python -c "import modules"` **不得**解析到 echo_tts（驗證不再污染頂層）；`UEP_INFER_TTS_ENGINE=indextts2|vox` 兩種都 `prepare` 成功（人工，GPU，一次） | 以 `-X importtime`／`sys.modules` 檢查 `utils`、`modules` 未被 echo_tts 佔用 | revert；重裝 editable（舊 repo 仍有 9 GB 權重原位） |
@@ -540,6 +540,38 @@ Core 側已有：`uep/endpoint/`（`CoreApi` 協定、`RpcCoreApi`、HMAC hello�
 | ES（`07e3ff8`） | 1,003／0／0，202 s | 1,001／0／0 | ES 於 M0 後有新 commit，收集數隨之增加；全過 |
 
 行為變化須知：hatch `dev-mode-exact` 後，**Core 根目錄不再因 editable 而進入 `sys.path`**（原本會放）。從 Core 根以外的工作目錄 `import configs`、`import Entry` 不再成功。`uep/` 沒有這類 import，Core、ES、Session 測試皆不受影響；舊 `core/`、`modules/`、`Entry.py` 與 bot 若從別的目錄 import 這些名稱需注意，bot 的 `bot.bat` 路徑未在本步驗證（§5.3 bot 基線仍待補）。
+
+### 5.2.2 M2 EM 三包完成紀錄（2026-11-02，THEFANTASIAS，CPU-only）
+
+**狀態：完成，未 push。** 分支 `feature/subsystem-migration`，三個簽章 commit：
+
+| commit | 內容 |
+|---|---|
+| subtree merge | `git subtree add --prefix=subsystems/echo_memory ../TestSeperateMemorySystem develop`（不 squash；來源 `f0c62e9`），導入後以 `git commit --amend --no-edit -S` 補簽章 |
+| hatch／setup | hatch `packages` 加入 `subsystems/echo_memory/{echo_memory,llm_integration,mcp_server}`；`setup_infer_env.ps1` 移除 `-Memory` 與舊 EM repo 的 `-e`；刪除 `agent_memory_spike/`、`examples/`（`scripts/probe_pipeline.py` 與 `Entry.py` 保留，EM 的 `test_m13_legacy`、`test_m9b_bypass` 讀它們） |
+| 設定／驗證 | `UepSettings` 明確給 embedding 預設、對應測試 2 個、`run_all_tests.ps1` 的 `$migrated` 加入 em、本節 |
+
+依賴：EM 宣告的 `pydantic`、`numpy`、`sentence-transformers`、`networkx`、`google-genai`、`python-dotenv`、`pyyaml`、`apscheduler`、`rich` 在 Core lock 內全部已有（core 或 inference extra），`uv lock` 無任何變動，既有套件版本不變。`mcp`（`mcp_server` 用）在 lock 內（1.30.0）但非 Core 直接依賴，`mcp_server` 僅為開發者工具，待 Q8。**`echo-mcp`、`echo-chat` 等 entry points 未放進 Core 的 scripts，等 Q8 決定**（`echo-chat` 指向的 `examples.minimal_chat` 已隨 `examples/` 刪除）。
+
+環境切換（共用環境）：`uv pip uninstall echo-memory` → `uv pip install --no-deps -e .`。`uv pip freeze` 前後只差一行（舊 EM 的 `-e`），editables 0.6 仍在。證據：`echo_memory`、`llm_integration`、`mcp_server` 的 `__file__` 皆指向 `U.E.P-s-Core/subsystems/echo_memory/<pkg>/__init__.py`（從 Core 根與 `%TEMP%` 啟動皆同）；`sys.path` 無含 `subsystems` 的項目；Core 根 `import tests` 指向 Core 的 `tests/`；`echo_stream`、`echo_stt`、`echo_tts` 仍指向各自舊 repo，`echo_thought_core` 指向 Core。
+
+**`.env` 行為（重要發現）：** EM 的 `echo_memory/config.py`、`llm_client.py`、`router.py`、`mcp_server/server.py` 讀「套件上一層」的 `.env`，遷入後該位置是 `subsystems/echo_memory/`（無 `.env`、不追蹤），舊 EM repo `.env` 不再被讀到。逐項核對後：
+
+- 舊 `.env` 的非機密鍵：`EMBEDDING_BACKEND=ollama`、`EMBEDDING_MODEL=bge-m3`、`EMBEDDING_DEVICE=cpu`、`OLLAMA_BASE_URL=http://localhost:11434`、`DREAM_ENABLED=false`、`GCP_PROJECT_ID`、`GCP_LOCATION` 等；API key（`GOOGLE_API_KEY`、`HF_TOKEN`）未讀值。
+- **Core 經 `uep/echo/memory_wiring.py` 建的真 engine，從來沒有吃到 `EMBEDDING_BACKEND`／`EMBEDDING_MODEL`**：`MemoryEngine` 的 embedding 後端與模型只認建構參數（預設 `sentence-transformers`／`BAAI/bge-small-zh-v1.5`），`Config.embedding_*` 只被 EM 自己的 CLI／MCP server 使用；`EchoEngineFactory` 在設定為 None 時不傳參。因此遷入前 Core 實際生效的是 sentence-transformers + bge-small-zh（與 ES `build_engine` 的註解一致），不是 ollama + bge-m3。若照「ollama／bge-m3」寫入預設，反而會改變行為（向量維度 512→1024，資料目錄索引判定需重建）。
+- 因此 `UepSettings.memory_embedding_backend／model` 的預設改為遷入前實際生效的 `sentence-transformers`／`BAAI/bge-small-zh-v1.5`（`UEP_MEMORY_EMBEDDING_*` 仍可覆寫），註解標明為 Q8 裁決前的維持現狀做法。測試 `test_core_預設_embedding_設定會傳進真_engine`（即使行程環境帶 `EMBEDDING_BACKEND=ollama`，真 `MemoryEngine` 仍取 Core 給的值）與 `test_uep_memory_設定可覆寫為_ollama` 鎖住。
+- 會因 `.env` 位置改變而不同的項目：`DREAM_ENABLED`（舊 false，現預設 true；Core 由 `MemoryHost` 以 `configure_dream` 明確關閉，smoke 測試斷言 `scheduler.started is False`）；`load_dotenv` 原本會把舊 `.env` 的 `GOOGLE_API_KEY`、`HF_TOKEN`、`GCP_*` 灌進行程環境，現在不會。`uep/` 沒有任何地方使用 `llm_integration.LLMClient` 或這些金鑰，Core 不受影響；ES／bot 若依賴此副作用須由行程環境或自身 `.env` 提供（未驗證 bot）。
+- 本步**未改 EM 程式碼**（`MEMORY_STORAGE_PATH`／log 預設改讀 `UEP_DATA_DIR`、`.env` 查找改為 `UEP_ENV_FILE`、移除 `mcp_server/server.py:26` 的 `sys.path.insert`，仍是 M2 計畫列的前置修正，未做）。注意 `mcp_server.server` 一旦被 import 會把 `subsystems/echo_memory` 放進 `sys.path`，Core 與 ES 執行路徑目前不會 import 它。
+
+驗收數字（`CUDA_VISIBLE_DEVICES=""`，一次只跑一套）：
+
+| 套件 | 結果 | 基線 | 備註 |
+|---|---|---|---|
+| EM（`subsystems/echo_memory`） | 2,166 pass／1 skip／0 fail（12 deselect），276 s | 2,166／1／0（12 deselect） | 與 M0 基線一致 |
+| Core `tests/uep` | 1,495 pass／0 skip／1 fail，491 s | M1：1,493／0／1 | 唯一失敗仍是已知的 `test_real_engine_smoke_through_host`（`timeout` 而非 `stored`）；pass 多 2 是新增的兩個 embedding 設定測試；有 GPU 條件下的確認仍待做 |
+| ES（`07e3ff8`） | 1,003 pass／1 xfail／0 fail（junit 計 1,004 tests），176 s | M1：1,003／0／0 | 全過 |
+
+資料目錄：本步未啟動任何程式，EM 測試使用 pytest 暫存目錄；`UEP_DATA_DIR` 未被觸碰。
 
 ### 5.3 驗收基線（M0 實跑結果）
 

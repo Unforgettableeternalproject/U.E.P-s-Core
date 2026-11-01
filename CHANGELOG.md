@@ -3610,3 +3610,15 @@
 
 ---
 
+### [chore]: EM 設定改由 Core 明確提供並記錄 M2 完成. 11/02
+
+> Date: Mon, 02 Nov 2026 01:50:43 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `ffb148a7f06bf8da09c981467bb08c20242d45bc`
+
+---
+

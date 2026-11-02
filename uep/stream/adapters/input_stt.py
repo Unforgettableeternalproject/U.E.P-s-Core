@@ -38,12 +38,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import os
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from . import config
 from ..contracts.cancellation import CancellationToken, CancelledError
 from ..contracts.stages import AudioSource
 from ..contracts.turn import TurnDetector, TurnPolicy, VoiceEvent
@@ -54,6 +54,22 @@ from ..audio.channel_engine import VoiceChannel as _Channel
 from ..audio.channel_engine import decode_stats, merge_parts
 from ..turn_detector import SilenceTurnDetector
 from ..audio.vad import EnergyVad
+
+
+def _env(name: str) -> str | None:
+    """讀環境變數（空字串視為未設）。F1：不再讀 ``.env``——Core 路徑的 STT 設定由 wiring 明確傳入。"""
+    value = os.environ.get(name)
+    return value if value not in (None, "") else None
+
+
+def _env_float(name: str, default: float) -> float:
+    value = _env(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 @dataclass(slots=True)
@@ -113,11 +129,11 @@ class SttInputStage:
         self.policy = policy or TurnPolicy()
         self.turn_detector = turn_detector or SilenceTurnDetector(self.policy)
         self.vad = vad or EnergyVad()
-        self.language = language or config.get("ECHO_STREAM_STT_LANGUAGE")
+        self.language = language or _env("ECHO_STREAM_STT_LANGUAGE")
         self.min_confidence = (
             min_confidence
             if min_confidence is not None
-            else config.get_float("ECHO_STREAM_STT_MIN_CONFIDENCE", 0.35)
+            else _env_float("ECHO_STREAM_STT_MIN_CONFIDENCE", 0.35)
         )
         """低於此信心值的轉錄直接丟棄，不進 LLM。
         雜訊誤轉錄（實測 "Hello!" conf=0.2 之類）會觸發一整輪

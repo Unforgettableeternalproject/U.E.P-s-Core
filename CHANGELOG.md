@@ -3835,3 +3835,15 @@
 
 ---
 
+### feat: Core 記憶切 bge-m3 並去重 memory_echo 與 Access Layer. 11/02
+
+> Date: Mon, 02 Nov 2026 16:45:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n5-memory`
+
+> Commit: `fd46ecaaf2e2f67538d4e2462c9ce19eaf2ab688`
+
+---
+

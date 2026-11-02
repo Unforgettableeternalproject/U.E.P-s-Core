@@ -20,13 +20,12 @@ import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from . import config
 from ..contracts.cancellation import CancellationToken
 from ..contracts.turn import TurnDetector, TurnPolicy, VoiceEvent
 from ..contracts.types import STT_SAMPLE_RATE, Utterance
 from ..audio.multichannel import ChannelEngine
 from ..audio.vad import EnergyVad
-from .input_stt import TranscriberBackend, _EchoSttBackend
+from .input_stt import TranscriberBackend, _EchoSttBackend, _env, _env_float
 
 
 class MultiChannelSttInputStage:
@@ -68,11 +67,11 @@ class MultiChannelSttInputStage:
         self._backend = backend
         self._owns_backend = backend is None
         self.policy = policy or TurnPolicy()
-        self.language = language or config.get("ECHO_STREAM_STT_LANGUAGE")
+        self.language = language or _env("ECHO_STREAM_STT_LANGUAGE")
         self.min_confidence = (
             min_confidence
             if min_confidence is not None
-            else config.get_float("ECHO_STREAM_STT_MIN_CONFIDENCE", 0.35)
+            else _env_float("ECHO_STREAM_STT_MIN_CONFIDENCE", 0.35)
         )
         self.preroll_s = preroll_s
         self.on_voice_event = on_voice_event

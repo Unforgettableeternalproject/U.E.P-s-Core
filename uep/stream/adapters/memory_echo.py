@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import sys
 import threading
 from collections.abc import Callable, Iterable, Iterator
@@ -44,7 +45,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import config
+from ..contracts import memory_tools as _tools
 
 logger = logging.getLogger(__name__)
 
@@ -72,31 +73,12 @@ FORCE_REMEMBER_DESCRIPTION = (
     "conversation is already stored automatically every turn."
 )
 """覆寫 echo_memory 原本偏寬的 force_remember 描述，避免模型把一般事實也當成要強制記憶。"""
-DEFAULT_TOOL_MAX_CHARS = 1500
-"""工具結果回給 LLM 的字數上限。deep_recall 的 top_k 可到 20、門檻比自動注入鬆
-（0.2 vs 0.45），不截會把第二段續寫的 prompt 塞爆。"""
-MEMBER_RECALL = "member_recall"
-MEMBER_RECALL_DESCRIPTION = (
-    "查詢同一個伺服器裡某位成員在共享記憶中可被看到的內容（例如使用者問「你認識某某嗎？"
-    "他最近在玩什麼？」）。member 填成員的名稱；query 可選，填想了解的主題，留空則取最近的內容。"
-    "只在使用者明確問到特定成員時呼叫；查不到只代表目前沒有可用的共享內容。"
-    "Look up what is shared about one named member of this server; call only when the "
-    "user asks about that member."
-)
-MEMBER_RECALL_SCHEMA = {
-    "name": MEMBER_RECALL,
-    "description": MEMBER_RECALL_DESCRIPTION,
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "member": {"type": "string", "description": "成員名稱（顯示名稱或暱稱）。"},
-            "query": {"type": "string", "description": "想了解的主題，可留空。"},
-        },
-        "required": ["member"],
-    },
-}
-"""member_recall 不在 echo_memory 的 TOOL_DECLARATIONS 裡，由 ES 自帶 schema。
-預設不開（DEFAULT_TOOLS 不含它），由宿主在 ECHO_STREAM_MEMORY_TOOLS 加上。"""
+DEFAULT_TOOL_MAX_CHARS = _tools.DEFAULT_TOOL_MAX_CHARS
+MEMBER_RECALL = _tools.MEMBER_RECALL
+MEMBER_RECALL_SCHEMA = _tools.MEMBER_RECALL_SCHEMA
+"""member_recall 不在 echo_memory 的 TOOL_DECLARATIONS 裡；schema 與字數上限取自共用契約
+（``contracts.memory_tools``，與 Core Access Layer 同一份，N5 去重）。預設不開（DEFAULT_TOOLS 不含它），
+由宿主在 ECHO_STREAM_MEMORY_TOOLS 加上。"""
 RETRACT_ABOUT_ME = "retract_about_me"
 OPT_OUT_ABOUT_ME = "opt_out_about_me"
 CORRECT_ABOUT_ME = "correct_about_me"
@@ -167,21 +149,29 @@ ABOUT_REASON_TEXT = {
     "already_hidden": "這條內容先前已經處理過了。",
 }
 MEMBER_NOT_FOUND = "無法確認是哪位成員。"
-MEMBER_NAME_MAX_CHARS = 40
+MEMBER_NAME_MAX_CHARS = _tools.MEMBER_LABEL_MAX_CHARS
 ASSESS_MODES = ("llm", "heuristic", "off")
 """salience 評估模式（ECHO_STREAM_MEMORY_ASSESS）：
 llm = SubconsciousAssessor 打一次 LLM（背景，不在熱路徑）；
 heuristic = echo_memory 的文字啟發式，零 token；off = 全部 0.5（Phase 4a 行為）。"""
 
 
-def _declares_param(fn: Any, name: str) -> bool:
-    """``fn`` 的簽名是否明確宣告名為 ``name`` 的參數；只有 ``**kwargs`` 或簽名讀不到都算否。"""
-    try:
-        param = inspect.signature(fn).parameters.get(name)
-    except (TypeError, ValueError):
-        return False
-    return param is not None and param.kind in (
-        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+_declares_param = _tools.declares_param
+
+
+def _env(name: str, default: str | None = None) -> str | None:
+    """讀環境變數（空字串視為未設）。F1：不再讀 ``.env``——Core 路徑的設定一律由 wiring 明確傳入，這些鍵只是 ES 時代的覆寫入口。"""
+    value = os.environ.get(name)
+    return value if value not in (None, "") else default
+
+
+def function_tool_definition(decl: dict[str, Any]) -> dict[str, Any]:
+    """echo_memory 的工具宣告（Gemini 格式 dict）-> OpenAI function schema；``force_remember`` 覆寫為收斂過的描述。
+    adapter 的 ``tool_definitions`` 與 Core 的 ``EchoMemoryToolBackend.definitions`` 共用這一處。"""
+    fn = dict(decl)
+    if fn.get("name") == "force_remember":
+        fn["description"] = FORCE_REMEMBER_DESCRIPTION
+    return {"type": "function", "function": fn}
 
 
 def _parse_ref(raw: Any) -> int | None:
@@ -271,22 +261,14 @@ def build_engine(
     data_path: str | Path | None = None,
     namespace_id: str | None = None,
     llm_fn: Callable[[str], str] | None = None,
-    memory_repo: str | None = None,
 ) -> Any:
-    """從 echo_memory repo 建一個 MemoryEngine。
+    """建一個 MemoryEngine（echo_memory 已在 Core 內 ``subsystems/echo_memory``，由環境直接 import）。
 
-    embedding 走本地 bge-small-zh、CPU——不跟 GPU 上的 STT/TTS 搶資源
-    （艾斯維爾 2026-08-21 定調）。
-
-    注意：這裡不指定 embedding 後端，沿用 echo_memory 的環境預設
-    （``EMBEDDING_BACKEND`` 預設 sentence-transformers + bge-small-zh，512 維）。
-    bot／Memory 線可能設成 ollama + bge-m3（1024 維），兩者不同。
-    資料目錄的 ``embedding_index.json`` manifest 記錄 model 與 dimension，
-    不符時 echo_memory 會判定索引需重建，而非靜默混用；因此不要讓兩邊
-    共用同一個資料目錄，除非 ``EMBEDDING_*`` 設定一致。
+    這只是 ES 時代的退路：Core 路徑的 engine 由 ``uep.echo.memory_wiring.EchoEngineFactory`` 建並以 ``engine=`` 傳入，
+    embedding 後端與模型（預設 ``sentence-transformers``／``BAAI/bge-m3``，1024 維）來自 ``UepSettings``。
+    這裡不指定 embedding，沿用 echo_memory 的環境預設；``embedding_index.json`` 的 model／dimension 不符時
+    echo_memory 會判定索引需重建而非靜默混用，所以不要讓不同 embedding 設定共用同一個資料目錄。
     """
-    config.ensure_subsystem("MEMORY", "echo_memory", memory_repo)
-
     # echo_memory 自帶的 APScheduler 是 lazy + 無差別的（見 core/dream_scheduler.py），
     # 觸發時機改由 Echo Stream 的 DreamScheduler 決定。其 Config 在 import 時讀 env，
     # 所以要在 import 前設；已 import 過則直接改 config 物件。setdefault 保留人工覆寫。
@@ -317,7 +299,7 @@ def build_engine(
 
     data = Path(
         data_path
-        or config.get("ECHO_STREAM_MEMORY_DATA")
+        or _env("ECHO_STREAM_MEMORY_DATA")
         or Path(__file__).resolve().parent.parent.parent / "data" / "memory"
     )
     return MemoryEngine(
@@ -325,7 +307,7 @@ def build_engine(
         device="cpu",
         llm_fn=llm_fn,
         namespace_id=namespace_id
-        or config.get("ECHO_STREAM_MEMORY_NAMESPACE", DEFAULT_NAMESPACE),
+        or _env("ECHO_STREAM_MEMORY_NAMESPACE", DEFAULT_NAMESPACE),
     )
 
 
@@ -469,7 +451,7 @@ class EchoMemoryAdapter:
         沒給就退回 dream 用的 llm_fn。"""
         self._assessor: Any = None
         self._judge: Any = None
-        self.assess_mode = config.get("ECHO_STREAM_MEMORY_ASSESS", "llm") or "llm"
+        self.assess_mode = _env("ECHO_STREAM_MEMORY_ASSESS", "llm") or "llm"
         if self.assess_mode not in ASSESS_MODES:
             logger.warning("ECHO_STREAM_MEMORY_ASSESS=%r 不認得，改用 llm", self.assess_mode)
             self.assess_mode = "llm"
@@ -478,13 +460,13 @@ class EchoMemoryAdapter:
         評估 novelty / dream_resonance 用。retrieve 與 store 之間隔一整輪對話，
         所以不能只留「最後一個」。"""
         self.top_k = top_k or int(
-            config.get("ECHO_STREAM_MEMORY_TOP_K", str(DEFAULT_TOP_K))
+            _env("ECHO_STREAM_MEMORY_TOP_K", str(DEFAULT_TOP_K))
         )
         self.max_chars = max_chars or int(
-            config.get("ECHO_STREAM_MEMORY_MAX_CHARS", str(DEFAULT_MAX_CHARS))
+            _env("ECHO_STREAM_MEMORY_MAX_CHARS", str(DEFAULT_MAX_CHARS))
         )
         self.min_match = float(
-            config.get("ECHO_STREAM_MEMORY_MIN_MATCH", str(DEFAULT_MIN_MATCH))
+            _env("ECHO_STREAM_MEMORY_MIN_MATCH", str(DEFAULT_MIN_MATCH))
         )
         self._session_id: str | None = None
         self.load_seconds: float | None = None
@@ -501,9 +483,9 @@ class EchoMemoryAdapter:
         """``member_recall`` 用：成員名稱 -> uid（解析不到回 None）。宿主注入。"""
         self._warned_no_resolver = False
         self.tool_max_chars = int(
-            config.get("ECHO_STREAM_MEMORY_TOOL_MAX_CHARS", str(DEFAULT_TOOL_MAX_CHARS))
+            _env("ECHO_STREAM_MEMORY_TOOL_MAX_CHARS", str(DEFAULT_TOOL_MAX_CHARS))
         )
-        raw_tools = config.get("ECHO_STREAM_MEMORY_TOOLS", DEFAULT_TOOLS) or DEFAULT_TOOLS
+        raw_tools = _env("ECHO_STREAM_MEMORY_TOOLS", DEFAULT_TOOLS) or DEFAULT_TOOLS
         self.enabled_tools: list[str] = (
             [] if raw_tools.strip().lower() in ("off", "none", "false", "0")
             else [t.strip() for t in raw_tools.split(",") if t.strip()]
@@ -680,10 +662,7 @@ class EchoMemoryAdapter:
                     "ECHO_STREAM_MEMORY_TOOLS 裡的 %r 不是 echo_memory 的工具，略過", name
                 )
                 continue
-            fn = dict(decl)
-            if name == "force_remember":
-                fn["description"] = FORCE_REMEMBER_DESCRIPTION
-            out.append({"type": "function", "function": fn})
+            out.append(function_tool_definition(decl))
         return out
 
     @property
@@ -772,7 +751,7 @@ class EchoMemoryAdapter:
                 label = " ".join(str(display_name(owner_uid) or "").split())
             except Exception:  # noqa: BLE001 - 名稱只是顯示
                 label = ""
-        label = (label or "這位成員")[:MEMBER_NAME_MAX_CHARS]
+        label = (label or _tools.UNKNOWN_MEMBER_LABEL)[:MEMBER_NAME_MAX_CHARS]
         target = cfg.get("shared_adapter") or self
         result = await target.retrieve_shared(
             query,
@@ -1160,7 +1139,7 @@ class EchoMemoryAdapter:
     @property
     def judge_enabled(self) -> bool:
         return self.assess_mode == "llm" and (
-            config.get("ECHO_STREAM_MEMORY_JUDGE", "on") or "on"
+            _env("ECHO_STREAM_MEMORY_JUDGE", "on") or "on"
         ).lower() not in ("off", "false", "0")
 
     @property
@@ -1304,8 +1283,8 @@ class EchoMemoryAdapter:
         ``ECHO_STREAM_MEMORY_PROFILE_MAX_CHARS``。引擎沒有 get_profile 時，
         有遊玩資料仍只回 activity 行；activity 失敗只降級為不附加。
         """
-        max_chars = int(config.get("ECHO_STREAM_MEMORY_PROFILE_MAX_CHARS", "800"))
-        top_n = _parse_top_n(config.get("ECHO_STREAM_MEMORY_ACTIVITY_TOP_N", "3"))
+        max_chars = int(_env("ECHO_STREAM_MEMORY_PROFILE_MAX_CHARS", "800"))
+        top_n = _parse_top_n(_env("ECHO_STREAM_MEMORY_ACTIVITY_TOP_N", "3"))
         line = ""
         if top_n > 0:
             line = _format_activity_line(await self.activity_profile(top_n=top_n))

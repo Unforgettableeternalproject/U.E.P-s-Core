@@ -254,7 +254,7 @@ def test_real_engine_smoke_through_host(tmp_path):
 # ---- EM 遷入後的設定等價（Q8 裁決前維持現狀）----
 
 def test_core_預設_embedding_設定會傳進真_engine(tmp_path, monkeypatch):
-    """EM 遷入 Core 後其 ``.env`` 查找不再落在舊 EM repo 根；Core 以 ``UEP_MEMORY_*`` 明確給出遷入前實際生效的值，
+    """EM 遷入 Core 後其 ``.env`` 查找不再落在舊 EM repo 根；Core 以 ``UEP_MEMORY_*`` 明確給出值（N5 起為 bge-m3 本機直載），
     且真 engine 的 embedding 後端／模型只認建構參數，不受 ``EMBEDDING_*`` 環境變數影響。"""
     pytest.importorskip("echo_memory")
     from uep.config import UepSettings
@@ -267,7 +267,7 @@ def test_core_預設_embedding_設定會傳進真_engine(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3")
     settings = UepSettings(_env_file=None)
     assert settings.memory_embedding_backend == "sentence-transformers"
-    assert settings.memory_embedding_model == "BAAI/bge-small-zh-v1.5"
+    assert settings.memory_embedding_model == "BAAI/bge-m3"
     assert settings.memory_device == "cpu"
 
     wiring = build_memory_wiring(
@@ -278,7 +278,7 @@ def test_core_預設_embedding_設定會傳進真_engine(tmp_path, monkeypatch):
     engine = wiring.engine_factory("local-default", tmp_path / "core_memory")
     try:
         assert engine.embedding_backend == "sentence-transformers"
-        assert engine.embedding_model == "BAAI/bge-small-zh-v1.5"
+        assert engine.embedding_model == "BAAI/bge-m3"
         assert engine.device == "cpu"
         assert engine.ollama_base_url == "http://localhost:11434"
     finally:

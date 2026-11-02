@@ -1,5 +1,5 @@
 """P3 S3 審查修正的回歸測試：audience 切換競態、輸出被拒的處理、Orchestrator 寫入失敗回收、關閉窗口、
-冪等鍵命名空間、輸入驗證與輸入 stage 失敗（需 PostgreSQL 與已安裝的 echo_stream）。"""
+冪等鍵命名空間、輸入驗證與輸入 stage 失敗（需 PostgreSQL）。"""
 from __future__ import annotations
 
 import asyncio
@@ -8,10 +8,9 @@ import time
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.adapters.think_llm import EchoBackend, LLMThinkStage
-from echo_stream.fakes.audio import FakeAudioSink
+from uep.stream.adapters.think_llm import EchoBackend, LLMThinkStage
+from uep.fakes.stream.audio import FakeAudioSink
 from sqlalchemy import select
 
 from tests.uep.echo_support import (

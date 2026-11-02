@@ -12,10 +12,9 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.contracts.cancellation import CancellationToken
-from echo_stream.contracts.types import Sentence
+from uep.stream.contracts.cancellation import CancellationToken
+from uep.stream.contracts.types import Sentence
 
 from uep.config import UepSettings
 from uep.echo.inference_wiring import (
@@ -26,6 +25,7 @@ from uep.echo.inference_wiring import (
     _InputGuard,
     _ThinkGuard,
     build_inference_wiring,
+    default_think_backend,
 )
 from uep.echo.metrics import Metrics
 
@@ -104,8 +104,8 @@ def test_設定傳到_speak_stage():
 
 
 def test_stt_模式選擇():
-    from echo_stream.adapters.input_multichannel import MultiChannelSttInputStage
-    from echo_stream.adapters.input_stt import SttInputStage
+    from uep.stream.adapters.input_multichannel import MultiChannelSttInputStage
+    from uep.stream.adapters.input_stt import SttInputStage
 
     assert isinstance(build(cfg=InferenceConfig(stt_mode="multichannel")).input_stage, MultiChannelSttInputStage)
     assert isinstance(build(cfg=InferenceConfig(stt_mode="single")).input_stage, SttInputStage)
@@ -114,17 +114,76 @@ def test_stt_模式選擇():
 
 
 def test_缺子系統路徑_fail_closed():
-    # 沒注入 backend 且沒設路徑：不猜同層目錄，直接拒絕組裝
-    with pytest.raises(InferenceWiringError, match="UEP_INFER_TTS_REPO"):
-        build_inference_wiring(InferenceConfig(), think_backend=FakeLlm(), stt_backend=FakeStt())
-    with pytest.raises(InferenceWiringError, match="UEP_INFER_STT_REPO"):
-        build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
-    with pytest.raises(InferenceWiringError, match="UEP_INFER_SESSION_REPO"):
-        build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), stt_backend=FakeStt())
-    with pytest.raises(InferenceWiringError, match="不存在"):
+    # TTS（M5）、STT（M3）、Session 都已遷入 Core：不設 *_REPO 不再被拒絕；只有 Session 的可選覆寫設了就必須存在
+    with pytest.raises(InferenceWiringError, match="UEP_INFER_SESSION_REPO.*不存在"):
+        default_think_backend(InferenceConfig(session_repo=Path("Z:/不存在的路徑")))
+    # 沒設 TTS 路徑、也沒注入 backend：可組裝（backend 在 prepare 才建，這裡不載模型）
+    w = build_inference_wiring(InferenceConfig(), think_backend=FakeLlm(), stt_backend=FakeStt())
+    assert w.speak is not None
+
+
+def test_tts_不需路徑_設了會被忽略並警告一次(caplog, tmp_path):
+    import logging
+
+    import uep.echo.inference_wiring as iw
+
+    iw._TTS_REPO_WARNED = False
+    cfg = InferenceConfig(tts_repo=Path("Z:/不存在的路徑"))
+    with caplog.at_level(logging.WARNING, logger="uep.echo.inference_wiring"):
+        build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm(), stt_backend=FakeStt())
         build_inference_wiring(
-            InferenceConfig(tts_repo=Path("Z:/不存在的路徑")), think_backend=FakeLlm(), stt_backend=FakeStt(),
+            InferenceConfig(tts_engine="vox", tts_repo=tmp_path), think_backend=FakeLlm(), stt_backend=FakeStt(),
         )
+    assert len([r for r in caplog.records if "UEP_INFER_TTS_REPO" in r.getMessage()]) == 1
+
+
+def test_stt_不需路徑_設了會被忽略並警告一次(caplog, tmp_path):
+    import logging
+
+    import uep.echo.inference_wiring as iw
+
+    # 沒設路徑、沒注入 backend：可組裝（backend 在 prepare 才建，這裡不載模型）
+    w = build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+    assert w.input_stage is not None
+    assert not hasattr(w.input_stage, "_stt_repo")
+    # 設了舊路徑：忽略，且行程內只警告一次
+    iw._STT_REPO_WARNED = False
+    cfg = InferenceConfig(stt_repo=Path("Z:/不存在的路徑"))
+    with caplog.at_level(logging.WARNING, logger="uep.echo.inference_wiring"):
+        build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+        build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+    assert len([r for r in caplog.records if "UEP_INFER_STT_REPO" in r.getMessage()]) == 1
+
+
+def test_think_backend_預設不需_session_路徑(monkeypatch, tmp_path):
+    import uep.stream.adapters.think_llm as think_llm
+
+    seen: dict = {}
+    monkeypatch.setattr(think_llm, "build_backend", lambda provider, **kw: seen.update(provider=provider, **kw) or "backend")
+    assert default_think_backend(InferenceConfig(llm_provider="openai")) == "backend"
+    assert seen["session_repo"] is None  # 交給環境（Core 的 editable）解析 echo_thought_core
+    default_think_backend(InferenceConfig(llm_provider="openai", session_repo=tmp_path))
+    assert seen["session_repo"] == str(tmp_path)  # 明確指定仍可覆寫
+
+
+def test_think_backend_有_ThinkConfig_時新名優先於舊_INFER_LLM(monkeypatch):
+    import uep.stream.adapters.think_llm as think_llm
+
+    for key in ("UEP_LLM_PROVIDER", "UEP_LLM_MODEL", "UEP_INFER_LLM_PROVIDER", "UEP_INFER_LLM_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("UEP_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("UEP_LLM_MODEL", "new-model")
+    monkeypatch.setenv("UEP_INFER_LLM_PROVIDER", "other")
+    monkeypatch.setenv("UEP_INFER_LLM_MODEL", "old-model")
+    seen: dict = {}
+    monkeypatch.setattr(
+        think_llm, "build_backend", lambda provider=None, **kw: seen.update(provider=provider, **kw) or "backend"
+    )
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert default_think_backend(cfg) == "backend"
+    assert seen["provider"] is None  # 交給 ThinkConfig（UEP_LLM_*）
+    assert "model" not in seen  # 不以舊 UEP_INFER_LLM_MODEL 覆寫
+    assert seen["config"].provider == "openai" and seen["config"].model == "new-model"
 
 
 def test_from_settings_讀環境變數(monkeypatch, tmp_path):
@@ -279,7 +338,7 @@ def test_attach_metrics_之後的指標進_host_metrics():
 # ---- TTS 引擎選擇（indextts2／vox）與 prepare 逾時設定 ----
 
 def _install_fake_vox(monkeypatch, captured):
-    """注入假的 ``echo_stream.adapters.speak_vox``：記錄建構參數，不載 GPU。"""
+    """注入假的 ``uep.stream.adapters.speak_vox``：記錄建構參數，不載 GPU。"""
     import sys
     import types
 
@@ -297,20 +356,20 @@ def _install_fake_vox(monkeypatch, captured):
             return
             yield
 
-    mod = types.ModuleType("echo_stream.adapters.speak_vox")
+    mod = types.ModuleType("uep.stream.adapters.speak_vox")
     mod.VoxSpeakStage = FakeVoxSpeakStage
-    monkeypatch.setitem(sys.modules, "echo_stream.adapters.speak_vox", mod)
+    monkeypatch.setitem(sys.modules, "uep.stream.adapters.speak_vox", mod)
     return FakeVoxSpeakStage
 
 
 def _block_vox_import(monkeypatch):
     import sys
 
-    monkeypatch.setitem(sys.modules, "echo_stream.adapters.speak_vox", None)  # None＝import 會拋 ImportError
+    monkeypatch.setitem(sys.modules, "uep.stream.adapters.speak_vox", None)  # None＝import 會拋 ImportError
 
 
 def test_tts_engine_預設_indextts2_且逾時_40():
-    from echo_stream.adapters.speak_indextts import IndexTTS2SpeakStage
+    from uep.stream.adapters.speak_indextts import IndexTTS2SpeakStage
 
     cfg = InferenceConfig(stt_mode="single")
     assert cfg.tts_engine == "indextts2" and cfg.speak_prepare_timeout_s == 40.0
@@ -339,7 +398,7 @@ def test_vox_引擎_參數映射_不傳_lora_與_warmup(monkeypatch, tmp_path):
         cfg, tts_backend_factory=boom, think_backend=FakeLlm(), stt_backend=FakeStt(),
     )
     assert isinstance(w.speak, fake_cls)
-    assert captured == {"tts_repo": str(tmp_path), "backend_config": {"cache_dir": "x"}}
+    assert captured == {"backend_config": {"cache_dir": "x"}}
     assert "lora_scale" not in captured and "warmup" not in captured
     # tts_speed／language 明確設定才傳
     captured.clear()
@@ -429,7 +488,7 @@ def test_host_start_走設定的上限而非固定_60():
 # ---- VOX 切句建議值 ----
 
 def test_vox_有建議值_傳到_think_的_split_policy(monkeypatch):
-    from echo_stream.core.splitter import SplitPolicy
+    from uep.stream.splitter import SplitPolicy
 
     recommended = SplitPolicy(first_min_weight=10.0, first_max_weight=24.0, min_weight=30.0, max_weight=80.0)
     fake_cls = _install_fake_vox(monkeypatch, {})
@@ -441,7 +500,7 @@ def test_vox_有建議值_傳到_think_的_split_policy(monkeypatch):
 
 
 def test_vox_無建議值方法_維持預設_split_policy(monkeypatch):
-    from echo_stream.core.splitter import SplitPolicy
+    from uep.stream.splitter import SplitPolicy
 
     _install_fake_vox(monkeypatch, {})  # 假 stage 沒有 recommended_split_policy
     w = build_inference_wiring(
@@ -451,7 +510,7 @@ def test_vox_無建議值方法_維持預設_split_policy(monkeypatch):
 
 
 def test_vox_佔位_stage_不取建議值(monkeypatch):
-    from echo_stream.core.splitter import SplitPolicy
+    from uep.stream.splitter import SplitPolicy
 
     _block_vox_import(monkeypatch)
     w = build_inference_wiring(
@@ -461,7 +520,7 @@ def test_vox_佔位_stage_不取建議值(monkeypatch):
 
 
 def test_非_vox_引擎不取建議值(monkeypatch):
-    from echo_stream.core.splitter import SplitPolicy
+    from uep.stream.splitter import SplitPolicy
 
     w = build()
     assert w.think.split_policy == SplitPolicy()

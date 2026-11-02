@@ -1,4 +1,4 @@
-name: Auto Version Tag on Config Change
+name: Auto Version Tag on Version Change
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - 'develop'
       - 'feature/**'
     paths:
-      - 'configs/config.yaml'
+      - 'pyproject.toml'
 
 jobs:
   check_and_tag:
@@ -21,18 +21,18 @@ jobs:
           fetch-depth: 2  # 需要取得前一個 commit 來比對差異
           token: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Check if system_version changed
+      - name: Check if version changed
         id: version_check
         run: |
-          echo "🔍 檢查 system_version 是否有變更..."
+          echo "🔍 檢查 pyproject.toml 的 version 是否有變更..."
           
-          # 取得當前的 system_version
-          CURRENT_VERSION=$(grep -E '^\s*system_version:' configs/config.yaml | sed -E 's/^\s*system_version:\s*//;s/\s*$//')
+          # 取得當前的 version（pyproject.toml）
+          CURRENT_VERSION=$(grep -m1 -E '^version\s*=' pyproject.toml | sed -E 's/^version\s*=\s*"([^"]*)".*/\1/')
           echo "📌 當前版本: $CURRENT_VERSION"
           
-          # 取得前一個 commit 的 system_version
-          git show HEAD~1:configs/config.yaml > /tmp/old_config.yaml 2>/dev/null || echo "system_version: none" > /tmp/old_config.yaml
-          OLD_VERSION=$(grep -E '^\s*system_version:' /tmp/old_config.yaml | sed -E 's/^\s*system_version:\s*//;s/\s*$//')
+          # 取得前一個 commit 的 version
+          git show HEAD~1:pyproject.toml > /tmp/old_config.yaml 2>/dev/null || echo 'version = "none"' > /tmp/old_config.yaml
+          OLD_VERSION=$(grep -m1 -E '^version\s*=' /tmp/old_config.yaml | sed -E 's/^version\s*=\s*"([^"]*)".*/\1/')
           echo "📌 舊版本: $OLD_VERSION"
           
           # 比較版本是否改變
@@ -70,7 +70,7 @@ jobs:
             echo "tag_created=false" >> $GITHUB_OUTPUT
           else
             # 創建帶註解的標籤
-            git tag -a "$TAG_NAME" -m "Auto-tagged version $TAG_NAME from config.yaml change"
+            git tag -a "$TAG_NAME" -m "Auto-tagged version $TAG_NAME from pyproject.toml version change"
             git push origin "$TAG_NAME"
             echo "✅ 成功創建並推送標籤: $TAG_NAME"
             echo "tag_created=true" >> $GITHUB_OUTPUT
@@ -100,7 +100,7 @@ jobs:
           **類型**: ${TAG_TYPE}
           
           ### 變更說明
-          自動從 config.yaml 版本變更產生標籤
+          自動從 pyproject.toml 版本變更產生標籤
           
           ---
           

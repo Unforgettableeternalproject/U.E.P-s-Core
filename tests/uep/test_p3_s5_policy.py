@@ -7,9 +7,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.contracts.turn import VoiceEvent, VoiceState
+from uep.stream.contracts.turn import VoiceEvent, VoiceState
 
 from uep.echo.policy import (
     YIELD_REASON,

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "model": "BAAI/bge-small-zh-v1.5",
+  "dimension": 512,
+  "ordered_ids": [
+    "ep_base_001",
+    "ep_base_002",
+    "ep_base_003",
+    "ep_base_004",
+    "ep_base_005",
+    "ep_base_006",
+    "ep_base_007",
+    "ep_base_008",
+    "ep_base_009",
+    "ep_base_010"
+  ]
+}

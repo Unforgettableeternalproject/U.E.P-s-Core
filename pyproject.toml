@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "uep"
 version = "0.0.0"
-description = "U.E.P 新 Core（頂層 uep/ 套件；舊碼 core/、modules/ 原地保留）"
+description = "U.E.P 新 Core（頂層 uep/ 套件；舊碼已刪除，最後狀態見 tag legacy-final-v0.9.4）"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 # core：新 Core 本體，不含 torch
@@ -19,6 +19,12 @@ dependencies = [
     "alembic>=1.16",
     "psycopg[binary]>=3.2",
     "python-ulid>=3.0",
+    # 子系統 echo_thought_core（Session）的執行期依賴
+    "python-dotenv>=1.0",
+    "rich>=13.7",
+    "tiktoken>=0.7",
+    # hatch dev-mode-exact 的 editable 載入器（.pth 執行期需要）
+    "editables~=0.3",
 ]
 
 [project.optional-dependencies]
@@ -30,9 +36,9 @@ agent-candidates = [
 # inference：STT／TTS 等重型推論依賴（3.12 推理 Host，T-20；GPU 行為待基準比對）
 # 不收 fairseq、pyworld：只服務 deprecated/ 的 RVC，RVC 工具留在 Python 3.10 的 env/（A14）
 inference = [
-    "torch==2.7.0",
-    "torchaudio==2.7.0",
-    "torchvision==0.22.0",
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
+    "torchvision==0.26.0",
     "faster-whisper==1.2.1",
     "ctranslate2==4.8.0",
     "numpy==2.0.0",
@@ -76,7 +82,7 @@ inference = [
     # 原排除套件的 3.12 方案
     "PyAudio==0.2.14",
     "py-cord[voice]",
-    "triton-windows>=3.3,<3.4; sys_platform == 'win32'",
+    "triton-windows>=3.6,<3.7; sys_platform == 'win32'",
     "flash-attn; sys_platform == 'win32'",
     # VOX TTS：在現行 torch 2.7／transformers 4.48 下驗證；訓練與 WebUI 依賴由 override-dependencies 排除
     "voxcpm==2.0.3",
@@ -136,7 +142,7 @@ torch = [{ index = "pytorch-cu128", extra = "inference" }]
 torchaudio = [{ index = "pytorch-cu128", extra = "inference" }]
 torchvision = [{ index = "pytorch-cu128", extra = "inference" }]
 # 第三方預編 wheel（mjun0812，含 sm_100／sm_120，適用 RTX 5070 Ti）；官方無 Windows wheel
-flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.10/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" }
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" }
 # DAVE 支援的 py-cord（PR #3159），與 env/ 對齊；正式版 2.8.1 缺 Sink.__sink_listeners__
 py-cord = { git = "https://github.com/Pycord-Development/pycord", rev = "05cf65fa6d81567a8a4347ac961a093981554137", extra = "inference" }
 
@@ -146,8 +152,25 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["uep"]
+packages = [
+    "uep",
+    "subsystems/echo_thought_core/echo_thought_core",
+    # 子系統 EM（echo-memory 同一個 dist 的三個頂層套件）
+    # echo-mcp 等 entry points 暫不放進 Core 的 scripts，待 Q8 決定
+    "subsystems/echo_memory/echo_memory",
+    "subsystems/echo_memory/llm_integration",
+    "subsystems/echo_memory/mcp_server",
+    # 子系統 STT：只保留 ASR 路徑（D103），其依賴（faster-whisper、opencc 等）已在 inference extra
+    "subsystems/echo_stt/echo_stt",
+    # 子系統 TTS：IndexTTS2／VOX；依賴（voxcpm、torch、transformers、peft 等）已在 inference extra，權重不進 git（UEP_TTS_MODELS_DIR）
+    "subsystems/echo_tts/echo_tts",
+]
+# editable 只暴露各套件本身，不把 subsystems/<name>/ 放進 sys.path（避免 tests／configs／Entry 同名遮蔽）
+dev-mode-exact = true
 
 [tool.pytest.ini_options]
-# 新 Core 測試；legacy 測試仍以 unit_tests/、integration_tests/ 明確指定路徑執行
+# 新 Core 測試；子系統測試由 scripts/run_all_tests.ps1 在各自目錄執行
 testpaths = ["tests/uep"]
+# N1：自 ES 搬入的 tests/uep/stream 依賴 auto 模式（async 測試與 async fixture 不另標記）
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Runtime artifacts and large model assets
+/models/
+/echo_tts/models/
+/checkpoints/
+/echo_tts/modules/tts_module/checkpoints/
+/outputs/
+/temp/
+/logs/
+*.wav
+*.mp3
+*.flac
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Test/build
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Environment
+.env
+.env.local
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Hidden
+docs/hidden/
+
+# Claude Code local settings
+.claude/settings.local.json
+.claude/worktrees/
+*.npy
+
+# Experiments - large/generated data
+experiments/breezyvoice_test/.venv/
+experiments/breezyvoice_test/BreezyVoice/
+experiments/breezyvoice_test/G2PWModel/
+experiments/breezyvoice_test/*.wav
+experiments/lora_training_data/
+# index-tts-lora: local-only training (上游複製品 + adapter 權重)，不進版控
+/experiments/index-tts-lora/
+
+# IndexTTS 2.5 checkpoints — 忽略模型內容，保留客製 config.yaml
+/echo_tts/modules/tts_module/checkpoints_v25/*
+!/echo_tts/modules/tts_module/checkpoints_v25/config.yaml
+
+# 正式角色參考音資產（覆蓋全域 *.wav 規則）
+!/echo_tts/assets/reference/*.wav
+
+# Claude-Codex pipeline 本地狀態
+.claude/pipeline-state.json
+
+# VOX 後端內建參考音素材（小檔，需進版控）
+!/echo_tts/assets/vox/*.wav
+!/echo_tts/assets/vox/emotion/*.wav
+
+# VoxCPM 實驗環境與模型
+.venv-voxcpm/
+/models_cache/

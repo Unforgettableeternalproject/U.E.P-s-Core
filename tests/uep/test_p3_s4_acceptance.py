@@ -2,7 +2,7 @@
 
 V06（插話停播、Sink 不 drain、歷史只含已交付）、V08（生成完成不等於交付完成）、VC-4-5（控制訊號不被工作緒
 積壓擋住）、VC-5-2（Discord 只到 transport_sent）、斷線與撤銷後舊輸出不復活；另含 D5（cancel_turn）、D79（工具白名單與
-action 事件）、D82（spoken-only 開關）、D73（dispatch 預算）。以 ES 的 fakes 驅動，需 PostgreSQL 與已安裝的 echo_stream。
+action 事件）、D82（spoken-only 開關）、D73（dispatch 預算）。以 ES 的 fakes 驅動，需 PostgreSQL。
 """
 from __future__ import annotations
 
@@ -13,12 +13,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.contracts.output import PlayedEvidence
-from echo_stream.contracts.types import AudioChunk
-from echo_stream.fakes.audio import FakeAudioSink
-from echo_stream.fakes.stages import FakeThinkStage
+from uep.stream.contracts.output import PlayedEvidence
+from uep.stream.contracts.types import AudioChunk
+from uep.fakes.stream.audio import FakeAudioSink
+from uep.fakes.stream.stages import FakeThinkStage
 
 from tests.uep.echo_support import (
     SPEAKER,
@@ -463,7 +462,7 @@ def _tool_think(r_tracer, name, args):
 
 
 def test_d79_host_whitelist_executes_via_access_layer_and_records_action_event(rig):
-    from echo_stream.core.tracer import LatencyTracer
+    from uep.stream.tracer import LatencyTracer
 
     tracer = LatencyTracer()
     secret = "這是引數裡的私人查詢字串"
@@ -484,7 +483,7 @@ def test_d79_host_whitelist_executes_via_access_layer_and_records_action_event(r
 
 
 def test_d79_non_whitelisted_tool_is_denied_without_event(rig):
-    from echo_stream.core.tracer import LatencyTracer
+    from uep.stream.tracer import LatencyTracer
 
     think = _tool_think(LatencyTracer(), "trigger_dream", {})
     port = ToolPort()
@@ -497,7 +496,7 @@ def test_d79_non_whitelisted_tool_is_denied_without_event(rig):
 
 
 def test_d79_timeout_is_recorded_as_action_unknown(rig):
-    from echo_stream.core.tracer import LatencyTracer
+    from uep.stream.tracer import LatencyTracer
 
     think = _tool_think(LatencyTracer(), "deep_recall", {"query": "x"})
     port = ToolPort({"deep_recall": {"success": False, "result": "tool timeout", "code": "timeout"}})
@@ -510,7 +509,7 @@ def test_d79_timeout_is_recorded_as_action_unknown(rig):
 
 
 def test_d79_host_rejects_think_with_own_tool_executor():
-    from echo_stream.core.tracer import LatencyTracer
+    from uep.stream.tracer import LatencyTracer
 
     from uep.echo.host import EchoPipelineHost
 
@@ -605,7 +604,7 @@ def _member_rig(tmp_path, *, engine_cls=FakeMemoryEngine):
 
 def test_member_recall_schema_matches_es_schema():
     """與 ES 的 MEMBER_RECALL_SCHEMA 對照（防漂移）；Core 端程式碼不 import ES，只有測試對照。"""
-    from echo_stream.adapters.memory_echo import MEMBER_RECALL_SCHEMA as ES_SCHEMA
+    from uep.stream.adapters.memory_echo import MEMBER_RECALL_SCHEMA as ES_SCHEMA
 
     from uep.memory.access import MEMBER_RECALL_SCHEMA
 
@@ -759,7 +758,7 @@ def _wait_generated(r, turn_id):
 
 
 def test_d5_cancel_claimed_but_history_not_retracted_is_retried_by_host_and_counted(rig):
-    from echo_stream.core.tracer import LatencyTracer
+    from uep.stream.tracer import LatencyTracer
 
     speak = GatedSpeak()
     think = FlakyRetractThink(

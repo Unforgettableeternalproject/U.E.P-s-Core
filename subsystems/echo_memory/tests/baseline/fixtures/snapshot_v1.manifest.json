@@ -1,0 +1,25 @@
+{
+  "episode_ids": [
+    "ep_base_001",
+    "ep_base_002",
+    "ep_base_003",
+    "ep_base_004",
+    "ep_base_005",
+    "ep_base_006",
+    "ep_base_007",
+    "ep_base_008",
+    "ep_base_009",
+    "ep_base_010"
+  ],
+  "concept_names": [
+    "台北工作",
+    "夜貓作息",
+    "小橘",
+    "手沖咖啡",
+    "筑波大學"
+  ],
+  "audit_tx_count": 7,
+  "held_patch_count": 1,
+  "relates_to_edges": 3,
+  "derived_from_edges": 5
+}

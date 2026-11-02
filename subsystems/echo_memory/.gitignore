@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# 資料存儲（不提交）
+data/
+# 例外：spike 的黃金資料是實驗素材（人工萃取），不是執行期產生的記憶資料
+!agent_memory_spike/data/
+!agent_memory_spike/data/*.json
+# 但 episode 是執行期產生的，且含對話原文（可能有機敏內容），不進版控
+agent_memory_spike/data/episodes/
+*.faiss
+*.pkl
+*.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 測試
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.tox/
+.hypothesis/
+test_data/
+
+# 環境變數（敏感資訊）
+.env
+.env.local
+
+# 日誌
+*.log
+logs/
+
+# 發布
+dist/
+build/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Claude Code（本地 agent 設定，不提交）
+CLAUDE.md
+.claude/
+
+# Probe 執行產物（不追蹤）
+probe_data/
+probe_output.jsonl
+
+# 臨時文件
+tmp/
+temp/
+*.tmp
+docs/**
+# Claude Code local settings
+.claude/
+.claude/settings.local.json.audit_tmp/

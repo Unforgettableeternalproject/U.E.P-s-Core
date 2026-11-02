@@ -1,4 +1,4 @@
-"""P3 S5 決策插槽的整合行為（需 PostgreSQL 與已安裝的 echo_stream）。
+"""P3 S5 決策插槽的整合行為（需 PostgreSQL）。
 
 涵蓋：proposer 預算逾時與例外回 D80 預設、Proposal 驗證、CC-7 提請與被拒回退、Behavior 軸被拒、
 替換 proposer 不改 Core、shadow mode、Aggregator 與 tick、被動模式插話、PASS 熱路徑、Q-1 回饋通道、
@@ -13,11 +13,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.contracts.output import OutcomeStatus, TurnOutcome
-from echo_stream.contracts.types import TurnPhase
-from echo_stream.core.tracer import LatencyTracer
+from uep.stream.contracts.output import OutcomeStatus, TurnOutcome
+from uep.stream.contracts.types import TurnPhase
+from uep.stream.tracer import LatencyTracer
 from sqlalchemy import select
 
 from tests.uep.echo_support import (

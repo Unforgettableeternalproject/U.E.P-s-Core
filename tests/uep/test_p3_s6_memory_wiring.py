@@ -249,3 +249,59 @@ def test_real_engine_smoke_through_host(tmp_path):
     finally:
         host.stop()
     assert host.adapter(OWNER_NS) is None
+
+
+# ---- EM 遷入後的設定等價（Q8 裁決前維持現狀）----
+
+def test_core_預設_embedding_設定會傳進真_engine(tmp_path, monkeypatch):
+    """EM 遷入 Core 後其 ``.env`` 查找不再落在舊 EM repo 根；Core 以 ``UEP_MEMORY_*`` 明確給出值（N5 起為 bge-m3 本機直載），
+    且真 engine 的 embedding 後端／模型只認建構參數，不受 ``EMBEDDING_*`` 環境變數影響。"""
+    pytest.importorskip("echo_memory")
+    from uep.config import UepSettings
+    from uep.echo.memory_wiring import build_memory_wiring
+
+    for key in ("UEP_MEMORY_EMBEDDING_BACKEND", "UEP_MEMORY_EMBEDDING_MODEL", "UEP_MEMORY_DEVICE"):
+        monkeypatch.delenv(key, raising=False)
+    # 即使行程環境帶著舊 EM .env 風格的變數，也不得改變 engine 的 embedding 設定
+    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
+    monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3")
+    settings = UepSettings(_env_file=None)
+    assert settings.memory_embedding_backend == "sentence-transformers"
+    assert settings.memory_embedding_model == "BAAI/bge-m3"
+    assert settings.memory_device == "cpu"
+
+    wiring = build_memory_wiring(
+        device=settings.memory_device,
+        embedding_backend=settings.memory_embedding_backend,
+        embedding_model=settings.memory_embedding_model,
+    )
+    engine = wiring.engine_factory("local-default", tmp_path / "core_memory")
+    try:
+        assert engine.embedding_backend == "sentence-transformers"
+        assert engine.embedding_model == "BAAI/bge-m3"
+        assert engine.device == "cpu"
+        assert engine.ollama_base_url == "http://localhost:11434"
+    finally:
+        close = getattr(engine, "close", None)
+        if callable(close):
+            close()
+
+
+def test_uep_memory_設定可覆寫為_ollama(tmp_path, monkeypatch):
+    pytest.importorskip("echo_memory")
+    from uep.config import UepSettings
+    from uep.echo.memory_wiring import build_memory_wiring
+
+    monkeypatch.setenv("UEP_MEMORY_EMBEDDING_BACKEND", "ollama")
+    monkeypatch.setenv("UEP_MEMORY_EMBEDDING_MODEL", "bge-m3")
+    settings = UepSettings(_env_file=None)
+    wiring = build_memory_wiring(
+        embedding_backend=settings.memory_embedding_backend, embedding_model=settings.memory_embedding_model,
+    )
+    engine = wiring.engine_factory("local-default", tmp_path / "core_memory")
+    try:
+        assert (engine.embedding_backend, engine.embedding_model) == ("ollama", "bge-m3")
+    finally:
+        close = getattr(engine, "close", None)
+        if callable(close):
+            close()

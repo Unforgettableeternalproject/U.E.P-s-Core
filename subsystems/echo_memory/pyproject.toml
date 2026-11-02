@@ -1,0 +1,86 @@
+[project]
+name = "echo-memory"
+version = "0.1.0"
+description = "自主記憶子系統 - 受 OpenSoul 啟發的動態記憶引擎"
+authors = [
+    {name = "U.E.P Team", email = "your-email@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    "pydantic>=2.5.0",
+    "numpy>=1.24.0",
+    "sentence-transformers>=2.3.0",
+    "networkx>=3.2",
+    "google-genai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "apscheduler>=3.10.0",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.12.0",
+    "ruff>=0.1.9",
+    "mypy>=1.8.0",
+]
+anthropic = ["anthropic>=0.18.0"]
+faiss = ["faiss-cpu>=1.9.0"]
+full = ["faiss-cpu>=1.9.0", "falkordb>=1.0.0"]
+mcp = ["mcp[cli]>=1.0.0"]
+
+# echo-dream 已移除：examples/dream_demo.py 尚未實作（規劃中）
+[project.scripts]
+echo-chat = "examples.minimal_chat:main"
+echo-mcp = "mcp_server.server:main"
+
+[tool.setuptools.packages.find]
+include = ["echo_memory*", "llm_integration*", "mcp_server*"]
+exclude = ["tests*", "test_data*", "examples*"]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# test_hybrid_retrieval.py 為互動式手動演示腳本（含 input()），排除於自動化測試之外
+# test_config.py 為診斷腳本（含 exit()），非 pytest 測試
+# coverage 由 CI pipeline 單獨呼叫，不預設掛在 addopts
+# -m "not live_api and not slow"：平常跑測試不觸發需要真實 API 或耗時的整合測試
+addopts = "--ignore=tests/test_hybrid_retrieval.py --ignore=tests/test_config.py -m \"not live_api and not slow\""
+markers = [
+    "live_api: 需要真實 Gemini API（設定 GOOGLE_API_KEY 或 GCP_PROJECT_ID）",
+    "slow: 執行時間較長的測試",
+]

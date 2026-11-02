@@ -5,6 +5,8 @@
 
 證據標記：**[執行]** 實際跑過的唯讀指令（只做 `pytest --collect-only`，沒有啟動任何應用、沒有跑 GPU 測試）；**[讀碼]** 讀檔或 grep；**[推論]** 由前兩者推得、未驗證。
 
+**修訂（2026-11-02，D103–D105）**：ES 不再作為子系統遷入（D104），舊 M4 作廢，改為 N 系列（ES 構件併核，§5.4）；M3 STT 範圍依 D103 縮為只留 ASR；embedding 統一 `BAAI/bge-m3`（D103）；新增 Core 端到端驗收（§5.5）。本文中凡寫「M4 ES」「ES 整包 subtree」處，以 §5.4 為準；順序為 M0–M2 → N1 → N2 → M3 → N3 → M5 → N5 → 全情境驗收 → M6。
+
 ---
 
 ## 0. 結論（先看這段）
@@ -27,8 +29,8 @@
 | 佈局 | 保留原套件名；放 `subsystems/<name>/`，內含該 repo 原結構（`<pkg>/`、`tests/`、`pyproject.toml`），不拆平（保住 `configs/`、`.env`、`./data` 的相對路徑假設） |
 | 安裝 | Core 的 hatch 設定以 editable 只提供各**套件**（`subsystems/<name>/<pkg>`），**子系統根目錄不得進 sys.path**（否則其 `tests/`、`configs/`、`Entry.py` 會變成頂層可 import）；做法需 M0 spike 驗證（hatch `dev-mode-exact` 或等效）；移除五個 editable 安裝與 `UEP_INFER_*_REPO` |
 | git 歷史 | `git subtree add`（不 squash），保留雜湊與 GPG 簽章；`git filter-repo` 為備選（見 §6） |
-| 遷移順序 | M0 準備 → M1 Session → M2 EM 三包 → M3 STT → M4 ES → M5 TTS → M6 收尾 |
-| ES 在 Core 內 | 機制留在 ES、權威在 Core（沿用 D71）；**合併** Addressing／Turn 偵測實作、DreamScheduler、設定系統、重複的 member_recall 實作；**升格** 為 Core 一等公民的是設定、身分／addressing、dream 排程與記憶工具定義；維持 adapter 層的是五個子系統 adapter 與 Discord／Web 音訊轉接 |
+| 遷移順序 | M0 準備 → M1 Session → M2 EM 三包 → N1 ES 純層併入 `uep/stream/` → N2 Console v0（fake）→ M3 STT（只留 ASR）→ N3 Think 重寫 → M5 TTS → N5 記憶 adapter 瘦身＋bge-m3 → 全情境驗收 → M6 收尾（D105 Q4；舊 M4 作廢） |
+| ES 在 Core 內 | D104／D105：ES 不遷為子系統，定位為參考架構；`contracts`、`core` 純層整包併入 `uep/stream/`，adapter 隨 M3／M5／N3／N5 重寫為 Core 版（`uep/stream/adapters/`）；`echo_stream` 在 N1 後於 `uep/` 內全面禁止 import；ES repo 轉 bot 維護線、不加功能，Core 為權威（§5.4）。以下 F 系列的融合項目照舊，但前提改為 N 系列完成 |
 | 平台接口 | 三平面（控制／輸入／輸出）＋既有 Presence 與 D91 工具通道；bot 分四階段從「行程內自帶 ES」改為「透過接口」（B0–B3） |
 | 工具層 | `ToolSpec` 為唯一來源；六個來源、四種執行位置收斂為「Core 註冊表＋三種 provider」（core、platform_remote、mcp_static）；記憶工具是第一批遷移對象，legacy 工作流最後 |
 | legacy 退場 | 分 R0–R4 五批；`stt/tts/mem/llm_module` 隨 M 系列被取代後先退；`core/`、`ui`、`ani`、`mov`、`nlp`、`sys` 要等 Desktop Adapter、Part S S5 才能退 |
@@ -279,7 +281,7 @@ Core 已經把 ES 當作 Host 內的管線元件（`EchoPipelineHost`，D70(1) i
   3. 做夢排程；
   4. 記憶工具定義與執行（Access Layer 為準，§3.5）。
 - **維持 ES 內部**：PipelineRunner、SentenceSplitter、StreamChannel、LatencyTracer、TurnCoordinator 機制、多通道輸入引擎、fakes。
-- **維持 adapter 層**（`echo_stream/adapters/`，仍是全 repo 唯一 import 子系統的地方，規則照舊）：`input_stt`、`input_multichannel`、`think_llm`、`speak_indextts`、`speak_vox`、`session_store`、`memory_echo` 的檢索／評估部分。遷入後移除其 `config.subsystem_path`／`ensure_importable` 的 sys.path 邏輯（改為 `importlib.util.find_spec` 回報套件位置，或直接移除）。
+- **維持 adapter 層**（`echo_stream/adapters/`，仍是全 repo 唯一 import 子系統的地方，規則照舊）：`input_stt`、`input_multichannel`、`think_llm`、`speak_indextts`、`speak_vox`、`session_store`、`memory_echo` 的檢索／評估部分。遷入後移除其 `config.subsystem_path`／`ensure_importable` 的 sys.path 邏輯（改為 `importlib.util.find_spec` 回報套件位置，或直接移除）。（D105 後：adapter 改置於 `uep/stream/adapters/`，不再留在 `echo_stream`，見 §5.4。）
 - **移出 `echo_stream` 對外面**：`web/`、`cli.py`（開發工具）；`stt_discord`、`discord_resample`（平台音訊轉接，歸 §3.6 的平台 adapter 家族；盤點時至少有四處與 Discord 音訊輸入相關：ES `adapters/stt_discord.py`、`echo_stt/channel/discord_channel.py`、bot `echo_decision/es_stt_input.py`、`echo_decision/discord_audio.py`，是否重複實作需要在融合階段逐一比對，本文不下結論）。
 
 **事件驅動的關係**：ES 內部是純 asyncio、無事件匯流排；Core 是持久事件匯流排（journal／outbox）。兩者不合併：ES 的回呼只做記憶體計算與入佇列，所有 DB／Gateway 寫入由 `CoreWorker` 單緒執行（證據回報先於 `turn.completed`）。遷入 repo 不改變這個邊界，但**要把它從「跨 repo 的約定」變成「同 repo 的測試」**（見風險 R9）。
@@ -287,12 +289,12 @@ Core 已經把 ES 當作 Host 內的管線元件（`EchoPipelineHost`，D70(1) i
 **難點與風險**
 
 1. **邊界侵蝕**：同 repo 後，「順手在 ES 裡 import `uep`」或「順手在 `uep` 其他地方 import `echo_stream`」的成本接近零。需要兩條對稱的 boundary test：既有的「只有 `uep/echo` 可以 import `echo_stream`」，加上「`echo_stream`、`echo_*` 子系統不得 import `uep`」。
-2. **ES 活躍分支多**（9 個 agent 工作樹、`d85-member-recall` 領先 3），ES 凍結期間 bot 整合會被擋住，所以 ES 排 M4，凍結窗口要短（見 §7）。
+2. **ES 活躍分支多**（9 個 agent 工作樹、`d85-member-recall` 領先 3）。D104 後不再整包凍結搬遷；ES 轉 bot 維護線，修正人工移植（D105 Q2）。
 3. **ES 測試 999 個**中有 `test_web*.py`（約 56 個）綁 `web/`；若 Q7 決定移出 `web/`，這部分測試跟著走，不能計入 `echo_stream` 驗收基線。
 4. **ES 的基準提交與 Core 測試的耦合**：`uep/echo/host.py` 註解寫「ES 基準為 develop e31eac0」，遷入後這種「依某個 ES 提交」的註解全部要改成「同 repo 的契約測試」。
 5. **D83**（`VOICE_USE_ES_OUTPUT` 預設翻轉與舊路徑刪除）狀態仍是「待裁決」，影響 bot 何時能停用自己的輸出循環（§3.6）。
 
-**順序影響**：ES 搬遷（M4）只是實體搬遷；融合動作（設定合併、addressing 合併、記憶工具去重）排在 M4 之後的獨立 PR（F 系列，§8.2）。
+**順序影響**：原「ES 搬遷（M4）」已作廢（D104），改為 N 系列併核（§5.4）；融合動作（設定合併、addressing 合併、記憶工具去重）排在 N 系列之後的獨立 PR（F 系列，§8.2）。
 
 ### 3.4 Host 與 Session 層
 
@@ -385,7 +387,7 @@ Core 已經把 ES 當作 Host 內的管線元件（`EchoPipelineHost`，D70(1) i
 | 步驟 | 內容 | 前置 |
 |---|---|---|
 | TL0（隨 M2 之後，設計為主） | 為 9 個記憶工具（deep_recall、force_remember、member_recall、retract／opt_out／correct_about_me、adjust_importance、list_hypotheses、request_hypothesis_review）寫 ToolSpec 草案與分類表（含 `trigger_dream` 為何**不**曝光） | M2 |
-| TL1（M4 之後） | 去重 C1／C2：schema 單一來源、`member_recall` 實作歸 Access Layer；about-me 三工具進 `TOOL_CLASSES` | M4、Q5 |
+| TL1（N5 之後） | 去重 C1／C2：schema 單一來源、`member_recall` 實作歸 Access Layer；about-me 三工具進 `TOOL_CLASSES` | N5、Q5 |
 | TL2 | 三個 `internal_read`／低風險工具改走 ActionIntent（保留 `action.*` 事件相容） | Part S S3 的對話回合流程 |
 | TL3 | `force_remember`、about-me 寫入類改走完整四階段 | TL2、DQ-16 |
 | TL4 | Desktop／Discord 平台宣告工具（D91 R0–R3）；legacy 桌面類 workflow 以 `platform_remote` 重寫 | Part H、P4、每訊框 MAC |
@@ -509,29 +511,424 @@ Core 側已有：`uep/endpoint/`（`CoreApi` 協定、`RpcCoreApi`、HMAC hello�
 | 步驟 | 內容 | 前置修正（在來源 repo 以 `feature/prep-core-migration` 先合入其 develop，或遷入 PR 的第一個 commit） | 完成條件 | 驗證 | 回退 |
 |---|---|---|---|---|---|
 | **M0 準備**（不搬碼） | 決定基線分支（Q1）；建立 `subsystems/` 骨架與 pyproject spike（hatch editable 只暴露套件）；補 boundary 反向測試；記錄五個子系統目前的**實跑基線**（pass／skip／fail 與耗時，含機器標註）；訂定本地閘門腳本 `scripts/run_all_tests.ps1`（§7.4）；發出凍結預告 | 無 | spike 在一次性 venv 證明 ADR-M1 的通過條件（sys.path 不含 `subsystems/<name>/`、`tests`／`configs` 仍解析到 Core 根）；基線表填完 | 基線腳本連跑兩次結果一致（排除 flaky） | 刪 spike 分支 |
-| **M1 Session**（`echo_thought_core`，9.1k 行／327 測試） | 以 subtree 導入；移除 `py-modules=["Entry"]` 與頂層 `Entry.py`（避免與 Core 根的 `Entry` 重名）；pyproject pytest 設定移除預設 `--cov` | `.env` 查找改為 `UEP_ENV_FILE`／cwd 優先，退回 `parent.parent`；`llm_config.yaml` 在套件內不需改 | `pytest -o addopts=""` 在 `subsystems/echo_thought_core` 得 327 收集、pass 數同基線；ES 的 `think_llm`（仍指舊路徑時）與新路徑兩種情況下 ES 測試不變 | 在共用環境 `pip uninstall echo-thought-core` 後 `import echo_thought_core` 指向 Core；Core `tests/uep/test_p3_s6_inference_wiring.py` 綠 | revert merge；`uv pip install --no-deps -e ../TestSeparateSessionControl` |
-| **M2 EM 三包**（`echo_memory`＋`llm_integration`＋`mcp_server`，2,167 測試） | 以 subtree 導入整個 repo；`agent_memory_spike`、`examples`、`probe_*` 在導入後的第一個 commit 刪除（歷史仍在；`env/` 若被追蹤才刪，多半已 gitignore）；三包同一步（`llm_integration`、`mcp_server` 依賴 echo_memory） | `MEMORY_STORAGE_PATH`／log 預設改讀 `UEP_DATA_DIR`；`.env` 查找同 M1；`mcp_server/server.py:26` 的 `sys.path.insert` 移除 | 2,167 收集／12 deselect 不變；pass 數同基線；Core `tests/uep/test_p3_s6_memory_wiring.py`、`test_p3_s2_memory_host.py` 綠；資料目錄**未被觸碰**（比對 `UEP_DATA_DIR` 內容雜湊或 mtime） | `llm_integration`、`mcp_server` 的 import 可用；`echo-mcp` 入口決定去留（Q8） | revert；重裝 editable；資料無需回復 |
-| **M3 STT**（`echo_stt`，271 測試） | subtree；`echo_stt/test_files/`（2.8 MB 音檔）移到 `tests/data/`（避免進 wheel） | `configs/stt_config.yaml` 路徑支援 `UEP_STT_CONFIG`；whisper 路徑支援 `UEP_MODELS_DIR`（預設仍讀既有 `models/stt/whisper`，用連結／環境變數指向現有 2.9 GB，不複製） | 271 收集、pass 同基線；`MultiChannelSTTEngine` 能以新路徑 `prepare`（單次，不跑 GPU 長測，只驗載入）；bot `cogs/stt.py` 的 `echo_stt` import 解析到 Core | `UEP_INFER_STT_REPO` 設定被忽略並警告一次 | revert；重裝 editable |
-| **M4 ES**（`echo_stream`，999 測試） | 凍結窗口短（建議 ≤ 3 天）；subtree；`config.subsystem_path`／`ensure_importable` 改為 `find_spec`；`UEP_INFER_*_REPO` 對已遷子系統失效；`web/`、`cli.py` 依 Q7 處理 | `_project_root()` 與 `.env`／`echo_stream.toml` 查找改為可由 `UEP_ENV_FILE`、`UEP_ES_TOML` 指定；ES 對 TTS 仍用 `UEP_INFER_TTS_REPO`（TTS 未遷） | 999 收集（扣除 Q7 移走的 `test_web*`，另列基線）；`tests/uep` 全綠（含 `test_import_boundary`、`test_p3_s3_*`）；bot 測試同基線；`python -m echo_stream demo --fake`（零依賴，不啟動伺服器、不吃 GPU）可跑 | boundary 反向測試綠：`echo_stream` 不 import `uep` | revert；重裝 editable；bot 設回舊 `ECHO_STREAM_*_REPO` |
-| **M5 TTS**（`echo_tts`，384 測試） | 先合 `tts-model-eval`、`vox-emotion`（見 Q4）；subtree；`experiments/`、`webapp/`、`benchmarks/`（若不需要）導入後刪除 | **§2.3 的 import 修正**（`echo_tts.modules.*`、拿掉 `sys.path.insert`、`utils.debug_helper`→`logging`）；`default_generation_paths` 接受 `UEP_TTS_MODEL_ROOT`；VOX 資產路徑已是套件相對，不動 | 384 收集、**在有 GPU 的目標機器**上 pass／skip 與基線一致；`validate_generation_paths` 通過（指到既有 9 GB 目錄）；`python -c "import modules"` **不得**解析到 echo_tts（驗證不再污染頂層）；`UEP_INFER_TTS_ENGINE=indextts2|vox` 兩種都 `prepare` 成功（人工，GPU，一次） | 以 `-X importtime`／`sys.modules` 檢查 `utils`、`modules` 未被 echo_tts 佔用 | revert；重裝 editable（舊 repo 仍有 9 GB 權重原位） |
+| **M1 Session**（`echo_thought_core`，9.1k 行／327 測試；**已完成 2026-11-02，見 §5.2.1**） | 以 subtree 導入；移除 `py-modules=["Entry"]` 與頂層 `Entry.py`（避免與 Core 根的 `Entry` 重名）；pyproject pytest 設定移除預設 `--cov` | `.env` 查找改為 `UEP_ENV_FILE`／cwd 優先，退回 `parent.parent`；`llm_config.yaml` 在套件內不需改 | `pytest -o addopts=""` 在 `subsystems/echo_thought_core` 得 327 收集、pass 數同基線；ES 的 `think_llm`（仍指舊路徑時）與新路徑兩種情況下 ES 測試不變 | 在共用環境 `pip uninstall echo-thought-core` 後 `import echo_thought_core` 指向 Core；Core `tests/uep/test_p3_s6_inference_wiring.py` 綠 | revert merge；`uv pip install --no-deps -e ../TestSeparateSessionControl` |
+| **M2 EM 三包**（`echo_memory`＋`llm_integration`＋`mcp_server`，2,167 測試；**已完成 2026-11-02，見 §5.2.2**） | 以 subtree 導入整個 repo；`agent_memory_spike`、`examples`、`probe_*` 在導入後的第一個 commit 刪除（歷史仍在；`env/` 若被追蹤才刪，多半已 gitignore）；三包同一步（`llm_integration`、`mcp_server` 依賴 echo_memory） | `MEMORY_STORAGE_PATH`／log 預設改讀 `UEP_DATA_DIR`；`.env` 查找同 M1；`mcp_server/server.py:26` 的 `sys.path.insert` 移除 | 2,167 收集／12 deselect 不變；pass 數同基線；Core `tests/uep/test_p3_s6_memory_wiring.py`、`test_p3_s2_memory_host.py` 綠；資料目錄**未被觸碰**（比對 `UEP_DATA_DIR` 內容雜湊或 mtime） | `llm_integration`、`mcp_server` 的 import 可用；`echo-mcp` 入口決定去留（Q8） | revert；重裝 editable；資料無需回復 |
+| **M3 STT**（`echo_stt`，271 測試；**已完成 2026-11-02，見 §5.2.3**） | subtree；**範圍依 D103：只保留 ASR（faster-whisper）**，VAD／斷句／串流狀態機以 ES 新作（`uep/stream/audio` 的 EnergyVad、channel_engine，N1 後）為主，echo_stt 的 AdvancedVAD 與 segment 狀態機退役；`uep/stream/adapters/input.py` 只呼叫 ASR；`echo_stt/test_files/`（2.8 MB 音檔）移到 `tests/data/`（避免進 wheel） | `configs/stt_config.yaml` 路徑支援 `UEP_STT_CONFIG`；whisper 路徑支援 `UEP_MODELS_DIR`（預設仍讀既有 `models/stt/whisper`，用連結／環境變數指向現有 2.9 GB，不複製） | 271 收集、pass 同基線（退役 VAD 相關測試另列清單）；A3（wav 檔→STT）通過；`MultiChannelSTTEngine` 能以新路徑 `prepare`（單次，不跑 GPU 長測，只驗載入）；bot `cogs/stt.py` 的 `echo_stt` import 解析到 Core | `UEP_INFER_STT_REPO` 設定被忽略並警告一次 | revert；重裝 editable |
+| **M4 ES**（**作廢**，D104） | 原「subtree 搬 ES 整包、999 測試、凍結 ≤3 天」不執行。改為 N1＋N2＋N3＋N5（§5.4）；ES 凍結窗口與 subtree 一併取消 | — | — | — | — |
+| **M5 TTS**（`echo_tts`，384 測試；**已完成 2026-11-02，見 §5.2.4**） | 先合 `tts-model-eval`、`vox-emotion`（見 Q4）；subtree；`experiments/`、`webapp/`、`benchmarks/`（若不需要）導入後刪除 | **§2.3 的 import 修正**（`echo_tts.modules.*`、拿掉 `sys.path.insert`、`utils.debug_helper`→`logging`）；`default_generation_paths` 接受 `UEP_TTS_MODEL_ROOT`；VOX 資產路徑已是套件相對，不動 | 384 收集、**在有 GPU 的目標機器**上 pass／skip 與基線一致；`validate_generation_paths` 通過（指到既有 9 GB 目錄）；`python -c "import modules"` **不得**解析到 echo_tts（驗證不再污染頂層）；`UEP_INFER_TTS_ENGINE=indextts2|vox` 兩種都 `prepare` 成功（人工，GPU，一次） | 以 `-X importtime`／`sys.modules` 檢查 `utils`、`modules` 未被 echo_tts 佔用 | revert；重裝 editable（舊 repo 仍有 9 GB 權重原位） |
 | **M6 收尾** | 刪 `UEP_INFER_*_REPO`；`setup_infer_env.ps1` 移除五個 editable 與五個路徑參數（§7.3）；舊 repo 打 `migrated-to-core/<sha>` tag 並在 GitHub 設為 archived（**觀察期後**）；README／CLAUDE.md／DECISIONS 更新；清掉 `*.egg-info` | — | 全新機器／全新 venv 只靠 Core repo 與 `uv sync` 能還原環境；七個套件解析位置全在 Core；觀察期 7 天（沿用 D76 習慣）無回退 | `scripts/run_all_tests.ps1` 全綠 | 還原 setup 腳本；舊 repo 取消 archived |
-| **F 系列（融合，M4 後獨立排程）** | F1 設定合併（ES `ECHO_STREAM_*` 相容層）；F2 member_recall／schema 去重（TL1）；F3 Addressing／authority 合併到 `uep/turn`；F4 DreamScheduler 退場；F5 Model Gateway（Q6）；F6 Core 常駐入口 | 各自另開 | 各自驗收 | | |
+| **N 系列（ES 併核，取代 M4）** | N1 純層搬入 `uep/stream/`；N2 Console v0（fake）；N3 Think 重寫；N5 記憶 adapter 瘦身＋bge-m3。順序見 §0；細節、去留表與風險見 §5.4 | 見 §5.4 | 各步驗收見 §5.4 | `tests/uep` 全綠＋對應情境 | revert |
+| **F 系列（融合，N 系列後獨立排程）** | F1 設定合併（ES `config.py`／`ECHO_STREAM_*` 淘汰，併入 `UepSettings`，相容層保留舊鍵映射）；F2 member_recall／schema 去重（TL1，N5 後）；F3 Addressing／authority 合併到 `uep/turn`（`uep/stream/turn_detector` 同併）；F4 DreamScheduler 退場；F5 Model Gateway（Q6）；F6 Core 常駐入口（由 `python -m uep.console` 起頭，§5.5） | 各自另開 | 各自驗收 | | |
 
-### 5.3 驗收基線（M0 填寫；以下為各自原本的命令與已觀察到的收集數）
+### 5.2.1 M1 Session 完成紀錄（2026-11-02，THEFANTASIAS，CPU-only）
 
-| 子系統 | 工作目錄 | 命令（共用環境 Python） | 收集數 [執行] | 備註 |
-|---|---|---|---|---|
-| ES | `subsystems/echo_stream` | `pytest`（`PYTHONIOENCODING=utf-8`） | 999 | Q7 之後扣除 `test_web*` |
-| EM 三包 | `subsystems/echo_memory` | `pytest` | 2,167（12 deselect） | `live_api`／`slow` 排除 |
-| STT | `subsystems/echo_stt` | `pytest` | 271 | 需 torch |
-| Session | `subsystems/echo_thought_core` | `pytest -o addopts=""` | 327 | 遷入時移除 `--cov` 預設後可直接 `pytest` |
-| TTS | `subsystems/echo_tts` | `pytest` | 384 | GPU／套件 skip，基線記 pass／skip |
-| Core | repo 根 | `pytest tests/uep` | 1,490（MIN：1,486 passed） | |
-| bot | bot repo | `pytest tests/ -q`（bot CLAUDE.md） | — | 需記基線 |
+**狀態：完成，未 push。** 分支 `feature/subsystem-migration`，三個簽章 commit：
+
+| commit | 內容 |
+|---|---|
+| `842c6dc` | `git subtree add --prefix=subsystems/echo_thought_core ../TestSeparateSessionControl develop`（不 squash；來源 `8c0e950`）。subtree 以 commit-tree 產生 merge，不吃 `commit.gpgsign`，導入後以 `git commit --amend -S` 補簽章（本地、未推送，未動 parents／tree） |
+| `01f90df` | hatch `packages` 加入 `subsystems/echo_thought_core/echo_thought_core` 與 `dev-mode-exact = true`；dependencies 補 `editables~=0.3` 與 Session 的 `python-dotenv`、`rich`、`tiktoken`（pydantic、pyyaml 已在 core）；`uv lock` 只新增 `editables 0.6`，既有版本無變動；`setup_infer_env.ps1` 移除 `-Session` 與舊 Session repo 的 `-e`、新增 `import editables` 檢查；Session 子系統移除 `Entry.py`／`py-modules`、pytest addopts 移除 `--cov`、`run.bat` 改 `-m echo_thought_core.cli` |
+| `05aacf5` | `default_think_backend` 不再強制 `UEP_INFER_SESSION_REPO`（未設時傳 `None`，由 ES `ensure_subsystem` 走環境已裝的套件；設了仍須存在，保留為可選覆寫）；`run_all_tests.ps1` 新增 `$migrated` 清單，session 不論 Layout 一律走 `subsystems/echo_thought_core`；對應測試改寫並新增 1 個 |
+
+環境切換（共用環境 `~/.uep/venv-inference-312`）：`uv pip uninstall echo-thought-core` → `uv pip install --no-deps -e .`（Core 以 hatch exact 重裝）→ `uv pip install --no-deps editables==0.6`。**重裝 Core 後、補 editables 前，環境內任何 python 啟動都會印 `.pth` 的 `ModuleNotFoundError: editables`**（與 spike 預測一致；setup 腳本已把檢查放在 `uv sync` 之後、其他安裝之前）。
+
+證據：`echo_thought_core.__file__` 指向 `U.E.P-s-Core/subsystems/echo_thought_core/echo_thought_core/__init__.py`（從 `/tmp` 與 `Echo-Stream` 目錄啟動皆同）；`sys.path` 無含 `subsystems` 的項目；在 Core 根 `import tests` 指向 Core 的 `tests/`；`echo_stream`、`echo_memory`、`llm_integration`、`mcp_server`、`echo_stt`、`echo_tts` 仍各指向舊 repo。
+
+驗收數字：
+
+| 套件 | 結果 | 基線 | 備註 |
+|---|---|---|---|
+| Session（`subsystems/echo_thought_core`） | 294／18／0（15 deselect），3.9 s | 294／18／0 | 與基線一致 |
+| Core `tests/uep` | 1,493 pass／0 skip／1 fail，615 s | 1,491～1,492 pass | 唯一失敗為已知的 `test_real_engine_smoke_through_host`；pass 多 1 是新增的 `test_think_backend_預設不需_session_路徑` |
+| ES（`07e3ff8`） | 1,003／0／0，202 s | 1,001／0／0 | ES 於 M0 後有新 commit，收集數隨之增加；全過 |
+
+行為變化須知：hatch `dev-mode-exact` 後，**Core 根目錄不再因 editable 而進入 `sys.path`**（原本會放）。從 Core 根以外的工作目錄 `import configs`、`import Entry` 不再成功。`uep/` 沒有這類 import，Core、ES、Session 測試皆不受影響；舊 `core/`、`modules/`、`Entry.py` 與 bot 若從別的目錄 import 這些名稱需注意，bot 的 `bot.bat` 路徑未在本步驗證（§5.3 bot 基線仍待補）。
+
+### 5.2.2 M2 EM 三包完成紀錄（2026-11-02，THEFANTASIAS，CPU-only）
+
+**狀態：完成，未 push。** 分支 `feature/subsystem-migration`，三個簽章 commit：
+
+| commit | 內容 |
+|---|---|
+| subtree merge | `git subtree add --prefix=subsystems/echo_memory ../TestSeperateMemorySystem develop`（不 squash；來源 `f0c62e9`），導入後以 `git commit --amend --no-edit -S` 補簽章 |
+| hatch／setup | hatch `packages` 加入 `subsystems/echo_memory/{echo_memory,llm_integration,mcp_server}`；`setup_infer_env.ps1` 移除 `-Memory` 與舊 EM repo 的 `-e`；刪除 `agent_memory_spike/`、`examples/`（`scripts/probe_pipeline.py` 與 `Entry.py` 保留，EM 的 `test_m13_legacy`、`test_m9b_bypass` 讀它們） |
+| 設定／驗證 | `UepSettings` 明確給 embedding 預設、對應測試 2 個、`run_all_tests.ps1` 的 `$migrated` 加入 em、本節 |
+
+依賴：EM 宣告的 `pydantic`、`numpy`、`sentence-transformers`、`networkx`、`google-genai`、`python-dotenv`、`pyyaml`、`apscheduler`、`rich` 在 Core lock 內全部已有（core 或 inference extra），`uv lock` 無任何變動，既有套件版本不變。`mcp`（`mcp_server` 用）在 lock 內（1.30.0）但非 Core 直接依賴，`mcp_server` 僅為開發者工具，待 Q8。**`echo-mcp`、`echo-chat` 等 entry points 未放進 Core 的 scripts，等 Q8 決定**（`echo-chat` 指向的 `examples.minimal_chat` 已隨 `examples/` 刪除）。
+
+環境切換（共用環境）：`uv pip uninstall echo-memory` → `uv pip install --no-deps -e .`。`uv pip freeze` 前後只差一行（舊 EM 的 `-e`），editables 0.6 仍在。證據：`echo_memory`、`llm_integration`、`mcp_server` 的 `__file__` 皆指向 `U.E.P-s-Core/subsystems/echo_memory/<pkg>/__init__.py`（從 Core 根與 `%TEMP%` 啟動皆同）；`sys.path` 無含 `subsystems` 的項目；Core 根 `import tests` 指向 Core 的 `tests/`；`echo_stream`、`echo_stt`、`echo_tts` 仍指向各自舊 repo，`echo_thought_core` 指向 Core。
+
+**`.env` 行為（重要發現）：** EM 的 `echo_memory/config.py`、`llm_client.py`、`router.py`、`mcp_server/server.py` 讀「套件上一層」的 `.env`，遷入後該位置是 `subsystems/echo_memory/`（無 `.env`、不追蹤），舊 EM repo `.env` 不再被讀到。逐項核對後：
+
+- 舊 `.env` 的非機密鍵：`EMBEDDING_BACKEND=ollama`、`EMBEDDING_MODEL=bge-m3`、`EMBEDDING_DEVICE=cpu`、`OLLAMA_BASE_URL=http://localhost:11434`、`DREAM_ENABLED=false`、`GCP_PROJECT_ID`、`GCP_LOCATION` 等；API key（`GOOGLE_API_KEY`、`HF_TOKEN`）未讀值。
+- **Core 經 `uep/echo/memory_wiring.py` 建的真 engine，從來沒有吃到 `EMBEDDING_BACKEND`／`EMBEDDING_MODEL`**：`MemoryEngine` 的 embedding 後端與模型只認建構參數（預設 `sentence-transformers`／`BAAI/bge-small-zh-v1.5`），`Config.embedding_*` 只被 EM 自己的 CLI／MCP server 使用；`EchoEngineFactory` 在設定為 None 時不傳參。因此遷入前 Core 實際生效的是 sentence-transformers + bge-small-zh（與 ES `build_engine` 的註解一致），不是 ollama + bge-m3。若照「ollama／bge-m3」寫入預設，反而會改變行為（向量維度 512→1024，資料目錄索引判定需重建）。
+- 因此 `UepSettings.memory_embedding_backend／model` 的預設改為遷入前實際生效的 `sentence-transformers`／`BAAI/bge-small-zh-v1.5`（`UEP_MEMORY_EMBEDDING_*` 仍可覆寫），註解標明為 Q8 裁決前的維持現狀做法。測試 `test_core_預設_embedding_設定會傳進真_engine`（即使行程環境帶 `EMBEDDING_BACKEND=ollama`，真 `MemoryEngine` 仍取 Core 給的值）與 `test_uep_memory_設定可覆寫為_ollama` 鎖住。
+- 會因 `.env` 位置改變而不同的項目：`DREAM_ENABLED`（舊 false，現預設 true；Core 由 `MemoryHost` 以 `configure_dream` 明確關閉，smoke 測試斷言 `scheduler.started is False`）；`load_dotenv` 原本會把舊 `.env` 的 `GOOGLE_API_KEY`、`HF_TOKEN`、`GCP_*` 灌進行程環境，現在不會。`uep/` 沒有任何地方使用 `llm_integration.LLMClient` 或這些金鑰，Core 不受影響；ES／bot 若依賴此副作用須由行程環境或自身 `.env` 提供（未驗證 bot）。
+- 本步**未改 EM 程式碼**（`MEMORY_STORAGE_PATH`／log 預設改讀 `UEP_DATA_DIR`、`.env` 查找改為 `UEP_ENV_FILE`、移除 `mcp_server/server.py:26` 的 `sys.path.insert`，仍是 M2 計畫列的前置修正，未做）。注意 `mcp_server.server` 一旦被 import 會把 `subsystems/echo_memory` 放進 `sys.path`，Core 與 ES 執行路徑目前不會 import 它。
+
+驗收數字（`CUDA_VISIBLE_DEVICES=""`，一次只跑一套）：
+
+| 套件 | 結果 | 基線 | 備註 |
+|---|---|---|---|
+| EM（`subsystems/echo_memory`） | 2,166 pass／1 skip／0 fail（12 deselect），276 s | 2,166／1／0（12 deselect） | 與 M0 基線一致 |
+| Core `tests/uep` | 1,495 pass／0 skip／1 fail，491 s | M1：1,493／0／1 | 唯一失敗仍是已知的 `test_real_engine_smoke_through_host`（`timeout` 而非 `stored`）；pass 多 2 是新增的兩個 embedding 設定測試；有 GPU 條件下的確認仍待做 |
+| ES（`07e3ff8`） | 1,003 pass／1 xfail／0 fail（junit 計 1,004 tests），176 s | M1：1,003／0／0 | 全過 |
+
+資料目錄：本步未啟動任何程式，EM 測試使用 pytest 暫存目錄；`UEP_DATA_DIR` 未被觸碰。
+
+### 5.2.3 M3 STT 完成紀錄（2026-11-02，THEFANTASIAS，CPU-only）
+
+**狀態：完成，未 push。** 分支 `feature/m3-stt`（`--no-ff` 合回 `feature/subsystem-migration`），簽章 commit：
+
+| commit | 內容 |
+|---|---|
+| subtree merge | `git subtree add --prefix=subsystems/echo_stt ../TestSeparateSTTSystem develop`（不 squash；來源 `8aa9126`），導入後以 `git commit --amend --no-edit -S` 補簽章（`739944a`） |
+| hatch／setup（`45dc5c7`） | hatch `packages` 加入 `subsystems/echo_stt/echo_stt`；`setup_infer_env.ps1` 移除 `-Stt` 與舊 STT repo 的 `-e`；`run_all_tests.ps1` 的 `$migrated` 加入 `stt`；`echo_stt/test_files/`（2.8 MB）移到 `subsystems/echo_stt/tests/data/`，不進 wheel |
+| adapter／console（`d1915e3`） | 見下 |
+
+依賴：echo_stt 宣告的 `numpy`、`pydantic`、`pyyaml`、`rich`、`faster-whisper`、`torch`、`opencc-python-reimplemented` 在 Core lock 內全部已有，`uv lock --check` 無變動，`uv.lock` 未改。
+
+**adapter**：`uep/stream/adapters/input_stt.py`、`input_multichannel.py` 移除 `stt_repo` 參數與 `ensure_subsystem("STT", …)`，`_EchoSttBackend` 直接 import Core 內的 `echo_stt`；`_EchoSttBackend` 新增 `device`／`model_size` 覆寫（深拷貝後改，不污染 `load_config()` 全域快取），並提供公開別名 `EchoSttBackend`。VAD、斷句與 turn 判定維持 `uep/stream/audio/`（EnergyVad、channel_engine）；echo_stt 只走 `MultiChannelSTTEngine.transcribe_segment`（faster-whisper＋後處理），與遷入前行為相同。`inference_wiring.py` 不再要求 `UEP_INFER_STT_REPO`；`UepSettings.infer_stt_repo` 保留相容讀取，設了會被忽略並警告一次。
+
+**console `/stt <wav> [--model 名] [--lang 碼]`**（`uep/console/stt_cmd.py`）：讀 wav（16-bit PCM；非 16 kHz 以線性內插重採樣、多聲道下混），經 `EchoSttBackend` 辨識，印文字、語言、信心、載入與辨識耗時（RTF）。GPU 守門沿用 `UEP_E2E_ALLOW_GPU`：未設為 `1` 時強制 CPU＋`base` 模型並提示；設了才依 `stt_config.yaml`（device auto、large-v3-turbo）。實跑（CPU、base）：`zh_test.wav` 13.9 s 辨識 1.28 s、`en_test.wav` 19.7 s 辨識 5.40 s，文字正確。real 模式其他部分仍為「尚未支援」。
+
+環境切換（共用環境 `venv-inference-312-t211`；執行前 `botctl.py status` 確認 bot 未執行）：`uv pip uninstall echo-stt` → `uv pip install --no-deps -e .`（Core 重裝以納入新套件）。`uv pip freeze` 前後只差一行（舊 STT 的 `-e`），editables 仍在。證據：`echo_stt` 與 `echo_stt.core.multi_channel_engine` 的 `__file__` 指向 `U.E.P-s-Core/subsystems/echo_stt/…`（從 `%TEMP%` 啟動亦同）；`sys.path` 無含 `subsystems` 的項目；`echo_stt.core.config` 的預設設定檔解析為 `subsystems/echo_stt/configs/stt_config.yaml`；`echo_memory`、`echo_thought_core` 指向 Core，`echo_stream`、`echo_tts` 仍指向各自舊 repo。舊環境 `venv-inference-312` 未動。
+
+驗收數字（`CUDA_VISIBLE_DEVICES=""`，`run_all_tests.ps1` 全套一輪）：
+
+| 套件 | 結果 | 基線 | 備註 |
+|---|---|---|---|
+| STT（`subsystems/echo_stt`，在 Core 內跑） | 277 pass／0 skip／0 fail，54 s | 277 | 一致 |
+| Core `tests/uep` | 2,362 pass／1 xfail／1 fail，683 s | 2,355／1 xfail／1 fail | 唯一失敗仍是已知的 `test_real_engine_smoke_through_host`；pass 淨增 7：`/stt` 指令 7 個、wiring 新增 1 個、`console` 骨架參數化少 1 個 |
+| EM | 2,166／1／0，253 s | 2,166／1／0 | 一致 |
+| ES | 1,003／1 xfail／0，181 s | 1,003 | 一致 |
+| TTS | 426／15／0，26 s | 426／15 | 一致 |
+| Session | 294／18／0，4 s | 294／18 | 一致 |
+| bot（`python -m pytest -q`，共用環境） | 1,796 pass／7 fail／35 skip，143 s | 1,796／7／35 | 一致；7 個失敗為既有的 yaml 與 dataclass 預設比對 |
+
+import 邊界：既有的 `test_import_boundary.py` 已把 `echo_stt` 列入 `SUBSYSTEM_NAMES`（只允許 `uep/stream/adapters/` 與 `uep/echo/*_wiring.py` import），console 的 `/stt` 因此經 adapter 的 `EchoSttBackend` 而不直接 import；反向規則（`subsystems/` 不得 import `uep`）同樣涵蓋 `echo_stt`，全數通過。
+
+**bot 影響**：bot `cogs/stt.py:1114` 直接用 `echo_stt.core.multi_channel_engine.MultiChannelSTTEngine`，環境切換後解析到 Core 內的 echo_stt（程式內容與凍結 repo 的 `8aa9126` 相同，未改任何 bot 會走到的路徑）。**未啟動 bot 實測**，bot 基線測試不變是間接證據。
+
+**退役清單（M3 未刪除任何程式；前提：bot 改走 Core 的 STT 路徑、`cogs/stt.py` 不再 import `echo_stt` 的 VAD／segment 路徑後才執行，D103）：**
+
+| 項目 | 位置 | 取代者 | 備註 |
+|---|---|---|---|
+| AdvancedVAD、自適應尾端靜音 | `echo_stt/vad/advanced_vad.py`、`vad/__init__.py` 的 `AdaptiveTrailingSilenceConfig` | `uep/stream/audio/vad.py` EnergyVad | 與 segment 狀態機耦合（muzzle） |
+| 能量 VAD、噪音過濾 | `echo_stt/vad/energy_vad.py`、`noise_filter.py` | 同上 | `MultiChannelSTTEngine` 的 channel 路徑與 `ChannelManager` 仍會用到，須同步退 |
+| segment 狀態機與 channel 管線 | `echo_stt/core/multi_channel_engine.py` 的 channel／worker pool 路徑（保留 `transcribe_segment` 與初始化）、`channel/`（`manager`、`base`、`local_mic`、`discord_channel`）、`pipeline/queue.py`、`pipeline/worker.py` | `uep/stream/audio/channel_engine.py`、`multichannel.py` | bot 目前走這條；退役須先確認 bot 改走 Core |
+| 說話人辨識、關鍵字、輸出聚合 | `echo_stt/speaker/`、`keyword/`、`output/`、`recognition/` | 說話人由 Core 身分層（`uep/turn`、`uep/memory/identity`）；喚醒詞由 `uep/turn/wake` | 不在 ASR 範圍；是否真刪待 bot 路徑確認，且 `identification.py`（1,107 行）需另評估 |
+| 對應測試 | `tests/test_advanced_vad.py`、`test_vad.py`、`test_channel_manager.py`、`test_pipeline.py`、`test_keyword.py`、`test_speaker.py`、`test_multi_channel_engine.py` 中涉及上述路徑的部分 | — | 退役時一併移除，收集數隨之下降，需重記基線 |
+
+保留（ASR 核心）：`core/engine.py`（`STTEngine`／faster-whisper）、`core/config.py`、`core/schemas.py`、`core/multi_channel_schemas.py`、`pipeline/post_process.py`（幻覺過濾與 OpenCC s2twp）、`MultiChannelSTTEngine.initialize()`／`transcribe_segment()`／`shutdown()`。
+
+**與計畫（M3 列）的差異：**
+
+- 未做 `UEP_STT_CONFIG`、`UEP_MODELS_DIR`：預設設定檔路徑（套件上一層的 `configs/stt_config.yaml`）在遷入後自然落在 `subsystems/echo_stt/`；faster-whisper 的 `download_root: null` 走 HF 快取，實際不依賴 `models/stt/whisper`（僅 transformers fallback 讀該相對路徑）。需要覆寫時再補。
+- 「A3（wav 檔→STT）通過」：以 console `/stt` 對 wav 實跑（CPU、base）完成 ASR 這一段；`/wav` 全鏈（STT→LLM→TTS）仍是 real 模式範圍，待 M5／N3，未做。
+- 「`MultiChannelSTTEngine` 能以新路徑 `prepare`」：由 `/stt` 的 `EchoSttBackend`（內部 `MultiChannelSTTEngine.initialize()`）實際載入驗證；GPU 路徑未驗證（本步未佔用 GPU）。
+- 退役相關測試未移除、AdvancedVAD 等程式未刪（任務限制：bot 仍會走到）。
+- `Entry.py`、`run.bat`、`test.bat` 隨 subtree 進入 `subsystems/echo_stt/`，Core 的 hatch 只打包 `echo_stt/echo_stt`，不影響 import；未處理。
+
+### 5.2.4 M5 TTS 完成紀錄（2026-11-02，THEFANTASIAS，CPU-only；GPU 實跑未做）
+
+**狀態：程式與測試完成，未 push；環境 editable 切換與 GPU 實跑因 bot 執行中而未做（見下）。** 分支 `feature/m5-tts`（`--no-ff` 合回 `feature/subsystem-migration`），簽章 commit：
+
+| commit | 內容 |
+|---|---|
+| subtree merge | `git subtree add --prefix=subsystems/echo_tts ../TestSeparateTTSSystem develop`（不 squash；開工前確認 develop HEAD 仍為 `5626ce8`），導入後 `git commit --amend --no-edit -S` 補簽章 |
+| 遷入整理 | 刪 `experiments/`（74 檔）、`webapp/`（5 檔）、`.ipynb_checkpoints/`、被追蹤的 `.claude/settings.local.json`、`tests/test_blind_webapp.py`；§2.3 的 import 修正（見下）；新增 `echo_tts/config/model_paths.py`、`echo_tts/utils/log_helper.py` |
+| adapter／console | hatch `packages` 加入 `subsystems/echo_tts/echo_tts`；`setup_infer_env.ps1` 移除 `-Tts`；`run_all_tests.ps1` 的 `$migrated` 加 `tts`；`speak_vox`／`speak_indextts` 直接 import Core 內 `echo_tts`；`UEP_INFER_TTS_REPO` 改非必填；console `/tts`、`--tts real|fake` |
+
+**權重盤點（權重不進 Core git）：** TTS repo 追蹤的檔案 380 個，整段歷史最大 blob 為 `uep_reference_v25.wav`（1.3 MB），**沒有被追蹤的大型權重**（無 `.pt`／`.safetensors`／`.bin`／LoRA checkpoint 進 git），subtree 沒把權重歷史帶進來。權重全在 TTS 工作樹的 gitignore 範圍內：
+
+| 資產 | 舊位置（TTS 主工作樹，未動） | 大小 | Core 內如何指到 |
+|---|---|---|---|
+| IndexTTS 2.5 模型 | `TestSeparateTTSSystem/echo_tts/modules/tts_module/checkpoints_v25/` | 8.8 GB | `UEP_TTS_INDEXTTS_DIR` 指到舊 `.../TestSeparateTTSSystem/echo_tts`（版面不變：`modules/tts_module/checkpoints_v25/`、`models/tts/uep_v25.pt`）；未設則沿用套件內建位置（遷入後該處無權重） |
+| IndexTTS 角色特徵／LoRA | `TestSeparateTTSSystem/echo_tts/models/tts/{uep.pt,uep_v25.pt,*_metadata.json}`、`models/lora/gpt_best/` | 12 MB＋16 MB | 同上 |
+| VOX（VoxCPM2 與台灣華語 LoRA） | `%USERPROFILE%\.uep\models\vox\VoxCPM2\`、`lora_tw\step_0000600\`（使用者機器上已存在，4.9 GB；VoxBackend 原本必須由呼叫端經 `UEP_INFER_VOX_CONFIG` 給 `model_dir`／`lora_dir`，TTS repo 內沒有預設） | 4.9 GB | `UEP_TTS_MODELS_DIR`（預設 `%USERPROFILE%\.uep\models\vox`）；`model_dir`／`lora_dir` 未給時 adapter 以 `<根>/VoxCPM2`、`<根>/lora_tw/step_0000600` 補上，明確給的值優先（`VoxBackend` 本身未改，缺值仍丟 `ValueError`） |
+
+VOX 的新位置就是現有位置，不需搬移。**IndexTTS2 的 8.8 GB 搬移由艾斯維爾決定**：要搬時把 `checkpoints_v25/` 與 `models/` 放到新根目錄 `<X>/modules/tts_module/checkpoints_v25/`、`<X>/models/tts/uep_v25.pt`，設 `UEP_TTS_INDEXTTS_DIR=<X>` 即可，不必改程式。過渡期 `run_all_tests.ps1` 在該變數未設時自動沿用舊 TTS repo 的位置（約 7 個 IndexTTS 測試需要權重；M6 可移除）。命名擇一：`UEP_TTS_MODELS_DIR`（VOX）、`UEP_TTS_INDEXTTS_DIR`（IndexTTS2），取代計畫早先建議的 `UEP_TTS_MODEL_ROOT`。
+
+**§2.3 import 修正（R1）：** `from modules.…`／`import modules…` 全數改為 `echo_tts` 絕對路徑或相對 import（`s2mel/modules/{commons,quantize}.py` 改 `.flow_matching` 等相對、`s2mel/dac/utils/__init__.py` 與 facodec `commons.py` 改 `echo_tts.modules.tts_module.s2mel.dac…`、`runtime/indextts_{backend,generate}.py` 改 `echo_tts.modules.tts_module.lite_engine`、`gpt/conformer_encoder.py` 的 `tts_utils` 改 `..tts_utils` 並移除其 `sys.path.insert`）；兩處 `runtime/` 的 `sys.path.insert(0, engine_root)` 移除；`utils.debug_helper` 改為標準 logging（`echo_tts/utils/log_helper.py`）。`default_generation_paths()` 未指定 `project_root` 時改以套件位置推算（不再依賴 cwd 或舊 repo 路徑）。**未改**：`tts_module.py`（舊 `TTSModule` 包裝，依賴 `core.*`，`modules/tts_module/__init__.py` 已註明刻意不 import）仍含 `utils.debug_helper`／`utils.tts_chunker` 的舊 import，屬死碼；`s2mel/modules/quantize.py` 的 `from dac.nn.quantize`（頂層 `dac`）、`s2mel/dac` 的 `audiotools` 為原有的死路徑（環境本就沒有 `audiotools`），執行路徑不經過。
+
+驗證（`-X importtime` 的替代做法）：在 `%TEMP%` 啟動、`echo_tts` 由 Core 解析的行程內 import `vox_backend`、`indextts_backend`、`lite_engine`、`s2mel.modules.commons`、`gpt.conformer_encoder` 後，`sys.modules` 中 **沒有** 頂層 `modules`、`utils`、`tts_utils`、`gpt`、`codec`、`s2mel`、`poise`、`emotion_dynamics`，`sys.path` 無任何含 `subsystems` 的項目，也沒有新增 engine_root。
+
+依賴：echo_tts 宣告的依賴在 Core lock 內全部已有（`inference` extra 含 `voxcpm==2.0.3`、`torch`、`transformers`、`peft`、`omegaconf`、`sentencepiece` 等），`uv lock --check` 無變動，`uv.lock` 未改；`descript-audiotools`、`modelscope` 不在 lock（環境本就沒有，執行路徑不需要）。
+
+**adapter／wiring：** `speak_vox.py`、`speak_indextts.py` 移除 `tts_repo` 參數、`ensure_subsystem` 與 `from . import config`（**`speak_*` 已脫離 `adapters/config.py`**）；原讀 `ECHO_STREAM_TTS_{DEVICE,FP16,USE_ACCEL,QUEUE,SPEED}`、`ECHO_STREAM_VOX_QUEUE` 的 fallback 改為常數預設（device `cuda`、fp16 開、accel 關、indextts queue 2、speed 0.0；VOX queue 12 為 `DEFAULT_QUEUE_SIZE`），Core 一律由 `UEP_INFER_TTS_*` 經 wiring 明確傳入，行為不變。`inference_wiring.py` 的 `default_tts_backend`／`_build_vox_speak` 不再要求 `UEP_INFER_TTS_REPO`，設了忽略並警告一次（與 M3 的 STT 相同），D101 的 VOX 逾時 240 秒與 `recommended_split_policy` 維持。**F1 狀態：`adapters/config.py` 仍被 `input_stt`、`input_multichannel`（`ECHO_STREAM_STT_LANGUAGE`／`_MIN_CONFIDENCE`）與 `memory_echo`（`ensure_subsystem`）使用，這些脫鉤前不能移除；M5 後剩 input 與 memory_echo 兩類。**
+
+**console：** `/tts <文字> [--engine vox|indextts2]`（`uep/console/tts_cmd.py`）：經 Core Speak adapter 合成，寫 `<session-dir>/tts-<engine>-<ms>.wav`（`--session-dir` 預設 `outputs/e2e`），印載入耗時、首音延遲（stream 起算到第一個 chunk）、合成總耗時與 RTF、torch 的 VRAM 配置峰值。未指定 `--engine` 取 `UEP_INFER_TTS_ENGINE`（預設 `indextts2`；跑 VOX 請設該變數或加 `--engine vox`）。GPU 守門沿用 `UEP_E2E_ALLOW_GPU=1`，未設時明確提示需 GPU 並結束該指令，不載入模型。`--mode real` 現在 Think 與 TTS 都真實，`--tts real|fake` 比照 `--think` 獨立覆寫（`--mode real --tts fake` 即 N3 的行為）；`--tts real` 缺 `UEP_E2E_ALLOW_GPU=1` 以 `ConsoleError` 結束（exit 2），且 Host 啟動逾時改為 speak prepare 逾時＋60 秒（VOX 為 300 秒）。測試 `tests/uep/console/test_tts_cmd.py` 9 個、`test_console.py` 2 個，用 fake stage，不載模型。
+
+**環境切換：未執行。** 執行前依指示以 `botctl.py status` 確認：**bot 執行中（PID 38948）**，故不切換、停止該步驟；舊環境 `venv-inference-312` 未動；共用環境 `venv-inference-312-t211` 的 `echo_tts` 仍指向舊 TTS repo（editable）。待 bot 停止後切換步驟與 M3 相同：`uv pip uninstall echo-tts` → `uv pip install --no-deps -e .`（Core 重裝以納入新套件）→ 確認 `editables` 仍在，並檢查 `echo_tts.__file__` 指向 `U.E.P-s-Core/subsystems/echo_tts/echo_tts/__init__.py`。**本步所有測試是以 `PYTHONPATH=<暫存目錄>`（內含一個 junction 指向 `subsystems/echo_tts/echo_tts`）讓 `echo_tts` 先於舊 editable 解析**，未動環境；bot 測試也以同方式跑，效果等同切換後。
+
+**GPU 實跑：未做**（條件「bot 未執行且 GPU 可用」不成立；bot 執行中且 GPU 已用 4.4 GB）。首音延遲／總耗時／VRAM 峰值待 bot 停止後以 `UEP_E2E_ALLOW_GPU=1` 跑 `/tts 你好，這是一句測試語音。 --engine vox` 補記。
+
+驗收數字（`CUDA_VISIBLE_DEVICES=""`，`run_all_tests.ps1` 全套一輪，`PYTHONPATH` 指向 Core 的 echo_tts）：
+
+| 套件 | 結果 | 基線 | 備註 |
+|---|---|---|---|
+| TTS（`subsystems/echo_tts`，在 Core 內跑） | 469 pass／15 skip／0 fail，40 s | 遷入前在 TTS repo（5626ce8）實跑 473／15／0 | 差 4 = 刪除 `test_blind_webapp.py`（7 個）＋新增 `test_model_paths.py`（3 個）；skip 同為 GPU 整合測試 |
+| Core `tests/uep` | 2,385 pass／1 fail，770 s | M3：2,362／1 xfail／1 fail（派工基線 2,373） | 唯一失敗仍是已知的 `test_real_engine_smoke_through_host`；新增 `/tts` 9＋console 2＋vox 預設目錄 1＋wiring 的 TTS 警告 1 等 |
+| EM | 2,166／1／0，376 s | 2,166／1／0 | 一致 |
+| STT | 277／0／0，50 s | 277 | 一致 |
+| Session | 294／18／0，3 s | 294／18 | 一致 |
+| ES（`07e3ff8`） | 1,001 pass／2 fail | 1,003／1 xfail／0 | **2 個失敗是切換效應**：`tests/test_web.py::test_emotion_presets_在_runner_prepare_之前也能從_echo_tts_載入`、`..._找不到_TTS_repo_退回內建表` 靠過濾 meta_path 中名為 `__editable___echo_tts` 的 setuptools finder 來「藏起」共用環境的 echo_tts；echo_tts 改由 Core 提供後，該 finder 不存在，echo_tts 仍可被 import，斷言 `builtin` 失敗。屬 ES 維護線測試的環境假設，非功能退化；ES 不改（凍結），待 ES 端調整測試或接受 |
+| bot（`python -m pytest -q`） | 1,797 pass／7 fail／35 skip，159 s | 1,796／7／35 | 7 個失敗是同一批 yaml 與 dataclass 預設比對；多 1 個 pass 為 bot 自身新增測試 |
+
+import 邊界：既有 `test_import_boundary.py` 已把 `echo_tts` 列入 `SUBSYSTEM_NAMES`（只允許 `uep/stream/adapters/` 與 `uep/echo/*_wiring.py`），console `/tts` 經 adapter 取得 stage、不直接 import；`subsystems/` 反向規則涵蓋 `echo_tts`，全數通過。
+
+**與計畫（M5 列）的差異：**
+
+- 「先合 `tts-model-eval`、`vox-emotion`」：開工前 TTS develop 已是凍結點 `5626ce8`，未再檢查外部工作樹 `TTS-wt-*`；遷入的是 develop 當下內容。
+- 「`default_generation_paths` 接受 `UEP_TTS_MODEL_ROOT`」改為 `UEP_TTS_INDEXTTS_DIR`（IndexTTS2）與 `UEP_TTS_MODELS_DIR`（VOX）兩個變數；`validate_generation_paths` 通過是以 `UEP_TTS_INDEXTTS_DIR` 指向舊 `echo_tts/` 的條件驗證（`test_indextts2_generate_paths` 等 7 個權重測試通過）。
+- 「`UEP_INFER_TTS_ENGINE=indextts2|vox` 兩種都 `prepare` 成功（人工，GPU，一次）」：**未做**（bot 執行中）；兩個引擎的 import 與 `_build_backend` 以測試與 import 檢查驗證，模型載入未驗證。
+- 「384 收集、GPU 機器上 pass／skip 與基線一致」：僅 CPU-only 的 469／15；GPU 項目（`VOX_GPU_TEST=1`）未跑。
+- `Entry.py`、`run.bat`、`test.bat`、`DEVLOG.md`、`docs/` 等隨 subtree 進入 `subsystems/echo_tts/`，Core 的 hatch 只打包 `echo_tts/echo_tts`，不影響 import；未處理（比照 M3）。
+- TTS 主工作樹他人未提交的 `.claude/settings.local.json` 未碰（subtree 導入的是 commit 內容）；Core 內該檔已刪。
+
+### 5.3 驗收基線（M0 實跑結果）
+
+實跑條件：機器 THEFANTASIAS（Windows 11）、2026-11-01 22:53–23:55、共用環境 `~/.uep/venv-inference-312`（Python 3.12.7）、`scripts/run_all_tests.ps1`（Sibling 佈局）。
+**`CUDA_VISIBLE_DEVICES=""`：全程不佔用 GPU**，GPU 測試自動 skip；因此表內 pass／skip 是「CPU-only」基線，**不等於** M5 驗收所需的有 GPU 基線（TTS 的 GPU 項目仍須在目標機器另記）。
+連跑兩次（第 1 次逐項、第 2 次整支腳本一次跑完）；兩次的 pass／skip 一致處標「一致」。
+
+| 子系統 | 工作目錄（遷入後） | 命令（共用環境 Python；腳本額外加 `-p no:cacheprovider`） | 當時 commit（兄弟 repo） | 第 1 次 pass／skip／fail，耗時 | 第 2 次 pass／skip／fail，耗時 | 備註 |
+|---|---|---|---|---|---|---|
+| ES | `subsystems/echo_stream` | `pytest`（`PYTHONIOENCODING=utf-8`） | 第 1 次 `414fe54`；第 2 次 `cbbb5b8`（ES 於兩次之間有新 commit） | 997／0／1（+1 xfailed），199 s | 1001／0／0，201 s | 收集數隨 ES 變動（第 1 次 998 含 1 xfailed，第 2 次 1,001）；第 1 次失敗的 `tests/test_web.py::test_語音_start_會頂掉舊_session` 為本機 loopback 的 `ConnectionAbortedError [WinError 10053]`，第 2 次同類錯誤改出現在 Core 的 `test_cycle2_audit_b`，見下方 flaky 說明 |
+| EM 三包 | `subsystems/echo_memory` | `pytest`（pyproject addopts 原樣） | `f0c62e9` | 2,166／1／0（12 deselect），465 s | 2,166／1／0（12 deselect），469 s | 一致；總收集 2,179，與 §1.1 的 2,167＋12 對得上 |
+| STT | `subsystems/echo_stt` | `pytest` | `6d3ae9a` | 271／0／0，83 s | 271／0／0，48 s | 一致 |
+| Session | `subsystems/echo_thought_core` | `pytest -o addopts= -m "not e2e"`（保留 e2e 排除、去掉 `--cov`） | `8c0e950` | 294／18／0（15 deselect），9 s | 294／18／0（15 deselect），9 s | 一致；294＋18＋15＝327 |
+| TTS | `subsystems/echo_tts` | `pytest` | `100f214`（工作樹僅 `.claude/settings.local.json` 未提交） | 384／7／0，43 s | 384／7／0，47 s | 一致；GPU 被隱藏，7 個 skip 含 GPU 與 importorskip；pass 384＋skip 7＝391，比 §1.1 的收集數 384 多 7，原因未追查（可能是之後新增測試） |
+| Core | repo 根（`feature/subsystem-migration`，`21f8660`） | `pytest tests/uep` | `21f8660` | 1,492／0／1，602 s | 1,491／0／2，610 s | 收集 1,493（§1.1 寫 1,490，已增）；**不穩定，見下** |
+| bot | bot repo | `pytest tests/ -q` | `a215ee0` | 未測 | 未測 | M0 派遣範圍只含五個子系統與 Core；M1 前補 |
+
+Core 的兩類失敗（非遷移造成，M1 起須當作「已知基線雜訊」處理）：
+
+1. `tests/uep/test_p3_s6_memory_wiring.py::test_real_engine_smoke_through_host`：**兩次都失敗**（`store` 回 `timeout` 而非 `stored`）。該測試載入真實 echo_memory embedding；`CUDA_VISIBLE_DEVICES=""` 下改走 CPU，冷啟動超過 MemoryHost 逾時。[推論] 與隱藏 GPU 有關，未在有 GPU 條件下驗證（本次不得佔用 GPU）。M2 的驗收要在有 GPU 的條件下再確認一次。
+2. `test_cycle2_audit_b.py::test_resolve_recovery_api_requires_token_and_records_operator`（第 2 次）與 ES `test_web`（第 1 次）：同一個 `ConnectionAbortedError [WinError 10053]`，本機 loopback HTTP 連線被中止，隨機出現、重跑通過，視為 flaky。
+3. Core 整套約 10 分鐘，貼近 600 秒的單項上限；腳本因此給 Core 獨立的 `-CoreTimeoutSec`（預設 1800）。曾有一次 Core 在 `test_acceptance_v21` 附近停滯 50 分鐘以上（被我手動中止，單獨重跑該檔 9 秒完成），原因未查明，疑為共用 PostgreSQL 側的鎖或連線殘留；之後兩次完整跑都正常。
+
+| 子系統（舊表保留） | 收集數 [執行] |
+|---|---|
+| ES | 999（M0 前）；現 1,001 |
+| EM 三包 | 2,167（12 deselect） |
+| STT | 271 |
+| Session | 327 |
+| TTS | 384 |
+| Core | 1,490（現 1,493） |
+
+#### M0 佈局 spike 結論（ADR-M1 通過條件）
+
+**結論：可行。** 在一次性空殼專案（scratchpad，共用環境未動）上，Core `pyproject.toml` 以 hatch `dev-mode-exact = true` 並把 `packages` 列為「套件本身的路徑」，`uv pip install -e .` 後：
+
+- `sys.path` 不含任何 `subsystems/<name>/`（`.pth` 只有一行 `import _editable_impl_uep`，由 `editables` 的 `RedirectingFinder` 逐個套件名映射到實際位置）。
+- `import tests`、`import configs`、`import Entry` 仍解析到 Core 根；子系統內的同名 `tests/`、`configs/`、`Entry.py` 不外洩。
+- `echo_stream`、`echo_memory`、`llm_integration`、`mcp_server`、`echo_stt`、`echo_thought_core`、`echo_tts` 全部解析到 `subsystems/<name>/<pkg>/__init__.py`；子模組（`echo_stream.sub`）也可 import。
+
+M1 起 Core `pyproject.toml` 的對應設定（本步只記錄，未改）：
+
+```toml
+[tool.hatch.build.targets.wheel]
+packages = [
+    "uep",
+    "subsystems/echo_stream/echo_stream",
+    "subsystems/echo_memory/echo_memory",
+    "subsystems/echo_memory/llm_integration",
+    "subsystems/echo_memory/mcp_server",
+    "subsystems/echo_stt/echo_stt",
+    "subsystems/echo_thought_core/echo_thought_core",
+    "subsystems/echo_tts/echo_tts",
+]
+dev-mode-exact = true
+```
+
+注意事項：
+
+- `dev-mode-exact` 在執行期依賴 `editables`（hatch 已把 `editables~=0.3` 寫入 wheel 的 `Requires-Dist`），但 spike 中 `uv pip install -e .` **沒有自動裝進去**，導致 `.pth` 載入失敗（`ModuleNotFoundError: editables`）、套件不可 import。M1 須把 `editables` 加進 Core 的 dependencies／`uv.lock` 並確認 `uv sync` 會裝；setup 腳本也要驗證 `import editables`。
+- 子系統的 `tests/` 在 pytest 內仍會因 rootdir／`tests/__init__.py` 把 `subsystems/<name>/` 在該行程內 prepend 到 `sys.path`（現在兄弟 repo 就是如此）；各自獨立行程跑即不互相影響，這是 §5.3 下方「獨立進程」的另一個理由。
+- 以上僅驗證空殼；真實子系統內部的路徑假設（`.env`、`configs/`、`parent.parent`）仍須在各步驟處理。未測 hatch 預設（非 exact）模式的 `.pth` 內容，因 exact 已通過，不需要退回攤平佈局（B 變體）。
 
 > 為什麼要各自獨立進程：五個子系統的 `tests/` 都叫 `tests`（且 Core 還有 `tests/__init__.py`），每個有自己的 `conftest.py`；同進程混跑會互相遮蔽或覆蓋 fixture。獨立進程也讓各自的 `addopts` 與標記保持原樣。
 
 ---
+
+### 5.4 ES 併核（N 系列，取代舊 M4；D104／D105）
+
+**原則**：(1) 目標 `uep/stream/`，單向依賴——`uep/stream/` 不 import `uep` 其他部分，`uep/echo/`（Host）依賴它。(2) 純層（contracts＋core）整包一次搬，不逐檔。(3) adapter 不原樣搬，隨對應子系統遷入時重寫成 Core 版，置於 `uep/stream/adapters/`。(4) 淘汰項列明，不留灰色地帶。
+
+**構件去留**（來源 `Echo-Stream/echo_stream`）：
+
+| ES 構件 | 去向 |
+|---|---|
+| `contracts/*` | `uep/stream/contracts/`（與 Core 層契約 `uep/contracts/` 分開命名） |
+| `core/{coordinator,channel,splitter,tracer,policies}` | `uep/stream/` 同名檔 |
+| `core/{vad,channel_engine,multichannel}` | `uep/stream/audio/`（M3 STT 前端主體） |
+| `core/turn_detector` | `uep/stream/` 暫留，F3 與 `uep/turn` 合併 |
+| `core/{gap_filler,emotion}` | 併入但不接線（接線屬後續功能） |
+| `core/pipeline.PipelineRunner` | **淘汰**（N5 前評估；Core 走 TurnCoordinator） |
+| `core/standalone`、`core/dream_scheduler` | **淘汰**（Core 有 ticket 簽發與自己的 dream loop，F4） |
+| `sinks.py`、`sources.py` | `uep/stream/io/`（console 直接使用） |
+| `fakes/` | 併入 `uep/fakes`／`tests/uep` 支援檔，去重 |
+| `adapters/think_llm` | `uep/stream/adapters/think_llm.py`（N3 完成；設定改 `ThinkConfig`／`UEP_LLM_*`，模組名沿用） |
+| `adapters/input_*` | 隨 M3，只留 ASR 呼叫 |
+| `adapters/speak_*` | 隨 M5，§2.3 import 修正為前置 |
+| `adapters/memory_echo` | N5 瘦身，與 Access Layer 重複部分淘汰，只留 echo_memory 呼叫 |
+| `adapters/stt_discord`、`discord_resample` | **不進 Core**（屬 Discord Adapter／bot） |
+| `adapters/output_guard`、`session_store` | `output_guard` 隨 think 保留；`session_store` 淘汰（N3） |
+| `config.py`、`defaults.py`、`cli.py` | **淘汰**（設定併 `UepSettings`＝F1；cli 的 `*-check` 改寫為 console 的 `/check`） |
+| `web/server.py` | 暫不動，之後作 Website Adapter 起點（Q7），不在本里程碑 |
+
+**匯入邊界新規則**（改 `tests/uep/test_import_boundary.py`）：N1 後 `uep/` 內 `echo_stream` 全面禁止；`echo_memory`、`echo_stt`、`echo_thought_core`、`echo_tts`、`llm_integration` 只允許 `uep/stream/adapters/` 與 `uep/echo/*_wiring.py`；`uep/stream/` 其餘子目錄禁止 import 子系統與 `uep` 其他部分。
+
+**分步**：
+
+| 步 | 內容 | 驗收 | 資源 |
+|---|---|---|---|
+| N1 純層搬入 | contracts＋core 純檔搬進 `uep/stream/`；ES 對應測試搬進 `tests/uep/stream/`；host／sink／policy／outcomes 與 `inference_wiring` 改接新契約；**仍留在 ES 的現存 adapter（`think_llm`、`speak_*`、`input_*`、`memory_echo`）須同步處理**（薄 shim 繼承新型別，或未重寫版原樣搬入 `uep/stream/adapters/`，較簡） | `tests/uep` 全綠；搬入測試與 ES 基線數字一致；邊界測試綠；`uep/` 內 `echo_stream` 0 import；`isinstance` 煙霧測試 | CPU |
+| N2 Console v0（fake）**（已完成，見 §5.5 落地）** | §5.5；用 fakes 跑 A0 | 腳本化 A0 通過；人工跑一次 console | CPU＋PostgreSQL |
+| M3 STT | 見 §5.2（D103 範圍） | 271 測試同基線；A3 | whisper 2.9 GB，GPU 或 CPU（CPU 慢，未量測） |
+| N3 Think 重寫**（已完成，見下方 N3 落地）** | 設定改 `ThinkConfig`／`UEP_LLM_*`，session_store 淘汰、output_guard 保留 | A1（文字→真 LLM）通過 | API 金鑰，CPU |
+| M5 TTS | 見 §5.2；speak adapter 進 `uep/stream/adapters/speak_*.py` | A2、A4 | GPU，9 GB 權重 |
+| N5 記憶 adapter 瘦身 | `memory_echo` 去重；**切換 bge-m3（D103；Q5：先切再做 A5，用全新資料目錄，免重建舊索引）** | A5；記憶測試同基線 | embedding CPU 可，GPU 較快 |
+
+順序理由：N1 必須在 M3 前（M3 消費 `uep/stream/audio`）；N2 緊接 N1，讓驗收工具先於子系統長大，之後每遷入一個子系統多通過一個情境；N3 與 M3 無相依，可並行。ES repo 轉 bot 維護線、不加功能（D105 Q2）；bot 改走 Core 介面（B0–B3）後封存。
+
+**型別雙身分風險（N1 最大風險）**：若 Core 改用 `uep/stream/` 的契約、adapter 仍從 `echo_stream` 取，同名 dataclass（`AudioChunk`、`CancellationToken` 等）成為兩個不同型別，`isinstance`／序列化會靜默失效 [推論]。對策：N1 以「契約＋全部現存 adapter」同步切換為單位，不得分步；驗收含 `isinstance` 煙霧測試。
+
+**N1 開工前檢查項（設計稿未驗證處，由探索代理核對）**：
+
+1. `output_guard`、`session_store`、`gap_filler`、`emotion` 的 Core 接線需求。
+2. ES 測試中哪些屬純層可搬。
+3. `memory_echo` 與 Access Layer 的精確重複範圍。
+4. `inference_wiring` 的 `UEP_INFER_*_REPO`：M3／M5 前 STT／TTS 仍靠它，console 在此之前只能 fake 或舊路徑（A3／A4 等 M3、A2 等 M5）。
+5. EnergyVad 為「Phase 3 固定閾值」、Smart Turn v3 未接，A4 真實麥克風品質可能不足，須預留調參或接語意 VAD 的時間。
+6. Core embedding 設定仍是 bge-small-zh 512 維（`uep/config.py`），bge-m3 尚未落地；Qwen3-Embedding 待 transformers ≥4.51。
+7. VRAM 需求與 TTFA 在 Core 路徑的增量只有 bench 腳本定義（`dispatch_increment` 預算 +150 ms），未量測；PostgreSQL 是否有 JSONB 等專屬語法使 sqlite 不可行，未驗證。
+8. ES 在 N1 期間仍可能有提交，人工移植（Q2）。
+
+**N1 開工核對結果（2026-11-02；ES develop 07e3ff8，Core `feature/subsystem-migration` b856b25）**：八項皆未推翻前提；與計畫表不同處（1、2、3）已在落地時調整，下方「落地」段記錄。
+
+1. **四構件**：
+   - `emotion` 被 think adapter 直接使用（`think_llm.py:61` `extract_style, marker_prompt`），不是「併入不接線」；隨 think 一併接線，併入 `uep/stream/emotion.py`。
+   - `output_guard` 由 `think_llm.py:71` 引入、`think_llm.py:402` 建構（`OutputGuard.from_config()`，設定鍵 `output_guard.py:22-23`）；Core 沒有獨立接線需求，隨 think adapter 走，N3 決定去留。
+   - `gap_filler` 只被 `pipeline.py:40` 與 `web/server.py:60` 使用；`TurnCoordinator` 不接（`coordinator.py:85` 明寫），Core 無接線需求，併入不接線。
+   - `session_store` 只有 `web/server.py:2079` 使用（唯一 import `echo_thought_core.session_store` 的地方，`session_store.py:17,38`）；Core 沒有呼叫端，原樣搬入、不接線，N3 決定去留。
+2. **ES 測試純度**：ES `tests/` 共 1003 pass＋1 xfail。純層（contracts／core／fakes）與 adapter 測試（皆以 fake backend 驅動，不載模型）搬入 `tests/uep/stream/`（39 檔，835 pass＋1 xfail）；不搬：`test_config`(7)、`test_dream_scheduler`(12)、`test_web*`(56)、`test_discord_*`＋`test_stt_discord`(84)、`test_import_boundary`(6) 共 165；`test_gap_filler` 的 defaults／web.server 三項(3)。1003+1−165−3＝836 與搬入數一致。Core 的 pytest 需加 `asyncio_mode = "auto"`（ES 測試依賴；`pyproject.toml`）。
+3. **`memory_echo` 與 Access Layer 重複範圍**：確定重複的是 `member_recall` schema（`uep/memory/access.py:55-72` 對齊 `memory_echo.py:86`）與工具類別白名單（`access.py:~50` `TOOL_CLASSES`）；Access Layer 透過 `MemoryRuntime.adapter_call`（`access.py:98`）呼叫 adapter，不重複實作引擎呼叫。`uep/echo/memory_wiring.py:70,94` 是 `memory_echo` 在 Core 內的唯一消費者。未逐函式比對，精確去重留 N5。
+4. **`UEP_INFER_*_REPO`**：`uep/config.py:44-47` 定義；`inference_wiring.py:263`（TTS 必填）、`:282`（Session 選填覆寫）、`:426`（STT 必填）。M3／M5 前仍必須；N1 不動。console 在 M3／M5 前只能 fake 或沿用此路徑。
+5. **EnergyVad**：`uep/stream/audio/vad.py:1-6` 自述「Phase 3 固定閾值」，語意 VAD 未接；A4 真實麥克風調參／接 Smart Turn 的時間仍需預留。
+6. **Core embedding**：`uep/config.py:39-40` 仍為 `sentence-transformers`／`BAAI/bge-small-zh-v1.5`；bge-m3 尚未落地，屬 N5。
+7. **VRAM／TTFA 增量**：只有 `scripts/bench_inference_s6.py:9` 定義 `dispatch_increment`（預算 +150 ms），未量測；PostgreSQL 專屬語法已確認（`uep/context/models.py:22,74` 與 migrations 大量使用 `JSONB`），sqlite 不可行，與 Q6 一致。
+8. **ES 在 N1 期間的提交**：自 Core 上次對齊基準 e31eac0 起，ES develop 已有 20 筆提交（含 VOX adapter、STT 補強、關於我工具）；N1 以 07e3ff8 為來源複製，純層差異僅 `multichannel.py`、`splitter.py`、`style.py`。之後 ES 的提交人工移植（Q2）。
+
+**N1 落地（2026-11-02，`feature/n1-stream`）**：與 §5.4 去留表的差異：
+
+- **`core/pipeline.py`、`gap_filler.py` 暫留**（`uep/stream/pipeline.py`、`gap_filler.py`）：ES 的 think／speak／scenario 測試（約 10 檔）以 `PipelineRunner` 當驅動，淘汰前先留；Core 路徑不使用，N5 前評估淘汰並同步改寫那些測試。`dream_scheduler.py`、`standalone.py` 檔案淘汰。
+- **`StaticPolicySource`、`StandaloneTicketIssuer`** 併入 `uep/stream/policies.py`：`TurnCoordinator` 預設依賴前者（原在 `standalone.py`），後者是 coordinator 測試的簽發器。
+- **`config.py` 隨 adapters 搬為 `uep/stream/adapters/config.py`（過渡）**：八支 adapter 依賴它讀 `ECHO_STREAM_*`／`OPENAI_*`；`.env` 查找根由 ES repo 根改為 Core repo 根（環境變數優先的行為不變）。F1 併入 `UepSettings` 後移除。`cli.py`、`defaults.py` 未搬。
+- **`fakes/`** 置於 `uep/fakes/stream/`（與 Core 既有 fakes 分開，無重複構件需去重）。`sinks.py`、`sources.py` 置於 `uep/stream/io/`。`stt_discord`、`discord_resample`、`web/` 未搬。
+- **adapters 以「原樣搬入」處理**（不寫薄 shim）：`think_llm`、`speak_indextts`、`speak_vox`、`input_stt`、`input_multichannel`、`memory_echo`、`session_store`、`output_guard` 置於 `uep/stream/adapters/`，僅改相對 import；`uep/echo/*` 與測試全部切到 `uep.stream`，`uep/` 內 `echo_stream` 0 import。型別雙身分由 `tests/uep/stream/test_type_identity.py` 鎖住（adapter 產物 `isinstance` Core 版契約；獨立行程匯入 `uep.stream`／`uep.echo` 全部子模組後 `echo_stream` 不在 `sys.modules`）。
+- 邊界測試（`tests/uep/test_import_boundary.py`）改為：`echo_stream` 在 `uep/` 全面禁止；子系統只允許 `uep/stream/adapters/` 與 `uep/echo/*_wiring.py`；`uep/stream/` 不得 import `uep` 其他部分（含逸出的相對 import），非 adapters 子目錄不得 import 子系統。
+
+**N3 落地（2026-11-02，`feature/n3-think`）**：Think 段改為 Core 版。
+
+- **盤點**：`think_llm.py` 依賴＝`echo_thought_core`（僅 `build_backend`／`to_messages` 兩處 import，BackendRegistry 提供 openai／gemini／ollama，OpenAI 相容 client 在其內）、`uep.stream` 內的 `contracts`／`emotion`（`extract_style`、`marker_prompt`）／`splitter`／`tracer`、`output_guard`，以及 `adapters/config.py`（讀 `ECHO_STREAM_LLM_*`、`OPENAI_*`、prompt cache key、output guard 開關）。`llm_integration` 不在 think 路徑（0 import）；`memory_echo` 只以 `MemoryRetriever` Protocol 注入（recall 工具由 `uep/echo/memory_wiring.py`／Access Layer 提供，Think 不 import）。`emotion` 保留並接線。
+- **接線現況**：`uep/echo/inference_wiring.py` 的 `default_think_backend` → `build_backend`，`build_inference_wiring` 組 `LLMThinkStage(llm, system_prompt=..., split_policy=...)`。`recommended_split_policy` 由 wiring 在 TTS 引擎為 vox 時取 `speak` stage 的建議值，以 `setdefault` 注入 `split_policy`；N3 不改此注入點。
+- **上下文責任（D72 已裁決 (a)，無衝突）**：Think 自己 retrieve 並組 prompt（並行檢索與 prompt cache 的延遲最佳化），Core 事後登記；本步不動這個責任劃分，也不把 `history_limit` 佔位歷史換成 ContextManager。
+- **重寫範圍（保守，行為不變）**：adapter 不再讀環境變數。設定載體 `ThinkConfig`（`uep/stream/adapters/think_config.py`，frozen dataclass，`api_key` 不進 repr）由 `UepSettings.think_config()` 解析後注入 `build_backend(config=...)`、`LLMThinkStage(config=...)`；`uep/stream/` 仍不 import `uep` 其餘部分。命名：`UEP_LLM_{PROVIDER,MODEL,API,REASONING_EFFORT,MAX_TOKENS,TEMPERATURE,API_KEY,PROJECT,ORGANIZATION,BASE_URL,PROMPT_CACHE_KEY,OUTPUT_GUARD,OUTPUT_BLOCKLIST_EXTRA}`；順序為 `UEP_LLM_*` → `UEP_INFER_LLM_{PROVIDER,MODEL}`（既有）→ 舊名 `ECHO_STREAM_LLM_*`／`ECHO_STREAM_OUTPUT_*`／`OPENAI_*`（每個舊名警告一次，日誌不含值）→ 預設（與 ES 相同：openai／gpt-5.6-luna／chat／high／1024）。金鑰只從環境變數或 Core `.env`；provider 為 openai 且缺金鑰時 `ThinkConfigError`（繁中，只提變數名）。
+- **去留**：`output_guard` 保留（隨 think 走，開關／追加詞改走 `UEP_LLM_OUTPUT_GUARD`／`UEP_LLM_OUTPUT_BLOCKLIST_EXTRA`，`from_config` 移除）；`session_store` **淘汰**（Core 零呼叫端，只有 ES `web/server.py` 用過）連同其測試；`adapters/config.py` 的 think 部分已脫鉤，檔案仍因 `speak_*`／`input_*`／`memory_echo` 使用而留到 M5／N5／F1 移除（F1 條件改為這三者全脫鉤）。**M5 後 `speak_*` 已脫鉤；剩 `input_stt`、`input_multichannel`、`memory_echo` 三者仍 `from . import config`，F1 移除條件只剩 input（`ECHO_STREAM_STT_*` 讀取）與 memory_echo（N5）。（N5 已全數脫鉤並刪除 `config.py`，見 N5 落地。）**
+- **模組名**：沿用 `think_llm.py`（表中原寫 `think.py`）——改名要動約 20 個測試的 import 與 `test_type_identity` 清單，沒有行為收益，不做。
+
+### 5.5 Core 端到端驗收（D104／D105 Q3、Q6）
+
+**里程碑**：進入工作層（工具層）實作前，須先達成 Core 端到端可驗收——輸入到輸出整條由 Core 運行。現況：Core 決策層完整（`uep/turn`、`presence`、`control`、`output`、`tasks`、`db`、`EchoPipelineHost`），但**沒有可執行入口**（`uep.endpoint.__main__` 只有控制面；`bench_inference_s6.py --mode core` 未補齊），內層 sink 只有注入點、無真實實作。
+
+**介面**：CLI `python -m uep.console`，in-process 組裝 `assemble_core(echo=EchoPipelineHost(...))`，不另起 socket；內層 sink 由 console 提供（寫 `outputs/e2e/<turn>/<n>.wav`，`--play` 加播放，沿用 `uep/stream/io`）。UI 留給之後的 Website Adapter，屆時是第二個平台而非驗收工具。
+
+**指令**：`/say <文字>`（→ `submit_utterance`）、`/wav <檔>`（→ `feed` 分塊）、`/mic`、`/cancel`（barge-in）、`/status`（`InferenceWiring.status()`＋Presence）、`/trace`（`LatencyTracer`：STT／LLM 首句／TTS 首段／TTFA）、`/mem <查詢>`、`/check llm|tts|stt|mem`、`/quit`。無指令的輸入行等同 `/say`。旗標：`--fake`、`--no-tts`、`--no-stt`、`--session-dir`。啟動守門沿用 bench 做法：真實 GPU 路徑需 `UEP_E2E_ALLOW_GPU=1`，未給時只允許 fake／API 路徑。
+
+**三層隔離**（參照 Legacy `devtools/debug_api.py`「隔離模組做測試」的目的，不沿用其程式——它依賴 Legacy 模組與全域單例）：
+
+| 層 | 內容 |
+|---|---|
+| (a) 子系統隔離 | STT、TTS、EM、Session／Think 經其公開 API 或 `uep/stream/adapters/` 單獨組裝執行，不經 Core |
+| (b) Core 隔離 | `uep/turn`、`presence`、`output`、`tasks` 等以 fake stage 驅動 |
+| (c) 端到端 | Core＋Host 全接 |
+
+**資料層**：要求開發機 PostgreSQL（`assemble_core` 需要 `session_factory`／`UEP_DATABASE_URL`），不另做 sqlite／記憶體模式，避免第二套資料層行為。
+
+**驗收情境**：
+
+| # | 情境 | 需求 | 自動化 |
+|---|---|---|---|
+| A0 | 文字→fake think→fake speak→wav（`submit_utterance`→Coordinator→AdmittingSink） | CPU、PostgreSQL | pytest |
+| A1 | 文字→真 LLM→（fake TTS）文字串流 | CPU、API 金鑰 | 手動（LLM 可 mock 後自動） |
+| A2 | 文字→LLM→TTS 播放／存檔，TTFA 報告 | GPU（9 GB 權重；VRAM 以 bench 為準，未驗證） | 手動，env 門檻 |
+| A3 | 音檔→STT→LLM→TTS（`/wav`） | GPU（CPU whisper 可行但慢，未量測） | 手動 |
+| A4 | 麥克風→STT→LLM→TTS，說話中插話（`/mic`、`/cancel`） | GPU＋耳機（無回音消除，外放會自我觸發而假失敗） | 手動 |
+| A5 | 記憶：「我養了貓叫小橘」→ 換 session →「我的貓叫什麼」 | embedding CPU 可；資料目錄用臨時；bge-m3 切換後做 | fake embedder 自動＋真實手動 |
+| A6 | 多人定址：非對 UEP 的發話不回應；喚醒詞後回應 | CPU | pytest 為主 |
+| A7 | 全域 Stop／降級：說話中 Stop 立即靜音；拿掉 TTS 降為文字回應 | CPU（降級）／GPU（Stop 實機） | pytest＋手動 |
+| A8 | 延遲報告：TTFA 與 ES 基線（約 5.1 s，2026-08-20 實測）對照 | GPU | 手動，記錄不設硬門檻 |
+
+STT／TTS／embedding 同卡共存壓力（D90）列為 A2–A4 的觀察項。每遷入一個子系統就多通過一個情境：N2→A0、N3→A1、M3→A3、M5→A2／A4、N5→A5，A6／A7／A8 隨之補齊。
+
+**N2 落地（2026-11-02，`feature/n2-console`）**：`python -m uep.console` v0 完成，fake 模式為唯一完整支援（A0 通過）。
+
+- 程式：`uep/console/`（`__main__.py` 入口與 UTF-8 stdio、`app.py` 參數與 REPL、`commands.py` 指令層、`rig.py` 組裝）；測試 `tests/uep/console/test_console.py`（以程式呼叫 `Console.execute`，不走 subprocess）。console 屬 uep 內部，只 import `uep.*`，不 import 子系統。
+- 實際指令：`/say <文字>`（無指令輸入行同）、`/wav <路徑>`（fake STT：讀 wav 時長後產生固定格式 utterance，不做辨識）、`/cancel`（對進行中 turn 呼叫 `coordinator.cancel_turn`）、`/status`（Presence／Runtime／Interaction／Health、turn 狀態、Host 指標）、`/trace [all]`（`LatencyTracer` 報告＋journal 事件）、`/mem`（fake 模式未組裝記憶）、`/mic`（未實作）、`/help`、`/quit`。(a) 子系統隔離群 `/stt`、`/tts`、`/llm`、`/check` 只留骨架，回「尚未支援」，待 M3／M5。
+- 旗標：`--mode fake|real`（`real` 回「尚未支援」，exit code 2）、`--fake`、`--no-tts`（丟棄音訊）、`--no-stt`（保留旗標，v0 無作用）、`--session-dir`（預設 `outputs/e2e`，已加入 `.gitignore`）。`--play` 與 `UEP_E2E_ALLOW_GPU` 守門待 real 模式。
+- 輸出：每個 turn 寫 `<session-dir>/<turn_id>/<n>.wav`；`host_epoch.json` 也在 `--session-dir`。
+- 資料層：連線沿用 `UEP_DATABASE_URL`（`uep/config.py`，env 優先於 `.env`）；連不上、未設定或尚未 `alembic upgrade head` 皆以繁中訊息結束（exit 2），訊息不含連線字串。console 直接使用該庫，不自動 migrate。
+- 與 §5.5 原設計的差異：v0 不含 `--play`、`/mem` 查詢、`/check`；`/wav` 不分塊 `feed`（fake 模式無真輸入 stage）。
+
+**N3 落地（2026-11-02，`feature/n3-think`）**：A1（文字→真 LLM→fake TTS）可跑。
+
+- 旗標：`--mode real` ＝ Think 真實，STT／TTS 在 M3 接線與 M5 前仍為 fake（`/wav` 本來就是 fake STT）；`--think real|fake` 獨立覆寫（`--think real` 配預設 fake 模式＝「Think 真實、STT／TTS fake」，擇簡不另設 `--no-tts` 組合語意；`--no-tts` 仍只丟棄音訊）。啟動時即建 backend，缺金鑰 exit 2 並指出 `UEP_LLM_API_KEY`。Think 是 API，不需 `UEP_E2E_ALLOW_GPU`。
+- `/llm <文字>`：(a) 子系統隔離，直接用 `ThinkConfig`＋`LLMThinkStage` 呼叫（不經 Core、無記憶、無歷史），印 provider／model、每句 `[n] +秒`、首句延遲、句數、總耗時；缺金鑰、後端建立失敗、串流失敗各自印原因不中止 console。實作 `uep/console/llm_cmd.py`，測試用 fake stage，不打真實 API。
+- 仍待：`/check`。`/tts` 已於 M5 落地（見 §5.2.4）。
+
+**N5 落地（2026-11-02，`feature/n5-memory`）**：Core 記憶路徑切 bge-m3，memory_echo 與 Access Layer 去重，F1 的 `adapters/config.py` 移除。
+
+- **embedding**：`UepSettings.memory_embedding_backend／model` 預設改 `sentence-transformers`／`BAAI/bge-m3`（1024 維，ST 本機直載，脫離 Ollama）；`UEP_MEMORY_EMBEDDING_*` 仍可覆寫。Core 沒有預設記憶資料目錄（`UEP_MEMORY_DATA_ROOT` 未設即 fail-closed），所以「新資料目錄」是部署設定：換 bge-m3 時把 `UEP_MEMORY_DATA_ROOT` 指到全新路徑（建議舊名加 `-bgem3`），舊目錄不動不刪、不重建。守門：`EchoEngineFactory` 建 engine 前以 `check_embedding_index` 讀 `embedding_index.json`（沒有 manifest 的舊快照看 `embeddings.npy` 維度），model／維度與設定不符就拋 `EmbeddingIndexMismatch` 拒絕建 engine（原 EM 行為是判定索引需重建而改寫舊資料）。
+- **檢索下限**：EM 預設 `RETRIEVAL_MIN_SIMILARITY=0.35` 維持，不調。實測（本機 bge-m3 vs bge-small-zh，12 條事實、7 組相關查詢、8 句無關查詢，raw cosine）：bge-m3 相關目標 0.49–0.69（平均 0.575）、無關最近鄰 0.30–0.56（平均 0.499）；bge-small 相關最低 0.33（平均 0.484）、無關平均 0.421。整體上移約 0.08–0.09，且相關／無關重疊大，單靠門檻無法分離（0.5：召回 0.86／誤中 0.75；0.55：0.57／0.25），樣本小、事實模板相近，僅作方向。結論：先維持 0.35，把收緊的旋鈕開出來（`UEP_MEMORY_MIN_SIMILARITY`，未設＝沿用 EM；`EchoEngineFactory(min_similarity=)` 寫入 EM 全域設定，因 Access Layer 不逐次傳）；A5 真資料手動驗收後再校準，候選 0.5–0.55。ES adapter 的 `DEFAULT_MIN_MATCH=0.45` 只在 adapter 自己的 `retrieve` 生效，Core 讀取路徑不經它。
+- **去重**（逐函式比對 memory_echo 1609 行與 access.py 645 行）：重複的只有常數與小函式，已收為單一來源 `uep/stream/contracts/memory_tools.py`（`MEMBER_RECALL`、`MEMBER_RECALL_SCHEMA`、成員標籤常數、`DEFAULT_TOOL_MAX_CHARS`、`declares_param`），Access Layer 再匯出為權威（`access.MEMBER_RECALL_SCHEMA is memory_tools…`），memory_echo、`memory_wiring`、`echo/tools.py` 改引用；原「與 ES schema 對照」的漂移測試改為同一物件斷言。`EchoMemoryToolBackend.definitions` 與 adapter `tool_definitions` 共用 `function_tool_definition`（force_remember 描述覆寫只寫一處）。**不重複的實作留著**：adapter 的 `_member_recall`／resolver 與關於我三工具（`retract/opt_out/correct_about_me`）是 adapter 層另一條路徑（以 `context["about_me"]`、`about_refs` 串接），Core 路徑 `enabled_tools` 只開 `deep_recall`、`force_remember`，其餘是 Core 零呼叫但有 ES 沿用測試（約 850 行）覆蓋；與 Access Layer 的 `_execute_member_recall`（直接打 engine、用 roster）是兩種實作而非重複程式，合併牽涉 about_me 進 `TOOL_CLASSES`，仍歸 F2／TL1，不在 N5 做。
+- **F1 狀態**：memory_echo 不再呼叫 `ensure_subsystem`（echo_memory 在 Core 內，`build_engine` 的 `memory_repo` 參數移除），`input_stt`、`input_multichannel` 的 `ECHO_STREAM_STT_LANGUAGE`／`_MIN_CONFIDENCE` 與 memory_echo 的 `ECHO_STREAM_MEMORY_*` 改為只讀環境變數的區域 `_env` 小函式。**`uep/stream/adapters/config.py` 已刪除**（`.env` 不再被這些 adapter 讀取；Core 的 `.env` 沒有這些鍵，Core 路徑設定一律由 wiring 明確傳入，行為不變）。F1 剩餘：`ECHO_STREAM_*` 環境變數鍵本身尚未映射進 `UepSettings`（Q13 (a) 相容層待排程），但已無檔案層依賴。
+- **延遲量測（A5，§5.5）**：新增 `/mem embed <文字> [--device cpu|cuda] [--n 次數]`（`uep/console/mem_cmd.py`；走 `EpisodicMemory.generate_query_embedding` 同一條路徑，暫存目錄、不碰記憶資料）。**CPU（THEFANTASIAS，bge-m3 ST fp32，50 次）**：載入（首次呼叫含載模型，權重已在 HF 快取）16–18 秒；載入後首查 83–90 ms；穩態 p50 83–85 ms、p95 126–135 ms、max 143–221 ms；維度 1024。對照 Ollama 查詢上限 2.0 秒（bot 實測 Ollama bge-m3 embed 2004 ms 而降級）：穩態與首查都遠低於上限（p95 約 1/15），主要風險改為**冷啟動 16–18 秒遠大於 Access Layer 檢索逾時 3 秒**——ST 路徑不套 EM 的 embedding 逾時，首次檢索會被載入卡住；Core 組裝記憶時必須在 Host 啟動就暖機（`engine.warmup()`／adapter `warmup()`），目前 Core 尚無真記憶的 console 組裝，列為 A5 手動驗收前須接線。**GPU：待補**（艾斯維爾使用 GPU 期間不量測；補量時 `UEP_E2E_ALLOW_GPU=1 /mem embed <文字> --device cuda`）。
+- **A5 自動化**（`tests/uep/test_n5_memory.py`）：新資料目錄下 寫入→recall、重啟同目錄仍可 recall、manifest 為 bge-m3／1024（確定性雜湊 embedder，不載模型）；舊 bge-small 目錄被拒且檔案不變；本機 HF 快取有 bge-m3 時多跑一個真模型 CPU 版（「我養了一隻叫小橘的貓」→「你記得我的寵物嗎」命中小橘；快取沒有就 skip，測試不下載）。「換 session 後問貓叫什麼」的真 LLM 手動段仍待 Core 真記憶組裝。
+- **測試**（`scripts/run_all_tests.ps1` 全套，共用環境 echo_tts 已切到 Core，無需 PYTHONPATH）：Core `tests/uep` 2404 pass／0 失敗（基線 2385／1 已知失敗；新增 19 個測試，`test_real_engine_smoke_through_host` 本次通過，未改其邏輯，原失敗原因未查明，不歸因於 bge-m3 切換）；EM 2166 pass／1 skip；STT 277；Session 294／18 skip；TTS 469／15 skip；ES 1003 pass／0 失敗（基線 2 項 test_web 切換效應失敗此次未出現）。bot repo 未修改，未跑其測試。
+
+**real 模式落地（2026-11-02，`feature/e2e-real`）**：`python -m uep.console --mode real` 一次組裝 STT／Think／Speak／記憶，A0–A5 皆可由人手動驗。
+
+- **組裝**：STT＝`MultiChannelSttInputStage`（echo_stt faster-whisper，設定檔 `stt_config.yaml`，音訊經 `host.feed`）；Think＝真實 LLM＋`UEP_INFER_SYSTEM_PROMPT`；Speak＝VOX 預設（明確設 `UEP_INFER_TTS_ENGINE` 才改）；記憶＝EM engine＋bge-m3，資料根取 `UEP_MEMORY_DATA_ROOT`，未設用全新開發目錄 `~/.uep/data/console-memory-bgem3`（啟動時印出路徑）。獨立旗標：`--stt|--tts|--think|--memory real|fake`、`--play`。
+- **embedding 裝置**：bge-m3 預設 **CPU**（艾斯維爾裁決），`UEP_MEMORY_EMBEDDING_DEVICE`（新增，其次 `UEP_MEMORY_DEVICE`）可覆寫。EM 的 sentence-transformers 模型已改為**行程共用**（模組級快取＋`warmup(model, device)`，commit af5ad72），console 於建 engine 前預載。
+- **GPU 守門**：真實 STT／TTS（或 embedding 設為非 cpu）需 `UEP_E2E_ALLOW_GPU=1`，否則 exit 2 並說明；缺 LLM 金鑰先於 GPU 守門報錯。
+- **warmup 與逾時**：記憶 embedding、TTS（VOX）、ASR（含一次推論暖機）、Think 皆在接受第一個輸入前完成，啟動時印各自耗時；Host 啟動逾時沿用 `UEP_INFER_HOST_START_TIMEOUT_S`，未設則 speak（VOX 240）＋think＋input prepare 逾時加 30 秒餘裕（288 秒）。
+- **指令**：`/wav <檔>` 在 real 模式分塊餵 Host 輸入 stage（尾端補 1.6 秒靜音）走真實 STT；`/mic` Enter 開始、Enter 結束（`sounddevice`，**共用環境目前未安裝**，需 `uv pip install sounddevice`，缺少時印安裝提示）；`/mem` 顯示 namespace／episode 數／最近寫入，`/mem recall <文字>` 走 Access Layer；`/session new` 開新 conversation／segment（清 Think 歷史，記憶才不因同 session 被排除）；音訊一律寫 wav，`--play` 同步本機播放（亦需 sounddevice；請戴耳機）。
+- **實跑（THEFANTASIAS，GPU：VOX＋whisper，bge-m3 CPU，此次為艾斯維爾釋出 GPU 時的一次實跑）**：warmup TTS 74–101 秒、STT 6–8 秒、記憶 embedding 17–25 秒（CPU 冷載，含首次）、Think 0 秒。三輪（介紹／養貓小橘／新 session 問寵物）TTFA 3179／1934／2662 ms，總耗時 13.3／7.0／8.1 秒；回應帶 U.E.P 人設；第三輪（新 session，Think 歷史已清）答出「小橘」，journal 有 `action.executed`（deep_recall），`/mem recall 寵物` 65 ms 命中 3 筆。GPU 總用量峰值 10.6 GB（基線 2.3 GB，增量約 8.3 GB）。`zh_test.wav`（13.9 秒）STT 1.65 秒出字「莫夫從來都是最有優勢的一方」，該 utterance 開的 turn 隨即被後續分段取消（長音檔被切成多個 utterance 的 barge-in 行為，非失敗）。
+- **`/wav` 長音檔多句（2026-11-02，`fix/wav-turn-cancel`）**：`zh_test.wav` 在 2.9–3.6 秒有 0.7 秒停頓（= `TurnPolicy.silence_threshold_s`），VAD／TurnDetector 把它切成兩句 utterance（2.8 s＋10.2 s）；後句開的 turn 依「同 owner 新回覆取代舊回覆」（`coordinator._supersede_owner`，`superseded_by_owner`）取消前句，這是既有設計行為，Core 未改（D 號取代策略不動）。問題在 console：`_feed_audio` 只追 `submissions[before]`，因此回報前句「turn.cancelled」而看不到最後一輪。修法：逐句追到最後一個 turn（每個 turn 結束後再等 `FEED_SETTLE_S`＝2 秒看有無後續 utterance），前句顯示 cancelled、末句顯示回應。限制：`/wav` 仍以約 10 倍速餵入，後句辨識幾乎緊接前句，前句沒有機會跑完；真人於中途停頓 0.7 秒以上同樣會被切句並取代，前句內容只留在 STT 轉錄，不併入後句文字（若要「同一口氣」併句需另案評估 aggregator，屬 turn 策略決策）。
+- **後續補量**：GPU 讓給 bot 期間，A3/A4 的耳機、麥克風與 `--play` 路徑未實測（無 sounddevice）。
+
+**A0–A8 目前可驗狀態**：
+
+| # | 狀態 | 設備／前置 | 驗法 |
+|---|---|---|---|
+| A0 | 自動化通過 | PostgreSQL | pytest |
+| A1 | 通過（實跑） | API 金鑰 | `--mode real --tts fake --stt fake --memory fake` 或 real，`/say` |
+| A2 | 通過（實跑，TTFA 1.9–3.2 秒） | GPU＋`UEP_E2E_ALLOW_GPU=1` | `/say`，看 TTFA 與 wav |
+| A3 | `/wav` 通過（實跑）；與 LLM／TTS 串接見上 | GPU | `/wav subsystems/echo_stt/tests/data/zh_test.wav` |
+| A4 | 可手動驗，未實測 | GPU＋耳機＋`uv pip install sounddevice` | `--play`，`/mic`，說話中 `/cancel` |
+| A5 | 通過（實跑，新 session 命中） | bge-m3 CPU | 「我養了一隻叫小橘的貓」→`/session new`→「你記得我的寵物叫什麼嗎」 |
+| A6 | pytest 為主，console 無入口 | CPU | 待補（多人定址需平台 Adapter） |
+| A7 | 降級／Stop 有 pytest；Stop 實機未驗 | CPU／GPU | `--tts fake` 觀降級；實機待補 |
+| A8 | 數字已有一組（見上），未與 ES 基線 5.1 秒系統比對 | GPU | `/trace` |
+
+#### 人工驗收結果（2026-11-02，艾斯維爾）
+
+- **結論：通過。** 依 [Core驗收Console使用指南](Core驗收Console使用指南.md) 第 3 節手動驗收，八項（A1–A5、A7、A8，A6 仍以 pytest 為準）皆無問題；含 A4 麥克風與 `/cancel` 打斷。Core 端到端里程碑達成，可進入工作層（工具層）。
+- journal 時間軸（7 輪，20:58–21:08）：`turn.started`→`turn.generation_completed` 2.6–6.0 秒；A5 那輪含一次 `action.executed`（deep_recall，+3.3 秒）。
+- **缺口**：real TTS 各輪 TTFA 未保存——A7 以 `--tts fake` 重啟前沒有先 `/trace all`，而 TTFA 只存在記憶體 tracer、未寫 journal 或檔案。已開卡「console 延遲報告落地（TTFA 寫檔）」；A8 與 ES 基線的正式對照待該卡完成後補量。
 
 ## 6. git 歷史處理
 
@@ -591,7 +988,7 @@ git tag migrated-from/<repo>/<sha>
 | Session | M1 開始前 1 天 | 無領先分支；`SC-wt-usage` 工作樹的分支已 0 領先，直接移除工作樹 |
 | EM | M2 前 2 天 | `feature/memory-reliability` 工作樹確認已合入再移除；origin 的 `m14-dream-accumulation` 等遠端分支確認已合入（它們出現在 origin 但本機無領先，視為已合或棄置，**由記憶線確認**） |
 | STT | M3 前 1 天 | 無在途分支 |
-| ES | M4 前 3 天，窗口 ≤ 3 天 | `feature/d85-member-recall`（領先 3）先合入；`feat/vox-adapter` 的 agent 工作樹（領先 2）確認是否為 `speak_vox` 最終版（Core 的 `inference_wiring` 已引用 `speak_vox`，所以應已在 develop；仍需核對 worktree 分支那兩個 commit）；9 個 `.claude/worktrees/agent-*` 逐一確認已合入後清除；盤點期間 develop 還在前進，凍結前後各查一次 `git rev-parse develop` |
+| ES | 不凍結（D104：不整包遷入；N1 期間 ES 仍可能有提交，由人工移植，D105 Q2） | N1 開工前核對 ES 在途分支（`feature/d85-member-recall` 領先 3、`feat/vox-adapter` worktree 領先 2）是否已進 develop，避免併核到過期程式；其餘 9 個 `.claude/worktrees/agent-*` 逐一確認已合入 |
 | TTS | 見 Q4：合入 `tts-model-eval`（18）與 `vox-emotion`（5）後即凍；M5 與 VOX 調音互不依賴 | 外部工作樹 `TTS-wt-*` 三個；調音期間產生的 LoRA／權重不進 git，只更新 `UEP_TTS_MODEL_ROOT` 指向的目錄 |
 
 收斂機制：每個凍結前 48 小時，在房內（聊天室）通知所有可能在這個 repo 工作的 agent：列出未合入分支與未提交變更；凍結後該 repo 的 `develop` 加保護（或口頭約定＋標題標「FROZEN — 遷入 Core 中」於 README 頂部）。**本文不替任何 agent 決定誰在進行什麼**，只提供清單與方法。
@@ -636,7 +1033,7 @@ git tag migrated-from/<repo>/<sha>
 
 | legacy | 規模（行） | 新 Core 對應 | 狀態 | 備註 |
 |---|---|---|---|---|
-| `stt_module` | 3,426 | `echo_stt`＋ES Input stage | **已取代**（M3／M4 後） | 需做功能對照清單：speaker 識別、喚醒詞等 legacy 專屬功能是否在 echo_stt／`uep/turn/wake` |
+| `stt_module` | 3,426 | `echo_stt`（只留 ASR）＋`uep/stream` 前端（VAD／斷句） | **已取代**（M3／N1 後） | 需做功能對照清單：speaker 識別、喚醒詞等 legacy 專屬功能是否在 echo_stt／`uep/turn/wake` |
 | `tts_module` | 48,461（含 deprecated 與引擎本體） | `echo_tts` | **已取代**（M5 後） | RVC 工具留在 Python 3.10 的 `env/`（pyproject 註記 A14） |
 | `mem_module` | 10,260 | `echo_memory`＋`uep/memory` | **已取代**（功能），**資料未遷** | 舊記憶資料是否匯入需決定（Q10） |
 | `llm_module` | 8,031 | `echo_thought_core`＋ES Think＋`uep/context`；MCP client→Part S Gateway | **大部分取代** | Gemini 上下文快取（`hidden_docs/上下文快取的實現.md`）為 provider 特定功能，Session 是否承接待確認 |
@@ -647,7 +1044,7 @@ git tag migrated-from/<repo>/<sha>
 | `core/`（event_bus、controller、sessions、states、module_coordinator、router、system_loop、framework、registry、working_context、frontend_bridge…） | 17,100 | `uep/events`（event bus）、`uep/presence`＋`uep/state`（狀態）、`uep/turn`＋`uep/echo`（取代 coordinator／router／system_loop）、`uep/assembly`（取代 framework／registry）、`uep/context`（working_context） | **執行面已取代，但被 ui／ani／mov／sys／nlp 依賴** | `frontend_bridge` 仍把 legacy UI 接在 legacy event bus 上；`router.py`、`reload_coordinator.py`（死碼，無引用）可先清 |
 | `utils/`（logger、debug_helper、prompt_builder、model_manager…） | 2,442 | `logging`／`uep`；`prompt_builder` 對應 Session persona／prompt | **部分** | 與 bot、echo_tts 同名風險（§2.3） |
 | `devtools/` | 5,065 | — | 隨桌面保留 | animation_tester 等桌面工具 |
-| `Entry.py`、`production_runner`、`system_initializer` | 219＋ | **無常駐入口**（F6） | **未取代** | 先有 F6 才能讓 `Entry.py` 退 |
+| `Entry.py`、`production_runner`、`system_initializer` | 219＋ | **無常駐入口**（F6；以 `python -m uep.console` 起頭，§5.5） | **未取代** | 先有 F6 才能讓 `Entry.py` 退 |
 | `unit_tests/`（362）、`integration_tests/`（44）、`additional_tests/` | 7,796＋5,860 | 隨各模組 | 隨模組退場 | |
 
 ### 8.2 分批退場
@@ -655,7 +1052,7 @@ git tag migrated-from/<repo>/<sha>
 | 批 | 內容 | 條件 | 不做什麼 |
 |---|---|---|---|
 | R0（現在） | 標記 legacy 為 frozen（README／CLAUDE.md），legacy 測試分離（CI 另 job）；清明確死碼：`core/reload_coordinator.py`、未用的 build 產物（`dist/`、`build/`、`wheel/`、`clipboard_history.json`、`Animation Tester Program.exe`——**先確認是否被版控與是否仍需要**） | 不影響任何執行路徑 | 不動 `modules/*` |
-| R1（M3＋M4 之後） | 退 `stt_module`、`llm_module` 的 MCP client 部分 | 新路徑功能對照清單全綠（speaker、喚醒詞、上下文快取確認去向）；沒有其他 legacy 檔 import 它們（grep＋`unit_tests` 重跑） | 不刪 `llm_module` 的 Gemini 專屬功能，除非 Q 確認 Session 承接 |
+| R1（M3＋N1 之後） | 退 `stt_module`、`llm_module` 的 MCP client 部分 | 新路徑功能對照清單全綠（speaker、喚醒詞、上下文快取確認去向）；沒有其他 legacy 檔 import 它們（grep＋`unit_tests` 重跑） | 不刪 `llm_module` 的 Gemini 專屬功能，除非 Q 確認 Session 承接 |
 | R2（M5 之後＋Q10 決定） | 退 `tts_module`（保留 `deprecated_rvc` 與 `models/tts/` 資產說明）、`mem_module` | 資料匯入或明確放棄（Q10）；桌面殼（尚在 legacy）不再要求它們：桌面殼要嘛改走 Core 的 endpoint，要嘛隨 R4 一起 | |
 | R3（Part S S5 之後） | 退 `sys_module`、`nlp_module`（依 Q11） | 20 條 workflow 逐條有去向；`PermissionType` 對照表落地；NLP 若保留則作為 `uep/turn` 的 proposer 來源 | |
 | R4（Desktop Adapter／P9 之後） | 退 `ui_module`、`ani_module`、`mov_module`、`core/` 其餘、`devtools/`、`Entry.py`、legacy 測試與 CI | 桌面端能以新接口運作（Presence、輸出、動畫指令）；F6 常駐入口上線 | |
@@ -700,7 +1097,7 @@ git tag migrated-from/<repo>/<sha>
 | **Q4** | TTS 凍結點與 VOX 調音的關係 | (a) 合入 `tts-model-eval`、`vox-emotion` 後即凍並遷，調音在 Core 內繼續；(b) 等調音完成再遷；(c) 雙向同步窗口 | **(a)**：不等 VOX，但先合兩條在途分支；權重不進 git | M5 前 2 週發預告 |
 | **Q5** | 工具收斂的取捨：`member_recall`／schema 單一來源歸 Core；`correct_about_me` 分類（不可逆？是否核准） | (a) ToolSpec 單一來源，ES adapter 降為實作細節；(b) 維持兩份靠測試對齊 | **(a)**；`correct_about_me` 暫定 `external_effect`＋需核准，與 DQ-16 併案 | TL1 前 |
 | **Q6** | `echo_thought_core.backends` 是否作為 Model Gateway 實作 | (a) 是；(b) Core 另建 | **(a)** | F5 前 |
-| **Q7** | ES `web/server.py`、`cli.py` 去留 | (a) 移出 `echo_stream` 套件，成為 Website Adapter 起點與開發工具；(b) 原樣保留；(c) 刪除 | **(a)**，但 M4 先原樣搬、F 系列再移（避免 M4 範圍膨脹） | M4 |
+| **Q7** | ES `web/server.py`、`cli.py` 去留 | (a) 移出成為 Website Adapter 起點與開發工具；(b) 原樣保留；(c) 刪除 | **(a)**；D104 後 web 暫不動、之後作 Website Adapter 起點，cli 改寫為 console 的 smoke 指令（§5.4） | N 系列 |
 | **Q8** | `echo-mcp`、`echo-chat` 等 entry point 去留；legacy 保存形式（原位＋tag） | | `mcp_server` 保留為開發者工具、不進 LLM 可見集合；`echo-chat`／`echo-thought` 若無人用則不進 Core 的 scripts；legacy 原位＋每批 tag | M2／R0 |
 | **Q9** | 不遷移清單：`agent_memory_spike`、EM `examples/`、`probe_*`、`env/`；TTS `experiments/`、`webapp/`、`benchmarks/`；STT `outputs/`、`memory/` | | 全部不遷，舊 repo 打 tag 保存 | M0 |
 | **Q10** | legacy `mem_module` 既有記憶資料是否匯入 echo_memory | (a) 匯入；(b) 放棄；(c) 保留唯讀備份 | **(c)**，之後視需要再寫匯入工具 | R2 前 |
@@ -708,7 +1105,7 @@ git tag migrated-from/<repo>/<sha>
 | **Q12** | CI 策略 | (a) 本地閘門腳本＋CPU 子集 CI；(b) self-hosted GPU runner；(c) 只本地 | **(a)** | M0 |
 | **Q13** | 設定單一來源：ES 58 個 `ECHO_STREAM_*` 鍵的處置 | (a) 相容層保留、不再新增、逐步映射到 `UepSettings`；(b) 一次性改寫 | **(a)** | F1 前 |
 | **Q14** | 平台接口首版傳輸（B2 vs B3 順序）與音訊 STT 位置 | (a) 先行程內 Protocol（B2），網路版在 D91 R3 之後（B3）；STT 位置先放 Core 側（平台上傳 PCM）；(b) 直接做網路版 | **(a)** | B1 前 |
-| **Q15** | DECISIONS D71 狀態（已實作但標「待裁決」）、D83（`VOICE_USE_ES_OUTPUT` 翻轉）仍待裁決 | | D71 補記為已定案；D83 在 B1 前裁決 | M4 前 |
+| **Q15** | DECISIONS D71 狀態（已實作但標「待裁決」）、D83（`VOICE_USE_ES_OUTPUT` 翻轉）仍待裁決 | | D71 補記為已定案；D83 在 B1 前裁決 | N1 前 |
 
 ---
 
@@ -722,8 +1119,8 @@ git tag migrated-from/<repo>/<sha>
 | `Core/tests/uep/test_import_boundary.py` | 新增反向規則：`subsystems/` 內不得 import `uep`；ES 的 `contracts/`、`core/` 不得 import 子系統 | M0 |
 | `Core/uep/config.py`、`uep/echo/inference_wiring.py`（`_require_repo`、`_ensure_importable`） | 移除 `UEP_INFER_{TTS,STT,SESSION}_REPO` 與 sys.path 插入 | M6（逐步容忍：對已遷子系統忽略並警告） |
 | `Core/scripts/setup_infer_env.ps1` | §7.3 | M6（M1–M5 加 `-Legacy`） |
-| ES `config.py`（`subsystem_path`、`ensure_importable`、`_project_root`） | 改 `find_spec`；`.env`／toml 查找可覆寫 | M4 |
-| ES `cli.py`、`web/server.py` 中的 `ECHO_STREAM_*_REPO` 提示訊息與 `ensure_importable(subsystem_path("TTS"))` | 同上 | M4／M5 |
+| ES `config.py`（`subsystem_path`、`ensure_importable`、`_project_root`） | D104 後 ES config 淘汰（併入 `UepSettings`＝F1），此項自然消失 | N1／F1 |
+| ES `cli.py`、`web/server.py` 中的 `ECHO_STREAM_*_REPO` 提示訊息 | ES 維護線不動；Core 側不再引用（TTS 部分仍隨 M5） | M5 |
 | bot `echo_decision/echo_stream_bridge.py`、`cogs/stt.py`、`cogs/voice_ai.py` | sys.path.append 與 repo 路徑解析移除 | B0 |
 | echo_tts：`runtime/indextts_backend.py:53`、`runtime/indextts_generate.py:95`、`s2mel/modules/commons.py`、`quantize.py`、`dac/utils/__init__.py`、`tts_utils/maskgct/…/commons.py`、`lite_engine.py`、`emotion_mapper.py` | §2.3 | M5 前置 |
 | echo_tts `default_generation_paths` | `UEP_TTS_MODEL_ROOT` | M5 |

@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Testing
+.pytest_cache/
+htmlcov/
+coverage.xml
+.coverage
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+data/
+
+# Claude Code
+.claude/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/

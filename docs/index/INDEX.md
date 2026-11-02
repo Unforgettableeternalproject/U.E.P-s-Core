@@ -2,7 +2,7 @@
 
 查「東西在哪」。規則見 [README](README.md)。標 `planned` 的路徑尚未存在（檢查器會略過）。
 
-範圍：新 Core 在頂層 `uep/`（決策 A7）逐項列出；legacy（`core/`、`modules/`）只連到 [Core現況對照表](../架構重構/Core現況對照表.md)，不逐檔列。
+範圍：新 Core 在頂層 `uep/`（決策 A7）逐項列出；legacy（core/、modules/）只連到 [Core現況對照表](../架構重構/Core現況對照表.md)，不逐檔列。
 
 ## 1. 模組索引
 
@@ -40,20 +40,9 @@
 | T-24 稽核回歸測試 | `tests/uep/test_cycle2_audit_a.py`（CC-1：冪等衝突、tailer、欄位格式、Bus、TRUNCATE）、`tests/uep/test_cycle2_audit_b.py`（CC-4／CC-5：fresh_process、resolve-recovery、revoke 放行、hello 證明、dispatch intent 比對）、`tests/uep/test_cycle2_audit_c_tasks.py`（CC-6）、`tests/uep/test_cycle2_audit_c_context.py`（CC-2／CC-3、assembly strict）、`tests/uep/test_cycle2_audit_fix2.py`（第二輪修補：證據資格、payload_hash kid、階段 1.5 重檢、startup grace）；需 `UEP_TEST_DATABASE_URL` 者未設時 skip | CC-1、CC-2、CC-3、CC-4、CC-5、CC-6 | CC-1–CC-6 | V11、V12、V15、V19–V21／D43 |
 | V19–V21 驗收測試 | `tests/uep/test_acceptance_v19.py`、`tests/uep/test_acceptance_v20.py`、`tests/uep/test_acceptance_v21.py`（共用 `tests/uep/acceptance_support.py`；需 `UEP_TEST_DATABASE_URL`；fake Adapter、crash 注入） | CC-1、CC-5、CC-6 驗證案例 VC-1-1、VC-1-2、VC-5-3、VC-6-1、VC-6-2 | CC-1、CC-5、CC-6 | V19–V21 |
 
-### 1.2 legacy（範例區段，以 T-01 內容填寫）
+### 1.2 legacy（已刪除）
 
-| 區域 | 入口 | 一句話現況 | 詳見對照表 |
-|---|---|---|---|
-| 啟動 | `Entry.py`、`core/production_runner.py`、`core/system_initializer.py` | 預設 `python Entry.py` 走 debug CLI；正式流程需 `--production` | [§1.1](../架構重構/Core現況對照表.md) |
-| 模組開關 | `core/framework.py`、`core/registry.py`、`configs/config.yaml` | `engine_mode` 無行為；`registry.get_module` 不檢查 `modules_enabled` | [§1.2](../架構重構/Core現況對照表.md) |
-| 事件 | `core/event_bus.py` | `SystemEvent` 44 項、單消費者線程、歷史 100 筆 | [§1.3](../架構重構/Core現況對照表.md)、[§4.1](../架構重構/Core現況對照表.md) |
-| 會話 | `core/sessions/`、`core/controller.py`、`core/states/` | sessions 只是資料物件＋記帳，生命週期在 controller／state_manager | [§1.3](../架構重構/Core現況對照表.md)、[§4.2](../架構重構/Core現況對照表.md) |
-| 層級協調 | `core/module_coordinator.py`、`core/system_loop.py`、`core/router.py` | Router 仍在輸出路徑上 | [§1.3](../架構重構/Core現況對照表.md) |
-| 死碼 | `core/reload_coordinator.py` | 全 repo 無引用 | [§1.3](../架構重構/Core現況對照表.md) |
-| 前端橋接 | `core/frontend_bridge.py` | 訂閱十餘類事件轉給 UI／ANI／MOV | [V04](../架構重構/Core現況對照表.md) |
-| SYS | `modules/sys_module/workflows.py`、`modules/sys_module/workflows/`、`modules/sys_module/mcp_server/` | 同名檔案與套件衝突，套件勝出；MCP Server 為進程內物件 | [§1.4](../架構重構/Core現況對照表.md) |
-| LLM | `modules/llm_module/` | `modules/llm_module/mcp_client.py` 與 `modules/llm_module/mcp_client/` 同名衝突 | [§1.4](../架構重構/Core現況對照表.md) |
-| 勘誤 | `docs/架構重構/` 三份舊報告 | 錯誤已列入勘誤表 | [§3](../架構重構/Core現況對照表.md) |
+舊 9 模組架構（core/、modules/、utils/、devtools/、Entry.py）已自 repo 移除，刪除前的最後狀態保留於 git tag `legacy-final-v0.9.4`；其現況分析見 [Core現況對照表](../架構重構/Core現況對照表.md)，舊文件見 `docs/archive/legacy-v0.9.4/`。
 
 ### 1.3 外部子系統（不在本 repo）
 
@@ -83,14 +72,14 @@
 
 | 契約 | 草案章節 | 權威擁有者（草案 §x.4／x.6） | 相關 INV | 驗收項（初步） | legacy 對應（草案 §8） |
 |---|---|---|---|---|---|
-| CC-1 Event（UEPEvent＋journal） | §1 | Event Journal 唯一 append；信任欄位由 Gateway 寫；outbox 由 Dispatcher | INV-03–07 | V09、V20 | `core/event_bus.py` 的 `Event`（[§4.1](../架構重構/Core現況對照表.md)） |
-| CC-2 ContextSnapshot | §2 | Context Adapter 組裝與 revision；記憶與 ACL 屬 MEM Access Layer | INV-04、05、07 | V28 | `core/working_context.py` |
-| CC-3 Runtime Adapter | §3 | run／attempt 狀態屬 Core；Runtime 只提 intent | INV-02–04 | V36 | `modules/llm_module/` |
+| CC-1 Event（UEPEvent＋journal） | §1 | Event Journal 唯一 append；信任欄位由 Gateway 寫；outbox 由 Dispatcher | INV-03–07 | V09、V20 | core/event_bus.py 的 `Event`（[§4.1](../架構重構/Core現況對照表.md)） |
+| CC-2 ContextSnapshot | §2 | Context Adapter 組裝與 revision；記憶與 ACL 屬 MEM Access Layer | INV-04、05、07 | V28 | core/working_context.py |
+| CC-3 Runtime Adapter | §3 | run／attempt 狀態屬 Core；Runtime 只提 intent | INV-02–04 | V36 | modules/llm_module/ |
 | CC-4 Presence／transfer | §4 | Presence Manager（DB 交易）；Output Gate 在 Core | INV-01–03、08 | V11–V18 | 無 |
-| CC-5 Output／delivery | §5 | OutputIntent 屬 Core；deliveries 狀態屬 Delivery Manager | INV-02、03、05–08 | V06–V08 | `core/module_coordinator.py` 輸出層 |
-| CC-6 Task／action | §6（含 §6.1a Activity） | Task Manager；receipts 屬 executor；approvals 經人類通道 | INV-02–04、06 | V19–V21、V29–V31 | `modules/sys_module/` workflows |
-| Part S（S0～S3） | [SYS契約草案](../架構重構/SYS契約草案.md) §2～§5 | Task Manager 持有 Task／Action 狀態；工具註冊表為 Part S 設定；Chatroom 讀取游標由 Core 持有 | INV-02、04、07 | V29–V31、V36 | `modules/sys_module/`、`modules/llm_module/mcp_client.py` |
-| CC-7 State Coordinator | §6A | State Coordinator 只寫投影與 Interaction 軸；他人實體表歸各 Manager（§7.1） | INV-01、02、04 | V03 | `core/states/state_manager.py`、`core/states/state_queue.py` |
+| CC-5 Output／delivery | §5 | OutputIntent 屬 Core；deliveries 狀態屬 Delivery Manager | INV-02、03、05–08 | V06–V08 | core/module_coordinator.py 輸出層 |
+| CC-6 Task／action | §6（含 §6.1a Activity） | Task Manager；receipts 屬 executor；approvals 經人類通道 | INV-02–04、06 | V19–V21、V29–V31 | modules/sys_module/ workflows |
+| Part S（S0～S3） | [SYS契約草案](../架構重構/SYS契約草案.md) §2～§5 | Task Manager 持有 Task／Action 狀態；工具註冊表為 Part S 設定；Chatroom 讀取游標由 Core 持有 | INV-02、04、07 | V29–V31、V36 | modules/sys_module/、modules/llm_module/mcp_client.py |
+| CC-7 State Coordinator | §6A | State Coordinator 只寫投影與 Interaction 軸；他人實體表歸各 Manager（§7.1） | INV-01、02、04 | V03 | core/states/state_manager.py、core/states/state_queue.py |
 
 ## 4. 事件索引
 

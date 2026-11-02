@@ -86,6 +86,7 @@ class InferenceConfig:
     llm_provider: str | None = None
     llm_model: str | None = None
     system_prompt: str = ""
+    think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
     tts_engine: str = "indextts2"
     vox_config: Mapping[str, Any] | None = None  # 原樣轉給 VoxBackend(config)；None＝不傳
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
@@ -133,7 +134,7 @@ class InferenceConfig:
             tts_speed=settings.infer_tts_speed, tts_language=settings.infer_tts_language,
             stt_mode=settings.infer_stt_mode, stt_language=settings.infer_stt_language,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
-            system_prompt=settings.infer_system_prompt,
+            system_prompt=settings.infer_system_prompt, think=settings.think_config(),
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
             think_prepare_timeout_s=settings.infer_think_prepare_timeout_s,
             input_prepare_timeout_s=settings.infer_input_prepare_timeout_s,
@@ -297,7 +298,9 @@ def default_think_backend(cfg: InferenceConfig) -> Any:
     overrides: dict[str, Any] = {}
     if cfg.llm_model:
         overrides["model"] = cfg.llm_model
-    return build_backend(cfg.llm_provider, session_repo=str(repo) if repo is not None else None, **overrides)
+    return build_backend(
+        cfg.llm_provider, session_repo=str(repo) if repo is not None else None, config=cfg.think, **overrides,
+    )
 
 
 class _VoxUnavailableStage:
@@ -444,7 +447,7 @@ def build_inference_wiring(
     from uep.stream.adapters.think_llm import LLMThinkStage
 
     llm = think_backend if think_backend is not None else (think_backend_factory or default_think_backend)(cfg)
-    think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt}
+    think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt, "config": cfg.think}
     think_kwargs.update(extra.get("think", {}))
     recommended = _vox_recommended_split_policy(cfg, speak)
     if recommended is not None:

@@ -15,12 +15,7 @@ import logging
 import re
 from collections.abc import Iterable
 
-from . import config
-
 logger = logging.getLogger(__name__)
-
-ENV_ENABLED = "ECHO_STREAM_OUTPUT_GUARD"
-ENV_EXTRA = "ECHO_STREAM_OUTPUT_BLOCKLIST_EXTRA"
 
 # 預設污染詞（繁簡皆收）。只收「整詞」——單字「彩」「快」或單獨的「平台」「福利」
 # 會誤殺正常用語，一律不收。
@@ -45,13 +40,6 @@ _ASCII_TAIL = r"(?:[ \t]?[A-Za-z0-9][A-Za-z0-9._\-/:]*)?"
 _CONTENT_RE = re.compile(r"[A-Za-z0-9぀-ヿ㐀-䶿一-鿿]")
 
 
-def _parse_extra(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    # 同時接受半形與全形逗號、頓號
-    return [p.strip() for p in re.split(r"[,，、]", raw) if p.strip()]
-
-
 class OutputGuard:
     """句子層級的污染詞過濾器。"""
 
@@ -73,14 +61,6 @@ class OutputGuard:
                        re.IGNORECASE)
             if unique
             else None
-        )
-
-    @classmethod
-    def from_config(cls) -> OutputGuard:
-        """讀 .env / 環境變數：開關預設開，EXTRA 為逗號分隔的追加詞。"""
-        return cls(
-            enabled=config.get_bool(ENV_ENABLED, True),
-            extra=_parse_extra(config.get(ENV_EXTRA)),
         )
 
     def clean(self, text: str) -> tuple[str, list[str]]:
@@ -109,4 +89,4 @@ class OutputGuard:
         return cleaned, hits
 
 
-__all__ = ["DEFAULT_BLOCKLIST", "ENV_ENABLED", "ENV_EXTRA", "OutputGuard"]
+__all__ = ["DEFAULT_BLOCKLIST", "OutputGuard"]

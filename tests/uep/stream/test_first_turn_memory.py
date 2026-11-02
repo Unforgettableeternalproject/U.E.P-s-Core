@@ -88,13 +88,14 @@ async def test_prompt_cache_key_正常輪與預熱都帶():
     assert b.requests[1]["prompt_cache_key"] == "bot-voice"
 
 
-async def test_prompt_cache_key_空值不帶_且可由_env_讀取(monkeypatch):
+async def test_prompt_cache_key_空值不帶_且由_config_提供():
+    from uep.stream.adapters.think_config import ThinkConfig
+
     b = _Backend()
     stage = LLMThinkStage(b, system_prompt="人設", prompt_cache_key="")
     await stage.prewarm()
     assert "prompt_cache_key" not in b.requests[0]
 
-    monkeypatch.setenv("ECHO_STREAM_LLM_PROMPT_CACHE_KEY", " from-env ")
-    assert LLMThinkStage(_Backend()).prompt_cache_key == "from-env"
-    monkeypatch.setenv("ECHO_STREAM_LLM_PROMPT_CACHE_KEY", "")
+    assert LLMThinkStage(_Backend(), config=ThinkConfig(prompt_cache_key=" from-cfg ")).prompt_cache_key == "from-cfg"
+    assert LLMThinkStage(_Backend(), config=ThinkConfig(prompt_cache_key="")).prompt_cache_key is None
     assert LLMThinkStage(_Backend()).prompt_cache_key is None

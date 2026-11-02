@@ -3775,3 +3775,15 @@
 
 ---
 
+### feat: Think adapter 改讀 Core 設定並接上 console /llm. 11/02
+
+> Date: Mon, 02 Nov 2026 15:12:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n3-think`
+
+> Commit: `82c3a1d741c11bc23c41a533170c6355f667c84e`
+
+---
+

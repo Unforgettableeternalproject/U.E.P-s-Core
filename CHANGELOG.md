@@ -3847,3 +3847,15 @@
 
 ---
 
+### feat: EM 的 sentence-transformers 模型改為行程共用. 11/02
+
+> Date: Mon, 02 Nov 2026 18:29:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/e2e-real`
+
+> Commit: `91e7a9c7977c3dabee005b756069794eadc87c84`
+
+---
+

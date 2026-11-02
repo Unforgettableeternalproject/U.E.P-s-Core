@@ -33,6 +33,62 @@ from echo_memory.storage.locking import storage_lock, temporary_sibling
 logger = logging.getLogger("echo_memory.episodic")
 
 
+class _SharedEmbedder:
+    """行程共用的 SentenceTransformer（以 (model, device) 為 key）；``encode`` 以鎖序列化，多個 engine 同時呼叫也安全。"""
+
+    def __init__(self, model: Any) -> None:
+        self.model = model
+        self.lock = threading.Lock()
+
+    def encode(self, text: str) -> Any:
+        with self.lock:
+            return self.model.encode(text, convert_to_numpy=True)
+
+
+_SHARED_EMBEDDERS: dict[tuple[str, str], _SharedEmbedder] = {}
+_SHARED_LOCK = threading.Lock()
+_SHARED_LOAD_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+
+
+def get_shared_embedder(model: str, device: str) -> _SharedEmbedder:
+    """取得（必要時載入）行程共用的 sentence-transformers 模型。double-checked：已載入走無鎖快路徑；
+    同一 key 的並行首次呼叫只載一次（其餘等待），不同 key 互不阻塞。"""
+    key = (model, device)
+    entry = _SHARED_EMBEDDERS.get(key)
+    if entry is not None:
+        return entry
+    with _SHARED_LOCK:
+        load_lock = _SHARED_LOAD_LOCKS.setdefault(key, threading.Lock())
+    with load_lock:
+        entry = _SHARED_EMBEDDERS.get(key)
+        if entry is None:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+                hf_token = os.getenv('HF_TOKEN')
+                if hf_token:
+                    os.environ['HF_TOKEN'] = hf_token
+            except ImportError:
+                pass
+
+            from sentence_transformers import SentenceTransformer
+            entry = _SharedEmbedder(SentenceTransformer(model, device=device))
+            _SHARED_EMBEDDERS[key] = entry
+    return entry
+
+
+def warmup(model: str, device: str) -> None:
+    """宿主在啟動時預載共用模型並跑一次 encode（含首次推論成本）；之後所有 EpisodicMemory 共用它。"""
+    get_shared_embedder(model, device).encode("warmup")
+
+
+def _clear_shared_embedders() -> None:
+    """測試用：清空共用快取。"""
+    with _SHARED_LOCK:
+        _SHARED_EMBEDDERS.clear()
+        _SHARED_LOAD_LOCKS.clear()
+
+
 class EmbeddingUnavailable(RuntimeError):
     """Embedding 後端暫時不可用（逾時 / 連線失敗 / 回應異常）。"""
 
@@ -107,8 +163,7 @@ class EpisodicMemory:
         self._last_episode_id: str | None = None
         self._last_episode_by_session: dict[str, str] = {}
 
-        # 延遲加載 embedding 生成器
-        self._embedder = None
+        # embedding 模型為行程共用（get_shared_embedder），實例不持有
         self._index_rebuild_required = False
         self._snapshot_upgrade_required = False
 
@@ -951,23 +1006,9 @@ class EpisodicMemory:
 
     def _generate_embedding_st(self, text: str) -> list[float]:
         """透過 sentence-transformers 生成嵌入向量（fallback）"""
-        if self._embedder is None:
-            try:
-                from dotenv import load_dotenv
-                load_dotenv()
-                hf_token = os.getenv('HF_TOKEN')
-                if hf_token:
-                    os.environ['HF_TOKEN'] = hf_token
-            except ImportError:
-                pass
+        embedder = get_shared_embedder(self.embedding_model, self.device)
 
-            from sentence_transformers import SentenceTransformer
-            self._embedder = SentenceTransformer(
-                self.embedding_model,
-                device=self.device,
-            )
-
-        embedding = self._embedder.encode(text, convert_to_numpy=True)
+        embedding = embedder.encode(text)
         return self._normalize_vector(embedding).tolist()
 
     def generate_query_embedding(self, text: str) -> list[float]:

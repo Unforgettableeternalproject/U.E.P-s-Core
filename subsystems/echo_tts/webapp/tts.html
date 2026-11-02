@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>U.E.P TTS Shell</title>
+<style>
+  :root{
+    --bg:#0a0c10; --panel:#11151c; --line:#222932; --fg:#dfe6f0; --muted:#7d8899;
+    --accent:#7dd3c0; --accent-2:#a78bfa; --warn:#f0b866; --err:#f07a7a;
+    --mono:"SF Mono",Menlo,Consolas,"Cascadia Mono","Noto Sans TC",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%}
+  body{
+    background:var(--bg); color:var(--fg);
+    font-family:var(--mono); font-size:14px; line-height:1.6;
+    display:flex; flex-direction:column; height:100vh;
+  }
+
+  header{
+    border-bottom:1px solid var(--line); padding:10px 16px;
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    background:var(--panel);
+  }
+  .brand{color:var(--accent); font-weight:700; letter-spacing:.08em}
+  .chip{
+    font-size:12px; color:var(--muted); border:1px solid var(--line);
+    border-radius:99px; padding:2px 10px; white-space:nowrap;
+  }
+  .chip b{color:var(--fg); font-weight:600}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px}
+  .dot.on{background:var(--accent)} .dot.off{background:#555}
+  .dot.busy{background:var(--warn); animation:pulse 1s infinite}
+  @keyframes pulse{50%{opacity:.3}}
+
+  #log{
+    flex:1; overflow-y:auto; padding:16px; white-space:pre-wrap; word-break:break-word;
+  }
+  .line{margin-bottom:2px}
+  .cmd{color:var(--fg)}
+  .cmd .p{color:var(--accent-2)}
+  .out{color:var(--muted)}
+  .ok{color:var(--accent)}
+  .err{color:var(--err)}
+  .warn{color:var(--warn)}
+  .meta{color:var(--muted); font-size:12px}
+  .say{color:#cfe3ff}
+
+  .player{
+    display:inline-flex; align-items:center; gap:8px; margin:4px 0 8px;
+    border:1px solid var(--line); border-radius:8px; padding:4px 10px;
+    background:var(--panel);
+  }
+  .player button{
+    background:none;border:none;color:var(--accent);cursor:pointer;
+    font:inherit;font-size:15px;padding:0 2px;
+  }
+  .player .bar{width:150px;height:3px;background:#1d232c;border-radius:99px;overflow:hidden}
+  .player .bar i{display:block;height:100%;width:0;background:var(--accent)}
+  .player .t{font-size:11px;color:var(--muted);min-width:64px}
+
+  footer{
+    border-top:1px solid var(--line); padding:10px 16px; background:var(--panel);
+    display:flex; align-items:center; gap:10px;
+  }
+  .prompt{color:var(--accent-2); white-space:nowrap}
+  #input{
+    flex:1; background:none; border:none; outline:none;
+    color:var(--fg); font:inherit; caret-color:var(--accent);
+  }
+  #input:disabled{opacity:.4}
+  .hint{padding:0 16px 8px;color:var(--muted);font-size:12px;background:var(--panel)}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">U.E.P TTS</span>
+  <span class="chip" id="cEngine"><span class="dot off"></span>engine: <b>idle</b></span>
+  <span class="chip">lang: <b id="cLang">auto</b></span>
+  <span class="chip">emotion: <b id="cEmo">neutral</b></span>
+  <span class="chip">strength: <b id="cStr">0.50</b></span>
+  <span class="chip">speed: <b id="cSpeed">0.00</b></span>
+</header>
+
+<div id="log"></div>
+
+<div class="hint" id="hint">輸入文字直接合成，或用 <b>/help</b> 看指令。Enter 送出，↑↓ 翻歷史。</div>
+
+<footer>
+  <span class="prompt">tts&gt;</span>
+  <input id="input" autocomplete="off" autofocus placeholder="說點什麼…">
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  const $ = id => document.getElementById(id);
+  const log = $("log"), input = $("input");
+  const history = [];
+  let histIdx = -1, busy = false;
+  const audio = new Audio();
+  let playing = null;
+
+  // ── 輸出 ──
+  function write(text, cls){
+    const div = document.createElement("div");
+    div.className = "line " + (cls || "out");
+    div.textContent = text;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    return div;
+  }
+  function writeCmd(text){
+    const div = document.createElement("div");
+    div.className = "line cmd";
+    div.innerHTML = `<span class="p">tts&gt;</span> ${escapeHtml(text)}`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+  function escapeHtml(s){
+    return s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  }
+
+  // ── 播放器 ──
+  function addPlayer(file, meta){
+    const wrap = document.createElement("div");
+    wrap.className = "player";
+    wrap.innerHTML = `<button>▶</button><div class="bar"><i></i></div><span class="t"></span>`;
+    const btn = wrap.querySelector("button");
+    const fill = wrap.querySelector(".bar i");
+    const time = wrap.querySelector(".t");
+    time.textContent = meta;
+    const url = "/audio/" + file;
+
+    btn.addEventListener("click", () => {
+      if(playing && playing.url === url && !audio.paused){ audio.pause(); return; }
+      if(playing) playing.reset();
+      audio.src = url; audio.currentTime = 0;
+      audio.play().catch(e => write("播放失敗：" + e.message, "err"));
+      playing = {
+        url, btn, fill,
+        reset(){ this.btn.textContent = "▶"; this.fill.style.width = "0"; }
+      };
+      btn.textContent = "❚❚";
+    });
+
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+    return {play: () => btn.click()};
+  }
+
+  audio.addEventListener("timeupdate", () => {
+    if(playing && audio.duration)
+      playing.fill.style.width = (audio.currentTime/audio.duration*100) + "%";
+  });
+  audio.addEventListener("ended", () => { if(playing){ playing.reset(); playing = null; } });
+  audio.addEventListener("pause", () => { if(playing) playing.btn.textContent = "▶"; });
+  audio.addEventListener("play", () => { if(playing) playing.btn.textContent = "❚❚"; });
+
+  // ── 狀態列 ──
+  function renderState(s){
+    const dot = s.loaded ? "on" : "off";
+    const label = s.loaded ? "ready" : "idle";
+    $("cEngine").innerHTML = `<span class="dot ${busy ? "busy" : dot}"></span>engine: <b>${busy ? "busy" : label}</b>`;
+    if(s.language !== undefined) $("cLang").textContent = s.language;
+    if(s.strength !== undefined) $("cStr").textContent = Number(s.strength).toFixed(2);
+    if(s.speed !== undefined) $("cSpeed").textContent = Number(s.speed).toFixed(2);
+    if(s.emotion){
+      const labels = ["happy","angry","sad","afraid","disgusted","melancholic","surprised","calm"];
+      const nz = s.emotion.map((v,i) => v > 0.001 ? `${labels[i]} ${v.toFixed(2)}` : null).filter(Boolean);
+      $("cEmo").textContent = nz.length ? nz.join(" + ") : "neutral";
+    }
+  }
+  function setBusy(b){ busy = b; input.disabled = b; if(!b) input.focus(); refresh(); }
+
+  async function api(path, body){
+    const opt = body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {};
+    const res = await fetch(path, opt);
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    return data;
+  }
+  async function refresh(){
+    try{ renderState(await api("/api/state")); }catch(e){}
+  }
+
+  // ── 指令 ──
+  const HELP = [
+    "直接輸入文字        合成並播放（等同 /say）",
+    "/say <text>         明確指定合成",
+    "/emotion            顯示目前情緒與可用 preset",
+    "/emotion <preset> [0~1]      套用 preset，可選強度（預設 0.5）",
+    "/emotion <8 個數字> [0~1]    手動向量",
+    "/language <auto|zh|en|ja>    設定語言（auto = 自動偵測）",
+    "/speed <-1~1>       語速偏移（正=快，負=慢，0=預設）",
+    "/load               預先載入引擎（約 20 秒）",
+    "/status             顯示完整狀態",
+    "/clear              清空畫面",
+  ].join("\n");
+
+  async function run(raw){
+    const line = raw.trim();
+    if(!line) return;
+    writeCmd(line);
+
+    if(!line.startsWith("/")){ return doSay(line); }
+
+    const parts = line.slice(1).split(/\s+/);
+    const verb = parts[0].toLowerCase();
+    const args = parts.slice(1);
+
+    try{
+      switch(verb){
+        case "help": case "?":
+          write(HELP); return;
+
+        case "clear":
+          log.innerHTML = ""; return;
+
+        case "say":
+          if(!args.length){ write("用法：/say <text>", "warn"); return; }
+          return doSay(line.slice(line.indexOf(args[0])));
+
+        case "load": {
+          setBusy(true);
+          write("載入引擎中，約 20 秒…", "meta");
+          const s = await api("/api/load", {});
+          write(`引擎就緒（${s.load_seconds ? s.load_seconds.toFixed(1) : "?"}s）`, "ok");
+          setBusy(false); return;
+        }
+
+        case "status": {
+          const s = await api("/api/state");
+          write([
+            `engine    ${s.loaded ? "ready" : "idle"}`,
+            `language  ${s.language}`,
+            `emotion   [${s.emotion.map(v=>v.toFixed(2)).join(", ")}]  sum=${s.emotion.reduce((a,b)=>a+b,0).toFixed(3)}`,
+            `strength  ${Number(s.strength).toFixed(2)} (0~1) → ${s.actual_strength ? s.actual_strength.toFixed(3) : "-"} actual`,
+            `speed     ${Number(s.speed).toFixed(2)}`,
+          ].join("\n"));
+          return;
+        }
+
+        case "language": case "lang": {
+          if(!args.length){ write("用法：/language <auto|zh|en|ja>", "warn"); return; }
+          const r = await api("/api/language", {language: args[0].toLowerCase()});
+          write(`language = ${r.language}`, "ok"); refresh(); return;
+        }
+
+        case "speed": {
+          if(!args.length){ write("用法：/speed <-1~1>", "warn"); return; }
+          const r = await api("/api/speed", {speed: parseFloat(args[0])});
+          write(`speed = ${Number(r.speed).toFixed(2)}`, "ok"); refresh(); return;
+        }
+
+        case "emotion": case "emo": {
+          const s = await api("/api/state");
+          if(!args.length){
+            write(`presets: ${s.presets.join(", ")}`);
+            write(`current: [${s.emotion.map(v=>v.toFixed(2)).join(", ")}]  strength ${Number(s.strength).toFixed(2)}`);
+            return;
+          }
+          const nums = args.map(Number);
+          let payload;
+          if(args.length >= 8 && nums.slice(0,8).every(n => !isNaN(n))){
+            payload = {values: nums.slice(0,8), strength: nums.length > 8 && !isNaN(nums[8]) ? nums[8] : 0.5};
+          }else{
+            payload = {preset: args[0].toLowerCase(),
+                       strength: args.length > 1 && !isNaN(nums[1]) ? nums[1] : 0.5};
+          }
+          const r = await api("/api/emotion", payload);
+          write(`emotion = [${r.emotion.map(v=>v.toFixed(2)).join(", ")}] @ ${r.strength.toFixed(2)} (→ ${r.actual_strength.toFixed(3)})`, "ok");
+          refresh(); return;
+        }
+
+        default:
+          write(`未知指令 '${verb}'，用 /help 看清單`, "warn");
+      }
+    }catch(e){
+      write("錯誤：" + e.message, "err");
+      setBusy(false);
+    }
+  }
+
+  // ── 串流播放：每段一到就排進 Web Audio 時間軸，首段不等整句 ──
+  const SEGMENT_GAP = 0.2;   // 段間靜音，對齊引擎的 interval_silence_ms
+  let audioCtx = null;
+
+  function ctx(){
+    if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  }
+
+  async function doSay(text){
+    setBusy(true);
+    write(text, "say");
+    const status = write("合成中…", "meta");
+
+    const ac = ctx();
+    let nextAt = 0;          // 下一段該在時間軸的哪個點開始
+    let segCount = 0;
+    let firstHeard = null;
+    const started = performance.now();
+
+    const schedule = async (wavBytes) => {
+      let buf;
+      try{
+        buf = await ac.decodeAudioData(wavBytes.buffer.slice(
+          wavBytes.byteOffset, wavBytes.byteOffset + wavBytes.byteLength));
+      }catch(e){ return; }
+      const src = ac.createBufferSource();
+      src.buffer = buf;
+      src.connect(ac.destination);
+      const now = ac.currentTime;
+      if(nextAt < now + 0.02) nextAt = now + 0.02;   // 已落後就盡快接上
+      src.start(nextAt);
+      nextAt += buf.duration + SEGMENT_GAP;
+      segCount++;
+      if(firstHeard === null){
+        firstHeard = Math.round(performance.now() - started);
+        status.textContent = `播放中…（首段 ${firstHeard}ms）`;
+      }
+    };
+
+    try{
+      const res = await fetch("/api/say/stream", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({text}),
+      });
+      if(!res.ok){
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || ("HTTP " + res.status));
+      }
+
+      const reader = res.body.getReader();
+      let buf = new Uint8Array(0);
+      let meta = null, errMsg = null;
+
+      const append = (chunk) => {
+        const merged = new Uint8Array(buf.length + chunk.length);
+        merged.set(buf); merged.set(chunk, buf.length);
+        buf = merged;
+      };
+
+      // frame = 1 byte type + 4 byte big-endian length + payload
+      const drain = async () => {
+        while(buf.length >= 5){
+          const type = buf[0];
+          const len = (buf[1]<<24 | buf[2]<<16 | buf[3]<<8 | buf[4]) >>> 0;
+          if(buf.length < 5 + len) break;
+          const payload = buf.subarray(5, 5 + len);
+          if(type === 0x01) await schedule(payload);
+          else if(type === 0x02) meta = JSON.parse(new TextDecoder().decode(payload));
+          else if(type === 0x03) errMsg = JSON.parse(new TextDecoder().decode(payload)).error;
+          buf = buf.subarray(5 + len);
+        }
+      };
+
+      while(true){
+        const {done, value} = await reader.read();
+        if(value) { append(value); await drain(); }
+        if(done) break;
+      }
+      await drain();
+
+      if(errMsg) throw new Error(errMsg);
+
+      status.remove();
+      if(meta){
+        const rtf = meta.rtf != null ? `  RTF ${meta.rtf}` : "";
+        addPlayer(meta.file, `${(meta.elapsed_ms/1000).toFixed(2)}s / ${meta.audio_seconds}s`);
+        write(`[${meta.language}] 首段 ${meta.first_audio_ms}ms · 全長 ${meta.elapsed_ms}ms `
+              + `→ ${meta.audio_seconds}s · ${meta.segments} 段${rtf}`, "meta");
+      }else{
+        write(`已播放 ${segCount} 段`, "meta");
+      }
+    }catch(e){
+      status.remove();
+      write("合成失敗：" + e.message, "err");
+    }
+    setBusy(false);
+  }
+
+  // ── 輸入 ──
+  input.addEventListener("keydown", e => {
+    if(e.key === "Enter" && !e.isComposing){
+      const v = input.value;
+      if(v.trim()){ history.push(v); histIdx = history.length; }
+      input.value = "";
+      run(v);
+    }else if(e.key === "ArrowUp"){
+      if(histIdx > 0){ histIdx--; input.value = history[histIdx]; e.preventDefault(); }
+    }else if(e.key === "ArrowDown"){
+      if(histIdx < history.length - 1){ histIdx++; input.value = history[histIdx]; }
+      else { histIdx = history.length; input.value = ""; }
+      e.preventDefault();
+    }
+  });
+  document.addEventListener("click", e => {
+    if(!e.target.closest(".player") && !busy) input.focus();
+  });
+
+  // ── 啟動 ──
+  write("U.E.P TTS Shell — 輸入文字直接合成，/help 看指令", "ok");
+  write("引擎採 lazy load，第一次合成會多等約 20 秒（或先跑 /load）", "meta");
+  refresh();
+})();
+</script>
+</body>
+</html>

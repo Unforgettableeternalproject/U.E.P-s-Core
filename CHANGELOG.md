@@ -3787,3 +3787,15 @@
 
 ---
 
+### Add 'subsystems/echo_tts/' from commit '5626ce8a1ac5a194a6351eb3b070a98345345b3c'
+
+> Date: Mon, 02 Nov 2026 15:15:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `8c1afdd1b06a14aae29c5fef4359f92178822302`
+
+---
+

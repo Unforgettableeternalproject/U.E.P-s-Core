@@ -4003,3 +4003,15 @@
 
 ---
 
+### chore: 刪除 Legacy 程式與舊建置鏈. 11/02
+
+> Date: Mon, 02 Nov 2026 22:04:57 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `cc506dc33e53001b456f09c8215e393980f0d070`
+
+---
+

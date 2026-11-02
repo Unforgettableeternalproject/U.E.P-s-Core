@@ -61,14 +61,14 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 # 已遷入 Core 的子系統：不論 Layout 一律走 subsystems/<name>（M1：Session、M2：EM、M3：STT、M5：TTS）。後續里程碑遷入時在此追加
 $migrated = @('session', 'em', 'stt', 'tts')
 
-# 子系統名稱 -> 兄弟 repo 目錄名 / 遷入後 subsystems 下的目錄名 / 原本的 pytest 參數
+# 子系統名稱 -> 兄弟 repo 目錄名（已遷入者為 $null，舊 repo 已 archive 並將自本機刪除）/ 遷入後 subsystems 下的目錄名 / 原本的 pytest 參數
 # Session 的 addopts 在遷入後已移除 --cov；此處仍以 -o addopts= 清掉並顯式保留 e2e 排除，與 M0 基線命令一致
 $items = @(
     [pscustomobject]@{ Key = 'es';      Label = 'ES (echo_stream)';              Sibling = 'Echo-Stream';              Sub = 'echo_stream';       PytestArgs = '' }
-    [pscustomobject]@{ Key = 'em';      Label = 'EM (echo_memory 三包)';         Sibling = 'TestSeperateMemorySystem'; Sub = 'echo_memory';       PytestArgs = '' }
-    [pscustomobject]@{ Key = 'stt';     Label = 'STT (echo_stt)';                Sibling = 'TestSeparateSTTSystem';    Sub = 'echo_stt';          PytestArgs = '' }
-    [pscustomobject]@{ Key = 'session'; Label = 'Session (echo_thought_core)';   Sibling = 'TestSeparateSessionControl'; Sub = 'echo_thought_core'; PytestArgs = '-o addopts= -m "not e2e"' }
-    [pscustomobject]@{ Key = 'tts';     Label = 'TTS (echo_tts)';                Sibling = 'TestSeparateTTSSystem';    Sub = 'echo_tts';          PytestArgs = '' }
+    [pscustomobject]@{ Key = 'em';      Label = 'EM (echo_memory 三包)';         Sibling = $null;                      Sub = 'echo_memory';       PytestArgs = '' }
+    [pscustomobject]@{ Key = 'stt';     Label = 'STT (echo_stt)';                Sibling = $null;                      Sub = 'echo_stt';          PytestArgs = '' }
+    [pscustomobject]@{ Key = 'session'; Label = 'Session (echo_thought_core)';   Sibling = $null;                      Sub = 'echo_thought_core'; PytestArgs = '-o addopts= -m "not e2e"' }
+    [pscustomobject]@{ Key = 'tts';     Label = 'TTS (echo_tts)';                Sibling = $null;                      Sub = 'echo_tts';          PytestArgs = '' }
     [pscustomobject]@{ Key = 'core';    Label = 'Core (tests/uep)';              Sibling = $null;                      Sub = $null;               PytestArgs = 'tests/uep' }
 )
 if ($Only) { $items = $items | Where-Object { $Only -contains $_.Key } }
@@ -103,15 +103,7 @@ if (-not $AllowGpu) { $env:CUDA_VISIBLE_DEVICES = '' }
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONDONTWRITEBYTECODE = '1'
 
-# M5：TTS 權重不進 git。未指定 UEP_TTS_INDEXTTS_DIR 時，過渡期沿用舊 TTS repo 內既有的 IndexTTS2 權重（不複製、不搬動）；
-# 權重搬到使用者決定的新位置後，設該環境變數即可，此段可移除（M6）。
-if (-not $env:UEP_TTS_INDEXTTS_DIR) {
-    $legacyTtsRoot = Join-Path $SiblingRoot 'TestSeparateTTSSystem\echo_tts'
-    if (Test-Path (Join-Path $legacyTtsRoot 'modules/tts_module/checkpoints_v25')) {
-        $env:UEP_TTS_INDEXTTS_DIR = $legacyTtsRoot
-        Write-Host "   TTS 權重: 沿用舊位置 $legacyTtsRoot（UEP_TTS_INDEXTTS_DIR）"
-    }
-}
+# TTS 權重不進 git：未設 UEP_TTS_INDEXTTS_DIR 時，echo_tts 預設讀 %USERPROFILE%/.uep/models/indextts2（舊 TTS repo 已不再作為退回位置）
 
 Write-Host "== 本地閘門  Layout=$Layout  GPU=$(if ($AllowGpu) { '允許' } else { '停用 (CUDA_VISIBLE_DEVICES=空)' })  逾時=${TimeoutSec}s (Core ${CoreTimeoutSec}s)"
 Write-Host "   Python : $Python"

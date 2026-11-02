@@ -37,7 +37,7 @@ def default_generation_paths(project_root: str | Path | None = None) -> Generati
     root = Path(project_root or Path(__file__).resolve().parents[2]).resolve()
     engine_root = root / "echo_tts"
     # IndexTTS 2.5 遷移（2026-08-19）：模型目錄與角色特徵切換至 v25
-    weights_root = indextts_weights_root(engine_root)
+    weights_root = indextts_weights_root()
     model_dir = weights_root / "modules" / "tts_module" / "checkpoints_v25"
     return GenerationPaths(
         project_root=root,

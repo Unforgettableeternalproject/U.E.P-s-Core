@@ -3931,3 +3931,15 @@
 
 ---
 
+### fix: 台灣讀音修正第二批（辨識、校正、珍惜、惜、痕跡、跡）. 11/02
+
+> Date: Mon, 02 Nov 2026 21:18:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `fix/tts-pronunciation-2`
+
+> Commit: `25e8fc95e996d1e2cfdeb733f8d43e6f55d8f055`
+
+---
+

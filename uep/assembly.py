@@ -80,7 +80,7 @@ from uep.tasks.presence_bridge import (
 )
 from uep.tasks.states import RunStatus
 
-if TYPE_CHECKING:  # 組裝層不得硬依賴 echo_stream：只有 uep/echo/host 會 import 它
+if TYPE_CHECKING:  # 組裝層不得硬依賴 uep.stream：只有 uep/echo/host 會 import 它
     from uep.echo.host import EchoPipelineHost
 
 logger = logging.getLogger("uep.assembly")

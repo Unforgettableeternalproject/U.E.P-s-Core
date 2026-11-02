@@ -696,6 +696,30 @@ dev-mode-exact = true
 7. VRAM 需求與 TTFA 在 Core 路徑的增量只有 bench 腳本定義（`dispatch_increment` 預算 +150 ms），未量測；PostgreSQL 是否有 JSONB 等專屬語法使 sqlite 不可行，未驗證。
 8. ES 在 N1 期間仍可能有提交，人工移植（Q2）。
 
+**N1 開工核對結果（2026-11-02；ES develop 07e3ff8，Core `feature/subsystem-migration` b856b25）**：八項皆未推翻前提；與計畫表不同處（1、2、3）已在落地時調整，下方「落地」段記錄。
+
+1. **四構件**：
+   - `emotion` 被 think adapter 直接使用（`think_llm.py:61` `extract_style, marker_prompt`），不是「併入不接線」；隨 think 一併接線，併入 `uep/stream/emotion.py`。
+   - `output_guard` 由 `think_llm.py:71` 引入、`think_llm.py:402` 建構（`OutputGuard.from_config()`，設定鍵 `output_guard.py:22-23`）；Core 沒有獨立接線需求，隨 think adapter 走，N3 決定去留。
+   - `gap_filler` 只被 `pipeline.py:40` 與 `web/server.py:60` 使用；`TurnCoordinator` 不接（`coordinator.py:85` 明寫），Core 無接線需求，併入不接線。
+   - `session_store` 只有 `web/server.py:2079` 使用（唯一 import `echo_thought_core.session_store` 的地方，`session_store.py:17,38`）；Core 沒有呼叫端，原樣搬入、不接線，N3 決定去留。
+2. **ES 測試純度**：ES `tests/` 共 1003 pass＋1 xfail。純層（contracts／core／fakes）與 adapter 測試（皆以 fake backend 驅動，不載模型）搬入 `tests/uep/stream/`（39 檔，835 pass＋1 xfail）；不搬：`test_config`(7)、`test_dream_scheduler`(12)、`test_web*`(56)、`test_discord_*`＋`test_stt_discord`(84)、`test_import_boundary`(6) 共 165；`test_gap_filler` 的 defaults／web.server 三項(3)。1003+1−165−3＝836 與搬入數一致。Core 的 pytest 需加 `asyncio_mode = "auto"`（ES 測試依賴；`pyproject.toml`）。
+3. **`memory_echo` 與 Access Layer 重複範圍**：確定重複的是 `member_recall` schema（`uep/memory/access.py:55-72` 對齊 `memory_echo.py:86`）與工具類別白名單（`access.py:~50` `TOOL_CLASSES`）；Access Layer 透過 `MemoryRuntime.adapter_call`（`access.py:98`）呼叫 adapter，不重複實作引擎呼叫。`uep/echo/memory_wiring.py:70,94` 是 `memory_echo` 在 Core 內的唯一消費者。未逐函式比對，精確去重留 N5。
+4. **`UEP_INFER_*_REPO`**：`uep/config.py:44-47` 定義；`inference_wiring.py:263`（TTS 必填）、`:282`（Session 選填覆寫）、`:426`（STT 必填）。M3／M5 前仍必須；N1 不動。console 在 M3／M5 前只能 fake 或沿用此路徑。
+5. **EnergyVad**：`uep/stream/audio/vad.py:1-6` 自述「Phase 3 固定閾值」，語意 VAD 未接；A4 真實麥克風調參／接 Smart Turn 的時間仍需預留。
+6. **Core embedding**：`uep/config.py:39-40` 仍為 `sentence-transformers`／`BAAI/bge-small-zh-v1.5`；bge-m3 尚未落地，屬 N5。
+7. **VRAM／TTFA 增量**：只有 `scripts/bench_inference_s6.py:9` 定義 `dispatch_increment`（預算 +150 ms），未量測；PostgreSQL 專屬語法已確認（`uep/context/models.py:22,74` 與 migrations 大量使用 `JSONB`），sqlite 不可行，與 Q6 一致。
+8. **ES 在 N1 期間的提交**：自 Core 上次對齊基準 e31eac0 起，ES develop 已有 20 筆提交（含 VOX adapter、STT 補強、關於我工具）；N1 以 07e3ff8 為來源複製，純層差異僅 `multichannel.py`、`splitter.py`、`style.py`。之後 ES 的提交人工移植（Q2）。
+
+**N1 落地（2026-11-02，`feature/n1-stream`）**：與 §5.4 去留表的差異：
+
+- **`core/pipeline.py`、`gap_filler.py` 暫留**（`uep/stream/pipeline.py`、`gap_filler.py`）：ES 的 think／speak／scenario 測試（約 10 檔）以 `PipelineRunner` 當驅動，淘汰前先留；Core 路徑不使用，N5 前評估淘汰並同步改寫那些測試。`dream_scheduler.py`、`standalone.py` 檔案淘汰。
+- **`StaticPolicySource`、`StandaloneTicketIssuer`** 併入 `uep/stream/policies.py`：`TurnCoordinator` 預設依賴前者（原在 `standalone.py`），後者是 coordinator 測試的簽發器。
+- **`config.py` 隨 adapters 搬為 `uep/stream/adapters/config.py`（過渡）**：八支 adapter 依賴它讀 `ECHO_STREAM_*`／`OPENAI_*`；`.env` 查找根由 ES repo 根改為 Core repo 根（環境變數優先的行為不變）。F1 併入 `UepSettings` 後移除。`cli.py`、`defaults.py` 未搬。
+- **`fakes/`** 置於 `uep/fakes/stream/`（與 Core 既有 fakes 分開，無重複構件需去重）。`sinks.py`、`sources.py` 置於 `uep/stream/io/`。`stt_discord`、`discord_resample`、`web/` 未搬。
+- **adapters 以「原樣搬入」處理**（不寫薄 shim）：`think_llm`、`speak_indextts`、`speak_vox`、`input_stt`、`input_multichannel`、`memory_echo`、`session_store`、`output_guard` 置於 `uep/stream/adapters/`，僅改相對 import；`uep/echo/*` 與測試全部切到 `uep.stream`，`uep/` 內 `echo_stream` 0 import。型別雙身分由 `tests/uep/stream/test_type_identity.py` 鎖住（adapter 產物 `isinstance` Core 版契約；獨立行程匯入 `uep.stream`／`uep.echo` 全部子模組後 `echo_stream` 不在 `sys.modules`）。
+- 邊界測試（`tests/uep/test_import_boundary.py`）改為：`echo_stream` 在 `uep/` 全面禁止；子系統只允許 `uep/stream/adapters/` 與 `uep/echo/*_wiring.py`；`uep/stream/` 不得 import `uep` 其他部分（含逸出的相對 import），非 adapters 子目錄不得 import 子系統。
+
 ### 5.5 Core 端到端驗收（D104／D105 Q3、Q6）
 
 **里程碑**：進入工作層（工具層）實作前，須先達成 Core 端到端可驗收——輸入到輸出整條由 Core 運行。現況：Core 決策層完整（`uep/turn`、`presence`、`control`、`output`、`tasks`、`db`、`EchoPipelineHost`），但**沒有可執行入口**（`uep.endpoint.__main__` 只有控制面；`bench_inference_s6.py --mode core` 未補齊），內層 sink 只有注入點、無真實實作。

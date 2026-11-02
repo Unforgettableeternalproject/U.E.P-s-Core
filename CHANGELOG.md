@@ -3667,3 +3667,51 @@
 
 ---
 
+### docs: 記錄 N1 開工前檢查項核對結果. 11/02
+
+> Date: Mon, 02 Nov 2026 13:50:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `4c9eb018bf3cb26f1dca415df3104311d0cd275f`
+
+---
+
+### feat: 搬入 ES 純層至 uep/stream. 11/02
+
+> Date: Mon, 02 Nov 2026 13:51:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `0c5e738071005f79d14a1cff959d47ffad6978b2`
+
+---
+
+### refactor: Host 與 adapters 同步切換至 uep.stream. 11/02
+
+> Date: Mon, 02 Nov 2026 13:51:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `b0aebb275c77057c060ed54370602b68794a74a7`
+
+---
+
+### test: 邊界測試改為 uep 內禁止 echo_stream. 11/02
+
+> Date: Mon, 02 Nov 2026 13:51:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `6fb12076db011b63bb315bf63fe9ca93067466ad`
+
+---
+

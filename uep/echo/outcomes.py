@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from echo_stream.contracts.output import OutcomeStatus, TurnOutcome
+from uep.stream.contracts.output import OutcomeStatus, TurnOutcome
 
 from uep.turn.models import TurnEndFacts
 

@@ -12,10 +12,9 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.contracts.cancellation import CancellationToken
-from echo_stream.contracts.types import Sentence
+from uep.stream.contracts.cancellation import CancellationToken
+from uep.stream.contracts.types import Sentence
 
 from uep.config import UepSettings
 from uep.echo.inference_wiring import (
@@ -105,8 +104,8 @@ def test_設定傳到_speak_stage():
 
 
 def test_stt_模式選擇():
-    from echo_stream.adapters.input_multichannel import MultiChannelSttInputStage
-    from echo_stream.adapters.input_stt import SttInputStage
+    from uep.stream.adapters.input_multichannel import MultiChannelSttInputStage
+    from uep.stream.adapters.input_stt import SttInputStage
 
     assert isinstance(build(cfg=InferenceConfig(stt_mode="multichannel")).input_stage, MultiChannelSttInputStage)
     assert isinstance(build(cfg=InferenceConfig(stt_mode="single")).input_stage, SttInputStage)
@@ -130,7 +129,7 @@ def test_缺子系統路徑_fail_closed():
 
 
 def test_think_backend_預設不需_session_路徑(monkeypatch, tmp_path):
-    import echo_stream.adapters.think_llm as think_llm
+    import uep.stream.adapters.think_llm as think_llm
 
     seen: dict = {}
     monkeypatch.setattr(think_llm, "build_backend", lambda provider, **kw: seen.update(provider=provider, **kw) or "backend")
@@ -292,7 +291,7 @@ def test_attach_metrics_之後的指標進_host_metrics():
 # ---- TTS 引擎選擇（indextts2／vox）與 prepare 逾時設定 ----
 
 def _install_fake_vox(monkeypatch, captured):
-    """注入假的 ``echo_stream.adapters.speak_vox``：記錄建構參數，不載 GPU。"""
+    """注入假的 ``uep.stream.adapters.speak_vox``：記錄建構參數，不載 GPU。"""
     import sys
     import types
 
@@ -310,20 +309,20 @@ def _install_fake_vox(monkeypatch, captured):
             return
             yield
 
-    mod = types.ModuleType("echo_stream.adapters.speak_vox")
+    mod = types.ModuleType("uep.stream.adapters.speak_vox")
     mod.VoxSpeakStage = FakeVoxSpeakStage
-    monkeypatch.setitem(sys.modules, "echo_stream.adapters.speak_vox", mod)
+    monkeypatch.setitem(sys.modules, "uep.stream.adapters.speak_vox", mod)
     return FakeVoxSpeakStage
 
 
 def _block_vox_import(monkeypatch):
     import sys
 
-    monkeypatch.setitem(sys.modules, "echo_stream.adapters.speak_vox", None)  # None＝import 會拋 ImportError
+    monkeypatch.setitem(sys.modules, "uep.stream.adapters.speak_vox", None)  # None＝import 會拋 ImportError
 
 
 def test_tts_engine_預設_indextts2_且逾時_40():
-    from echo_stream.adapters.speak_indextts import IndexTTS2SpeakStage
+    from uep.stream.adapters.speak_indextts import IndexTTS2SpeakStage
 
     cfg = InferenceConfig(stt_mode="single")
     assert cfg.tts_engine == "indextts2" and cfg.speak_prepare_timeout_s == 40.0
@@ -442,7 +441,7 @@ def test_host_start_走設定的上限而非固定_60():
 # ---- VOX 切句建議值 ----
 
 def test_vox_有建議值_傳到_think_的_split_policy(monkeypatch):
-    from echo_stream.core.splitter import SplitPolicy
+    from uep.stream.splitter import SplitPolicy
 
     recommended = SplitPolicy(first_min_weight=10.0, first_max_weight=24.0, min_weight=30.0, max_weight=80.0)
     fake_cls = _install_fake_vox(monkeypatch, {})
@@ -454,7 +453,7 @@ def test_vox_有建議值_傳到_think_的_split_policy(monkeypatch):
 
 
 def test_vox_無建議值方法_維持預設_split_policy(monkeypatch):
-    from echo_stream.core.splitter import SplitPolicy
+    from uep.stream.splitter import SplitPolicy
 
     _install_fake_vox(monkeypatch, {})  # 假 stage 沒有 recommended_split_policy
     w = build_inference_wiring(
@@ -464,7 +463,7 @@ def test_vox_無建議值方法_維持預設_split_policy(monkeypatch):
 
 
 def test_vox_佔位_stage_不取建議值(monkeypatch):
-    from echo_stream.core.splitter import SplitPolicy
+    from uep.stream.splitter import SplitPolicy
 
     _block_vox_import(monkeypatch)
     w = build_inference_wiring(
@@ -474,7 +473,7 @@ def test_vox_佔位_stage_不取建議值(monkeypatch):
 
 
 def test_非_vox_引擎不取建議值(monkeypatch):
-    from echo_stream.core.splitter import SplitPolicy
+    from uep.stream.splitter import SplitPolicy
 
     w = build()
     assert w.think.split_policy == SplitPolicy()

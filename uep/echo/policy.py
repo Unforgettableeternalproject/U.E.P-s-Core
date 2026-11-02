@@ -15,13 +15,13 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
-from echo_stream.contracts.output import (
+from uep.stream.contracts.output import (
     ModeFlags,
     PolicySnapshot,
     TurnView,
     YieldAction,
 )
-from echo_stream.contracts.turn import VoiceEvent
+from uep.stream.contracts.turn import VoiceEvent
 
 from uep.turn.decision_config import ListenerConfig
 from uep.turn.engagement import ChannelMode

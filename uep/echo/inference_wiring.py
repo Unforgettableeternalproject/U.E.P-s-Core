@@ -280,7 +280,7 @@ def default_think_backend(cfg: InferenceConfig) -> Any:
     repo = None
     if cfg.session_repo is not None:
         repo = _require_repo(cfg.session_repo, "UEP_INFER_SESSION_REPO", "Session")
-    from echo_stream.adapters.think_llm import build_backend
+    from uep.stream.adapters.think_llm import build_backend
 
     overrides: dict[str, Any] = {}
     if cfg.llm_model:
@@ -309,7 +309,7 @@ def _build_indextts2_speak(
     tts_backend_factory: Callable[[InferenceConfig], Any] | None, extra: Mapping[str, Any],
 ) -> Any:
     """IndexTTS2（V25）路徑：backend 預建一次、所有 turn 共用。"""
-    from echo_stream.adapters.speak_indextts import IndexTTS2SpeakStage
+    from uep.stream.adapters.speak_indextts import IndexTTS2SpeakStage
 
     backend = tts_backend if tts_backend is not None else (tts_backend_factory or default_tts_backend)(cfg)
     speak_kwargs: dict[str, Any] = {
@@ -327,7 +327,7 @@ def _build_vox_speak(cfg: InferenceConfig, extra: Mapping[str, Any]) -> Any:
     不建 IndexTTS2 backend（V25 與 VOX 不能同時常駐），也不傳 ``lora_scale``。
     """
     try:
-        from echo_stream.adapters.speak_vox import VoxSpeakStage
+        from uep.stream.adapters.speak_vox import VoxSpeakStage
     except ImportError as exc:
         reason = f"{VOX_ADAPTER_MISSING}: {type(exc).__name__}: {exc}"
         logger.error("VOX adapter 無法載入，speak 標為 not ready：%s", reason)
@@ -416,11 +416,11 @@ def build_inference_wiring(
 
     # --- STT：backend 在 prepare 才建（載 faster-whisper） ---
     if cfg.stt_mode == "multichannel":
-        from echo_stream.adapters.input_multichannel import (
+        from uep.stream.adapters.input_multichannel import (
             MultiChannelSttInputStage as InputCls,
         )
     else:
-        from echo_stream.adapters.input_stt import SttInputStage as InputCls
+        from uep.stream.adapters.input_stt import SttInputStage as InputCls
     stt_repo = None
     if stt_backend is None:
         stt_repo = str(_require_repo(cfg.stt_repo, "UEP_INFER_STT_REPO", "STT"))
@@ -429,7 +429,7 @@ def build_inference_wiring(
     input_stage = InputCls(**input_kwargs)
 
     # --- Think：LLM backend（API client） ---
-    from echo_stream.adapters.think_llm import LLMThinkStage
+    from uep.stream.adapters.think_llm import LLMThinkStage
 
     llm = think_backend if think_backend is not None else (think_backend_factory or default_think_backend)(cfg)
     think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt}

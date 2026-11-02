@@ -40,14 +40,14 @@ def _summ(values: list[float]) -> dict[str, Any]:
 
 
 async def _sentences(texts: tuple[str, ...], turn_id: str):
-    from echo_stream.contracts.types import Sentence
+    from uep.stream.contracts.types import Sentence
 
     for i, text in enumerate(texts):
         yield Sentence(text=text, turn_id=turn_id, index=i, is_first=i == 0, is_last=i == len(texts) - 1)
 
 
 async def measure_first_audio(speak: Any, texts: tuple[str, ...], runs: int) -> list[float]:
-    from echo_stream.contracts.cancellation import CancellationToken
+    from uep.stream.contracts.cancellation import CancellationToken
 
     out: list[float] = []
     for n in range(runs):
@@ -63,7 +63,7 @@ async def measure_first_audio(speak: Any, texts: tuple[str, ...], runs: int) -> 
 
 async def measure_barge_in(speak: Any, texts: tuple[str, ...], runs: int) -> list[float]:
     """第一個 chunk 到達後取消，量取消到 stream 結束。"""
-    from echo_stream.contracts.cancellation import CancellationToken
+    from uep.stream.contracts.cancellation import CancellationToken
 
     out: list[float] = []
     for n in range(runs):

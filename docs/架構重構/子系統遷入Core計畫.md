@@ -675,7 +675,7 @@ dev-mode-exact = true
 | 步 | 內容 | 驗收 | 資源 |
 |---|---|---|---|
 | N1 純層搬入 | contracts＋core 純檔搬進 `uep/stream/`；ES 對應測試搬進 `tests/uep/stream/`；host／sink／policy／outcomes 與 `inference_wiring` 改接新契約；**仍留在 ES 的現存 adapter（`think_llm`、`speak_*`、`input_*`、`memory_echo`）須同步處理**（薄 shim 繼承新型別，或未重寫版原樣搬入 `uep/stream/adapters/`，較簡） | `tests/uep` 全綠；搬入測試與 ES 基線數字一致；邊界測試綠；`uep/` 內 `echo_stream` 0 import；`isinstance` 煙霧測試 | CPU |
-| N2 Console v0（fake） | §5.5；用 fakes 跑 A0 | 腳本化 A0 通過；人工跑一次 console | CPU＋PostgreSQL |
+| N2 Console v0（fake）**（已完成，見 §5.5 落地）** | §5.5；用 fakes 跑 A0 | 腳本化 A0 通過；人工跑一次 console | CPU＋PostgreSQL |
 | M3 STT | 見 §5.2（D103 範圍） | 271 測試同基線；A3 | whisper 2.9 GB，GPU 或 CPU（CPU 慢，未量測） |
 | N3 Think 重寫 | `think.py` 去 ES 殘留（設定、session_store、output_guard 決定去留） | A1（文字→真 LLM）通過 | API 金鑰，CPU |
 | M5 TTS | 見 §5.2；speak adapter 進 `uep/stream/adapters/speak_*.py` | A2、A4 | GPU，9 GB 權重 |
@@ -753,6 +753,15 @@ dev-mode-exact = true
 | A8 | 延遲報告：TTFA 與 ES 基線（約 5.1 s，2026-08-20 實測）對照 | GPU | 手動，記錄不設硬門檻 |
 
 STT／TTS／embedding 同卡共存壓力（D90）列為 A2–A4 的觀察項。每遷入一個子系統就多通過一個情境：N2→A0、N3→A1、M3→A3、M5→A2／A4、N5→A5，A6／A7／A8 隨之補齊。
+
+**N2 落地（2026-11-02，`feature/n2-console`）**：`python -m uep.console` v0 完成，fake 模式為唯一完整支援（A0 通過）。
+
+- 程式：`uep/console/`（`__main__.py` 入口與 UTF-8 stdio、`app.py` 參數與 REPL、`commands.py` 指令層、`rig.py` 組裝）；測試 `tests/uep/console/test_console.py`（以程式呼叫 `Console.execute`，不走 subprocess）。console 屬 uep 內部，只 import `uep.*`，不 import 子系統。
+- 實際指令：`/say <文字>`（無指令輸入行同）、`/wav <路徑>`（fake STT：讀 wav 時長後產生固定格式 utterance，不做辨識）、`/cancel`（對進行中 turn 呼叫 `coordinator.cancel_turn`）、`/status`（Presence／Runtime／Interaction／Health、turn 狀態、Host 指標）、`/trace [all]`（`LatencyTracer` 報告＋journal 事件）、`/mem`（fake 模式未組裝記憶）、`/mic`（未實作）、`/help`、`/quit`。(a) 子系統隔離群 `/stt`、`/tts`、`/llm`、`/check` 只留骨架，回「尚未支援」，待 M3／M5。
+- 旗標：`--mode fake|real`（`real` 回「尚未支援」，exit code 2）、`--fake`、`--no-tts`（丟棄音訊）、`--no-stt`（保留旗標，v0 無作用）、`--session-dir`（預設 `outputs/e2e`，已加入 `.gitignore`）。`--play` 與 `UEP_E2E_ALLOW_GPU` 守門待 real 模式。
+- 輸出：每個 turn 寫 `<session-dir>/<turn_id>/<n>.wav`；`host_epoch.json` 也在 `--session-dir`。
+- 資料層：連線沿用 `UEP_DATABASE_URL`（`uep/config.py`，env 優先於 `.env`）；連不上、未設定或尚未 `alembic upgrade head` 皆以繁中訊息結束（exit 2），訊息不含連線字串。console 直接使用該庫，不自動 migrate。
+- 與 §5.5 原設計的差異：v0 不含 `--play`、`/mem` 查詢、`/check`；`/wav` 不分塊 `feed`（fake 模式無真輸入 stage）。
 
 ## 6. git 歷史處理
 

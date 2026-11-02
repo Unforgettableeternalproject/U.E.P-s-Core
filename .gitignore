@@ -446,3 +446,4 @@ openspec/changes/
 
 # 推理環境（Python 3.12，P3 S6）
 .venv-infer/
+outputs/e2e/

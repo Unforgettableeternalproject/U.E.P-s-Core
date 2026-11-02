@@ -3622,3 +3622,15 @@
 
 ---
 
+### docs: 遷移計畫納入 D103-D105 ES 併核與端到端驗收. 11/02
+
+> Date: Mon, 02 Nov 2026 12:31:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `49a073d30f31d64757458a0d037154a8bdf90d91`
+
+---
+

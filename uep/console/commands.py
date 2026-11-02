@@ -24,6 +24,10 @@ STT_WAIT_S = 60.0
 FEED_CHUNK_S = 0.1
 FEED_TAIL_SILENCE_S = 1.6
 """餵完音訊後補的靜音長度，讓 VAD／turn 判定看到足夠的停頓而結束這句話。"""
+FEED_SETTLE_S = 2.0
+"""一個 turn 結束後，再等多久看有沒有同一段音訊的後續 utterance。長音檔中間的停頓超過 turn 門檻（0.7 秒）
+會被切成多句，各句各開一個 turn、後句依「同 owner 新回覆取代舊回覆」取消前句（設計行為，見計畫 §5.5）；
+console 要追到最後一個 turn 才算這個音檔跑完。"""
 SUBSYSTEM_NAMESPACES = ("check",)
 
 HELP_TEXT = """\
@@ -54,7 +58,7 @@ class Console:
     def __init__(
         self, runtime: ConsoleRuntime, out: Callable[[str], None] = print, wait_s: float = DEFAULT_WAIT_S,
         *, input_fn: Callable[[str], str] = input, mic_factory: Callable[[], object] | None = None,
-        stt_wait_s: float = STT_WAIT_S, feed_sleep: bool = True,
+        stt_wait_s: float = STT_WAIT_S, feed_sleep: bool = True, settle_s: float = FEED_SETTLE_S,
     ) -> None:
         self.rt = runtime
         self.out = out
@@ -63,6 +67,7 @@ class Console:
         self.mic_factory = mic_factory
         self.stt_wait_s = stt_wait_s
         self.feed_sleep = feed_sleep
+        self.settle_s = settle_s
         self.last_turn_id: str | None = None
         self._commands: dict[str, Callable[[str], None]] = {
             "say": self._say, "wav": self._wav, "cancel": self._cancel, "status": self._status,
@@ -153,9 +158,16 @@ class Console:
         if len(rt.submissions) <= before:
             self.out(f"STT 在 {self.stt_wait_s:.0f} 秒內沒有產生 utterance（可能被幻覺過濾或為純雜訊）。")
             return
-        fact, result = rt.submissions[before]
-        self.out(f"STT 辨識（餵入後 {time.perf_counter() - t0:.2f} 秒）：{fact.text}")
-        self._report_turn(result)
+        # 長音檔可能被 VAD 切成多句（每句各開一個 turn，後句取代前句）：逐句追到最後一個 turn 結束
+        index = before
+        while index < len(rt.submissions):
+            fact, result = rt.submissions[index]
+            index += 1
+            self.out(f"STT 辨識（餵入後 {time.perf_counter() - t0:.2f} 秒）：{fact.text}")
+            self._report_turn(result)
+            settle_deadline = time.monotonic() + self.settle_s
+            while len(rt.submissions) <= index and time.monotonic() < settle_deadline:
+                time.sleep(0.05)
 
     def _submit(self, text: str, **over) -> None:
         rt = self.rt

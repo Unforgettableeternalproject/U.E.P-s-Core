@@ -15,6 +15,8 @@ import numpy as np
 try:
     import torch
     import torchaudio
+    from echo_stt._torchaudio_compat import ensure_torchaudio_compat
+    ensure_torchaudio_compat()
     from pyannote.audio import Model
     VAD_AVAILABLE = True
 except ImportError:

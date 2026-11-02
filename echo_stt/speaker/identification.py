@@ -14,7 +14,6 @@ import os
 import time
 import pickle
 import logging
-import tempfile
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 from dotenv import load_dotenv
@@ -34,6 +33,8 @@ logger = logging.getLogger(__name__)
 try:
     import torch
     import torchaudio
+    from echo_stt._torchaudio_compat import ensure_torchaudio_compat
+    ensure_torchaudio_compat()  # torchaudio 2.9+ 缺屬性時補上，pyannote 才能 import
     from pyannote.audio import Pipeline as PyannoteTPipeline
     from pyannote.audio import Model
     from pyannote.core import Segment
@@ -356,18 +357,13 @@ class SpeakerIdentification:
         try:
             logger.debug("[Speaker] 開始說話人識別...")
 
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                audio_float = audio_data.astype(np.float32) / 32768.0
-                audio_tensor = torch.from_numpy(audio_float).unsqueeze(0)  # type: ignore
-                torchaudio.save(temp_file.name, audio_tensor, self.sample_rate)  # type: ignore
-                temp_path = temp_file.name
-
-            diarization = self.pipeline(temp_path)
-
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+            # 直接傳入記憶體中的 waveform，避免 pyannote 經 torchaudio.info/load 讀檔
+            # （torchaudio 2.9+ 已移除 info，load 需 torchcodec）
+            audio_float = audio_data.astype(np.float32) / 32768.0
+            audio_tensor = torch.from_numpy(audio_float).unsqueeze(0)  # type: ignore
+            diarization = self.pipeline(
+                {"waveform": audio_tensor, "sample_rate": self.sample_rate}
+            )
 
             speakers = []
             for segment, _, speaker in diarization.itertracks(yield_label=True):

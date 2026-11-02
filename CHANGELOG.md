@@ -3967,3 +3967,15 @@
 
 ---
 
+### test: 修正兩個依賴計時的測試在 Linux 上偶發失敗. 11/02
+
+> Date: Mon, 02 Nov 2026 21:54:08 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `a649404025120063b441c7cd4717923b25e9b167`
+
+---
+

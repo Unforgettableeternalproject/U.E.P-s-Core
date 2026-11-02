@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
@@ -316,6 +317,11 @@ def test_client_trusts_real_server_and_server_does_not_register_before_hello_ok(
         client.connect()
         assert client.connected and server.connected("ep_cli")
         client.close()
+        # 伺服器端是非同步發現 EOF 才取消登記；先等第一條連線確實被撤掉，再驗證第二次失敗不留下登記（Linux 上不等會偶發殘留）
+        deadline = time.monotonic() + 5
+        while server.connected("ep_cli") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not server.connected("ep_cli")
 
         def boom(*_args):
             raise EndpointAuthError("x")

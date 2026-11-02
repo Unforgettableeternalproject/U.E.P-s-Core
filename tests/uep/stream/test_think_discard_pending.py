@@ -88,7 +88,8 @@ async def test_清除前發起的retrieve晚到不寫回():
             await gate.wait()
             return "含離場者的投影"
 
-    stage = _stage(FakeBackend(delay_s=0.001), {"A": SlowMemory()})
+    # 生成必須比下方 0.05s 等待更久：Windows 計時器約 15ms 一跳，delay 0.001 實際會變慢，Linux 則會在 discard 前就跑完而取消 retrieve
+    stage = _stage(FakeBackend(delay_s=0.02), {"A": SlowMemory()})
     task = asyncio.ensure_future(_run_turn(stage, "嗨", "A", turn_id="t1"))
     await asyncio.sleep(0.05)  # retrieve 已起跑、卡在 gate
     stage.discard_pending("A")

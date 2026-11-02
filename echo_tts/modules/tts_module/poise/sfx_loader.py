@@ -57,9 +57,14 @@ class SfxLoader:
             return None
 
         try:
+            import numpy as np
+            import soundfile as sf
+            import torch
             import torchaudio
 
-            waveform, sr = torchaudio.load(str(path))
+            # torchaudio 2.11 的 load 需 torchcodec，改用 soundfile（輸出 (C, T) float32）
+            data, sr = sf.read(str(path), dtype="float32", always_2d=True)
+            waveform = torch.from_numpy(np.ascontiguousarray(data.T))
 
             # Convert to mono if stereo
             if waveform.shape[0] > 1:

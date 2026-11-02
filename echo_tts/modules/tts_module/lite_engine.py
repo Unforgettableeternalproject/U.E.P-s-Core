@@ -2028,14 +2028,8 @@ class IndexTTSLite:
             _t = time.perf_counter()
 
             # 7. 保存音頻
-            import torchaudio
-            torchaudio.save(
-                output_path,
-                audio_output,
-                sample_rate=22050,
-                encoding="PCM_S",
-                bits_per_sample=16
-            )
+            from .tts_utils.audio_io import save_audio_tensor
+            save_audio_tensor(output_path, audio_output, 22050)
             _t = _mark("wav_save_ms", _t)
 
             if verbose:

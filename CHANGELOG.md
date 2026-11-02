@@ -3631,6 +3631,27 @@
 > Branch: `feature/subsystem-migration`
 
 > Commit: `49a073d30f31d64757458a0d037154a8bdf90d91`
+### chore: 試行升級 torch 2.11. 11/02
+
+> Date: Mon, 02 Nov 2026 12:26:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/torch-2.11`
+
+> Commit: `0253ce9e47f3fcac5d454e94d1df445f8c83eaa3`
+
+---
+
+### fix: setup_infer_env 在 PowerShell 5.1 與結束碼誤判. 11/02
+
+> Date: Mon, 02 Nov 2026 12:35:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/torch-2.11`
+
+> Commit: `dbdf699d212613553ff9985aab8b6daded21c2fb`
 
 ---
 

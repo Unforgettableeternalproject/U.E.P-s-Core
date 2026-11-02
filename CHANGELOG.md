@@ -3526,3 +3526,408 @@
 
 ---
 
+### [chore]: 子系統遷移 M0 準備. 11/01
+
+> Date: Sun, 01 Nov 2026 23:54:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `63a4101b2a69a45cb1ad6d3fdf0f6739e0335bb8`
+
+---
+
+### [chore]: 遷入 Session 子系統（subtree）. 11/02
+
+> Date: Mon, 02 Nov 2026 01:00:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `0b1fa709de37a8e299f3f7476de2f2f610010483`
+
+---
+
+### [chore]: Core 以 hatch editable 提供 Session. 11/02
+
+> Date: Mon, 02 Nov 2026 01:04:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `c3455a6f979e9be8a9cae783bf3f1b7e668a511e`
+
+---
+
+### [chore]: Session 入口改走 Core 內路徑. 11/02
+
+> Date: Mon, 02 Nov 2026 01:04:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `2c38117c19123361e1f348fc518130644cf50644`
+
+---
+
+### [docs]: 記錄 M1 Session 遷入完成狀態. 11/02
+
+> Date: Mon, 02 Nov 2026 01:19:20 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `8478f4ce9f867e401ad60ac788eca923e1ecbcd6`
+
+---
+
+### [chore]: 遷入 EM 子系統（subtree）. 11/02
+
+> Date: Mon, 02 Nov 2026 01:21:37 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `cac6677be17988d11af013f864083224fafc4bf3`
+
+---
+
+### [chore]: Core 以 hatch editable 提供 EM 三包. 11/02
+
+> Date: Mon, 02 Nov 2026 01:26:54 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `373e027b6093a2a734ed802c0ff942db7c371c87`
+
+---
+
+### [chore]: EM 設定改由 Core 明確提供並記錄 M2 完成. 11/02
+
+> Date: Mon, 02 Nov 2026 01:50:43 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `ffb148a7f06bf8da09c981467bb08c20242d45bc`
+
+---
+
+### docs: 遷移計畫納入 D103-D105 ES 併核與端到端驗收. 11/02
+
+> Date: Mon, 02 Nov 2026 12:31:04 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `49a073d30f31d64757458a0d037154a8bdf90d91`
+### chore: 試行升級 torch 2.11. 11/02
+
+> Date: Mon, 02 Nov 2026 12:26:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/torch-2.11`
+
+> Commit: `0253ce9e47f3fcac5d454e94d1df445f8c83eaa3`
+
+---
+
+### fix: setup_infer_env 在 PowerShell 5.1 與結束碼誤判. 11/02
+
+> Date: Mon, 02 Nov 2026 12:35:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/torch-2.11`
+
+> Commit: `dbdf699d212613553ff9985aab8b6daded21c2fb`
+
+---
+
+### chore: 共用環境預設改為 torch 2.11 的 venv-inference-312-t211. 11/02
+
+> Date: Mon, 02 Nov 2026 12:47:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `53bd2b9d6e713aca939d5afdea2632b35ea95428`
+
+---
+
+### docs: 記錄 N1 開工前檢查項核對結果. 11/02
+
+> Date: Mon, 02 Nov 2026 13:50:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `4c9eb018bf3cb26f1dca415df3104311d0cd275f`
+
+---
+
+### feat: 搬入 ES 純層至 uep/stream. 11/02
+
+> Date: Mon, 02 Nov 2026 13:51:00 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `0c5e738071005f79d14a1cff959d47ffad6978b2`
+
+---
+
+### refactor: Host 與 adapters 同步切換至 uep.stream. 11/02
+
+> Date: Mon, 02 Nov 2026 13:51:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `b0aebb275c77057c060ed54370602b68794a74a7`
+
+---
+
+### test: 邊界測試改為 uep 內禁止 echo_stream. 11/02
+
+> Date: Mon, 02 Nov 2026 13:51:10 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `6fb12076db011b63bb315bf63fe9ca93067466ad`
+
+---
+
+### feat: 新增 Core 端到端驗收 Console v0. 11/02
+
+> Date: Mon, 02 Nov 2026 14:11:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n2-console`
+
+> Commit: `e4c1398be3f7d5250ebe9604f65da44dc58dd03f`
+
+---
+
+### Add 'subsystems/echo_stt/' from commit '8aa91268bbfcd5b42e1a3b10ff612699c9a22cc7'
+
+> Date: Mon, 02 Nov 2026 14:13:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `09ca366e630bdbe018da24587e2a3a91dea831da`
+
+---
+
+### chore: 導入 STT 子系統的 hatch 與環境設定. 11/02
+
+> Date: Mon, 02 Nov 2026 14:18:05 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `f7d350817c6203b81d88675d23e5f9e86e115643`
+
+---
+
+### feat: Core adapter 改用 Core 內的 echo_stt 並實作 console /stt. 11/02
+
+> Date: Mon, 02 Nov 2026 14:18:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `6f12e12741459046d28c476e3dde551a901303f4`
+
+---
+
+### docs: 新增 M3 STT 遷入完成紀錄與退役清單. 11/02
+
+> Date: Mon, 02 Nov 2026 14:41:53 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `f69ea1502058899b9d962c195c9fa4de8355a95c`
+
+---
+
+### feat: Think adapter 改讀 Core 設定並接上 console /llm. 11/02
+
+> Date: Mon, 02 Nov 2026 15:12:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n3-think`
+
+> Commit: `82c3a1d741c11bc23c41a533170c6355f667c84e`
+
+---
+
+### Add 'subsystems/echo_tts/' from commit '5626ce8a1ac5a194a6351eb3b070a98345345b3c'
+
+> Date: Mon, 02 Nov 2026 15:15:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `8c1afdd1b06a14aae29c5fef4359f92178822302`
+
+---
+
+### refactor: echo_tts 遷入後移除頂層 modules/utils 依賴並新增權重路徑解析. 11/02
+
+> Date: Mon, 02 Nov 2026 15:35:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `4ecba4fac8cfeb5150ec6ea59e38b4d7afabb5f5`
+
+---
+
+### feat: Core speak adapter 改用 Core 內 echo_tts 並實作 console /tts. 11/02
+
+> Date: Mon, 02 Nov 2026 15:35:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `1d4eafbfc2a833f14c8d313845b96f1b15067a20`
+
+---
+
+### docs: 新增 M5 TTS 遷入完成紀錄與權重盤點. 11/02
+
+> Date: Mon, 02 Nov 2026 16:04:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `0dd0c5fcdc1f04d5f5a79a04227f07eb88af3df1`
+
+---
+
+### feat: Core 記憶切 bge-m3 並去重 memory_echo 與 Access Layer. 11/02
+
+> Date: Mon, 02 Nov 2026 16:45:15 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n5-memory`
+
+> Commit: `fd46ecaaf2e2f67538d4e2462c9ce19eaf2ab688`
+
+---
+
+### feat: EM 的 sentence-transformers 模型改為行程共用. 11/02
+
+> Date: Mon, 02 Nov 2026 18:29:44 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/e2e-real`
+
+> Commit: `91e7a9c7977c3dabee005b756069794eadc87c84`
+
+---
+
+### fix: /llm 的 async client 在同一 event loop 內關閉. 11/02
+
+> Date: Mon, 02 Nov 2026 19:16:05 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/e2e-real`
+
+> Commit: `fe32795b815cbe218234738059b5c91dc65cd208`
+
+---
+
+### feat: console real 模式組裝真實 STT／Think／TTS／記憶. 11/02
+
+> Date: Mon, 02 Nov 2026 19:16:07 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/e2e-real`
+
+> Commit: `c8ac45f70037949d3ec1f54b728ceba5021d192a`
+
+---
+
+### fix: console /wav 長音檔多句時追到最後一個 turn. 11/02
+
+> Date: Mon, 02 Nov 2026 19:36:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `fix/wav-turn-cancel`
+
+> Commit: `a2cccdd2d1f43026cd0b3c10b538398c55ca3158`
+
+---
+
+### docs: 新增 Core 驗收 Console 使用指南. 11/02
+
+> Date: Mon, 02 Nov 2026 20:13:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `4991d1a7ab44d1143bb0a8abe57d736b82eaa2b2`
+
+---
+
+### fix: 補上 gpt-6-luna 的 context window 與價格門檻. 11/02
+
+> Date: Mon, 02 Nov 2026 20:54:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `0bf67569ded9ad515c1e04a1bcdb3d15de57e0d1`
+
+---
+
+### docs: 記錄 Core 端到端人工驗收通過. 11/02
+
+> Date: Mon, 02 Nov 2026 21:11:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `adedadec4c76a8ee5045df6ca06667578d5252b3`
+
+---
+

@@ -1,0 +1,83 @@
+[project]
+name = "echo-thought-core"
+version = "0.2.0-dev"
+description = "Echo Thought Core — LLM 會話控制子系統 (Prompt/Token/Context 優化引擎)"
+authors = [
+    {name = "U.E.P Team", email = "ptyc4076@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    "pydantic>=2.5.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "rich>=13.7.0",
+    "tiktoken>=0.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.12.0",
+    "ruff>=0.1.9",
+    "mypy>=1.8.0",
+]
+gemini = ["google-genai>=1.0.0"]
+ollama = ["requests>=2.31.0"]
+openai = ["openai>=2.43.0"]
+llmlingua = ["llmlingua>=0.2.0"]
+full = [
+    "google-genai>=1.0.0",
+    "requests>=2.31.0",
+    "openai>=2.43.0",
+    "llmlingua>=0.2.0",
+]
+
+[project.scripts]
+echo-thought = "echo_thought_core.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["echo_thought_core*"]
+exclude = ["tests*", "examples*", "docs*"]
+
+[tool.setuptools.package-data]
+echo_thought_core = ["*.yaml", "py.typed"]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = "-m 'not e2e'"
+markers = [
+    "e2e: End-to-end integration tests (require live LLM services, run with: pytest -m e2e)",
+]

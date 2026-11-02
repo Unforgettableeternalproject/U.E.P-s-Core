@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from collections.abc import Callable, Mapping
@@ -18,10 +19,59 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from uep.stream.contracts.memory_tools import DEFAULT_TOOL_MAX_CHARS
+
 logger = logging.getLogger("uep.echo.memory_wiring")
 
 MEMORY_TOOLS: tuple[str, ...] = ("deep_recall", "force_remember")
-DEFAULT_TOOL_MAX_CHARS = 1500
+DEFAULT_ENGINE_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+"""``MemoryEngine`` 的 embedding_model 參數預設（呼叫端沒給模型時實際生效的值）。"""
+KNOWN_EMBEDDING_DIMS: dict[str, int] = {
+    "BAAI/bge-m3": 1024, "bge-m3": 1024, "BAAI/bge-small-zh-v1.5": 512, "all-MiniLM-L6-v2": 384,
+}
+
+
+class EmbeddingIndexMismatch(RuntimeError):
+    """資料目錄的向量索引與目前設定的 embedding 模型不符（換模型必須用全新資料目錄）。"""
+
+
+def check_embedding_index(storage_dir: Path, model: str | None) -> None:
+    """建 engine 前核對既有索引的模型／維度；不符就拒絕，避免 echo_memory 悄悄重建（改寫舊資料）或混用。
+
+    空目錄、沒有索引的目錄一律放行。依 ``embedding_index.json``（model、dimension）；沒有 manifest 的舊版快照
+    改看 ``embeddings.npy`` 的維度。模型未知（不在 ``KNOWN_EMBEDDING_DIMS``）且 manifest 的 model 相同時放行。
+    """
+    want = model or DEFAULT_ENGINE_EMBEDDING_MODEL
+    manifest = Path(storage_dir) / "embedding_index.json"
+    matrix = Path(storage_dir) / "embeddings.npy"
+    have_model: str | None = None
+    have_dim: int | None = None
+    if manifest.exists():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        have_model = data.get("model") if isinstance(data, dict) else None
+        dim = data.get("dimension") if isinstance(data, dict) else None
+        have_dim = dim if isinstance(dim, int) else None
+    elif matrix.exists():
+        import numpy as np
+
+        try:
+            arr = np.load(matrix, mmap_mode="r")
+            have_dim = int(arr.shape[1]) if arr.ndim == 2 else None
+        except (OSError, ValueError):
+            have_dim = None
+    else:
+        return
+    want_dim = KNOWN_EMBEDDING_DIMS.get(want)
+    if (have_model is not None and have_model != want) or (
+        have_dim is not None and want_dim is not None and have_dim != want_dim
+    ):
+        raise EmbeddingIndexMismatch(
+            f"資料目錄 {storage_dir} 的向量索引（model={have_model!r}, dimension={have_dim}）與目前設定的 embedding "
+            f"（model={want!r}, dimension={want_dim}）不符。換模型請改用全新的 UEP_MEMORY_DATA_ROOT；舊目錄不會被重建或改寫。"
+        )
 
 
 class EchoEngineFactory:
@@ -35,7 +85,9 @@ class EchoEngineFactory:
         embedding_backend: str | None = None,
         embedding_model: str | None = None,
         events_enabled_fn: Callable[[], bool] | None = None,
+        min_similarity: float | None = None,
     ) -> None:
+        self._min_similarity = min_similarity
         self._device = device
         self._embedding_backend = embedding_backend
         self._embedding_model = embedding_model
@@ -43,7 +95,14 @@ class EchoEngineFactory:
 
     def __call__(self, namespace_id: str, data_root: Path) -> Any:
         from echo_memory import MemoryEngine
+        from echo_memory.namespace import resolve_namespace_path
 
+        check_embedding_index(resolve_namespace_path(Path(data_root), namespace_id), self._embedding_model)
+        if self._min_similarity is not None:
+            # EM 的檢索下限只認 EM 全域設定（retrieve 未帶 min_similarity 時讀它），Access Layer 不逐次傳
+            from echo_memory.config import get_config
+
+            get_config().retrieval_min_similarity = float(self._min_similarity)
         kwargs: dict[str, Any] = {
             "storage_path": Path(data_root), "namespace_id": namespace_id, "device": self._device,
             "event_emitter_enabled_fn": self._events_enabled_fn,
@@ -53,6 +112,28 @@ class EchoEngineFactory:
         if self._embedding_model:
             kwargs["embedding_model"] = self._embedding_model
         return MemoryEngine(**kwargs)
+
+
+def warmup_embedding(model: str, device: str) -> None:
+    """宿主啟動時預載行程共用的 sentence-transformers 模型（EM 的模組級 ``warmup``），之後所有 engine 共用同一份。"""
+    from echo_memory.storage.episodic import warmup
+
+    warmup(model, device)
+
+
+class QueryEmbedder:
+    """量測用：與記憶檢索同一條 query embedding 路徑（``EpisodicMemory.generate_query_embedding``），不碰任何記憶資料
+    （storage 指向呼叫端給的暫存目錄）。給 console ``/mem embed``。"""
+
+    def __init__(self, storage_dir: Path, *, backend: str, model: str, device: str) -> None:
+        from echo_memory.storage.episodic import EpisodicMemory
+
+        self._mem = EpisodicMemory(
+            storage_path=Path(storage_dir), embedding_model=model, device=device, embedding_backend=backend,
+        )
+
+    def embed(self, text: str) -> list[float]:
+        return self._mem.generate_query_embedding(text)
 
 
 def make_adapter_factory(
@@ -67,7 +148,7 @@ def make_adapter_factory(
     ``assess_mode``／``enabled_tools`` 明確設定，不依賴 ES 的環境變數預設。"""
 
     def factory(namespace_id: str, engine: Any, engine_lock: threading.Lock) -> Any:
-        from echo_stream.adapters.memory_echo import ASSESS_MODES, EchoMemoryAdapter
+        from uep.stream.adapters.memory_echo import ASSESS_MODES, EchoMemoryAdapter
 
         if assess_mode not in ASSESS_MODES:
             raise ValueError(f"assess_mode 必須是 {ASSESS_MODES}：{assess_mode!r}")
@@ -81,7 +162,7 @@ def make_adapter_factory(
 
 class EchoMemoryToolBackend:
     """``MemoryToolBackend`` 的真實作：宣告取自 echo_memory 的 ``TOOL_DECLARATIONS``（只留 ``deep_recall``／
-    ``force_remember``），``force_remember`` 的描述沿用 ES 收斂過的版本。
+    ``force_remember``），``force_remember`` 的描述沿用 ES 收斂過的版本（與 adapter 共用 ``function_tool_definition``）。
 
     有 adapter 時 Access Layer 只用 ``definitions()``，執行走 ``adapter.execute_tool``（寫入唯一經 adapter）；
     ``execute`` 只給沒有 adapter 的最小組裝（直接用 echo_memory 的 ``ToolExecutor``）。"""
@@ -91,17 +172,14 @@ class EchoMemoryToolBackend:
         self._max_chars = max_chars
 
     def definitions(self) -> list[dict[str, Any]]:
-        from echo_stream.adapters.memory_echo import FORCE_REMEMBER_DESCRIPTION
+        from uep.stream.adapters.memory_echo import function_tool_definition
         from llm_integration.tools.definitions import TOOL_DECLARATIONS
 
         out: list[dict[str, Any]] = []
         for decl in TOOL_DECLARATIONS:
             if decl["name"] not in self._names:
                 continue
-            fn = dict(decl)
-            if fn["name"] == "force_remember":
-                fn["description"] = FORCE_REMEMBER_DESCRIPTION
-            out.append({"type": "function", "function": fn})
+            out.append(function_tool_definition(decl))
         return out
 
     def execute(self, engine: Any, name: str, args: Mapping[str, Any], session_id: str) -> dict[str, Any]:
@@ -140,11 +218,12 @@ def build_memory_wiring(
     embedding_model: str | None = None,
     events_enabled_fn: Callable[[], bool] | None = None,
     assess_mode: str = "llm",
+    min_similarity: float | None = None,
 ) -> MemoryWiring:
     return MemoryWiring(
         engine_factory=EchoEngineFactory(
             device=device, embedding_backend=embedding_backend, embedding_model=embedding_model,
-            events_enabled_fn=events_enabled_fn,
+            events_enabled_fn=events_enabled_fn, min_similarity=min_similarity,
         ),
         adapter_factory=make_adapter_factory(llm_fn=llm_fn, assess_llm_fn=assess_llm_fn, assess_mode=assess_mode),
         tool_backend=EchoMemoryToolBackend(),

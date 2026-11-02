@@ -86,6 +86,7 @@ class InferenceConfig:
     llm_provider: str | None = None
     llm_model: str | None = None
     system_prompt: str = ""
+    think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
     tts_engine: str = "indextts2"
     vox_config: Mapping[str, Any] | None = None  # 原樣轉給 VoxBackend(config)；None＝不傳
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
@@ -133,7 +134,7 @@ class InferenceConfig:
             tts_speed=settings.infer_tts_speed, tts_language=settings.infer_tts_language,
             stt_mode=settings.infer_stt_mode, stt_language=settings.infer_stt_language,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
-            system_prompt=settings.infer_system_prompt,
+            system_prompt=settings.infer_system_prompt, think=settings.think_config(),
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
             think_prepare_timeout_s=settings.infer_think_prepare_timeout_s,
             input_prepare_timeout_s=settings.infer_input_prepare_timeout_s,
@@ -252,6 +253,30 @@ def _require_repo(path: Path | None, env: str, what: str) -> Path:
     return Path(path)
 
 
+_TTS_REPO_WARNED = False
+
+
+def _warn_tts_repo_ignored(path: Path) -> None:
+    """``UEP_INFER_TTS_REPO`` 在 M5 後不再生效：行程內只警告一次。"""
+    global _TTS_REPO_WARNED
+    if _TTS_REPO_WARNED:
+        return
+    _TTS_REPO_WARNED = True
+    logger.warning("UEP_INFER_TTS_REPO（%s）已不再使用：echo_tts 已遷入 Core（subsystems/echo_tts），此設定被忽略", path)
+
+
+_STT_REPO_WARNED = False
+
+
+def _warn_stt_repo_ignored(path: Path) -> None:
+    """``UEP_INFER_STT_REPO`` 在 M3 後不再生效：行程內只警告一次。"""
+    global _STT_REPO_WARNED
+    if _STT_REPO_WARNED:
+        return
+    _STT_REPO_WARNED = True
+    logger.warning("UEP_INFER_STT_REPO（%s）已不再使用：echo_stt 已遷入 Core（subsystems/echo_stt），此設定被忽略", path)
+
+
 def _ensure_importable(path: Path) -> None:
     entry = str(path)
     if entry not in sys.path:
@@ -260,26 +285,34 @@ def _ensure_importable(path: Path) -> None:
 
 def default_tts_backend(cfg: InferenceConfig) -> Any:
     """預建 ``IndexTTS2Backend``（只存路徑與旗標，不載權重；``load()`` 在 SpeakStage.prepare）。"""
-    repo = _require_repo(cfg.tts_repo, "UEP_INFER_TTS_REPO", "TTS")
-    _ensure_importable(repo)
+    if cfg.tts_repo is not None:
+        _warn_tts_repo_ignored(cfg.tts_repo)
     from echo_tts.runtime.indextts_backend import IndexTTS2Backend
     from echo_tts.runtime.indextts_generate import default_generation_paths
 
     return IndexTTS2Backend(
-        paths=default_generation_paths(repo), device=cfg.tts_device, use_fp16=cfg.tts_fp16,
+        paths=default_generation_paths(), device=cfg.tts_device, use_fp16=cfg.tts_fp16,
         use_accel=cfg.tts_use_accel,
     )
 
 
 def default_think_backend(cfg: InferenceConfig) -> Any:
-    """從 SessionControl 的 registry 建 LLM backend（API client，無本地模型）。"""
-    repo = _require_repo(cfg.session_repo, "UEP_INFER_SESSION_REPO", "Session")
-    from echo_stream.adapters.think_llm import build_backend
+    """從 SessionControl 的 registry 建 LLM backend（API client，無本地模型）。
+
+    Session（echo_thought_core）已遷入 Core（subsystems/echo_thought_core），由 Core 的 editable 安裝提供，
+    預設不需路徑；``UEP_INFER_SESSION_REPO`` 僅作可選覆寫（指向舊 repo 回退時用），設了就必須存在。
+    """
+    repo = None
+    if cfg.session_repo is not None:
+        repo = _require_repo(cfg.session_repo, "UEP_INFER_SESSION_REPO", "Session")
+    from uep.stream.adapters.think_llm import build_backend
 
     overrides: dict[str, Any] = {}
     if cfg.llm_model:
         overrides["model"] = cfg.llm_model
-    return build_backend(cfg.llm_provider, session_repo=str(repo), **overrides)
+    return build_backend(
+        cfg.llm_provider, session_repo=str(repo) if repo is not None else None, config=cfg.think, **overrides,
+    )
 
 
 class _VoxUnavailableStage:
@@ -303,7 +336,7 @@ def _build_indextts2_speak(
     tts_backend_factory: Callable[[InferenceConfig], Any] | None, extra: Mapping[str, Any],
 ) -> Any:
     """IndexTTS2（V25）路徑：backend 預建一次、所有 turn 共用。"""
-    from echo_stream.adapters.speak_indextts import IndexTTS2SpeakStage
+    from uep.stream.adapters.speak_indextts import IndexTTS2SpeakStage
 
     backend = tts_backend if tts_backend is not None else (tts_backend_factory or default_tts_backend)(cfg)
     speak_kwargs: dict[str, Any] = {
@@ -321,17 +354,17 @@ def _build_vox_speak(cfg: InferenceConfig, extra: Mapping[str, Any]) -> Any:
     不建 IndexTTS2 backend（V25 與 VOX 不能同時常駐），也不傳 ``lora_scale``。
     """
     try:
-        from echo_stream.adapters.speak_vox import VoxSpeakStage
+        from uep.stream.adapters.speak_vox import VoxSpeakStage
     except ImportError as exc:
         reason = f"{VOX_ADAPTER_MISSING}: {type(exc).__name__}: {exc}"
         logger.error("VOX adapter 無法載入，speak 標為 not ready：%s", reason)
         return _VoxUnavailableStage(reason)
-    # 簽章（ES 暫定）：VoxSpeakStage(*, backend, tts_repo, backend_config, sample_rate, language, speed, ...)。
+    # 簽章：VoxSpeakStage(*, backend, backend_config, sample_rate, language, speed, ...)。
     # 不傳 lora_scale／emotion_*／use_accel／warmup（暖機固定在 prepare）；language、speed 只在明確設定時才傳，
     # 其餘交給 backend 決定（zh 預設 1.2、en／ja 1.0）。
     vox_kwargs: dict[str, Any] = {}
     if cfg.tts_repo is not None:
-        vox_kwargs["tts_repo"] = str(cfg.tts_repo)
+        _warn_tts_repo_ignored(cfg.tts_repo)
     if cfg.vox_config:
         vox_kwargs["backend_config"] = dict(cfg.vox_config)
     if cfg.tts_language is not None:
@@ -410,23 +443,23 @@ def build_inference_wiring(
 
     # --- STT：backend 在 prepare 才建（載 faster-whisper） ---
     if cfg.stt_mode == "multichannel":
-        from echo_stream.adapters.input_multichannel import (
+        from uep.stream.adapters.input_multichannel import (
             MultiChannelSttInputStage as InputCls,
         )
     else:
-        from echo_stream.adapters.input_stt import SttInputStage as InputCls
-    stt_repo = None
-    if stt_backend is None:
-        stt_repo = str(_require_repo(cfg.stt_repo, "UEP_INFER_STT_REPO", "STT"))
-    input_kwargs: dict[str, Any] = {"backend": stt_backend, "stt_repo": stt_repo, "language": cfg.stt_language}
+        from uep.stream.adapters.input_stt import SttInputStage as InputCls
+    # M3：echo_stt 已遷入 Core（subsystems/echo_stt），不再需要 UEP_INFER_STT_REPO；設了也忽略並警告
+    if cfg.stt_repo is not None:
+        _warn_stt_repo_ignored(cfg.stt_repo)
+    input_kwargs: dict[str, Any] = {"backend": stt_backend, "language": cfg.stt_language}
     input_kwargs.update(extra.get("input", {}))
     input_stage = InputCls(**input_kwargs)
 
     # --- Think：LLM backend（API client） ---
-    from echo_stream.adapters.think_llm import LLMThinkStage
+    from uep.stream.adapters.think_llm import LLMThinkStage
 
     llm = think_backend if think_backend is not None else (think_backend_factory or default_think_backend)(cfg)
-    think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt}
+    think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt, "config": cfg.think}
     think_kwargs.update(extra.get("think", {}))
     recommended = _vox_recommended_split_policy(cfg, speak)
     if recommended is not None:

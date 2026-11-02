@@ -1,0 +1,53 @@
+[project]
+name = "echo-stt"
+version = "0.1.0"
+description = "Echo STT — 獨立語音識別子系統 (faster-whisper + 多通道引擎 + VAD)"
+authors = [
+    {name = "U.E.P Team", email = "ptyc4076@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    "numpy>=1.24.0",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.9",
+    "black>=23.12.0",
+]
+stt = [
+    "faster-whisper>=1.0.0",
+    "torch>=2.0.0",
+    "opencc-python-reimplemented>=0.1.7",
+]
+vad = [
+    "silero-vad>=5.0",
+]
+discord = [
+    "scipy>=1.10.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["echo_stt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

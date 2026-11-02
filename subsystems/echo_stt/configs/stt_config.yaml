@@ -1,0 +1,149 @@
+# TestSeparateSTTSystem Configuration
+# 從 U.E.P Core stt_module/config.yaml 遷出並清理
+# Audit 2026-06-15: 標記各欄位生效狀態
+
+# ─── Whisper 模型 ──────────────────────────────────────────
+whisper:
+  # faster-whisper (CTranslate2) 設定
+  backend: "faster-whisper"              # ✅ faster-whisper / transformers
+  model_size: "large-v3-turbo"            # ✅ 推薦 large-v3-turbo (1.5GB, 快速, 高品質)
+                                         #    可選: base (141MB, 快但品質差), large-v3 (3GB, 最高品質但慢)
+  compute_type: "int8"                   # ✅ int8 (推薦, VRAM 低) / float16 / float32 (CPU 自動降級)
+  device: "auto"                         # ✅ auto / cuda / cpu
+  num_workers: 1                         # ✅ CTranslate2 並行 worker 數
+  download_root: null                    # ✅ 模型下載目錄（null = HF 快取預設）
+  prefer_offline: false                  # ✅ 優先嘗試離線載入（HF_HUB_OFFLINE=1 時自動啟用）
+
+  # transformers fallback（backend: transformers 時使用）
+  model_id: "openai/whisper-base"        # ✅ Hugging Face 模型 ID
+  local_path: "models/stt/whisper/whisper-base"  # ✅ 本地模型目錄
+  use_local_model: true                  # ✅ 優先使用本地模型
+  torch_dtype: "auto"                    # ✅ auto / float16 / float32
+
+# ─── 音訊輸入 ──────────────────────────────────────────────
+audio:
+  sample_rate: 16000                     # ✅ Whisper 標準採樣率
+  device_index: null                     # ✅ 麥克風裝置索引 (null = 系統預設)
+  phrase_time_limit: 5                   # ✅ 單句錄音最大長度 (秒)
+  channels: 1                            # ✅ 通道數
+  frames_per_buffer: 1024                # ✅ 緩衝區大小
+  # format: "int16"                      # ❌ 已移除 — 固定使用 paInt16，不可配置
+
+# ─── 辨識模式 ──────────────────────────────────────────────
+recognition:
+  max_new_tokens: 128                    # ⚠️ 僅 transformers 後端生效
+  task: "transcribe"                     # ✅ transcribe / translate
+  language: null                         # ✅ null = 自動偵測, "zh" / "en" 等 (ISO 639-1)
+  no_speech_threshold: 0.4               # ✅ 無語音判定閾值（兩後端皆生效）
+  compression_ratio_threshold: 1.35      # ✅ 壓縮比閾值（兩後端皆生效）
+  # beam_size: 5                         # ✅ 可選，預設 5
+  # best_of: 5                           # ✅ 可選，預設 5
+
+# ─── 持續監聽 ──────────────────────────────────────────────
+continuous:
+  chunk_duration: 2.0                    # ✅ 每次錄音片段長度 (秒)
+  silence_threshold: 1.5                 # ✅ 靜音持續時間閾值 (秒)
+  max_speech_duration: 30.0              # ✅ 單次語音最大長度 (秒)
+  total_duration: 30.0                   # ✅ 總監聽時長 (秒)
+
+# ─── VAD (語音活動偵測) ────────────────────────────────────
+vad:
+  sensitivity: 0.7                       # ✅ 靈敏度 (0.0-1.0)
+  min_speech_duration: 0.3               # ✅ 最小語音持續時間 (秒)，同時用於 faster-whisper VAD
+  # energy_threshold_base: 0.0005        # ❌ 已移除 — EnergyVAD 未使用此欄位
+  # silence_duration_threshold: 0.8      # ❌ 已移除 — 使用 continuous.silence_threshold
+  # window_size: 0.025                   # ❌ 已移除 — EnergyVAD 未使用此欄位
+
+# ─── 語者識別 ──────────────────────────────────────────────
+speaker:
+  enabled: false                         # ✅ 是否啟用語者識別（false = 完全不初始化）
+  model: "pyannote/speaker-diarization-3.1"  # ✅ 語者分離模型
+  embedding_model: "pyannote/embedding"  # ✅ 嵌入模型
+  database_path: "memory/speaker_models.pkl"  # ✅ 資料庫儲存路徑
+  similarity_threshold: 0.999995         # ✅ 相似度閾值
+  min_samples_for_recognition: 15        # ✅ 最低辨識樣本數
+  use_multi_distance: true               # ✅ 多距離匹配
+  distance_weights:                      # ✅ 距離權重
+    cosine: 0.3
+    euclidean: 0.3
+    magnitude: 0.2
+    correlation: 0.2
+  confidence_max_cap: 0.98               # ✅ 置信度上限
+
+# ─── 智能喚醒 ──────────────────────────────────────────────
+keyword:
+  enabled: true                          # ✅ 是否啟用智能喚醒（false = should_activate 永遠 True）
+  activation_threshold: 0.6             # ✅ 啟動閾值
+  wake_confidence_threshold: 0.8        # ✅ 喚醒信心度閾值
+
+# ─── 多通道引擎 ───────────────────────────────────────────
+multi_channel:
+  enabled: false                           # 多通道功能開關（false = 不初始化）
+
+  # Worker 池設定
+  num_workers: 2                           # 辨識 worker 數量（共用 WhisperModel）
+  queue_max_size: 50                       # 佇列上限
+  queue_overflow_policy: "drop_oldest"     # 佇列滿時策略：
+                                           #   drop_oldest — 丟棄最舊 segment（即時場景，WebRTC 標準）
+                                           #   drop_newest — 拒收新 segment（離線分析，不遺失資料）
+
+  # 通道限制
+  max_channels: 8                          # 最大通道數
+
+  # VAD 設定（每個通道獨立實例）
+  vad_config:
+    sample_rate: 16000
+    sensitivity: 0.7
+    min_speech_duration: 0.3
+    use_silero: true
+    silero_threshold: 0.5
+    trailing_silence_ms: 600               # 固定模式下的 trailing silence（自適應開啟時作為 fallback）
+    max_segment_ms: 30000                  # 強制截斷上限
+    min_speech_ms: 200                     # 最短段落（低於此忽略）
+    adaptive_threshold: true               # 自適應背景噪音閾值
+
+    # ── 自適應 trailing silence ──────────
+    # 根據已累積語音長度動態調整 trailing silence，
+    # 解決固定閾值的「斷太早」和「斷太晚」問題
+    adaptive_trailing: true                # 啟用自適應（false = 用固定 trailing_silence_ms）
+    soft_max_segment_ms: 9000              # 軟性切割點（超過後降至 long 級閾值）
+    pre_speech_padding_chunks: 3           # 語音前保留的 chunk 數（捕捉起始輔音）
+
+    # 段落長度區間閾值（ms）
+    short_seg_threshold_ms: 3000           # < 3s = 短段落
+    medium_seg_threshold_ms: 10000         # 3-10s = 中段落
+    long_seg_threshold_ms: 20000           # 10-20s = 長段落，> 20s = 超長
+
+    # 各區間的 trailing silence（ms）
+    short_trailing_ms: 1100                # 短段落：等久一點（說話者可能在想）
+    medium_trailing_ms: 650                # 中段落：正常節奏
+    long_trailing_ms: 450                  # 長段落：積極切割
+    very_long_trailing_ms: 300             # 超長段落：趁停頓就切
+
+  # 預設語言（null = 自動偵測）
+  default_language: null
+
+  # 降噪前處理
+  noise_filter_enabled: false
+
+  # Timeout 設定
+  drain_timeout_s: 5.0                     # stop() 時等佇列排空的上限
+  direct_transcribe_timeout_s: 10.0        # transcribe_segment() 同步阻塞上限
+
+# ─── 後處理 ───────────────────────────────────────────────
+post_processing:
+  # Hallucination 過濾（偵測 Whisper 重複輸出）
+  hallucination_filter: true              # ✅ 啟用重複偵測
+  max_repeat_ratio: 0.4                   # ✅ 單一 token 佔比超過此值即判定重複
+  max_repeat_count: 5                     # ✅ 同一 token 連續出現超過此次數即判定
+  min_confidence: 0.05                    # ✅ 低於此信心度直接丟棄
+
+  # 繁簡轉換（基於 OpenCC）
+  chinese_convert: "s2twp"                # ✅ 簡體→繁體台灣用詞 (null = 不轉換)
+  # 可用方案: s2twp (推薦), s2t, t2s, s2hk
+
+# ─── 效能 (TODO: 尚未實作) ────────────────────────────────
+# performance:
+#   use_fp16: true
+#   batch_size: 1
+#   chunk_length: 30

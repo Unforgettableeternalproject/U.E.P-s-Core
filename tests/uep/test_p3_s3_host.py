@@ -1,4 +1,4 @@
-"""P3 S3：EchoPipelineHost 與 Turn Orchestrator 的整合行為（需 PostgreSQL 與已安裝的 echo_stream）。
+"""P3 S3：EchoPipelineHost 與 Turn Orchestrator 的整合行為（需 PostgreSQL）。
 
 涵蓋組裝順序（echo 在 memory 之後啟動、之前停止）、批 B 繞道（B1 loop 綁定、B2 關閉後 submit）、
 回呼不阻塞 ES loop、attempt／PASS／passive／FAILED／取消的事件對映、Core 否決權、audience 切換、
@@ -13,11 +13,10 @@ from dataclasses import dataclass
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.adapters.think_llm import EchoBackend, LLMThinkStage
-from echo_stream.contracts.types import Utterance
-from echo_stream.fakes.stages import FakeThinkStage
+from uep.stream.adapters.think_llm import EchoBackend, LLMThinkStage
+from uep.stream.contracts.types import Utterance
+from uep.fakes.stream.stages import FakeThinkStage
 from sqlalchemy import select
 
 from tests.uep.echo_support import (

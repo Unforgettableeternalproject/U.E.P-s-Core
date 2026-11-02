@@ -1,0 +1,2065 @@
+"""
+IndexTTS2 Lite Engine - 精簡推論引擎
+
+精簡功能:
+- ✅ 加載預提取的角色特徵
+- ✅ 情感向量控制 (8維)
+- ✅ 文本轉語音合成
+- ❌ 移除: 特徵提取、情感識別、BPE分詞等
+
+使用方式:
+    from indextts.lite_engine import IndexTTSLite
+    
+    # 初始化
+    engine = IndexTTSLite(
+        cfg_path="checkpoints/config.yaml",
+        model_dir="checkpoints"
+    )
+    
+    # 加載角色
+    engine.load_character("characters/uep-1.pt")
+    
+    # 合成語音
+    engine.synthesize(
+        text="Hello world",
+        output_path="output.wav",
+        emotion_vector=[0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # Happy
+        max_emotion_strength=0.3  # 保留 70% 原始聲音
+    )
+"""
+
+import os
+import time
+import torch
+import warnings
+from pathlib import Path
+from typing import Dict, Optional, List, Union
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
+from omegaconf import OmegaConf
+
+# transformers 4.48+ 已移除此符號，vendored GPT2 程式碼仍會 import（2.5 遷移規格）
+import transformers.pytorch_utils as _pu
+if not hasattr(_pu, "is_torch_greater_or_equal_than_1_13"):
+    _pu.is_torch_greater_or_equal_than_1_13 = True
+
+# 導入系統日誌工具
+try:
+    from echo_tts.utils.log_helper import debug_log, info_log, error_log
+    _HAS_SYSTEM_LOG = True
+except ImportError:
+    _HAS_SYSTEM_LOG = False
+    # Fallback: 使用 print
+    def debug_log(level, msg): print(msg)
+    def info_log(msg): print(msg)
+    def error_log(msg): print(f"ERROR: {msg}")
+
+# 使用絕對導入 (當作為腳本運行時)
+import sys
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.dirname(__file__))
+
+try:
+    # 嘗試相對導入
+    from .gpt.model_v2 import UnifiedVoice
+    from .codec.models import EnhancedCodec
+    from .tts_utils.front import TextNormalizer
+    from .tts_utils.tokenizer_v25 import get_tokenizer, lang_to_token
+    from .tts_utils.text_v25 import (
+        apply_pronunciation_annotations, apply_lang_case_rules, split_text_by_token_budget,
+    )
+    from .tts_utils.ja_g2p import JapaneseG2PProcessor
+    from .tts_utils.nemo_tn import normalize_text as nemo_text_normalize
+    from .tts_utils.gpt_length import calc_dynamic_max_generate_length
+    from .tts_utils.chinese_segmenter import pre_segment_chinese
+    from .tts_utils.english_segmenter import pre_segment_english
+    from .tts_utils.custom_vocab import apply_custom_vocab
+    from .tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats, log_synthesis_failure
+    from .emotion_dynamics import EmotionDynamics, create_emotion_dynamics
+    from .poise import PoisePlanner, PoiseConfig, PoiseLevel, create_poise_config
+    from .s2mel.modules.commons import load_checkpoint2, MyModel
+    from .s2mel.modules.bigvgan import bigvgan
+except ImportError:
+    # 回退到絕對導入
+    from gpt.model_v2 import UnifiedVoice
+    from codec.models import EnhancedCodec
+    from tts_utils.front import TextNormalizer
+    from tts_utils.tokenizer_v25 import get_tokenizer, lang_to_token
+    from tts_utils.text_v25 import (
+        apply_pronunciation_annotations, apply_lang_case_rules, split_text_by_token_budget,
+    )
+    from tts_utils.ja_g2p import JapaneseG2PProcessor
+    from tts_utils.nemo_tn import normalize_text as nemo_text_normalize
+    from tts_utils.gpt_length import calc_dynamic_max_generate_length
+    from tts_utils.chinese_segmenter import pre_segment_chinese
+    from tts_utils.english_segmenter import pre_segment_english
+    from tts_utils.custom_vocab import apply_custom_vocab
+    from tts_utils.segment_guard import check_segment_anomaly, get_retry_params, SegmentGuardStats, log_synthesis_failure
+    from emotion_dynamics import EmotionDynamics, create_emotion_dynamics
+    from poise import PoisePlanner, PoiseConfig, PoiseLevel, create_poise_config
+    from s2mel.modules.commons import load_checkpoint2, MyModel
+    from s2mel.modules.bigvgan import bigvgan
+
+
+# ── Mixed-language segment splitting ──────────────────────────────
+#
+# When a majority-Chinese text contains English phrases (or vice-versa),
+# the GPT autoregressive model tends to pronounce the minority language
+# with the majority language's accent because surrounding tokens bias
+# the hidden state.
+#
+# Solution: detect language boundaries within each BPE-token segment and
+# split at those boundaries so each language runs through GPT without
+# cross-language context contamination.
+#
+# Threshold: a minority-language run must contain >= `min_words`
+# *words* (not characters) to justify an independent GPT segment.
+# Short insertions (1-2 words like "meeting" or "OK") stay with
+# the surrounding majority language — splitting them individually
+# produces unstable audio.
+# ──────────────────────────────────────────────────────────────────
+
+import re as _re
+# CJK 漢字 + 日文假名。
+# 假名（平假名 3040-309F / 片假名 30A0-30FF / 半形片假名 FF66-FF9F）必須納入：
+# 否則「今日はいい天気ですね」只有漢字被認成 cjk，假名全掉進 neutral，
+# 日文會被當成「漢字夾雜中性符號」而在假名處被切碎。
+# 註：這條路徑（_apply_language_splitting）在 2.5 已停用——2.5 的 tiktoken 是
+# byte-level 無 UNK，混合語言由多語言詞表原生支援。這裡補上是為了日後若重新
+# 啟用語言分割時不會踩到同一個坑。
+_CJK_LANG_SPLIT_RE = _re.compile(
+    r'[一-鿿㐀-䶿\U00020000-\U0002a6df'      # CJK 統一漢字（含擴充 A、B）
+    r'぀-ゟ゠-ヿ'                              # 平假名、片假名
+    r'ｦ-ﾟ]'                                    # 半形片假名
+)
+
+
+def _classify_tokens(tokens: list) -> list:
+    """Classify each BPE token as ``'cjk'``, ``'alpha'``, or ``'neutral'``.
+
+    - ``'cjk'``:     contains CJK Unified Ideographs
+    - ``'alpha'``:   pure ASCII alphabetical (English word / subword)
+    - ``'neutral'``: punctuation, digits, whitespace, etc.
+    """
+    types = []
+    for tok in tokens:
+        raw = tok.lstrip('▁')
+        if not raw:
+            types.append('neutral')
+        elif _CJK_LANG_SPLIT_RE.search(raw):
+            types.append('cjk')
+        elif raw.isascii() and raw.isalpha():
+            types.append('alpha')
+        else:
+            types.append('neutral')
+    return types
+
+
+def _count_words_in_alpha_run(tokens: list, start: int, end: int) -> int:
+    """Count the number of distinct English words in a BPE alpha-token run.
+
+    SentencePiece convention: ``▁`` prefix marks the start of a new word.
+    Subword continuations (no ``▁``) belong to the previous word.
+
+    Example: ``['▁machine', '▁learn', 'ing', '▁model']`` → 3 words.
+    """
+    word_count = 0
+    for i in range(start, end):
+        tok = tokens[i]
+        if tok.startswith('▁') or i == start:
+            word_count += 1
+    return word_count
+
+
+def _count_cjk_chars_in_run(tokens: list, start: int, end: int) -> int:
+    """Count CJK characters in a token run.
+
+    Each CJK token typically holds exactly one character (because of
+    ``tokenize_by_CJK_char``), so this is roughly the character count.
+    """
+    count = 0
+    for i in range(start, end):
+        raw = tokens[i].lstrip('▁')
+        count += sum(1 for c in raw if _CJK_LANG_SPLIT_RE.search(c))
+    return count
+
+
+def _tag_tokens_by_language(
+    tokens: list,
+    dominant_lang: str = 'zh',
+    min_en_words: int = 3,
+    min_zh_chars: int = 3,
+) -> list:
+    """Tag each BPE token as ``'zh'`` or ``'en'``.
+
+    The algorithm detects runs of the *minority* language inside the
+    *dominant* language and only promotes them to a separate language tag
+    if they meet the minimum threshold:
+
+    - In Chinese-dominant text: English runs need ``>= min_en_words``
+      consecutive English words to be tagged ``'en'``.
+    - In English-dominant text: CJK runs need ``>= min_zh_chars``
+      consecutive CJK characters to be tagged ``'zh'``.
+
+    Sub-threshold runs are absorbed into the dominant language.
+
+    Args:
+        tokens: flat list of BPE token strings.
+        dominant_lang: ``'zh'`` or ``'en'`` — the majority language of
+            the current synthesis context.
+        min_en_words: minimum consecutive English *words* (not chars/tokens)
+            for an English run to be split out.  Default 3.
+        min_zh_chars: minimum consecutive CJK *characters* for a Chinese
+            run to be split out from English-dominant text.  Default 3.
+
+    Returns:
+        list of ``'zh'`` / ``'en'`` strings, same length as *tokens*.
+    """
+    if not tokens:
+        return []
+
+    types = _classify_tokens(tokens)
+    tags: list = [None] * len(tokens)
+
+    if dominant_lang == 'zh':
+        # ── Chinese dominant: tag qualifying English runs ──
+        # CJK → zh immediately
+        for i, t in enumerate(types):
+            if t == 'cjk':
+                tags[i] = 'zh'
+
+        # Find alpha runs and check word count
+        i = 0
+        while i < len(tokens):
+            if types[i] == 'alpha':
+                j = i
+                while j < len(tokens) and types[j] == 'alpha':
+                    j += 1
+                word_count = _count_words_in_alpha_run(tokens, i, j)
+                if word_count >= min_en_words:
+                    for k in range(i, j):
+                        tags[k] = 'en'
+                # else: leave None → will inherit 'zh' from neighbors
+                i = j
+            else:
+                i += 1
+
+    else:
+        # ── English dominant: tag qualifying CJK runs ──
+        # Alpha → en immediately
+        for i, t in enumerate(types):
+            if t == 'alpha':
+                tags[i] = 'en'
+
+        # Find CJK runs and check character count
+        i = 0
+        while i < len(tokens):
+            if types[i] == 'cjk':
+                j = i
+                while j < len(tokens) and types[j] == 'cjk':
+                    j += 1
+                char_count = _count_cjk_chars_in_run(tokens, i, j)
+                if char_count >= min_zh_chars:
+                    for k in range(i, j):
+                        tags[k] = 'zh'
+                # else: leave None → will inherit 'en' from neighbors
+                i = j
+            else:
+                i += 1
+
+    # Fill None from neighbors (forward → backward → fallback to dominant)
+    for i in range(len(tags)):
+        if tags[i] is None and i > 0:
+            tags[i] = tags[i - 1]
+    for i in range(len(tags) - 2, -1, -1):
+        if tags[i] is None:
+            tags[i] = tags[i + 1]
+
+    return [t or dominant_lang for t in tags]
+
+
+def _split_segment_by_language(
+    seg_tokens: list,
+    dominant_lang: str = 'zh',
+    min_en_words: int = 3,
+    min_zh_chars: int = 3,
+) -> list:
+    """Split one segment's token list at language boundaries.
+
+    Returns a list of token-lists.  If the segment is monolingual the
+    returned list contains the original segment unchanged.
+    """
+    if not seg_tokens:
+        return [seg_tokens]
+
+    tags = _tag_tokens_by_language(
+        seg_tokens,
+        dominant_lang=dominant_lang,
+        min_en_words=min_en_words,
+        min_zh_chars=min_zh_chars,
+    )
+
+    # Fast path: monolingual
+    if len(set(tags)) <= 1:
+        return [seg_tokens]
+
+    # Split at language transitions
+    runs: list = []
+    cur = [seg_tokens[0]]
+    cur_lang = tags[0]
+    for i in range(1, len(tags)):
+        if tags[i] == cur_lang:
+            cur.append(seg_tokens[i])
+        else:
+            runs.append(cur)
+            cur = [seg_tokens[i]]
+            cur_lang = tags[i]
+    runs.append(cur)
+
+    return runs
+
+
+def _apply_language_splitting(
+    segments: list,
+    dominant_lang: str = 'zh',
+    min_en_words: int = 3,
+    min_zh_chars: int = 3,
+    verbose: bool = False,
+) -> list:
+    """Post-process segments: split any mixed-language segment at boundaries.
+
+    Only minority-language runs that meet the word/char threshold are
+    split into independent segments; shorter insertions stay with the
+    majority language.
+
+    Args:
+        segments: list of token-lists (output of ``split_segments``).
+        dominant_lang: ``'zh'`` or ``'en'``.
+        min_en_words: minimum English word count to split (default 3).
+        min_zh_chars: minimum CJK character count to split (default 3).
+        verbose: whether to log when splitting occurs.
+
+    Returns:
+        New segment list where each segment is (approximately) monolingual.
+    """
+    result: list = []
+    split_count = 0
+    for seg in segments:
+        sub_segs = _split_segment_by_language(
+            seg,
+            dominant_lang=dominant_lang,
+            min_en_words=min_en_words,
+            min_zh_chars=min_zh_chars,
+        )
+        if len(sub_segs) > 1:
+            split_count += 1
+        result.extend(sub_segs)
+
+    if verbose and split_count > 0:
+        debug_log(2, f"      🌐 混合語言段落拆分: {len(segments)} → {len(result)} 段 "
+                      f"({split_count} 段包含中英混合)")
+
+    return result
+
+
+class IndexTTSLite:
+    """精簡版 IndexTTS2 推論引擎"""
+
+    @staticmethod
+    def _remove_long_silence(
+        codes: "torch.Tensor",
+        stop_mel_token: int,
+        silent_token: int = 52,
+        max_consecutive: int = 30,
+        keep_consecutive: int = 10,
+    ) -> tuple:
+        """Remove excessively long runs of silent tokens from GPT output codes.
+
+        Ported from upstream IndexTTS2 ``infer_v2.py::remove_long_silence``.
+
+        Parameters
+        ----------
+        codes:
+            Shape ``[B, T]`` — batch of mel token sequences from GPT.
+        stop_mel_token:
+            The stop token ID (e.g. 8193).
+        silent_token:
+            The silence token ID (default 52 per upstream).
+        max_consecutive:
+            If total count of silent_token in the sequence exceeds this,
+            trigger compression.
+        keep_consecutive:
+            Maximum consecutive silent tokens to keep after compression.
+
+        Returns
+        -------
+        (codes, code_lens) where codes may be shortened.
+        """
+        device = codes.device
+        codes_list = []
+        code_lens = []
+        modified = False
+
+        for i in range(codes.shape[0]):
+            code = codes[i]
+
+            # Find effective length (up to stop token)
+            if not torch.any(code == stop_mel_token).item():
+                eff_len = code.size(0)
+            else:
+                stop_idx = (code == stop_mel_token).nonzero(as_tuple=False)
+                eff_len = stop_idx[0].item() if len(stop_idx) > 0 else code.size(0)
+
+            silent_count = torch.sum(code[:eff_len] == silent_token).item()
+
+            if silent_count > max_consecutive:
+                # Compress: keep at most `keep_consecutive` consecutive silent tokens
+                keep_indices = []
+                n_consecutive = 0
+                for k in range(eff_len):
+                    if code[k].item() != silent_token:
+                        keep_indices.append(k)
+                        n_consecutive = 0
+                    elif n_consecutive < keep_consecutive:
+                        keep_indices.append(k)
+                        n_consecutive += 1
+                    # else: skip (too many consecutive silences)
+
+                eff_len = len(keep_indices)
+                codes_list.append(code[keep_indices])
+                modified = True
+            else:
+                codes_list.append(code[:eff_len])
+
+            code_lens.append(eff_len)
+
+        if modified:
+            if len(codes_list) == 1:
+                codes = codes_list[0].unsqueeze(0)
+            else:
+                from torch.nn.utils.rnn import pad_sequence
+                codes = pad_sequence(codes_list, batch_first=True, padding_value=stop_mel_token)
+
+        max_len = max(code_lens) if code_lens else 0
+        if max_len > 0 and max_len < codes.shape[1]:
+            codes = codes[:, :max_len]
+
+        code_lens_tensor = torch.tensor(code_lens, dtype=torch.long, device=device)
+        return codes, code_lens_tensor
+
+    @staticmethod
+    def _trim_trailing_silence(
+        audio: "torch.Tensor",
+        rms_threshold: float = 0.005,
+        window_ms: int = 50,
+        min_silence_ms: int = 300,
+        keep_tail_ms: int = 80,
+        sample_rate: int = 22050,
+    ) -> "torch.Tensor":
+        """Trim trailing silence from a segment's audio tensor.
+
+        Uses windowed RMS to detect silence (robust against BigVGAN's
+        low-level noise floor).  Scans backwards from the end; if trailing
+        silence exceeds *min_silence_ms*, trims to last voiced window plus
+        *keep_tail_ms* of fade-out.
+
+        Works on shapes ``[samples]`` or ``[channels, samples]``.
+        """
+        if audio.numel() == 0:
+            return audio
+
+        # Flatten to 1-D for analysis
+        flat = audio.view(-1) if audio.dim() == 1 else audio[0]
+        n_samples = flat.shape[0]
+
+        window_size = int(sample_rate * window_ms / 1000)
+        min_silence_samples = int(sample_rate * min_silence_ms / 1000)
+        keep_samples = int(sample_rate * keep_tail_ms / 1000)
+
+        if n_samples < window_size:
+            return audio
+
+        # Compute RMS per window from the end backwards
+        n_windows = n_samples // window_size
+        last_voiced_sample = n_samples  # default: no trim
+
+        for i in range(n_windows - 1, -1, -1):
+            start = i * window_size
+            end = start + window_size
+            window_rms = (flat[start:end].float() ** 2).mean().sqrt().item()
+            if window_rms > rms_threshold:
+                last_voiced_sample = end
+                break
+        else:
+            # All windows below threshold — keep minimal audio
+            return audio[..., :keep_samples] if n_samples > keep_samples else audio
+
+        trailing_silence = n_samples - last_voiced_sample
+
+        if trailing_silence > min_silence_samples:
+            trim_to = min(last_voiced_sample + keep_samples, n_samples)
+            return audio[..., :trim_to]
+
+        return audio
+
+    @staticmethod
+    def _apply_fade(
+        audio: "torch.Tensor",
+        fade_in_ms: float = 0,
+        fade_out_ms: float = 0,
+        sample_rate: int = 22050,
+    ) -> "torch.Tensor":
+        """Apply fade-in and/or fade-out to an audio tensor.
+
+        Works on shapes [samples] or [channels, samples].
+        Uses a linear ramp (simple but effective for short fades).
+        """
+        if audio.numel() == 0:
+            return audio
+
+        n_samples = audio.shape[-1]
+
+        if fade_in_ms > 0:
+            fade_in_samples = min(int(sample_rate * fade_in_ms / 1000), n_samples)
+            ramp = torch.linspace(0.0, 1.0, fade_in_samples, device=audio.device)
+            audio[..., :fade_in_samples] = audio[..., :fade_in_samples] * ramp
+
+        if fade_out_ms > 0:
+            fade_out_samples = min(int(sample_rate * fade_out_ms / 1000), n_samples)
+            ramp = torch.linspace(1.0, 0.0, fade_out_samples, device=audio.device)
+            audio[..., -fade_out_samples:] = audio[..., -fade_out_samples:] * ramp
+
+        return audio
+
+    def __init__(
+        self,
+        cfg_path: str = "checkpoints/config.yaml",
+        model_dir: str = "checkpoints",
+        use_fp16: bool = True,
+        device: Optional[str] = None,
+        use_cuda_kernel: bool = False,
+        use_accel: bool = False,
+    ):
+        """
+        初始化精簡推論引擎
+
+        Args:
+            cfg_path: 配置文件路徑
+            model_dir: 模型目錄
+            use_fp16: 是否使用半精度
+            device: 設備 (None=自動檢測)
+            use_cuda_kernel: 是否使用 CUDA kernel (需要 CUDA Toolkit)
+            use_accel: 是否啟用加速引擎 (CUDA Graph + Flash Attention + Paged KV Cache)
+        """
+        self.model_dir = model_dir
+        self.use_fp16 = use_fp16
+        self.use_cuda_kernel = use_cuda_kernel
+        self.use_accel = use_accel
+        
+        # 設置設備
+        if device is None:
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                self.device = torch.device("mps")
+            else:
+                self.device = torch.device("cpu")
+        else:
+            self.device = torch.device(device)
+        
+        # 加載配置（必須先加載才能讀取優化設定）
+        self.cfg = OmegaConf.load(cfg_path)
+        
+        # 🚀 進階優化配置（輕量方案，無需額外依賴）
+        adv_opt = self.cfg.get('advanced_optimization', {})
+        self.compile_mode = adv_opt.get('compile_mode', 'reduce-overhead')
+
+        # sm_120 (RTX 50 系列 Blackwell) torch.compile 相容性檢查：
+        # inductor 在 sm_120 上對 S2Mel 產生錯誤結果、對 BigVGAN 大幅變慢。
+        # 僅允許 GPT inference_model 使用 torch.compile（AccelEngine 已驗證可用）。
+        _raw_use_compile = adv_opt.get('use_torch_compile', False)
+        self._sm_120 = False
+        if torch.cuda.is_available():
+            try:
+                cap = torch.cuda.get_device_capability()
+                self._sm_120 = cap[0] >= 12
+            except Exception:
+                pass
+        if self._sm_120 and _raw_use_compile:
+            debug_log(1, "   ⚠️  偵測到 sm_120 (Blackwell) — torch.compile 僅對 GPT 啟用，S2Mel/BigVGAN 跳過")
+        self.use_torch_compile = _raw_use_compile
+        # cudnn.benchmark 對每個新 conv shape 做演算法搜尋（實測 RTX 5070 Ti 每個
+        # 新 mel 長度 ~1-1.3s）。TTS 每段 mel 長度都不同、搜尋結果永遠用不到第二次，
+        # 此工作負載下是純負資產（2026-08-19 實測：BigVGAN 4.0s → 0.25s）。預設關閉。
+        self.cudnn_benchmark = adv_opt.get('cudnn_benchmark', False)
+        
+        # SDPA (Scaled Dot Product Attention) 配置
+        self.use_sdpa = adv_opt.get('use_sdpa', True)
+        self.enable_math = adv_opt.get('enable_math', True)
+        self.enable_flash = adv_opt.get('enable_flash', True)
+        self.enable_mem_efficient = adv_opt.get('enable_mem_efficient', True)
+        
+        # 量化配置
+        self.use_dynamic_quantization = adv_opt.get('use_dynamic_quantization', False)
+        self.quantize_gpt = adv_opt.get('quantize_gpt', False)
+        self.quantize_s2mel = adv_opt.get('quantize_s2mel', False)
+        
+        # 🚀 啟用 cuDNN benchmark（自動選擇最優 kernel）
+        if self.cudnn_benchmark and torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            debug_log(2, "   ⚡ 已啟用 cuDNN benchmark (自動調優)")
+        
+        # 🚀 配置 SDPA (Scaled Dot Product Attention)
+        if self.use_sdpa and hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
+            # 設置 SDPA 後端（Flash Attention / Memory Efficient / Math）
+            try:
+                torch.backends.cuda.enable_flash_sdp(self.enable_flash)
+                torch.backends.cuda.enable_mem_efficient_sdp(self.enable_mem_efficient)
+                torch.backends.cuda.enable_math_sdp(self.enable_math)
+                debug_log(2, f"   ⚡ 已配置 SDPA (Flash={self.enable_flash}, MemEff={self.enable_mem_efficient}, Math={self.enable_math})")
+            except Exception as e:
+                debug_log(1, f"   ⚠️  SDPA 配置失敗: {e}")
+        
+        # ── 情緒推論配置（從 tts_module/config.yaml 讀取）──
+        _emo_cfg = self.cfg.get('emotion', {})
+        self.emo_max_strength = float(_emo_cfg.get('max_strength', 0.8))
+        self.emo_bias = _emo_cfg.get('emo_bias', None)
+        if self.emo_bias is not None:
+            self.emo_bias = [float(x) for x in self.emo_bias]
+        self.emo_bias_cap = float(_emo_cfg.get('emo_bias_cap', 0.8))
+        self.merge_alpha = float(_emo_cfg.get('merge_alpha', 1.0))
+
+        # ── GPT 採樣預設值 ──
+        _samp_cfg = self.cfg.get('gpt_sampling', {})
+        self.default_do_sample = bool(_samp_cfg.get('do_sample', True))
+        self.default_temperature = float(_samp_cfg.get('temperature', 0.8))
+        self.default_top_p = float(_samp_cfg.get('top_p', 1.0))
+        self.default_top_k = int(_samp_cfg.get('top_k', 50))
+        self.default_num_beams = int(_samp_cfg.get('num_beams', 1))
+        self.default_repetition_penalty = float(_samp_cfg.get('repetition_penalty', 10.0))
+        self.default_length_penalty = float(_samp_cfg.get('length_penalty', 1.0))
+
+        # ── 合成管線配置 ──
+        _synth_cfg = self.cfg.get('synthesis', {})
+        self.interval_silence_ms = float(_synth_cfg.get('interval_silence_ms', 200))
+        self._config_stretch_ratio = float(_synth_cfg.get('s2mel_stretch_ratio', 1.72))
+        self._speed_value = 0.0  # 使用者語速偏移，[-1.0, +1.0]，正=快 負=慢
+        self.s2mel_stretch_ratio = self._config_stretch_ratio  # 有效值（config - speed×0.5）
+        self.cfm_n_timesteps = int(_synth_cfg.get('cfm_n_timesteps', 25))
+        self.cfm_inference_cfg_rate = float(_synth_cfg.get('cfm_inference_cfg_rate', 0.7))
+
+        # ── 情緒動態調控 ──
+        self.emotion_dynamics = create_emotion_dynamics(
+            OmegaConf.to_container(self.cfg, resolve=True) if hasattr(self.cfg, '_metadata') else dict(self.cfg)
+        )
+
+        # ── Poise 呼吸法系統 ──
+        _cfg_dict = OmegaConf.to_container(self.cfg, resolve=True) if hasattr(self.cfg, '_metadata') else dict(self.cfg)
+        self.poise_config = create_poise_config(_cfg_dict)
+
+        # 當前加載的角色特徵
+        self.current_character = None
+        self.character_features = None
+
+        # ── LoRA adapter ──
+        self._lora_active: bool = False
+        self._lora_scale: float = 0.0
+        self._lora_path: str | None = None
+        self._lora_original_inference_model = None  # 保存未掛 adapter 的原始 model
+        self._lora_merged: bool = False
+
+        # Profiling: init timings (populated by _init_models / load_character / warmup)
+        self._init_timings: dict[str, float] = {}
+
+        # 初始化模型
+        self._init_models()
+        
+        # 保存預熱配置（稍後在加載角色後執行）
+        self._warmup_config = {
+            'enable': adv_opt.get('enable_warmup', True),
+            'text': adv_opt.get('warmup_text', 'This is a test generation for warmup.'),
+            'iterations': adv_opt.get('warmup_iterations', 1)
+        }
+        
+        info_log("✅ IndexTTS Lite Engine 初始化完成!")
+    
+    def _warmup_models(self, warmup_text: str = "你好", iterations: int = 1):
+        """
+        🔥 模型預熱，提前觸發 torch.compile 編譯和 CUDA kernel 編譯
+        
+        Args:
+            warmup_text: 預熱用的文本（簡短即可）
+            iterations: 預熱次數
+        """
+        info_log(f"🔥 [預熱] 開始模型預熱... (文本: '{warmup_text}', 次數: {iterations})")
+        
+        import tempfile
+        import time
+        
+        start_time = time.time()
+        
+        try:
+            # 創建臨時檔案
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.wav', delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+            
+            # 執行預熱生成
+            for i in range(iterations):
+                debug_log(3, f"   [預熱] 第 {i+1}/{iterations} 次...")
+                
+                # 呼叫 synthesize 方法（不顯示詳細訊息）
+                self.synthesize(
+                    text=warmup_text,
+                    output_path=tmp_path,
+                    emotion_vector=None,
+                    verbose=False  # 關閉詳細輸出
+                )
+            
+            # 刪除臨時檔案
+            try:
+                import os
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                    debug_log(3, f"   [預熱] 已刪除臨時檔案: {tmp_path}")
+            except Exception as e:
+                debug_log(1, f"   [預熱] 刪除臨時檔案失敗: {e}")
+            
+            elapsed = time.time() - start_time
+            self._init_timings["warmup_ms"] = elapsed * 1000
+            info_log(f"✅ [預熱] 完成! 耗時: {elapsed:.2f}秒")
+            info_log(f"   ✓ torch.compile 已編譯")
+            info_log(f"   ✓ CUDA kernel 已編譯")
+            info_log(f"   ✓ 後續推論將明顯加速")
+            
+        except Exception as e:
+            error_log(f"⚠️  [預熱] 失敗: {e}")
+            debug_log(1, "   系統將繼續使用，但首次推論會較慢")
+            import traceback
+            debug_log(3, f"   預熱錯誤詳情:\n{traceback.format_exc()}")
+    
+    def _init_models(self):
+        """初始化必要的模型組件"""
+        debug_log(2, "🚀 初始化模型...")
+
+        # 1. GPT 模型
+        debug_log(2, "   [1/4] 加載 GPT 模型...")
+        _t0 = time.perf_counter()
+        gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
+        # 使用字典展開來傳遞所有 GPT 配置參數(包括嵌套的 condition_module 等)
+        gpt_kwargs = dict(self.cfg.gpt)
+        gpt_kwargs['use_accel'] = self.use_accel
+        # 2.5 架構：speaker conditioning 改用 CAMPPlus embedding
+        gpt_kwargs['spk_cond_mode'] = 'campplus'
+        self.gpt = UnifiedVoice(**gpt_kwargs).to(self.device)
+
+        self.gpt.load_state_dict(torch.load(gpt_path, map_location=self.device, weights_only=True))
+
+        if self.use_fp16:
+            self.gpt.eval().half()
+        else:
+            self.gpt.eval()
+
+        # 初始化 GPT inference model
+        self.gpt.post_init_gpt2_config(use_deepspeed=False, kv_cache=True, half=self.use_fp16)
+
+        # 🚀 應用 torch.compile 優化 GPT（如果配置啟用）
+        if self.use_torch_compile and hasattr(torch, 'compile'):
+            try:
+                debug_log(2, f"   ⚡ 對 GPT 應用 torch.compile (mode={self.compile_mode})")
+                # 編譯 inference_model 而非整個 gpt
+                self.gpt.inference_model = torch.compile(
+                    self.gpt.inference_model,
+                    mode=self.compile_mode,
+                    fullgraph=False  # 允許部分圖編譯
+                )
+            except Exception as e:
+                debug_log(1, f"   ⚠️  torch.compile GPT 失敗，回退: {e}")
+        self._init_timings["gpt_ms"] = (time.perf_counter() - _t0) * 1000
+        debug_log(3, f"      ✓ GPT 加載完成: {gpt_path}")
+
+        # 2. Semantic Codec — 2.5 EnhancedCodec（25Hz，checkpoint 隨模型發布）
+        debug_log(2, "   [2/4] 加載 Semantic Codec (EnhancedCodec)...")
+        _t0 = time.perf_counter()
+        # 注意：omegaconf 2.0.x 對缺失鍵回傳 None 而非 raise，
+        # 不可傳 cfg= 讓 EnhancedCodec 自行 hasattr 探測，改為明確參數展開
+        _codec_cfg = dict(self.cfg.semantic_codec)
+        semantic_codec = EnhancedCodec(
+            codebook_size=int(_codec_cfg.get('codebook_size', 8192)),
+            hidden_size=int(_codec_cfg.get('hidden_size', 1024)),
+            codebook_dim=int(_codec_cfg.get('codebook_dim', 8)),
+            vocos_dim=int(_codec_cfg.get('vocos_dim', 384)),
+            vocos_intermediate_dim=int(_codec_cfg.get('vocos_intermediate_dim', 2048)),
+            vocos_num_layers=int(_codec_cfg.get('vocos_num_layers', 12)),
+            num_quantizers=int(_codec_cfg.get('num_quantizers') or 1),
+            downsample_scale=int(_codec_cfg.get('downsample_scale') or 2),
+        )
+        semantic_codec.load_checkpoint(os.path.join(self.model_dir, "codec.pth"))
+        self.semantic_codec = semantic_codec.to(self.device)
+        self.semantic_codec.eval()
+        self._init_timings["semantic_codec_ms"] = (time.perf_counter() - _t0) * 1000
+        debug_log(3, f"      ✓ Semantic Codec 加載完成")
+
+        # 3. S2Mel 模型
+        debug_log(2, "   [3/4] 加載 S2Mel 模型...")
+        _t0 = time.perf_counter()
+        s2mel_path = os.path.join(self.model_dir, self.cfg.s2mel_checkpoint)
+        # 2.5 架構：S2Mel 不再使用 GPT latent（新 checkpoint 無 gpt_layer 權重）
+        s2mel = MyModel(self.cfg.s2mel)
+        s2mel, _, _, _ = load_checkpoint2(s2mel, None, s2mel_path, load_only_params=True)
+        self.s2mel = s2mel.to(self.device)
+        # 初始化 GPT-Fast cache (參考 infer_v2.py line 139)
+        self.s2mel.models['cfm'].estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
+        self.s2mel.eval()
+
+        # 🚀 應用 torch.compile 優化 (如果配置啟用，sm_120 除外)
+        if self.use_torch_compile and not self._sm_120 and hasattr(torch, 'compile'):
+            try:
+                debug_log(2, f"   ⚡ 對 S2Mel 應用 torch.compile (mode={self.compile_mode})")
+                self.s2mel = torch.compile(self.s2mel, mode=self.compile_mode)
+            except Exception as e:
+                debug_log(1, f"   ⚠️  torch.compile S2Mel 失敗，回退: {e}")
+        elif self._sm_120:
+            debug_log(2, "   ℹ️  S2Mel torch.compile 跳過 (sm_120 相容性)")
+
+        # 🚀 可選: 應用動態量化 (INT8)
+        if self.use_dynamic_quantization and self.quantize_s2mel:
+            try:
+                debug_log(2, "   ⚡ 對 S2Mel 應用動態量化 (INT8)")
+                self.s2mel = torch.quantization.quantize_dynamic(
+                    self.s2mel,
+                    {torch.nn.Linear},
+                    dtype=torch.qint8
+                )
+            except Exception as e:
+                debug_log(1, f"   ⚠️  S2Mel 量化失敗，回退: {e}")
+        # S2Mel CFM estimator 獨立 compile（進階選項，config.yaml 啟用：
+        #   advanced_optimization.compile_s2mel: true）
+        # sm_120 已於 2026-08-19 實測解封（torch 2.7.0+cu128 + triton-windows
+        # 3.3.1.post21）：S2Mel warm 1.44x、音訊健全；首次編譯 ~48s 由 warmup 吸收。
+        # 全模型 compile（use_torch_compile 的 S2Mel/BigVGAN 分支）在 sm_120 仍未驗證，防護照舊。
+        if self.cfg.get('advanced_optimization', {}).get('compile_s2mel', False):
+            if hasattr(self.s2mel, 'enable_torch_compile'):
+                try:
+                    debug_log(2, "   ⚡ 對 S2Mel CFM estimator 應用 torch.compile")
+                    self.s2mel.enable_torch_compile()
+                except Exception as e:
+                    debug_log(1, f"   ⚠️  S2Mel CFM torch.compile 失敗，回退: {e}")
+
+        self._init_timings["s2mel_ms"] = (time.perf_counter() - _t0) * 1000
+        debug_log(3, f"      ✓ S2Mel 加載完成: {s2mel_path}")
+
+        # 4. BigVGAN Vocoder
+        debug_log(2, "   [4/4] 加載 BigVGAN Vocoder...")
+        _t0 = time.perf_counter()
+        bigvgan_name = self.cfg.vocoder.name
+        # 優先使用模型目錄內的本地 cache（上游 2.5 佈局），避免重複下載
+        _local_bigvgan = os.path.join(self.model_dir, "hf_cache", "bigvgan")
+        if os.path.isdir(_local_bigvgan):
+            bigvgan_name = _local_bigvgan
+        self.bigvgan = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=self.use_cuda_kernel)
+        self.bigvgan = self.bigvgan.to(self.device)
+        self.bigvgan.remove_weight_norm()
+        self.bigvgan.eval()
+
+        # 🚀 應用 torch.compile 優化 (如果配置啟用，sm_120 除外)
+        if self.use_torch_compile and not self._sm_120 and hasattr(torch, 'compile'):
+            try:
+                debug_log(2, f"   ⚡ 對 BigVGAN 應用 torch.compile (mode={self.compile_mode})")
+                self.bigvgan = torch.compile(self.bigvgan, mode=self.compile_mode)
+            except Exception as e:
+                debug_log(1, f"   ⚠️  torch.compile BigVGAN 失敗，回退: {e}")
+        elif self._sm_120:
+            debug_log(2, "   ℹ️  BigVGAN torch.compile 跳過 (sm_120 相容性)")
+        self._init_timings["bigvgan_ms"] = (time.perf_counter() - _t0) * 1000
+        debug_log(3, f"      ✓ BigVGAN 加載完成: {bigvgan_name}")
+
+        # 5. 情感和說話人矩陣 (用於 emo_vector 映射)
+        debug_log(2, "   [5/6] 加載情感和說話人矩陣...")
+        _t0 = time.perf_counter()
+        emo_matrix = torch.load(os.path.join(self.model_dir, self.cfg.emo_matrix), map_location=self.device, weights_only=True)
+        spk_matrix = torch.load(os.path.join(self.model_dir, self.cfg.spk_matrix), map_location=self.device, weights_only=True)
+
+        self.emo_matrix = emo_matrix.to(self.device)
+        self.spk_matrix = spk_matrix.to(self.device)
+        self.emo_num = list(self.cfg.emo_num)
+
+        # Split 矩陣 (用於按情感類別索引)
+        self.emo_matrix = torch.split(self.emo_matrix, self.emo_num)
+        self.spk_matrix = torch.split(self.spk_matrix, self.emo_num)
+        self._init_timings["emo_matrix_ms"] = (time.perf_counter() - _t0) * 1000
+        debug_log(3, f"      ✓ 矩陣加載完成: {self.cfg.emo_matrix}, {self.cfg.spk_matrix}")
+
+        # 6. 文本標準化器 + 2.5 tiktoken 多語言 Tokenizer (參考 infer_v2_5.py)
+        debug_log(2, "   [6/6] 加載文本處理...")
+        _t0 = time.perf_counter()
+        # Glossary: 從 config 讀取是否啟用、以及 glossary 檔案路徑
+        _text_cfg = self.cfg.get('text_processing', {})
+        _enable_glossary = _text_cfg.get('enable_glossary', False)
+        _glossary_path = _text_cfg.get('glossary_path', '')
+
+        self.text_normalizer = TextNormalizer(enable_glossary=_enable_glossary)
+        self.text_normalizer.load()
+
+        # 載入術語詞彙表（若有指定路徑）
+        if _enable_glossary and _glossary_path:
+            abs_glossary = os.path.join(self.model_dir, _glossary_path) if not os.path.isabs(_glossary_path) else _glossary_path
+            if self.text_normalizer.load_glossary_from_yaml(abs_glossary):
+                debug_log(3, f"      ✓ 術語詞彙表已載入: {abs_glossary}")
+            else:
+                debug_log(3, f"      ⚠️  術語詞彙表未找到: {abs_glossary}")
+
+        self.tokenizer = get_tokenizer(multilingual=True, model_dir=self.model_dir)
+        # 日語 G2P 惰性初始化：僅在 language='ja' 時載入，
+        # 避免中英合成因缺 fugashi/MeCab 而無法啟動
+        self._ja_text_process = None
+        self._init_timings["text_processor_ms"] = (time.perf_counter() - _t0) * 1000
+        debug_log(3, f"      ✓ 文本處理器和 tiktoken 多語言模型加載完成")
+    
+    def load_character(self, character_path: Union[str, Path], verbose: bool = True):
+        """
+        加載預提取的角色特徵
+        
+        Args:
+            character_path: 角色特徵文件路徑 (.pt)
+            verbose: 是否打印詳細信息
+            
+        Returns:
+            bool: 是否加載成功
+        """
+        character_path = Path(character_path)
+        _char_t0 = time.perf_counter()
+
+        if not character_path.exists():
+            raise FileNotFoundError(f"角色文件不存在: {character_path}")
+
+        if verbose:
+            debug_log(2, f"📂 加載角色: {character_path.name}")
+
+        try:
+            # 加載特徵
+            features = torch.load(character_path, map_location=self.device, weights_only=False)
+            
+            # 驗證必要字段
+            required_fields = ['spk_cond_emb', 'style', 'prompt_condition', 'ref_mel']
+            missing_fields = [f for f in required_fields if f not in features]
+            
+            if missing_fields:
+                raise ValueError(f"角色文件缺少必要字段: {missing_fields}")
+            
+            # 如果使用 fp16,將浮點數特徵轉換為 half
+            if self.use_fp16:
+                for key in ['spk_cond_emb', 'style', 'prompt_condition', 'ref_mel']:
+                    if key in features and features[key].dtype in [torch.float32, torch.float64]:
+                        features[key] = features[key].half()
+            
+            # 檢查情感索引 (emo_indices)
+            if 'emo_indices' not in features:
+                if verbose:
+                    debug_log(2, "   ⚠️  警告: 此角色文件沒有 emo_indices,將使用全零向量")
+                features['emo_indices'] = torch.zeros(8, dtype=torch.long).to(self.device)
+            elif isinstance(features['emo_indices'], list):
+                # 如果是 list,轉換為 tensor
+                features['emo_indices'] = torch.tensor(features['emo_indices'], dtype=torch.long).to(self.device)
+            
+            self.character_features = features
+            self.current_character = character_path.stem
+            
+            if verbose:
+                info_log(f"   ✓ 角色 '{self.current_character}' 加載成功!")
+                
+                # 加載 metadata (如果存在)
+                metadata_path = character_path.with_suffix('.pt_metadata.json')
+                if metadata_path.exists():
+                    import json
+                    with open(metadata_path, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                    debug_log(3, f"   📋 提取時間: {metadata.get('extraction_time', 'N/A')}")
+                    debug_log(3, f"   📋 音頻長度: {metadata.get('audio_duration', 'N/A')}")
+                    if 'emo_indices' in metadata:
+                        debug_log(3, f"   📋 情感索引: {metadata['emo_indices']}")
+            
+            self._init_timings["char_load_ms"] = (time.perf_counter() - _char_t0) * 1000
+
+            # 🔥 角色加載成功後，執行預熱（如果這是首次加載且已配置）
+            if hasattr(self, '_warmup_config') and self._warmup_config.get('enable', False):
+                # 執行一次預熱後就移除配置，避免重複預熱
+                warmup_cfg = self._warmup_config
+                delattr(self, '_warmup_config')  # 移除配置標記
+                
+                self._warmup_models(
+                    warmup_text=warmup_cfg['text'],
+                    iterations=warmup_cfg['iterations']
+                )
+            
+            return True
+            
+        except Exception as e:
+            error_log(f"❌ 加載角色失敗: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    # ── LoRA Adapter API ──
+
+    def load_lora(self, adapter_path: str, scale: float = 1.0) -> None:
+        """載入 PEFT LoRA adapter。
+
+        Args:
+            adapter_path: adapter 目錄路徑（含 adapter_config.json + adapter_model.*）
+                          也支援舊版 merged checkpoint (.pth) 的向後相容。
+            scale: adapter 強度 (0.0 ~ 1.0)，透過 PEFT scaling 控制。
+        """
+        adapter_path = str(adapter_path)
+
+        # 向後相容：如果是 .pth 檔案，走舊格式 checkpoint 的 delta blending 路徑
+        if adapter_path.endswith('.pth') and os.path.isfile(adapter_path):
+            return self._load_lora_pth(adapter_path, scale)
+
+        # PEFT adapter 目錄
+        if not os.path.isdir(adapter_path):
+            raise FileNotFoundError(f"LoRA adapter 目錄不存在: {adapter_path}")
+
+        info_log(f"🧬 [LoRA] 載入 adapter: {os.path.basename(adapter_path)}")
+
+        try:
+            from peft import PeftModel
+        except ImportError:
+            raise ImportError("需要安裝 peft: pip install peft")
+
+        # 保存原始 inference_model（用於 unload）
+        if self._lora_original_inference_model is None:
+            self._lora_original_inference_model = self.gpt.inference_model
+
+        # 掛載 adapter
+        self.gpt.inference_model = PeftModel.from_pretrained(
+            self._lora_original_inference_model,
+            adapter_path,
+            is_trainable=False,
+        )
+        self.gpt.inference_model.eval()
+        if self.use_fp16:
+            self.gpt.inference_model.half()
+
+        self._lora_active = True
+        self._lora_path = adapter_path
+
+        # 設定 scale
+        self.set_lora_scale(scale)
+
+        info_log(f"   ✓ adapter 載入完成")
+
+    def merge_lora(self, adapter_path: str, scale: float = 1.0) -> dict:
+        """把 PEFT LoRA 以 ``scale`` 永久合併進 GPT 權重（accel 下也會生效）。
+
+        ``load_lora`` 的 PEFT 包裝只作用在 ``inference_model``；``use_accel`` 時
+        ``generate`` 走獨立的 GPT2AccelModel 複本，不經 ``inference_model``，LoRA 會
+        靜默失效。此方法合併後把權重原地同步進 accel 模型（參數位址不變，CUDA graph 不失效）。
+
+        ⚠️ 合併後不可再調 scale、也不可再 ``load_lora``；要換強度須重新載入引擎。
+        """
+        if self._lora_active or self._lora_merged:
+            raise RuntimeError("LoRA 已載入或已合併，不可重複合併（需重新載入引擎）")
+        adapter_path = str(adapter_path)
+        if not os.path.isdir(adapter_path):
+            raise FileNotFoundError(f"LoRA adapter 目錄不存在: {adapter_path}")
+        try:
+            from .lora_merge import merge_lora_into_gpt
+        except ImportError:
+            from lora_merge import merge_lora_into_gpt
+
+        info_log(f"🧬 [LoRA] 合併 adapter: {os.path.basename(adapter_path)}")
+        stats = merge_lora_into_gpt(self.gpt, adapter_path, scale, self.use_fp16)
+        self._lora_merged = True
+        self._lora_scale = stats["scale"]
+        self._lora_path = adapter_path
+        info_log(
+            f"   ✓ 已合併 scale={stats['scale']:.0%} 探針層={stats['probe']} "
+            f"主模型 Δnorm={stats['merged_delta_norm']}"
+        )
+        if self.use_accel:
+            info_log(
+                f"   ✓ accel 同步={stats['accel_synced']} Δnorm={stats['accel_delta_norm']} "
+                f"與主模型殘差={stats['accel_residual_norm']}"
+            )
+        return stats
+
+    def _load_lora_pth(self, checkpoint_path: str, scale: float = 1.0) -> None:
+        """載入舊格式 .pth merged checkpoint，用 delta blending 混合權重。"""
+        info_log(f"🧬 [LoRA] 載入 .pth checkpoint: {os.path.basename(checkpoint_path)}")
+
+        merged_state = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+        if isinstance(merged_state, dict) and 'model' in merged_state:
+            merged_state = merged_state['model']
+
+        if not hasattr(self, '_lora_original_state') or self._lora_original_state is None:
+            self._lora_original_state = {
+                k: v.clone() for k, v in self.gpt.state_dict().items()
+            }
+
+        delta: dict[str, torch.Tensor] = {}
+        for key in self._lora_original_state:
+            if key in merged_state and self._lora_original_state[key].shape == merged_state[key].shape:
+                diff = merged_state[key].to(self._lora_original_state[key].dtype) - self._lora_original_state[key]
+                if diff.abs().max().item() > 1e-8:
+                    delta[key] = diff
+
+        if not delta:
+            raise ValueError("Checkpoint 與原始 GPT 無差異")
+
+        self._lora_delta = delta
+        self._lora_path = checkpoint_path
+        self._lora_active = True
+        info_log(f"   ✓ delta 計算完成: {len(delta)} keys")
+
+        # 套用 scale
+        s = max(0.0, min(1.0, scale))
+        self._lora_scale = s
+        new_state = dict(self._lora_original_state)
+        for key, diff in self._lora_delta.items():
+            new_state[key] = self._lora_original_state[key] + s * diff
+        self.gpt.load_state_dict(new_state, strict=True)
+        info_log(f"   🧬 [LoRA] scale = {s:.0%} ({len(delta)} keys blended)")
+
+    def set_lora_scale(self, scale: float) -> None:
+        """動態調整 LoRA 強度。
+
+        PEFT adapter 模式：修改每個 LoRA 層的 scaling 係數。
+        .pth checkpoint 模式：重新 blend state_dict。
+        """
+        scale = max(0.0, min(1.0, scale))
+        self._lora_scale = scale
+
+        # .pth delta blending 路徑
+        if hasattr(self, '_lora_delta') and self._lora_delta is not None:
+            if not hasattr(self, '_lora_original_state') or self._lora_original_state is None:
+                raise RuntimeError(".pth LoRA: 原始權重不存在")
+            new_state = dict(self._lora_original_state)
+            for key, diff in self._lora_delta.items():
+                new_state[key] = self._lora_original_state[key] + scale * diff
+            self.gpt.load_state_dict(new_state, strict=True)
+            info_log(f"   🧬 [LoRA] scale = {scale:.0%} ({len(self._lora_delta)} keys blended)")
+            return
+
+        # PEFT adapter 路徑：修改 scaling 係數
+        # PEFT 的 scaling = lora_alpha / r，我們用 user_scale 乘上去
+        model = self.gpt.inference_model
+        if not hasattr(model, 'peft_config'):
+            raise RuntimeError("尚未載入 LoRA adapter")
+
+        adapter_name = list(model.peft_config.keys())[0]
+        base_scaling = model.peft_config[adapter_name].lora_alpha / model.peft_config[adapter_name].r
+
+        count = 0
+        for name, module in model.named_modules():
+            if hasattr(module, 'scaling') and isinstance(module.scaling, dict):
+                module.scaling[adapter_name] = base_scaling * scale
+                count += 1
+
+        info_log(f"   🧬 [LoRA] scale = {scale:.0%} ({count} layers)")
+
+    def unload_lora(self) -> None:
+        """移除 LoRA adapter，還原原始模型。"""
+        # PEFT adapter 路徑
+        if self._lora_original_inference_model is not None:
+            self.gpt.inference_model = self._lora_original_inference_model
+            self._lora_original_inference_model = None
+            info_log("   🧬 [LoRA] adapter 已移除")
+
+        # .pth delta 路徑
+        if hasattr(self, '_lora_original_state') and self._lora_original_state is not None:
+            self.gpt.load_state_dict(self._lora_original_state, strict=True)
+            self._lora_original_state = None
+            self._lora_delta = None
+            info_log("   🧬 [LoRA] 已還原原始權重")
+
+        self._lora_active = False
+        self._lora_scale = 0.0
+        self._lora_path = None
+        torch.cuda.empty_cache()
+
+    def get_lora_status(self) -> dict:
+        """回傳 LoRA 狀態。"""
+        return {
+            "active": self._lora_active,
+            "scale": self._lora_scale,
+            "path": self._lora_path,
+        }
+
+    # ── Speed (語速) API ──
+
+    def set_speed(self, value: float) -> float:
+        """設定語速偏移（絕對值）。
+
+        Args:
+            value: [-1.0, +1.0]，正值=加快，負值=放慢，0=預設
+
+        Returns:
+            設定後的語速值
+        """
+        self._speed_value = max(-1.0, min(1.0, value))
+        self.s2mel_stretch_ratio = self._config_stretch_ratio - (self._speed_value * 0.5)
+        return self._speed_value
+
+    def adjust_speed(self, delta: float) -> float:
+        """基於目前值調整語速。
+
+        Args:
+            delta: 調整量，例如 +0.3 或 -0.2
+
+        Returns:
+            調整後的語速值
+        """
+        return self.set_speed(self._speed_value + delta)
+
+    def get_speed(self) -> float:
+        """取得目前語速偏移值。"""
+        return self._speed_value
+
+    def get_speed_info(self) -> dict:
+        """取得語速完整資訊。"""
+        return {
+            "speed": self._speed_value,
+            "stretch_ratio": self.s2mel_stretch_ratio,
+            "config_stretch_ratio": self._config_stretch_ratio,
+        }
+
+    def normalize_emotion_vector(
+        self,
+        emotion_vector: List[float],
+        max_strength: float = 0.3,
+        verbose: bool = False
+    ) -> List[float]:
+        """
+        歸一化情感向量,確保不會覆蓋原始聲音特徵
+        
+        Args:
+            emotion_vector: 8維情感向量 [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+            max_strength: 最大情感強度 (0-1),推薦 0.3 保留 70% 原始聲音
+            verbose: 是否打印信息
+            
+        Returns:
+            歸一化後的情感向量
+        """
+        current_sum = sum(emotion_vector)
+        
+        if current_sum == 0 or current_sum <= max_strength:
+            return emotion_vector
+        
+        # 比例壓縮
+        scale_factor = max_strength / current_sum
+        normalized = [v * scale_factor for v in emotion_vector]
+        
+        if verbose:
+            debug_log(3, f"   📊 情感歸一化: {current_sum:.2f} → {sum(normalized):.2f}")
+            debug_log(3, f"      原始聲音保留: {(1 - sum(normalized)) * 100:.0f}%")
+        
+        return normalized
+    
+    def synthesize_direct(
+        self,
+        text: str,
+        output_path: str,
+        emotion_vector: Optional[List[float]] = None,
+        max_emotion_strength: float = 0.3,
+        language: str = 'en',
+        # GPT 優化參數
+        num_beams: int = 1,
+        do_sample: bool = True,
+        temperature: float = 0.6,
+        top_p: float = 0.9,
+        top_k: int = 20,
+        verbose: bool = True
+    ) -> bool:
+        """
+        【已廢棄】直接手動調用各個模型步驟的合成方法
+        
+        此方法存在問題:
+        1. 手動實現容易出錯
+        2. 可能觸發 CUDA kernel 錯誤
+        3. 可能導致無限循環
+        
+        請使用 synthesize() 方法代替!
+        """
+        raise DeprecationWarning("請使用 synthesize() 方法,它使用 IndexTTS2 的內部邏輯更穩定")
+    
+    def synthesize(
+        self,
+        text: str,
+        output_path: str,
+        emotion_vector: Optional[List[float]] = None,
+        max_emotion_strength: Optional[float] = None,
+        language: str = 'en',
+        num_beams: Optional[int] = None,
+        do_sample: Optional[bool] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+        length_penalty: Optional[float] = None,
+        verbose: bool = True,
+        on_segment_audio=None,
+        max_text_tokens_per_segment: int = 120,
+        quick_streaming_tokens: int = 0,
+        preset_overrides: Optional[Dict] = None,
+    ) -> bool:
+        """
+        合成語音 — 回傳 bool，保持向後相容。
+        內部委派給 _synthesize_impl()。
+        所有採樣參數預設為 None → 從 config.yaml (gpt_sampling) 讀取。
+
+        Args:
+            on_segment_audio: Optional callback(segment_audio_tensor, segment_index, total_segments).
+                Called after each segment's vocoder completes, before concatenation.
+                Use for streaming playback.
+            max_text_tokens_per_segment: Maximum BPE tokens per segment (default 120, matches upstream).
+            quick_streaming_tokens: If > 0, first segment will be at most this many tokens
+                for faster first-audio latency.
+            preset_overrides: Optional dict of dynamics overrides from emotion preset.
+        """
+        success, _ = self._synthesize_impl(
+            text=text, output_path=output_path,
+            emotion_vector=emotion_vector, max_emotion_strength=max_emotion_strength,
+            language=language, num_beams=num_beams, do_sample=do_sample,
+            temperature=temperature, top_p=top_p, top_k=top_k,
+            repetition_penalty=repetition_penalty, length_penalty=length_penalty,
+            verbose=verbose, collect_timings=False,
+            on_segment_audio=on_segment_audio,
+            max_text_tokens_per_segment=max_text_tokens_per_segment,
+            quick_streaming_tokens=quick_streaming_tokens,
+            preset_overrides=preset_overrides,
+        )
+        return success
+
+    def synthesize_with_profile(
+        self,
+        text: str,
+        output_path: str,
+        emotion_vector: Optional[List[float]] = None,
+        max_emotion_strength: Optional[float] = None,
+        language: str = 'en',
+        num_beams: Optional[int] = None,
+        do_sample: Optional[bool] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+        length_penalty: Optional[float] = None,
+        verbose: bool = True,
+        max_text_tokens_per_segment: int = 120,
+        quick_streaming_tokens: int = 0,
+        preset_overrides: Optional[Dict] = None,
+    ) -> tuple:
+        """
+        合成語音並回傳 (success: bool, timings: dict)。
+        timings 包含各階段的毫秒計時。
+        """
+        return self._synthesize_impl(
+            text=text, output_path=output_path,
+            emotion_vector=emotion_vector, max_emotion_strength=max_emotion_strength,
+            language=language, num_beams=num_beams, do_sample=do_sample,
+            temperature=temperature, top_p=top_p, top_k=top_k,
+            repetition_penalty=repetition_penalty, length_penalty=length_penalty,
+            verbose=verbose, collect_timings=True,
+            max_text_tokens_per_segment=max_text_tokens_per_segment,
+            quick_streaming_tokens=quick_streaming_tokens,
+            preset_overrides=preset_overrides,
+        )
+
+    def _synthesize_impl(
+        self,
+        text: str,
+        output_path: str,
+        emotion_vector: Optional[List[float]] = None,
+        max_emotion_strength: Optional[float] = None,
+        language: str = 'en',
+        num_beams: Optional[int] = None,
+        do_sample: Optional[bool] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+        length_penalty: Optional[float] = None,
+        verbose: bool = True,
+        collect_timings: bool = False,
+        on_segment_audio=None,
+        max_text_tokens_per_segment: int = 120,
+        quick_streaming_tokens: int = 0,
+        preset_overrides: Optional[Dict] = None,
+    ) -> tuple:
+        """
+        合成語音的核心實現 (獨立引擎實現,參考 infer_v2.py 邏輯)
+
+        所有 Optional 參數為 None 時自動從 config.yaml 讀取預設值。
+
+        Args:
+            text: 要合成的文本
+            output_path: 輸出音頻路徑
+            emotion_vector: 8維情感向量
+            max_emotion_strength: 最大情感強度 (None → config emotion.max_strength)
+            language: 語言 ('en' 或 'zh')
+            num_beams: GPT beam search 大小
+            do_sample: 是否採樣 (None → config gpt_sampling.do_sample)
+            temperature: 採樣溫度 (None → config gpt_sampling.temperature)
+            top_p: Nucleus 採樣
+            top_k: Top-K 採樣
+            repetition_penalty: 重複懲罰 (None → config gpt_sampling.repetition_penalty)
+            length_penalty: 長度懲罰 (None → config gpt_sampling.length_penalty)
+            verbose: 是否打印詳細信息
+            collect_timings: 是否收集各階段計時
+
+        Returns:
+            (success: bool, timings: dict) — timings 為空 dict 若 collect_timings=False
+        """
+        # ── 參數 fallback：None → config 預設值 ──
+        if max_emotion_strength is None:
+            max_emotion_strength = self.emo_max_strength
+        if do_sample is None:
+            do_sample = self.default_do_sample
+        if temperature is None:
+            temperature = self.default_temperature
+        if top_p is None:
+            top_p = self.default_top_p
+        if top_k is None:
+            top_k = self.default_top_k
+        if num_beams is None:
+            num_beams = self.default_num_beams
+        if repetition_penalty is None:
+            repetition_penalty = self.default_repetition_penalty
+        if length_penalty is None:
+            length_penalty = self.default_length_penalty
+
+        timings: dict[str, float] = {}
+
+        def _mark(key: str, t0: float) -> float:
+            now = time.perf_counter()
+            if collect_timings:
+                timings[key] = (now - t0) * 1000
+            return now
+
+        if self.character_features is None:
+            raise RuntimeError("請先使用 load_character() 加載角色!")
+
+        wall_t0 = time.perf_counter()
+
+        if verbose:
+            debug_log(2, f"🎙️  合成語音...")
+            debug_log(3, f"   角色: {self.current_character}")
+            debug_log(3, f"   文本: {text}")
+            debug_log(3, f"   文本長度: {len(text)} 字符")
+            debug_log(3, f"   採樣: do_sample={do_sample}, T={temperature}, rep_penalty={repetition_penalty}")
+
+        # 1. 情感向量處理
+        if emotion_vector is None:
+            emotion_vector = [0.0] * 8  # 中性
+
+        if len(emotion_vector) != 8:
+            raise ValueError("情感向量必須是 8 維")
+
+        # 語言別情感增益（保留機制，預設不啟用）
+        # 2.5 盲測定案（2026-08-19）：0.65 是以「最終送進模型的總和」定義，
+        # 日文梯度與中英同值即通過聽感，不再需要 1.3x 補償。
+        # 且增益若在 normalize 之前套，等分量情況下會被 normalize 完全抵銷。
+        # 要重新啟用請在 config.yaml 的 emotion.lang_gain 明寫（如 ja: 1.2）。
+        _lang_gain_cfg = self.cfg.get('emotion', {}).get('lang_gain', {}) or {}
+        _lang_gain = float(_lang_gain_cfg.get(language, 1.0))
+        if _lang_gain != 1.0 and any(v > 0 for v in emotion_vector):
+            emotion_vector = [v * _lang_gain for v in emotion_vector]
+            if verbose:
+                debug_log(3, f"   🌐 語言情感增益 ({language}): ×{_lang_gain}")
+
+        # ① 先歸一化到目標強度：preset 定義的是「情緒配方」（比例），
+        #    實際強度由 max_strength 決定（預設 0.65，可用區間 0.57~0.65）
+        emotion_vector = self.normalize_emotion_vector(emotion_vector, max_emotion_strength, verbose)
+
+        # ② 再套 emo_bias（壓制容易出怪聲的維度，目前只有 calm 0.5625）
+        # ⚠️ 順序關鍵：bias 必須在 normalize 之後。套在之前會被 normalize
+        #    等比拉回目標總和，壓制效果完全消失（calm 會拿到 0.65 而非 0.366）。
+        #    代價是含 calm 的向量總和低於 max_strength，這正是想要的。
+        if self.emo_bias is not None and any(v > 0 for v in emotion_vector):
+            biased = [v * b for v, b in zip(emotion_vector, self.emo_bias)]
+            biased_sum = sum(biased)
+            if biased_sum > self.emo_bias_cap:
+                scale = self.emo_bias_cap / biased_sum
+                biased = [v * scale for v in biased]
+            emotion_vector = biased
+            if verbose:
+                debug_log(3, f"   🎭 emo_bias 套用後: {[f'{v:.3f}' for v in emotion_vector]}, sum={sum(emotion_vector):.3f}")
+
+        normalized_emotion = emotion_vector
+
+        # ── 情緒動態調控（第三層）──
+        # 根據情緒向量動態調整 temperature、段間靜音、語速、cfg_rate
+        dyn = self.emotion_dynamics.compute(
+            normalized_emotion,
+            base_temperature=temperature,
+            base_silence_ms=self.interval_silence_ms,
+            base_stretch_ratio=self.s2mel_stretch_ratio,
+            base_cfg_rate=self.cfm_inference_cfg_rate,
+            preset_overrides=preset_overrides,
+        )
+        if dyn.temperature is not None:
+            temperature = dyn.temperature
+        # interval_silence / stretch_ratio / cfg_rate 在使用處讀取
+        _dyn_silence_ms = dyn.interval_silence_ms if dyn.interval_silence_ms is not None else self.interval_silence_ms
+        _dyn_stretch_ratio = dyn.s2mel_stretch_ratio if dyn.s2mel_stretch_ratio is not None else self.s2mel_stretch_ratio
+        _dyn_cfg_rate = dyn.cfm_inference_cfg_rate if dyn.cfm_inference_cfg_rate is not None else self.cfm_inference_cfg_rate
+
+        # 保留 dyn 物件供段落級變化使用
+        _dyn_overrides = dyn
+
+        if verbose and dyn.emotion_intensity > 0:
+            debug_log(3, f"   🎛️  情緒動態: {dyn.dominant_emotion} (intensity={dyn.emotion_intensity:.3f})")
+            variation_str = f", variation=±{dyn.speed_variation:.3f}" if dyn.speed_variation > 0.001 else ""
+            debug_log(3, f"      T={temperature:.3f}, silence={_dyn_silence_ms:.0f}ms, "
+                        f"stretch={_dyn_stretch_ratio:.3f}{variation_str}, cfg_rate={_dyn_cfg_rate:.3f}")
+
+        try:
+            # 2. 文本處理 — tokenize + 分段 (參考 infer_v2.py line 487-523)
+            _t = time.perf_counter()
+            if verbose:
+                debug_log(3, "   [1/4] 文本處理...")
+
+            # Custom vocabulary replacements (before segmentation and BPE)
+            _vocab_cfg = self.cfg.get('text_processing', {}).get('custom_vocab', {})
+            text = apply_custom_vocab(text, _vocab_cfg)
+
+            # ── 2.5 語言解析與語言別正規化 ──
+            # engine language ('zh'/'en'/'ja'/...) → 上游 lang 代碼；lang prefix 佔用 token 預算
+            _lang_code = {'zh': 'ZH', 'en': 'EN', 'ja': 'JA', 'es': 'ES', 'ar': 'AR'}.get(language, 'ZH')
+            _lang_prefix = f'<|{_lang_code.lower()}|> '
+            self._active_lang_code = _lang_code  # 供 GPT 呼叫處建立 lang tensor
+
+            if _lang_code in ('ZH', 'EN'):
+                # 我們的 normalize 一條龍：t2s / 引號停頓 / glossary / 數字正規化
+                text = self.text_normalizer.normalize(text)
+            else:
+                # ja/es 走上游 NeMo 正規化，避免 OpenCC t2s 誤傷日文漢字。
+                # 標點西化必須先做（上游 infer_v2_5 在進語言分支前套 char_rep_map）：
+                # 模型以西式標點訓練，日文標點（。、）對 GPT 是罕見 token，
+                # 實測會被模型唸成無意義音節（Whisper 轉寫證實：雪エク/シンジュウ），
+                # 且 codes 膨脹 40-60%（2026-08-19 上游比對定案）
+                text = self.text_normalizer.apply_char_rep_map(text)
+                text = nemo_text_normalize(text, _lang_code.lower())
+
+            text = apply_lang_case_rules(text, _lang_code)
+            text = apply_pronunciation_annotations(text)
+            if _lang_code == 'JA':
+                if self._ja_text_process is None:
+                    self._ja_text_process = JapaneseG2PProcessor(g2p_ratio=0)
+                text = self._ja_text_process.process_ja_text(text)
+
+            # Language-aware semantic pre-segmentation (before token packing)
+            if language == 'zh':
+                _jieba_cfg = self.cfg.get('chunking', {}).get('jieba_segmentation', {})
+                sub_texts = pre_segment_chinese(text, _jieba_cfg)
+                if len(sub_texts) > 1 and verbose:
+                    debug_log(2, f"      🈶 jieba 語義預切分: {len(sub_texts)} 段")
+            elif language == 'ja':
+                # 日文不做句子級預切分。pySBD 是英文規則（靠 . ! ? + 空格 判句尾），
+                # 套在無空格的日文上會把每個「。」都當切點——實測 112 token 的日文
+                # 被切成 5 段（11/16/11/47/27），而同長度中文維持 1 段。分段過碎會
+                # 讓段間停頓變多、韻律斷裂，且每段都要跑一次 GPT。
+                # split_text_by_token_budget 的 _SENTENCE_BOUNDARY 已含日文標點
+                # （。、！？），會在超出預算時才於標點處切，行為與中文一致。
+                sub_texts = [text]
+            else:
+                _en_cfg = self.cfg.get('chunking', {}).get('english_segmentation', {})
+                sub_texts = pre_segment_english(text, _en_cfg)
+                if len(sub_texts) > 1 and verbose:
+                    debug_log(2, f"      🔤 pySBD 句子預切分: {len(sub_texts)} 段")
+
+            # ── 2.5 token 預算分段：segments 為文本字串，GPT 呼叫處再 encode ──
+            _capacity = self.gpt.text_pos_embedding.emb.num_embeddings
+            _tok_len = lambda t: len(self.tokenizer.encode(t, allowed_special='all'))
+            segments: list = []
+            for sub_text in sub_texts:
+                segments.extend(split_text_by_token_budget(
+                    sub_text, _tok_len, max_text_tokens_per_segment, _capacity, _lang_prefix,
+                ))
+
+            # 首段快速串流：以較小預算重切首段，降低 first-audio latency
+            if quick_streaming_tokens > 0 and segments:
+                _quick = split_text_by_token_budget(
+                    segments[0], _tok_len, quick_streaming_tokens, _capacity, _lang_prefix,
+                )
+                segments = _quick + segments[1:]
+            # 2.5 tokenizer 為 tiktoken byte-level，無 UNK；混合語言由多語言詞表原生支援，
+            # 故移除 2.0 的 _apply_language_splitting 與 sanitize_unk_tokens 防線。
+
+            num_segments = len(segments)
+            if num_segments > 1 and verbose:
+                debug_log(2, f"      ℹ️  文本分為 {num_segments} 段處理")
+                if quick_streaming_tokens > 0:
+                    debug_log(2, f"      ⚡ 首段快速串流: ≤{quick_streaming_tokens} tokens")
+
+            # ── Poise 呼吸法：預規劃休息段 ──
+            poise_planner = PoisePlanner(self.poise_config)
+            poise_plan = poise_planner.plan(
+                total_segments=num_segments,
+                language=language,
+                original_emotion=normalized_emotion,
+                segments=segments,  # Pass tokens for sentence-boundary detection
+            )
+            poise_active = self.poise_config.enabled and len(poise_plan) > num_segments
+            if poise_active and verbose:
+                debug_log(2, f"      🫁 {PoisePlanner.format_plan_summary(poise_plan)}")
+
+            _t = _mark("text_norm_ms", _t)
+
+            # 3. 情感向量映射 (跨段共用, 只計算一次)
+            if 'emo_indices' in self.character_features:
+                emo_indices = self.character_features['emo_indices']
+            else:
+                style = self.character_features['style']
+                emo_indices = []
+                for spk_mat in self.spk_matrix:
+                    query_norm = torch.nn.functional.normalize(style.squeeze(0), p=2, dim=-1)
+                    matrix_norm = torch.nn.functional.normalize(spk_mat, p=2, dim=-1)
+                    similarities = torch.matmul(query_norm, matrix_norm.T)
+                    most_similar_idx = torch.argmax(similarities).item()
+                    emo_indices.append(most_similar_idx)
+
+            weight_vector = torch.tensor(normalized_emotion, device=self.device)
+            emo_matrix_selected = [emo_mat[idx].unsqueeze(0) for idx, emo_mat in zip(emo_indices, self.emo_matrix)]
+            emo_matrix_cat = torch.cat(emo_matrix_selected, 0)
+            emovec_mat = weight_vector.unsqueeze(1) * emo_matrix_cat
+            emovec_mat = torch.sum(emovec_mat, 0).unsqueeze(0)
+
+            if self.use_fp16:
+                emovec_mat = emovec_mat.half()
+            _t = _mark("emotion_ms", _t)
+
+            # Shared conditioning (跨段共用)
+            spk_cond_emb = self.character_features['spk_cond_emb']
+            emo_cond_emb = spk_cond_emb
+
+            # --- 分段循環：每段獨立走 GPT→S2Mel→BigVGAN 管線 ---
+            # CUDA kernel 是非同步執行的：不在階段邊界 synchronize 的話，
+            # 計時器量到的是 kernel 排隊時間，前一階段的執行會溢進下一階段
+            # （2026-08-19 實測：BigVGAN 純運算 ~0.2s 卻被記 ~4s）。
+            _cuda_sync = torch.cuda.synchronize if self.device.type == 'cuda' else (lambda: None)
+            audio_segments: list = []
+            seg_gpt_semantic_ms = 0.0
+            seg_gpt_latent_ms = 0.0
+            seg_s2mel_cfm_ms = 0.0
+            seg_vocoder_ms = 0.0
+            first_segment_done_ms: Optional[float] = None
+
+            # Anomaly detection config
+            _anomaly_cfg = self.cfg.get('synthesis', {}).get('anomaly_detection', {})
+            _anomaly_enabled = _anomaly_cfg.get('enabled', True)
+            _max_retries = int(_anomaly_cfg.get('max_retries', 1))
+            _max_audio_ratio = float(_anomaly_cfg.get('max_audio_ratio', 3.0))
+            _max_segment_rtf = float(_anomaly_cfg.get('max_segment_rtf', 5.0))
+            guard_stats = SegmentGuardStats()
+
+            # --- Adaptive Segment Emotion (實驗性) ---
+            # 為多段文本的每段生成微幅不同的情緒偏移，提升段落間的語調連續性。
+            # 策略：以 base emovec_mat 為中心，沿段落位置施加平滑的 cosine 弧線偏移。
+            # 單段文本不受影響。
+            # Poise 呼吸法：休息段後的復歸段會覆寫 arc_scale。
+            adaptive_emotion = (num_segments > 1)
+            if adaptive_emotion:
+                # 預生成每段的情緒偏移因子（cosine arc: 中間段稍高能量，首尾段回歸基調）
+                import math
+                segment_emotion_scales = []
+                for i in range(num_segments):
+                    # Cosine arc: 0 → π 映射，中間段 scale 最大
+                    t = i / max(num_segments - 1, 1)
+                    # 微幅 arc：基礎 1.0 ± 0.05 的 cosine 波動
+                    arc_scale = 1.0 + 0.05 * math.sin(math.pi * t)
+                    segment_emotion_scales.append(arc_scale)
+                if verbose:
+                    debug_log(2, f"      🎭 自適應語感: {num_segments} 段, 偏移範圍 ±5%")
+
+            # Dynamic length config (from config.yaml → gpt.dynamic_length.*)
+            _dyn_cfg = self.cfg.get('gpt', {}).get('dynamic_length', {})
+            _mel_per_token_ratio = float(_dyn_cfg.get('mel_per_token_ratio', 10.0))
+            _safety_margin = int(_dyn_cfg.get('safety_margin', 150))
+            _min_gen_len = int(_dyn_cfg.get('min_generate_length', 300))
+
+            total_plan_items = len(poise_plan)
+            for plan_idx, plan_item in enumerate(poise_plan):
+
+                # ── Poise: 處理休息段 ──
+                if plan_item.type != 'normal':
+                    level_label = plan_item.poise_level.label if plan_item.poise_level else "?"
+                    if verbose:
+                        debug_log(3, f"   ── 🫁 休息段 ({level_label}) ──")
+
+                    if plan_item.type == 'poise_silence':
+                        # 純靜音：直接生成零填充
+                        silence_samples = int(plan_item.poise_silence_ms * 22050 / 1000)
+                        poise_audio = torch.zeros(1, silence_samples)
+                        if verbose:
+                            debug_log(3, f"      ⏸️  靜音 {plan_item.poise_silence_ms:.0f}ms")
+
+                    elif plan_item.type == 'poise_audio':
+                        # 音效素材（目前 fallback 到靜音）
+                        sfx = poise_planner.sfx_loader.get_breath()
+                        if sfx is not None:
+                            poise_audio = sfx
+                            if verbose:
+                                dur_ms = sfx.shape[-1] / 22050 * 1000
+                                debug_log(3, f"      🎵 音效 {dur_ms:.0f}ms")
+                        else:
+                            poise_audio = torch.zeros(1, int(0.5 * 22050))
+                            if verbose:
+                                debug_log(3, f"      ⏸️  音效 fallback → 靜音 500ms")
+
+                    elif plan_item.type == 'poise_tts':
+                        # 銜接詞/插入語：走完整 TTS pipeline
+                        if verbose:
+                            debug_log(3, f"      💬 \"{plan_item.poise_text}\"")
+
+                        # Tokenize the filler text（2.5：tiktoken + 語言前綴 + stop token）
+                        poise_token_ids = self.tokenizer.encode(
+                            _lang_prefix + plan_item.poise_text, allowed_special='all',
+                        )
+                        poise_text_tensor = torch.tensor(poise_token_ids, dtype=torch.int32, device=self.device).unsqueeze(0)
+                        poise_text_tensor = torch.nn.functional.pad(poise_text_tensor, (0, 1), value=1)
+
+                        # Compute emovec_mat for poise emotion (corrected toward neutral)
+                        if plan_item.poise_emotion is not None:
+                            poise_weight = torch.tensor(plan_item.poise_emotion, device=self.device)
+                            poise_emo_mat = poise_weight.unsqueeze(1) * emo_matrix_cat
+                            poise_emo_mat = torch.sum(poise_emo_mat, 0).unsqueeze(0)
+                            if self.use_fp16:
+                                poise_emo_mat = poise_emo_mat.half()
+                        else:
+                            poise_emo_mat = emovec_mat
+
+                        # Run GPT → S2Mel → BigVGAN for the filler
+                        with torch.no_grad():
+                            dtype = torch.float16 if self.use_fp16 else None
+                            with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                                poise_emovec = self.gpt.merge_emovec(
+                                    spk_cond_emb, emo_cond_emb,
+                                    torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                                    torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                                    alpha=self.merge_alpha
+                                )
+                                if poise_emo_mat is not None:
+                                    pw_sum = torch.sum(torch.tensor(plan_item.poise_emotion or normalized_emotion, device=self.device))
+                                    poise_emovec = poise_emo_mat + (1 - pw_sum) * poise_emovec
+
+                                poise_codes, _ = self.gpt.inference_speech(
+                                    spk_cond_emb, poise_text_tensor,
+                                    torch.LongTensor([lang_to_token(self._active_lang_code)]).to(self.device),
+                                    emo_cond_emb,
+                                    cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                                    emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                                    emo_vec=poise_emovec,
+                                    campplus_embedding=self.character_features['style'],
+                                    num_return_sequences=1, num_beams=num_beams,
+                                    do_sample=do_sample, temperature=temperature,
+                                    top_p=top_p, top_k=top_k,
+                                    length_penalty=length_penalty, repetition_penalty=repetition_penalty,
+                                    max_generate_length=300,  # Fillers are short
+                                )
+                                # 2.5 架構：無 GPT latent forward 階段
+
+                        # 截斷 stop token（2.5 不做靜音 token 壓縮）
+                        stop_mel_token = self.cfg.gpt.stop_mel_token
+                        poise_codes, poise_code_lens = self._remove_long_silence(
+                            poise_codes, stop_mel_token, silent_token=-1,
+                            max_consecutive=30, keep_consecutive=10,
+                        )
+
+                        # S2Mel
+                        with torch.no_grad():
+                            dtype = None
+                            with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                                poise_S = self.semantic_codec.decode(poise_codes)
+                                _poise_stretch = _dyn_overrides.segment_stretch(plan_idx, baseline=_dyn_stretch_ratio)
+                                poise_tgt_len = torch.LongTensor(
+                                    [int(poise_S.shape[1] * _poise_stretch)]
+                                ).to(self.device)
+
+                            poise_cond = self.s2mel.models['length_regulator'](
+                                poise_S, ylens=poise_tgt_len, n_quantizers=3, f0=None
+                            )[0]
+                            cat_cond = torch.cat([self.character_features['prompt_condition'], poise_cond], dim=1)
+                            poise_vc = self.s2mel.models['cfm'].inference(
+                                cat_cond,
+                                torch.LongTensor([cat_cond.size(1)]).to(self.device),
+                                self.character_features['ref_mel'],
+                                self.character_features['style'], None,
+                                n_timesteps=self.cfm_n_timesteps,
+                                inference_cfg_rate=_dyn_cfg_rate
+                            )
+                            poise_mel = poise_vc[:, :, self.character_features['ref_mel'].size(-1):]
+
+                        # BigVGAN
+                        with torch.no_grad():
+                            poise_audio = self.bigvgan(poise_mel.float()).squeeze(0).cpu()
+                        # NOTE: do NOT trim trailing silence on poise segments
+
+                    else:
+                        continue  # Unknown poise type, skip
+
+                    # Apply fade-in to poise audio for smooth transition
+                    poise_audio = self._apply_fade(poise_audio, fade_in_ms=80, fade_out_ms=80)
+
+                    # Also apply fade-out to the PREVIOUS normal segment
+                    # for a smoother exit into the rest
+                    if len(audio_segments) > 0:
+                        audio_segments[-1] = self._apply_fade(
+                            audio_segments[-1], fade_out_ms=150,
+                        )
+
+                    audio_segments.append(poise_audio)
+
+                    # Streaming callback for poise segment
+                    if on_segment_audio is not None:
+                        on_segment_audio(poise_audio, plan_idx, total_plan_items)
+
+                    continue  # Skip to next plan item
+
+                # ── Normal segment processing ──
+                seg_idx = plan_item.original_seg_idx
+                seg_tokens = segments[seg_idx]
+
+                # If this is a resume segment (right after a rest), apply fade-in
+                _is_resume = poise_active and plan_item.resume_arc_scale != 1.0
+
+                if verbose and num_segments > 1:
+                    debug_log(3, f"   ── 段落 {seg_idx + 1}/{num_segments} ──")
+                    seg_preview = seg_tokens if len(seg_tokens) <= 100 else seg_tokens[:97] + "..."
+                    debug_log(3, f"      📝 \"{seg_preview}\"")
+
+                # 2.5：tiktoken encode（含語言前綴），尾端補 stop_text_token=1
+                _seg_ids = self.tokenizer.encode(_lang_prefix + seg_tokens, allowed_special='all')
+                text_tokens = torch.tensor(_seg_ids, dtype=torch.int32, device=self.device).unsqueeze(0)
+                text_tokens = torch.nn.functional.pad(text_tokens, (0, 1), value=1)
+                _seg_token_count = text_tokens.shape[-1]
+
+                # 計算動態 max_generate_length（基於本段 text token 數）
+                seg_max_gen_len = calc_dynamic_max_generate_length(
+                    num_text_tokens=_seg_token_count,
+                    cfg_max_mel_tokens=self.cfg.gpt.max_mel_tokens,
+                    mel_per_token_ratio=_mel_per_token_ratio,
+                    safety_margin=_safety_margin,
+                    min_generate_length=_min_gen_len,
+                )
+                if verbose:
+                    debug_log(3, f"      📏 動態長度上限: {seg_max_gen_len} mel tokens (text tokens: {_seg_token_count})")
+
+                # 4. GPT 生成語義 tokens
+                if verbose:
+                    debug_log(3, f"   [2/4] GPT 生成中...")
+
+                _cuda_sync()  # 結清前置工作（conditioning 準備等），GPT 計時從乾淨佇列開始
+                _seg_t = time.perf_counter()
+                with torch.no_grad():
+                    dtype = torch.float16 if self.use_fp16 else None
+                    with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                        emovec = self.gpt.merge_emovec(
+                            spk_cond_emb,
+                            emo_cond_emb,
+                            torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                            alpha=self.merge_alpha
+                        )
+
+                        # 套用 per-segment 情緒偏移
+                        # Poise: 休息段後的復歸段使用 resume_arc_scale 覆寫
+                        seg_emovec_mat = emovec_mat
+                        if adaptive_emotion and emovec_mat is not None:
+                            scale = segment_emotion_scales[seg_idx]
+                            if poise_active and plan_item.resume_arc_scale != 1.0:
+                                scale = plan_item.resume_arc_scale
+                            seg_emovec_mat = emovec_mat * scale
+
+                        if seg_emovec_mat is not None:
+                            weight_sum = torch.sum(torch.tensor(normalized_emotion, device=self.device))
+                            emovec = seg_emovec_mat + (1 - weight_sum) * emovec
+
+                        codes, speech_conditioning_latent = self.gpt.inference_speech(
+                            spk_cond_emb,
+                            text_tokens,
+                            torch.LongTensor([lang_to_token(self._active_lang_code)]).to(self.device),
+                            emo_cond_emb,
+                            cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=self.device),
+                            emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=self.device),
+                            emo_vec=emovec,
+                            campplus_embedding=self.character_features['style'],
+                            num_return_sequences=1,
+                            num_beams=num_beams,
+                            do_sample=do_sample,
+                            temperature=temperature,
+                            top_p=top_p,
+                            top_k=top_k,
+                            length_penalty=length_penalty,
+                            repetition_penalty=repetition_penalty,
+                            max_generate_length=seg_max_gen_len,
+                        )
+                        _cuda_sync()
+                        seg_gpt_semantic_ms += (time.perf_counter() - _seg_t) * 1000
+                        _seg_t = time.perf_counter()
+                        # 2.5 架構：S2Mel 不再使用 GPT latent，移除 gpt forward 階段
+
+                # 截斷 stop token 之後的 codes（silent_token=-1 → 不做靜音壓縮，
+                # 2.5 codec 詞表不同，舊 silent_token=52 已無意義；上游 2.5 亦未壓縮）
+                stop_mel_token = self.cfg.gpt.stop_mel_token
+                codes, code_lens = self._remove_long_silence(
+                    codes, stop_mel_token, silent_token=-1,
+                    max_consecutive=30, keep_consecutive=10,
+                )
+
+                # 5. S2Mel 生成 Mel 頻譜
+                if verbose:
+                    debug_log(3, f"   [3/4] S2Mel 生成中...")
+
+                with torch.no_grad():
+                    dtype = None
+                    with torch.amp.autocast(self.device.type, enabled=dtype is not None, dtype=dtype):
+                        # 2.5：EnhancedCodec.decode 內含升採樣（25Hz codes → 50Hz 等效特徵）
+                        S_infer = self.semantic_codec.decode(codes)
+                        _seg_stretch = _dyn_overrides.segment_stretch(seg_idx, baseline=_dyn_stretch_ratio)
+                        target_lengths = torch.LongTensor(
+                            [int(S_infer.shape[1] * _seg_stretch)]
+                        ).to(self.device)
+
+                    cond = self.s2mel.models['length_regulator'](
+                        S_infer,
+                        ylens=target_lengths,
+                        n_quantizers=3,
+                        f0=None
+                    )[0]
+
+                    cat_condition = torch.cat([self.character_features['prompt_condition'], cond], dim=1)
+
+                    vc_target = self.s2mel.models['cfm'].inference(
+                        cat_condition,
+                        torch.LongTensor([cat_condition.size(1)]).to(self.device),
+                        self.character_features['ref_mel'],
+                        self.character_features['style'],
+                        None,
+                        n_timesteps=self.cfm_n_timesteps,
+                        inference_cfg_rate=_dyn_cfg_rate
+                    )
+
+                    mel = vc_target[:, :, self.character_features['ref_mel'].size(-1):]
+                _cuda_sync()
+                seg_s2mel_cfm_ms += (time.perf_counter() - _seg_t) * 1000
+                _seg_t = time.perf_counter()
+
+                # 6. BigVGAN 生成波形
+                if verbose:
+                    debug_log(3, f"   [4/4] BigVGAN 生成中...")
+                _seg_t = time.perf_counter()  # 重設起點，排除 verbose log 開銷
+
+                with torch.no_grad():
+                    seg_audio_gpu = self.bigvgan(mel.float()).squeeze(0)
+                _cuda_sync()
+                seg_vocoder_ms += (time.perf_counter() - _seg_t) * 1000
+                seg_audio = seg_audio_gpu.cpu()  # D2H transfer 不計入 vocoder 時間
+
+                # --- Anomaly detection (before trim, so we check raw length) ---
+                if _anomaly_enabled:
+                    _seg_gpt_time_ms = seg_gpt_semantic_ms  # cumulative, but for this segment only the last delta matters
+                    anomaly_result = check_segment_anomaly(
+                        audio_samples=seg_audio.shape[-1],
+                        sample_rate=22050,
+                        num_text_tokens=_seg_token_count,
+                        gpt_gen_time_ms=_seg_gpt_time_ms,
+                        max_audio_ratio=_max_audio_ratio,
+                        max_segment_rtf=_max_segment_rtf,
+                    )
+                    if anomaly_result.is_anomalous:
+                        guard_stats.anomaly_count += 1
+                        guard_stats.anomalous_segments.append(seg_idx)
+                        if verbose:
+                            debug_log(1, f"   ⚠️  段落 {seg_idx+1} 異常: {anomaly_result.reason}")
+
+                # Trim trailing silence from segment (GPT sometimes generates
+                # long silence runs before the stop token)
+                seg_audio = self._trim_trailing_silence(seg_audio)
+
+                # Apply fade-in on resume segments (re-entering after poise rest)
+                if _is_resume:
+                    seg_audio = self._apply_fade(seg_audio, fade_in_ms=120)
+
+                audio_segments.append(seg_audio)
+
+                # Record first-segment completion time
+                if first_segment_done_ms is None:
+                    first_segment_done_ms = (time.perf_counter() - wall_t0) * 1000
+
+                # Streaming callback: emit segment audio immediately
+                if on_segment_audio is not None:
+                    on_segment_audio(seg_audio, plan_idx, total_plan_items)
+
+            # --- 拼接所有段落的音頻（段間插入短靜音）---
+            if len(audio_segments) == 1:
+                audio_output = audio_segments[0]
+            else:
+                # Insert configurable silence between segments (default 200ms, upstream alignment)
+                interval_samples = int(_dyn_silence_ms * 22050 / 1000)
+                silence = torch.zeros(audio_segments[0].shape[0], interval_samples)
+                parts = []
+                for i, seg in enumerate(audio_segments):
+                    parts.append(seg)
+                    if i < len(audio_segments) - 1:
+                        parts.append(silence)
+                audio_output = torch.cat(parts, dim=-1)
+                if verbose:
+                    debug_log(3, f"   ✓ 已拼接 {len(audio_segments)} 段音頻（含段間靜音）")
+
+            # Record accumulated stage timings
+            if collect_timings:
+                timings["gpt_semantic_ms"] = seg_gpt_semantic_ms
+                timings["gpt_latent_ms"] = seg_gpt_latent_ms
+                timings["s2mel_cfm_ms"] = seg_s2mel_cfm_ms
+                timings["vocoder_ms"] = seg_vocoder_ms
+                timings["segment_count"] = float(num_segments)
+                timings["first_segment_ms"] = first_segment_done_ms or 0.0
+                timings["anomaly_count"] = float(guard_stats.anomaly_count)
+                timings["retry_count"] = float(guard_stats.retry_count)
+                # Poise metrics
+                if poise_active:
+                    poise_state = poise_planner.get_state()
+                    timings["poise_rest_count"] = float(poise_state.total_rests)
+                    timings["poise_plan_items"] = float(total_plan_items)
+
+            _t = time.perf_counter()
+
+            # 7. 保存音頻
+            from .tts_utils.audio_io import save_audio_tensor
+            save_audio_tensor(output_path, audio_output, 22050)
+            _t = _mark("wav_save_ms", _t)
+
+            if verbose:
+                duration = audio_output.shape[-1] / 22050
+                debug_log(2, f"   ✓ 合成完成!")
+                debug_log(3, f"   📁 保存至: {output_path}")
+                debug_log(3, f"   ⏱️  音頻時長: {duration:.2f}秒")
+
+            # Finalize timings
+            if collect_timings:
+                timings["text_chars"] = float(len(text))
+                audio_duration_s = audio_output.shape[-1] / 22050
+                timings["audio_duration_ms"] = audio_duration_s * 1000
+                timings["total_wall_ms"] = (time.perf_counter() - wall_t0) * 1000
+
+            return True, timings
+
+        except Exception as e:
+            # 呼叫端主動取消（is_cancellation）不算錯誤，也不印 traceback
+            if not log_synthesis_failure(e, debug_log, error_log):
+                import traceback
+                traceback.print_exc()
+            if collect_timings:
+                timings["total_wall_ms"] = (time.perf_counter() - wall_t0) * 1000
+            return False, timings
+    
+    def get_current_character(self) -> Optional[str]:
+        """獲取當前加載的角色名稱"""
+        return self.current_character
+    
+    def is_character_loaded(self) -> bool:
+        """檢查是否已加載角色"""
+        return self.character_features is not None

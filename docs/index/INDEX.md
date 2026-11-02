@@ -49,7 +49,6 @@
 | 事件 | `core/event_bus.py` | `SystemEvent` 44 項、單消費者線程、歷史 100 筆 | [§1.3](../架構重構/Core現況對照表.md)、[§4.1](../架構重構/Core現況對照表.md) |
 | 會話 | `core/sessions/`、`core/controller.py`、`core/states/` | sessions 只是資料物件＋記帳，生命週期在 controller／state_manager | [§1.3](../架構重構/Core現況對照表.md)、[§4.2](../架構重構/Core現況對照表.md) |
 | 層級協調 | `core/module_coordinator.py`、`core/system_loop.py`、`core/router.py` | Router 仍在輸出路徑上 | [§1.3](../架構重構/Core現況對照表.md) |
-| 死碼 | `core/reload_coordinator.py` | 全 repo 無引用 | [§1.3](../架構重構/Core現況對照表.md) |
 | 前端橋接 | `core/frontend_bridge.py` | 訂閱十餘類事件轉給 UI／ANI／MOV | [V04](../架構重構/Core現況對照表.md) |
 | SYS | `modules/sys_module/workflows.py`、`modules/sys_module/workflows/`、`modules/sys_module/mcp_server/` | 同名檔案與套件衝突，套件勝出；MCP Server 為進程內物件 | [§1.4](../架構重構/Core現況對照表.md) |
 | LLM | `modules/llm_module/` | `modules/llm_module/mcp_client.py` 與 `modules/llm_module/mcp_client/` 同名衝突 | [§1.4](../架構重構/Core現況對照表.md) |

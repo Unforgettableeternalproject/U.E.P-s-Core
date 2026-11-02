@@ -3979,3 +3979,15 @@
 
 ---
 
+### chore: 刪除零引用與已失效的殘留檔. 11/02
+
+> Date: Mon, 02 Nov 2026 22:03:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `f98aa18838b734fa563687772abfa73813964fdf`
+
+---
+

@@ -402,6 +402,14 @@ def test_有效上限預設卡在價格門檻():
     assert backend.get_max_context_window() == 1_050_000
 
 
+def test_gpt6_luna_有已知_context_window_與價格門檻():
+    """gpt-6-luna 不該落到未知模型的保守值（會每次啟動都警告）。"""
+    assert _resolve_context_window("gpt-6-luna") == 1_050_000
+    backend = OpenAIBackend(model="gpt-6-luna")
+    assert backend.get_context_window_size() == 272_000
+    assert backend.get_max_context_window() == 1_050_000
+
+
 def test_可以關掉價格門檻用滿長_context():
     backend = OpenAIBackend(model="gpt-5.6-luna", use_cost_threshold=False)
     assert backend.get_context_window_size() == 1_050_000

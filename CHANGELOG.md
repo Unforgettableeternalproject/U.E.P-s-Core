@@ -3907,3 +3907,15 @@
 
 ---
 
+### fix: 補上 gpt-6-luna 的 context window 與價格門檻. 11/02
+
+> Date: Mon, 02 Nov 2026 20:54:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `0bf67569ded9ad515c1e04a1bcdb3d15de57e0d1`
+
+---
+

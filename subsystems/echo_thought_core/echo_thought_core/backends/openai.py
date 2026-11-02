@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 #    要精確值請在 config 明確指定 context_window。
 
 OPENAI_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-6-luna": 1_050_000,
     "gpt-5.6-luna": 1_050_000,
     "gpt-4o": 128_000,
     "gpt-4o-mini": 128_000,
@@ -57,10 +58,12 @@ OPENAI_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 COST_THRESHOLDS: dict[str, int] = {
+    "gpt-6-luna": 272_000,
     "gpt-5.6-luna": 272_000,
 }
 """價格跳階的 input token 數。
 
+GPT-6-luna 同樣有 272K 跳階（第三方價目表列 >272K input 為 2x，2026-11-02 查得，未見官方頁）。
 GPT-5.6 系列：**超過 272K input tokens 的請求，整個請求**按 2x input /
 1.5x output 計價（不是只有超出的部分）。
 

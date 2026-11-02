@@ -63,6 +63,7 @@ def test_snap_speed():
         ("很差", "很{cha1}"),
         ("亞洲", "{ya3}洲"),
         ("模糊", "{mo2}{hu2}"),
+        ("混淆", "{hun4}{yao2}"),
         ("謝謝", "{xie4}{xie5}"),
         ("謝謝你", "{xie4}{xie5}你"),
         ("謝謝大家", "{xie4}{xie5}大家"),
@@ -83,6 +84,60 @@ def test_taiwan_pronunciation(word, expect):
 def test_taiwan_zhe_not_applied_to_other_zhe(text):
     # 只有「動詞＋著」詞條讀 zhe5；單字「著」其他讀法不得被改
     assert "zhe5" not in TaiwanPronunciationNormalizer().normalize(text)
+
+
+@pytest.mark.parametrize(
+    "text,expect",
+    [
+        ("ㄒㄧㄝˋ", "{xie4}"),
+        ("ㄏㄨˊ", "{hu2}"),
+        ("ㄓㄜ˙", "{zhe5}"),
+        ("ㄇㄚ", "{ma1}"),
+        ("ㄅㄆㄇㄈ", "{bo1}{po1}{mo1}{fo1}"),
+        ("ㄉㄊㄋㄌ", "{de1}{te1}{ne1}{le1}"),
+        ("ㄓㄔㄕㄖㄗㄘㄙ", "{zhi1}{chi1}{shi1}{ri1}{zi1}{ci1}{si1}"),
+        ("ㄓˊ", "{zhi2}"),
+        ("ㄐㄩㄝˊ", "{jue2}"),
+        ("ㄌㄩˋ", "{lv4}"),
+        ("ㄧ ㄨ ㄩ", "{yi1} {wu1} {yu1}"),
+        ("ㄧㄡˇ", "{you3}"),
+        ("ㄐㄧㄡˇ", "{jiu3}"),
+        ("ㄏㄨㄟˋ", "{hui4}"),
+        ("ㄨㄟˋ", "{wei4}"),
+        ("ㄎㄨㄣˋ", "{kun4}"),
+        ("ㄨㄣˊ", "{wen2}"),
+        ("ㄒㄩㄥˊ", "{xiong2}"),
+        ("ㄨㄥ", "{weng1}"),
+        ("ㄅㄛ", "{bo1}"),
+        ("ㄦˊ", "{er2}"),
+        ("˙ㄇㄚ", "{ma5}"),
+        ("謝謝 (ㄒㄧㄝˋ ㄒㄧㄝ˙) 你", "{xie4}{xie5} ({xie4} {xie5}) 你"),
+        ("謝 (ㄒㄧㄝˋ)", "謝 ({xie4})"),
+    ],
+)
+def test_zhuyin_to_pinyin(text, expect):
+    assert TaiwanPronunciationNormalizer().normalize(text) == expect
+
+
+def test_zhuyin_unconvertible_and_stray_tone_filtered():
+    n = TaiwanPronunciationNormalizer()
+    out = n.normalize("好ㄐㄚ吧ˊˇˋ˙ㄪ")  # ㄐㄚ 非法組合、ㄪ 無拼音、殘留聲調
+    assert out == "好吧"
+    for ch in "ˊˇˋ˙ㄪㄐㄚ":
+        assert ch not in out
+
+
+def test_zhuyin_untouched_when_absent():
+    n = TaiwanPronunciationNormalizer()
+    assert n.normalize("今天天氣很好 hello, world。") == "今天天氣很好 hello, world。"
+    assert n.normalize("{zou4}步驟") == "{zou4}步{zou4}"
+
+
+def test_zhuyin_in_vox_zh_path_only():
+    # 只有 zh 前處理（taiwan）會轉注音；en/ja 路徑不經過 TaiwanPronunciationNormalizer
+    assert vb.LANGS["zh"].preprocess == "taiwan"
+    assert vb.LANGS["en"].preprocess != "taiwan"
+    assert vb.LANGS["ja"].preprocess != "taiwan"
 
 
 def test_taiwan_protects_existing_braces():

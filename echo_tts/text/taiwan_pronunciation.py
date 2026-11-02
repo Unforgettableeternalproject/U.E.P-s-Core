@@ -71,6 +71,8 @@ ENTRIES = [
        f"{_S}「角色」jué sè；另列語音 ㄐㄧㄠˇ ㄙㄜˋ（jiǎo sè），不採用"),
     _e("模糊", {0: "mo2", 1: "hu2"}, "ㄇㄛˊ ㄏㄨˊ", "mó hu（第二字輕聲）",
        f"{_S}「模糊」ㄇㄛˊ ㄏㄨˊ（本調，兩岸差異：大陸 hu 輕聲）；以拼音強制"),
+    _e("混淆", {0: "hun4", 1: "yao2"}, "ㄏㄨㄣˋ ㄧㄠˊ", "hùn xiáo",
+       f"{_S}「混淆」ㄏㄨㄣˋ ㄧㄠˊ（hùn yáo）；模型易讀成 xiao（淆），以拼音強制"),
     _e("謝謝", {0: "xie4", 1: "xie5"}, "ㄒㄧㄝˋ ㄒㄧㄝ˙", "xiè xie（第二字輕聲）",
        "常用口語「謝謝」第二字輕聲 ㄒㄧㄝ˙（xie5）；僅詞條，「感謝」「謝罪」等不受影響", "指定"),
     _e("試著", {1: "zhe5"}, "ㄓㄜ˙", "zhe（輕聲，同）", "動詞＋著（持續貌助詞）輕聲 ㄓㄜ˙；僅詞條，不設單字「著」規則（著急 zhao2、著作 zhu4、睡著 zhao2 不套用）", "指定"),
@@ -104,6 +106,94 @@ HAN_RULE = {
 }
 # 排除：「和」緊接在這些字後多半是「和平／和氣」等詞，不是連詞
 _HAN_BLOCK = re.compile(r"和(?=[平氣諧解睦藹善談約聲弦])")
+
+# ---- 注音符號 → 拼音 ----
+# LLM 回覆可能夾帶注音（如「謝 (ㄒㄧㄝˋ)」），VoxCPM2 唸不出來會產生怪聲：轉成 {pinyin+聲調}，
+# 無法轉換的注音字元與殘留聲調符號直接濾掉。
+_ZY_INITIALS = {
+    "ㄅ": "b", "ㄆ": "p", "ㄇ": "m", "ㄈ": "f", "ㄉ": "d", "ㄊ": "t", "ㄋ": "n", "ㄌ": "l",
+    "ㄍ": "g", "ㄎ": "k", "ㄏ": "h", "ㄐ": "j", "ㄑ": "q", "ㄒ": "x",
+    "ㄓ": "zh", "ㄔ": "ch", "ㄕ": "sh", "ㄖ": "r", "ㄗ": "z", "ㄘ": "c", "ㄙ": "s",
+}
+# 單獨聲母（念字母名）：ㄅ→bo、ㄉ→de、ㄓ→zhi …
+_ZY_LETTER = {
+    "ㄅ": "bo", "ㄆ": "po", "ㄇ": "mo", "ㄈ": "fo", "ㄉ": "de", "ㄊ": "te", "ㄋ": "ne", "ㄌ": "le",
+    "ㄍ": "ge", "ㄎ": "ke", "ㄏ": "he", "ㄐ": "ji", "ㄑ": "qi", "ㄒ": "xi",
+    "ㄓ": "zhi", "ㄔ": "chi", "ㄕ": "shi", "ㄖ": "ri", "ㄗ": "zi", "ㄘ": "ci", "ㄙ": "si",
+}
+# (介音, 韻母) -> (有聲母時的拼法, 零聲母時的拼法)；None 表示該位置不成立
+_ZY_RIME = {
+    ("", "ㄚ"): ("a", "a"), ("", "ㄛ"): ("o", "o"), ("", "ㄜ"): ("e", "e"), ("", "ㄝ"): ("e", "e"),
+    ("", "ㄞ"): ("ai", "ai"), ("", "ㄟ"): ("ei", "ei"), ("", "ㄠ"): ("ao", "ao"), ("", "ㄡ"): ("ou", "ou"),
+    ("", "ㄢ"): ("an", "an"), ("", "ㄣ"): ("en", "en"), ("", "ㄤ"): ("ang", "ang"), ("", "ㄥ"): ("eng", "eng"),
+    ("", "ㄦ"): ("er", "er"),
+    ("ㄧ", ""): ("i", "yi"), ("ㄧ", "ㄚ"): ("ia", "ya"), ("ㄧ", "ㄛ"): ("io", "yo"), ("ㄧ", "ㄝ"): ("ie", "ye"),
+    ("ㄧ", "ㄞ"): ("iai", "yai"), ("ㄧ", "ㄠ"): ("iao", "yao"), ("ㄧ", "ㄡ"): ("iu", "you"),
+    ("ㄧ", "ㄢ"): ("ian", "yan"), ("ㄧ", "ㄣ"): ("in", "yin"), ("ㄧ", "ㄤ"): ("iang", "yang"),
+    ("ㄧ", "ㄥ"): ("ing", "ying"),
+    ("ㄨ", ""): ("u", "wu"), ("ㄨ", "ㄚ"): ("ua", "wa"), ("ㄨ", "ㄛ"): ("uo", "wo"), ("ㄨ", "ㄞ"): ("uai", "wai"),
+    ("ㄨ", "ㄟ"): ("ui", "wei"), ("ㄨ", "ㄢ"): ("uan", "wan"), ("ㄨ", "ㄣ"): ("un", "wen"),
+    ("ㄨ", "ㄤ"): ("uang", "wang"), ("ㄨ", "ㄥ"): ("ong", "weng"),
+    ("ㄩ", ""): ("u", "yu"), ("ㄩ", "ㄝ"): ("ue", "yue"), ("ㄩ", "ㄢ"): ("uan", "yuan"),
+    ("ㄩ", "ㄣ"): ("un", "yun"), ("ㄩ", "ㄥ"): ("iong", "yong"),
+}
+_ZY_TONE = {"ˊ": "2", "ˇ": "3", "ˋ": "4", "˙": "5"}
+_ZY_APICAL = {"zh", "ch", "sh", "r", "z", "c", "s"}  # 單用加 -i
+_ZY_SYLLABLE = re.compile(
+    "(?P<pre>˙)?(?P<i>[ㄅ-ㄙ])?(?P<m>[ㄧ-ㄩ])?(?P<f>[ㄚ-ㄦ])?"
+    "(?P<t>[ˊˇˋ˙])?"
+)
+# 清除用：注音區塊（含擴充）與聲調符號
+_ZY_LEFTOVER = re.compile("[㄀-ㄯㆠ-ㆿˊˇˋ˙]")
+_ZY_ANY = _ZY_LEFTOVER
+
+
+def _zy_syllable(m):
+    initial, medial, final = m.group("i") or "", m.group("m") or "", m.group("f") or ""
+    tone = _ZY_TONE.get(m.group("t") or m.group("pre") or "", "1")
+    if not (initial or medial or final):
+        return None
+    if initial and not medial and not final:  # 單獨聲母：念字母名
+        return _ZY_LETTER[initial] + tone
+    rime = _ZY_RIME.get((medial, final))
+    if rime is None:
+        return None
+    if not initial:
+        return rime[1] + tone
+    ini = _ZY_INITIALS[initial]
+    base = rime[0]
+    # 聲母與介音的合法搭配：ㄐㄑㄒ 只配 ㄧㄩ；ㄓㄔㄕㄖㄗㄘㄙ 不配 ㄧㄩ；ㄩ 僅 ㄋㄌ（nü/lü）與 ㄐㄑㄒ
+    if ini in ("j", "q", "x") and medial not in ("ㄧ", "ㄩ"):
+        return None
+    if ini in _ZY_APICAL and medial in ("ㄧ", "ㄩ"):
+        return None
+    if medial == "ㄩ":
+        if ini in ("n", "l"):
+            base = base.replace("u", "v")  # nü/lü 以 v 表示
+        elif ini not in ("j", "q", "x"):
+            return None
+    return ini + base + tone
+
+
+def zhuyin_to_pinyin(text):
+    """把文字中的注音音節轉成 `{pinyin+聲調}`，無法轉換的注音字元與聲調符號濾掉；無注音則原樣返回。"""
+    if not _ZY_ANY.search(text):
+        return text
+    out, i = [], 0
+    while i < len(text):
+        if not _ZY_ANY.match(text, i):
+            out.append(text[i])
+            i += 1
+            continue
+        m = _ZY_SYLLABLE.match(text, i)
+        py = _zy_syllable(m) if m and m.end() > i else None
+        if py:
+            out.append("{%s}" % py)
+            i = m.end()
+        else:  # 無法轉換：整個音節丟掉（至少一個字元）
+            i = m.end() if m and m.end() > i else i + 1
+    return "".join(out)
+
 
 _PROTECT = re.compile(r"\{[^{}]*\}")
 
@@ -146,6 +236,10 @@ class TaiwanPronunciationNormalizer:
 
     def explain(self, text):
         log, parts, last = [], [], 0
+        zy = zhuyin_to_pinyin(text)  # 注音先轉成 {拼音}，之後視為受保護區段
+        if zy != text:
+            log.append({"word": "注音", "to": zy, "status": "規則"})
+            text = zy
         for m in _PROTECT.finditer(text):  # 已有的 {…} 不動
             parts.append(self._apply(text[last:m.start()], log))
             parts.append(m.group(0))

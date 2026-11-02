@@ -3634,3 +3634,15 @@
 
 ---
 
+### fix: setup_infer_env 在 PowerShell 5.1 與結束碼誤判. 11/02
+
+> Date: Mon, 02 Nov 2026 12:35:32 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/torch-2.11`
+
+> Commit: `dbdf699d212613553ff9985aab8b6daded21c2fb`
+
+---
+

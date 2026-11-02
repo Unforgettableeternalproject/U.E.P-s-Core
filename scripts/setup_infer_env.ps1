@@ -33,5 +33,11 @@ foreach ($item in @(@("ES", $Es), @("STT", $Stt), @("TTS", $Tts))) {
 }
 # voxcpm 宣告的訓練／WebUI 依賴由 pyproject override 刻意排除，check 時略過這些；其餘不相容仍視為失敗
 $excluded = "torchcodec|gradio|modelscope|datasets|funasr|spaces|argbind"
-$issues = uv pip check --python $py 2>&1 | Where-Object { "$_" -match "requires" -and "$_" -notmatch "``voxcpm`` requires ``($excluded)" }
+# uv 把 check 結果寫到 stderr；Windows PowerShell 5.1 在 Stop 下會把 2>&1 的 stderr 當成 NativeCommandError 終止，故暫時改 Continue
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$issues = uv pip check --python $py 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -match "requires" -and $_ -notmatch "``voxcpm`` requires ``($excluded)" }
+$ErrorActionPreference = $prevEap
 if ($issues) { $issues; throw "uv pip check 失敗" }
+# uv pip check 的 exit 1 來自被略過的 voxcpm 項目；明確 exit 0，避免殘留的 `$LASTEXITCODE 成為腳本結束碼
+exit 0

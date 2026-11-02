@@ -8,9 +8,8 @@ import time
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.contracts.turn import VoiceEvent, VoiceState
+from uep.stream.contracts.turn import VoiceEvent, VoiceState
 
 from tests.uep.echo_support import PRIVATE, SPEAKER, WAIT, build_rig, make_session
 from tests.uep.test_p3_s5_policy import View, active_source, voiced

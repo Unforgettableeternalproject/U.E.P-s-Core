@@ -8,11 +8,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.contracts.output import OutcomeStatus, PlayedEvidence, TurnOutcome
-from echo_stream.contracts.types import AudioChunk, TurnPhase
-from echo_stream.fakes.audio import FakeAudioSink
+from uep.stream.contracts.output import OutcomeStatus, PlayedEvidence, TurnOutcome
+from uep.stream.contracts.types import AudioChunk, TurnPhase
+from uep.fakes.stream.audio import FakeAudioSink
 
 from uep.context.snapshot import MemoryStatus
 from uep.contracts.presence import AcquireResult, AuthorizationTuple, GateDecision

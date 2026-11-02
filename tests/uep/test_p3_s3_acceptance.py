@@ -1,15 +1,14 @@
 """P3 S3 驗收：ES 綁定（P3接入方案 §5 S3 列）。
 
 V09 一入一出、journal 內 turn 事件序列、V07 取消後晚到輸出被丟（不產生 intent）、V12 舊 generation 輸出被拒。
-以 ES 的 fakes 驅動；需 PostgreSQL 與已安裝的 echo_stream（未安裝時整檔 skip）。
+以 ES 的 fakes 驅動；需 PostgreSQL（未安裝時整檔 skip）。
 """
 from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("echo_stream")
 
-from echo_stream.contracts.types import AudioChunk
+from uep.stream.contracts.types import AudioChunk
 
 from tests.uep.echo_support import (
     SPEAKER,

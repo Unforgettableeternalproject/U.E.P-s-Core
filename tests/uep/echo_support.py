@@ -1,4 +1,4 @@
-"""P3 S3 測試共用 rig：以 ES 的 fakes 驅動 EchoPipelineHost（需 PostgreSQL 與已安裝的 echo_stream）。
+"""P3 S3 測試共用 rig：以 ES 的 fakes 驅動 EchoPipelineHost（需 PostgreSQL）。
 
 組出真的 CoreAssembly（Presence、Gate、DeliveryManager、StateCoordinator、journal），ES 端用
 ``FakeThinkStage``／``FakeSpeakStage``／``FakeAudioSink``，端點 Lease 走真的 PresenceManager（行程內 RPC）。
@@ -12,10 +12,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from echo_stream.contracts.turn import VoiceEvent, VoiceState
-from echo_stream.core.tracer import LatencyTracer
-from echo_stream.fakes.audio import FakeAudioSink
-from echo_stream.fakes.stages import FakeSpeakStage, FakeThinkStage
+from uep.stream.contracts.turn import VoiceEvent, VoiceState
+from uep.stream.tracer import LatencyTracer
+from uep.fakes.stream.audio import FakeAudioSink
+from uep.fakes.stream.stages import FakeSpeakStage, FakeThinkStage
 from sqlalchemy import select
 
 from uep.assembly import CoreAssembly, assemble_core

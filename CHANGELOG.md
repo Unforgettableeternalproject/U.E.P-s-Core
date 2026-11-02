@@ -3691,3 +3691,15 @@
 
 ---
 
+### refactor: Host 與 adapters 同步切換至 uep.stream. 11/02
+
+> Date: Mon, 02 Nov 2026 13:51:09 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `b0aebb275c77057c060ed54370602b68794a74a7`
+
+---
+

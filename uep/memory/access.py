@@ -52,7 +52,7 @@ TOOL_CLASSES: Mapping[str, str] = {
     "deep_recall": "internal_read", "force_remember": "reversible_local", "member_recall": "internal_read",
 }
 MEMBER_RECALL = "member_recall"
-# 與 ES 的 MEMBER_RECALL_SCHEMA 對齊（echo_stream.adapters.memory_echo，e31eac0；不 import）。真 echo_memory 的工具宣告
+# 與 ES 的 MEMBER_RECALL_SCHEMA 對齊（uep.stream.adapters.memory_echo，e31eac0；不 import）。真 echo_memory 的工具宣告
 # 沒有 member_recall，所以由 Access Layer 自己提供 schema 並直接實作（不走通用 tool backend）。
 MEMBER_RECALL_SCHEMA: Mapping[str, Any] = {
     "name": MEMBER_RECALL,

@@ -24,9 +24,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from echo_stream.contracts.output import PlayedEvidence, sink_played_evidence
-from echo_stream.contracts.stages import AudioSink
-from echo_stream.contracts.types import AudioChunk
+from uep.stream.contracts.output import PlayedEvidence, sink_played_evidence
+from uep.stream.contracts.stages import AudioSink
+from uep.stream.contracts.types import AudioChunk
 
 from uep.contracts.presence import GateDecision
 

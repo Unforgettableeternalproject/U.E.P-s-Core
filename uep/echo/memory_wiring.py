@@ -67,7 +67,7 @@ def make_adapter_factory(
     ``assess_mode``／``enabled_tools`` 明確設定，不依賴 ES 的環境變數預設。"""
 
     def factory(namespace_id: str, engine: Any, engine_lock: threading.Lock) -> Any:
-        from echo_stream.adapters.memory_echo import ASSESS_MODES, EchoMemoryAdapter
+        from uep.stream.adapters.memory_echo import ASSESS_MODES, EchoMemoryAdapter
 
         if assess_mode not in ASSESS_MODES:
             raise ValueError(f"assess_mode 必須是 {ASSESS_MODES}：{assess_mode!r}")
@@ -91,7 +91,7 @@ class EchoMemoryToolBackend:
         self._max_chars = max_chars
 
     def definitions(self) -> list[dict[str, Any]]:
-        from echo_stream.adapters.memory_echo import FORCE_REMEMBER_DESCRIPTION
+        from uep.stream.adapters.memory_echo import FORCE_REMEMBER_DESCRIPTION
         from llm_integration.tools.definitions import TOOL_DECLARATIONS
 
         out: list[dict[str, Any]] = []

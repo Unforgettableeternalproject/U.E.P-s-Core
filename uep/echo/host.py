@@ -1,7 +1,7 @@
 """EchoPipelineHost：Core 內託管 Echo Stream 的轉接層（P3接入方案 §1、§5 S3；D70 (1)、D72 (a)）。
 
 Core 眼中它同時是三個角色：輸入提交者（utterance -> Gateway）、回合執行者（接受 ``CoreTicket`` 跑
-think -> speak -> sink）、播放端點（CC-4 Lease 持有者，``EchoEndpoint``）。依賴方向固定 ``uep -> echo_stream``，
+think -> speak -> sink）、播放端點（CC-4 Lease 持有者，``EchoEndpoint``）。依賴方向固定 ``uep.echo -> uep.stream``，
 只有 ``uep/echo/`` 可以 import echo_stream（``tests/uep/test_import_boundary.py`` 鎖住）。
 
 執行緒模型（D70 (1)）：ES 跑在 ``EsLoop`` 專屬執行緒；``on_turn_ended``、``sink_factory``、``on_think_start``、
@@ -39,17 +39,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from echo_stream.contracts.cancellation import CancellationToken
-from echo_stream.contracts.output import (
+from uep.stream.contracts.cancellation import CancellationToken
+from uep.stream.contracts.output import (
     CommitMode,
     OutcomeStatus,
     TurnRequest,
     TurnTicket,
 )
-from echo_stream.contracts.stages import AudioSink
-from echo_stream.contracts.types import Utterance
-from echo_stream.core.coordinator import TurnCoordinator
-from echo_stream.core.tracer import LatencyTracer
+from uep.stream.contracts.stages import AudioSink
+from uep.stream.contracts.types import Utterance
+from uep.stream.coordinator import TurnCoordinator
+from uep.stream.tracer import LatencyTracer
 
 from uep.contracts.presence import AcquireResult, GateDecision
 from uep.echo.config import EchoOutputConfig

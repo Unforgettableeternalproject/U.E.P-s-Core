@@ -117,8 +117,7 @@ def test_缺子系統路徑_fail_closed():
     # 沒注入 backend 且沒設路徑：不猜同層目錄，直接拒絕組裝
     with pytest.raises(InferenceWiringError, match="UEP_INFER_TTS_REPO"):
         build_inference_wiring(InferenceConfig(), think_backend=FakeLlm(), stt_backend=FakeStt())
-    with pytest.raises(InferenceWiringError, match="UEP_INFER_STT_REPO"):
-        build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+    # STT 已遷入 Core（M3）：不設 UEP_INFER_STT_REPO 不再被拒絕（見 test_stt_不需路徑_設了會被忽略並警告一次）
     # Session 已遷入 Core：不設 UEP_INFER_SESSION_REPO 不再被拒絕（見 test_think_backend_預設不需_session_路徑）
     with pytest.raises(InferenceWiringError, match="UEP_INFER_SESSION_REPO.*不存在"):
         default_think_backend(InferenceConfig(session_repo=Path("Z:/不存在的路徑")))
@@ -126,6 +125,24 @@ def test_缺子系統路徑_fail_closed():
         build_inference_wiring(
             InferenceConfig(tts_repo=Path("Z:/不存在的路徑")), think_backend=FakeLlm(), stt_backend=FakeStt(),
         )
+
+
+def test_stt_不需路徑_設了會被忽略並警告一次(caplog, tmp_path):
+    import logging
+
+    import uep.echo.inference_wiring as iw
+
+    # 沒設路徑、沒注入 backend：可組裝（backend 在 prepare 才建，這裡不載模型）
+    w = build_inference_wiring(InferenceConfig(tts_repo=tmp_path), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+    assert w.input_stage is not None
+    assert not hasattr(w.input_stage, "_stt_repo")
+    # 設了舊路徑：忽略，且行程內只警告一次
+    iw._STT_REPO_WARNED = False
+    cfg = InferenceConfig(tts_repo=tmp_path, stt_repo=Path("Z:/不存在的路徑"))
+    with caplog.at_level(logging.WARNING, logger="uep.echo.inference_wiring"):
+        build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+        build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+    assert len([r for r in caplog.records if "UEP_INFER_STT_REPO" in r.getMessage()]) == 1
 
 
 def test_think_backend_預設不需_session_路徑(monkeypatch, tmp_path):

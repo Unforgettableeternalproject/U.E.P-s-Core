@@ -3751,3 +3751,15 @@
 
 ---
 
+### feat: Core adapter 改用 Core 內的 echo_stt 並實作 console /stt. 11/02
+
+> Date: Mon, 02 Nov 2026 14:18:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `6f12e12741459046d28c476e3dde551a901303f4`
+
+---
+

@@ -252,6 +252,18 @@ def _require_repo(path: Path | None, env: str, what: str) -> Path:
     return Path(path)
 
 
+_STT_REPO_WARNED = False
+
+
+def _warn_stt_repo_ignored(path: Path) -> None:
+    """``UEP_INFER_STT_REPO`` 在 M3 後不再生效：行程內只警告一次。"""
+    global _STT_REPO_WARNED
+    if _STT_REPO_WARNED:
+        return
+    _STT_REPO_WARNED = True
+    logger.warning("UEP_INFER_STT_REPO（%s）已不再使用：echo_stt 已遷入 Core（subsystems/echo_stt），此設定被忽略", path)
+
+
 def _ensure_importable(path: Path) -> None:
     entry = str(path)
     if entry not in sys.path:
@@ -421,10 +433,10 @@ def build_inference_wiring(
         )
     else:
         from uep.stream.adapters.input_stt import SttInputStage as InputCls
-    stt_repo = None
-    if stt_backend is None:
-        stt_repo = str(_require_repo(cfg.stt_repo, "UEP_INFER_STT_REPO", "STT"))
-    input_kwargs: dict[str, Any] = {"backend": stt_backend, "stt_repo": stt_repo, "language": cfg.stt_language}
+    # M3：echo_stt 已遷入 Core（subsystems/echo_stt），不再需要 UEP_INFER_STT_REPO；設了也忽略並警告
+    if cfg.stt_repo is not None:
+        _warn_stt_repo_ignored(cfg.stt_repo)
+    input_kwargs: dict[str, Any] = {"backend": stt_backend, "language": cfg.stt_language}
     input_kwargs.update(extra.get("input", {}))
     input_stage = InputCls(**input_kwargs)
 

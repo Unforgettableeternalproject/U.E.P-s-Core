@@ -59,7 +59,8 @@ jobs:
         image: postgres:17
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          # CI 一次性測試庫（僅 runner 內部可達）：免密碼 trust 認證，避免 workflow 中出現字面密碼
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: uep
         ports:
           - 5432:5432
@@ -69,10 +70,9 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      UEP_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/uep
+      UEP_DATABASE_URL: postgresql://postgres@localhost:5432/uep
       # conftest 規定測試庫名必須以 _test 結尾，且不得與 UEP_DATABASE_URL 相同
-      UEP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/uep_test
-      PGPASSWORD: postgres
+      UEP_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/uep_test
     steps:
       - uses: actions/checkout@v4
 

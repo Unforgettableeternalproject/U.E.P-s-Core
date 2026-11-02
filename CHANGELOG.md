@@ -4051,3 +4051,15 @@
 
 ---
 
+### chore: CI 的 PostgreSQL 測試庫改用 trust 認證. 11/02
+
+> Date: Mon, 02 Nov 2026 22:30:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `f4444743ef87a17af61b8282163492dd0e1c83b4`
+
+---
+

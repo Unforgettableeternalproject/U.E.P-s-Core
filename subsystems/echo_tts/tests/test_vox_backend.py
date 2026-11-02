@@ -59,6 +59,15 @@ def test_snap_speed():
         ("週末", "{zhou1}末"),
         ("鍋", "{guo1}"),
         ("調校", "{tiao2}{jiao4}"),
+        ("辨識", "{bian4}{shi4}"),
+        ("辨識結果", "{bian4}{shi4}結果"),
+        ("校正", "{jiao4}{zheng4}"),
+        ("珍惜", "{zhen1}{xi2}"),
+        ("痕跡", "{hen2}{ji1}"),
+        ("可惜", "可{xi2}"),
+        ("愛惜", "愛{xi2}"),
+        ("足跡", "足{ji1}"),
+        ("事跡", "事{ji1}"),
         ("重構", "{chong2}{gou4}"),
         ("很差", "很{cha1}"),
         ("亞洲", "{ya3}洲"),
@@ -336,6 +345,12 @@ from echo_tts.runtime.vox_backend import (  # noqa: E402
 
 def test_taiwan_xi2():
     assert TaiwanPronunciationNormalizer().normalize("把燈熄掉") == "把燈{xi2}掉"
+
+
+@pytest.mark.parametrize("text", ["學校", "校長", "校園", "校對"])
+def test_taiwan_xiao_single_char_unchanged(text):
+    # 只有「校正」詞條改讀；單字「校」不得被動
+    assert TaiwanPronunciationNormalizer().normalize(text) == text
 
 
 def test_strength_band_is_057_to_065():

@@ -9,6 +9,9 @@ echo_stt — 獨立 STT 模組
 
 __version__ = "0.1.0"
 
+# 最早載入：torchaudio 2.9+ 相容層（舊版 torchaudio 下為 no-op）
+from echo_stt import _torchaudio_compat  # noqa: F401
+
 
 def __getattr__(name: str):
     """Lazy import — 只在存取 STTEngine 時才載入 torch 等重型依賴。"""

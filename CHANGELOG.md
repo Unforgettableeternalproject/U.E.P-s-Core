@@ -3667,3 +3667,15 @@
 
 ---
 
+### docs: 記錄 N1 開工前檢查項核對結果. 11/02
+
+> Date: Mon, 02 Nov 2026 13:50:51 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n1-stream`
+
+> Commit: `4c9eb018bf3cb26f1dca415df3104311d0cd275f`
+
+---
+

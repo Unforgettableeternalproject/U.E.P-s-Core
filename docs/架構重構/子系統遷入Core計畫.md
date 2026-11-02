@@ -924,6 +924,12 @@ STT／TTS／embedding 同卡共存壓力（D90）列為 A2–A4 的觀察項。�
 | A7 | 降級／Stop 有 pytest；Stop 實機未驗 | CPU／GPU | `--tts fake` 觀降級；實機待補 |
 | A8 | 數字已有一組（見上），未與 ES 基線 5.1 秒系統比對 | GPU | `/trace` |
 
+#### 人工驗收結果（2026-11-02，艾斯維爾）
+
+- **結論：通過。** 依 [Core驗收Console使用指南](Core驗收Console使用指南.md) 第 3 節手動驗收，八項（A1–A5、A7、A8，A6 仍以 pytest 為準）皆無問題；含 A4 麥克風與 `/cancel` 打斷。Core 端到端里程碑達成，可進入工作層（工具層）。
+- journal 時間軸（7 輪，20:58–21:08）：`turn.started`→`turn.generation_completed` 2.6–6.0 秒；A5 那輪含一次 `action.executed`（deep_recall，+3.3 秒）。
+- **缺口**：real TTS 各輪 TTFA 未保存——A7 以 `--tts fake` 重啟前沒有先 `/trace all`，而 TTFA 只存在記憶體 tracer、未寫 journal 或檔案。已開卡「console 延遲報告落地（TTFA 寫檔）」；A8 與 ES 基線的正式對照待該卡完成後補量。
+
 ## 6. git 歷史處理
 
 ### 6.1 三種做法比較

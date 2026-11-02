@@ -3919,3 +3919,15 @@
 
 ---
 
+### docs: 記錄 Core 端到端人工驗收通過. 11/02
+
+> Date: Mon, 02 Nov 2026 21:11:11 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `adedadec4c76a8ee5045df6ca06667578d5252b3`
+
+---
+

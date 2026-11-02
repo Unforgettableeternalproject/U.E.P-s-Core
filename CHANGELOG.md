@@ -3943,3 +3943,15 @@
 
 ---
 
+### chore: 本地 agent 相關檔案移出版控. 11/02
+
+> Date: Mon, 02 Nov 2026 21:29:06 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `988d4128fbbb246ba34c3720bd55004c444dad4e`
+
+---
+

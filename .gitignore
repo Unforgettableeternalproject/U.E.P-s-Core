@@ -425,10 +425,16 @@ deprecated/*
 .github/instructions/codacy.instructions.md
 **/.github/prompts/*
 
-# Claude Code 專案文件（含敏感的專案記憶與路徑）
+# 本地 agent 相關檔案一律不進版控（Claude Code、Codex、其他 agent 工具與任務層設定）
 CLAUDE.md
 AGENTS.md
+GEMINI.md
 .claude/
+.codex/
+.cursor/
+.chatroom/
+.mcp.json
+openspec/
 
 # Builds
 build/*
@@ -438,8 +444,6 @@ dist/*
 *.spec
 *.exe
 *.zip
-# 任務層：change 工作內容以 Lore Vault 服務端為準（TASK_LAYER_MCP §5.4）
-openspec/changes/
 
 # uv 虛擬環境
 .venv/

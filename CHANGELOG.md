@@ -4063,3 +4063,15 @@
 
 ---
 
+### chore: IndexTTS 權重預設改指 ~/.uep/models/indextts2. 11/03
+
+> Date: Tue, 03 Nov 2026 00:34:23 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `chore/relocate-legacy-weights`
+
+> Commit: `541e7d35c994d1dcb49e3811e50c05c82265c801`
+
+---
+

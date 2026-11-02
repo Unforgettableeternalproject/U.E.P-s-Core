@@ -161,8 +161,15 @@ class IndexTTS2Backend:
     def _resolve_default_lora(self) -> str:
         """Resolve the default LoRA adapter/checkpoint path relative to project root."""
         import os
+        from echo_tts.config.model_paths import indextts_weights_root
         project_root = str(Path(self.paths.engine_root).parent)
-        candidate = os.path.join(project_root, self.DEFAULT_LORA_CHECKPOINT)
+        # 權重不進 git：LoRA 與其他 IndexTTS 權重同在權重根目錄下（models/lora/gpt_best）
+        weights_candidate = str(indextts_weights_root() / "models" / "lora" / "gpt_best")
+        candidate = (
+            weights_candidate
+            if os.path.isdir(weights_candidate) or os.path.isfile(weights_candidate + ".pth")
+            else os.path.join(project_root, self.DEFAULT_LORA_CHECKPOINT)
+        )
         # 優先找 adapter 目錄（PEFT 格式）
         if os.path.isdir(candidate):
             return candidate

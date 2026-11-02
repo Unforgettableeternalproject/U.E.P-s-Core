@@ -648,7 +648,16 @@ import 邊界：既有的 `test_import_boundary.py` 已把 `echo_stt` 列入 `SU
 | IndexTTS 角色特徵／LoRA | `TestSeparateTTSSystem/echo_tts/models/tts/{uep.pt,uep_v25.pt,*_metadata.json}`、`models/lora/gpt_best/` | 12 MB＋16 MB | 同上 |
 | VOX（VoxCPM2 與台灣華語 LoRA） | `%USERPROFILE%\.uep\models\vox\VoxCPM2\`、`lora_tw\step_0000600\`（使用者機器上已存在，4.9 GB；VoxBackend 原本必須由呼叫端經 `UEP_INFER_VOX_CONFIG` 給 `model_dir`／`lora_dir`，TTS repo 內沒有預設） | 4.9 GB | `UEP_TTS_MODELS_DIR`（預設 `%USERPROFILE%\.uep\models\vox`）；`model_dir`／`lora_dir` 未給時 adapter 以 `<根>/VoxCPM2`、`<根>/lora_tw/step_0000600` 補上，明確給的值優先（`VoxBackend` 本身未改，缺值仍丟 `ValueError`） |
 
-VOX 的新位置就是現有位置，不需搬移。**IndexTTS2 的 8.8 GB 搬移由艾斯維爾決定**：要搬時把 `checkpoints_v25/` 與 `models/` 放到新根目錄 `<X>/modules/tts_module/checkpoints_v25/`、`<X>/models/tts/uep_v25.pt`，設 `UEP_TTS_INDEXTTS_DIR=<X>` 即可，不必改程式。過渡期 `run_all_tests.ps1` 在該變數未設時自動沿用舊 TTS repo 的位置（約 7 個 IndexTTS 測試需要權重；M6 可移除）。命名擇一：`UEP_TTS_MODELS_DIR`（VOX）、`UEP_TTS_INDEXTTS_DIR`（IndexTTS2），取代計畫早先建議的 `UEP_TTS_MODEL_ROOT`。
+VOX 的新位置就是現有位置，不需搬移。**IndexTTS2 的 8.8 GB 搬移由艾斯維爾決定**：要搬時把 `checkpoints_v25/` 與 `models/` 放到新根目錄 `<X>/modules/tts_module/checkpoints_v25/`、`<X>/models/tts/uep_v25.pt`，設 `UEP_TTS_INDEXTTS_DIR=<X>` 即可，不必改程式。過渡期 `run_all_tests.ps1` 曾在該變數未設時自動沿用舊 TTS repo 的位置，11/03 權重搬遷後已移除（見下方「權重搬遷（11/03）」）。命名擇一：`UEP_TTS_MODELS_DIR`（VOX）、`UEP_TTS_INDEXTTS_DIR`（IndexTTS2），取代計畫早先建議的 `UEP_TTS_MODEL_ROOT`。
+
+**權重搬遷（11/03）：** 四個舊子系統 repo 已 archive 並準備自本機刪除，仍在用的權重已複製（舊檔未刪，檔案數與總位元組逐項比對一致，大檔 sha256 一致）到使用者目錄：
+
+| 權重 | 新位置 | 大小 |
+|---|---|---|
+| STT Breeze（`whisper-breeze25-ct2-fp16`，bot 以 `config/stt.yaml` 的 `model_path` 引用） | `%USERPROFILE%\.uep\models\stt\whisper\whisper-breeze25-ct2-fp16\` | 2.88 GB |
+| IndexTTS 2.5（`checkpoints_v25/` 含 `.cache`、`hf_cache`；`models/tts/{uep,uep_v25}.pt` 與 metadata） | `%USERPROFILE%\.uep\models\indextts2\modules\tts_module\checkpoints_v25\`、`...\indextts2\models\tts\` | 約 4.1 GB |
+
+`UEP_TTS_INDEXTTS_DIR` 未設時預設即 `%USERPROFILE%\.uep\models\indextts2`（`model_paths.indextts_weights_root()`，環境變數仍優先）；LoRA 預設改先找 `<權重根>/models/lora/gpt_best`（舊 repo 該目錄本來就是空的，LoRA 權重未曾存在於此）。上文 8.8／8,976 MB 為當時計入 `.cache` 等的估計，實際複製的 `checkpoints_v25/` 為 4.0 GB。
 
 **§2.3 import 修正（R1）：** `from modules.…`／`import modules…` 全數改為 `echo_tts` 絕對路徑或相對 import（`s2mel/modules/{commons,quantize}.py` 改 `.flow_matching` 等相對、`s2mel/dac/utils/__init__.py` 與 facodec `commons.py` 改 `echo_tts.modules.tts_module.s2mel.dac…`、`runtime/indextts_{backend,generate}.py` 改 `echo_tts.modules.tts_module.lite_engine`、`gpt/conformer_encoder.py` 的 `tts_utils` 改 `..tts_utils` 並移除其 `sys.path.insert`）；兩處 `runtime/` 的 `sys.path.insert(0, engine_root)` 移除；`utils.debug_helper` 改為標準 logging（`echo_tts/utils/log_helper.py`）。`default_generation_paths()` 未指定 `project_root` 時改以套件位置推算（不再依賴 cwd 或舊 repo 路徑）。**未改**：`tts_module.py`（舊 `TTSModule` 包裝，依賴 `core.*`，`modules/tts_module/__init__.py` 已註明刻意不 import）仍含 `utils.debug_helper`／`utils.tts_chunker` 的舊 import，屬死碼；`s2mel/modules/quantize.py` 的 `from dac.nn.quantize`（頂層 `dac`）、`s2mel/dac` 的 `audiotools` 為原有的死路徑（環境本就沒有 `audiotools`），執行路徑不經過。
 

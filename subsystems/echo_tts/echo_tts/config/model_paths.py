@@ -3,8 +3,8 @@
 - ``UEP_TTS_MODELS_DIR``：VOX 權重根目錄，內含 ``VoxCPM2/`` 與 ``lora_tw/step_0000600/``。
   預設 ``%USERPROFILE%/.uep/models/vox``。
 - ``UEP_TTS_INDEXTTS_DIR``：IndexTTS2 權重根目錄，版面與遷入前 TTS repo 的 ``echo_tts/`` 相同
-  （``modules/tts_module/checkpoints_v25/``、``models/tts/uep_v25.pt``）。
-  未設定時沿用套件內建位置（遷入前行為）；舊 TTS repo 的權重不需搬動，把此變數指到舊 ``echo_tts/`` 目錄即可。
+  （``modules/tts_module/checkpoints_v25/``、``models/tts/uep_v25.pt``、``models/lora/gpt_best``）。
+  預設 ``%USERPROFILE%/.uep/models/indextts2``。
 """
 from __future__ import annotations
 
@@ -42,7 +42,9 @@ def with_default_vox_paths(config: dict | None) -> dict:
     return merged
 
 
-def indextts_weights_root(engine_root: Path) -> Path:
-    """IndexTTS2 權重根目錄：``UEP_TTS_INDEXTTS_DIR`` 優先，否則為套件內建位置 ``engine_root``。"""
+def indextts_weights_root() -> Path:
+    """IndexTTS2 權重根目錄：``UEP_TTS_INDEXTTS_DIR`` 優先，否則 ``~/.uep/models/indextts2``。"""
     raw = os.environ.get(ENV_INDEXTTS_DIR, "").strip()
-    return Path(raw).expanduser() if raw else engine_root
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".uep" / "models" / "indextts2"

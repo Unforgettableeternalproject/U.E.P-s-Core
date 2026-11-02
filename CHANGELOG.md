@@ -3763,3 +3763,15 @@
 
 ---
 
+### docs: 新增 M3 STT 遷入完成紀錄與退役清單. 11/02
+
+> Date: Mon, 02 Nov 2026 14:41:53 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `f69ea1502058899b9d962c195c9fa4de8355a95c`
+
+---
+

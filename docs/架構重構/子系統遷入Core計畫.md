@@ -513,7 +513,7 @@ Core 側已有：`uep/endpoint/`（`CoreApi` 協定、`RpcCoreApi`、HMAC hello�
 | **M0 準備**（不搬碼） | 決定基線分支（Q1）；建立 `subsystems/` 骨架與 pyproject spike（hatch editable 只暴露套件）；補 boundary 反向測試；記錄五個子系統目前的**實跑基線**（pass／skip／fail 與耗時，含機器標註）；訂定本地閘門腳本 `scripts/run_all_tests.ps1`（§7.4）；發出凍結預告 | 無 | spike 在一次性 venv 證明 ADR-M1 的通過條件（sys.path 不含 `subsystems/<name>/`、`tests`／`configs` 仍解析到 Core 根）；基線表填完 | 基線腳本連跑兩次結果一致（排除 flaky） | 刪 spike 分支 |
 | **M1 Session**（`echo_thought_core`，9.1k 行／327 測試；**已完成 2026-11-02，見 §5.2.1**） | 以 subtree 導入；移除 `py-modules=["Entry"]` 與頂層 `Entry.py`（避免與 Core 根的 `Entry` 重名）；pyproject pytest 設定移除預設 `--cov` | `.env` 查找改為 `UEP_ENV_FILE`／cwd 優先，退回 `parent.parent`；`llm_config.yaml` 在套件內不需改 | `pytest -o addopts=""` 在 `subsystems/echo_thought_core` 得 327 收集、pass 數同基線；ES 的 `think_llm`（仍指舊路徑時）與新路徑兩種情況下 ES 測試不變 | 在共用環境 `pip uninstall echo-thought-core` 後 `import echo_thought_core` 指向 Core；Core `tests/uep/test_p3_s6_inference_wiring.py` 綠 | revert merge；`uv pip install --no-deps -e ../TestSeparateSessionControl` |
 | **M2 EM 三包**（`echo_memory`＋`llm_integration`＋`mcp_server`，2,167 測試；**已完成 2026-11-02，見 §5.2.2**） | 以 subtree 導入整個 repo；`agent_memory_spike`、`examples`、`probe_*` 在導入後的第一個 commit 刪除（歷史仍在；`env/` 若被追蹤才刪，多半已 gitignore）；三包同一步（`llm_integration`、`mcp_server` 依賴 echo_memory） | `MEMORY_STORAGE_PATH`／log 預設改讀 `UEP_DATA_DIR`；`.env` 查找同 M1；`mcp_server/server.py:26` 的 `sys.path.insert` 移除 | 2,167 收集／12 deselect 不變；pass 數同基線；Core `tests/uep/test_p3_s6_memory_wiring.py`、`test_p3_s2_memory_host.py` 綠；資料目錄**未被觸碰**（比對 `UEP_DATA_DIR` 內容雜湊或 mtime） | `llm_integration`、`mcp_server` 的 import 可用；`echo-mcp` 入口決定去留（Q8） | revert；重裝 editable；資料無需回復 |
-| **M3 STT**（`echo_stt`，271 測試） | subtree；**範圍依 D103：只保留 ASR（faster-whisper）**，VAD／斷句／串流狀態機以 ES 新作（`uep/stream/audio` 的 EnergyVad、channel_engine，N1 後）為主，echo_stt 的 AdvancedVAD 與 segment 狀態機退役；`uep/stream/adapters/input.py` 只呼叫 ASR；`echo_stt/test_files/`（2.8 MB 音檔）移到 `tests/data/`（避免進 wheel） | `configs/stt_config.yaml` 路徑支援 `UEP_STT_CONFIG`；whisper 路徑支援 `UEP_MODELS_DIR`（預設仍讀既有 `models/stt/whisper`，用連結／環境變數指向現有 2.9 GB，不複製） | 271 收集、pass 同基線（退役 VAD 相關測試另列清單）；A3（wav 檔→STT）通過；`MultiChannelSTTEngine` 能以新路徑 `prepare`（單次，不跑 GPU 長測，只驗載入）；bot `cogs/stt.py` 的 `echo_stt` import 解析到 Core | `UEP_INFER_STT_REPO` 設定被忽略並警告一次 | revert；重裝 editable |
+| **M3 STT**（`echo_stt`，271 測試；**已完成 2026-11-02，見 §5.2.3**） | subtree；**範圍依 D103：只保留 ASR（faster-whisper）**，VAD／斷句／串流狀態機以 ES 新作（`uep/stream/audio` 的 EnergyVad、channel_engine，N1 後）為主，echo_stt 的 AdvancedVAD 與 segment 狀態機退役；`uep/stream/adapters/input.py` 只呼叫 ASR；`echo_stt/test_files/`（2.8 MB 音檔）移到 `tests/data/`（避免進 wheel） | `configs/stt_config.yaml` 路徑支援 `UEP_STT_CONFIG`；whisper 路徑支援 `UEP_MODELS_DIR`（預設仍讀既有 `models/stt/whisper`，用連結／環境變數指向現有 2.9 GB，不複製） | 271 收集、pass 同基線（退役 VAD 相關測試另列清單）；A3（wav 檔→STT）通過；`MultiChannelSTTEngine` 能以新路徑 `prepare`（單次，不跑 GPU 長測，只驗載入）；bot `cogs/stt.py` 的 `echo_stt` import 解析到 Core | `UEP_INFER_STT_REPO` 設定被忽略並警告一次 | revert；重裝 editable |
 | **M4 ES**（**作廢**，D104） | 原「subtree 搬 ES 整包、999 測試、凍結 ≤3 天」不執行。改為 N1＋N2＋N3＋N5（§5.4）；ES 凍結窗口與 subtree 一併取消 | — | — | — | — |
 | **M5 TTS**（`echo_tts`，384 測試） | 先合 `tts-model-eval`、`vox-emotion`（見 Q4）；subtree；`experiments/`、`webapp/`、`benchmarks/`（若不需要）導入後刪除 | **§2.3 的 import 修正**（`echo_tts.modules.*`、拿掉 `sys.path.insert`、`utils.debug_helper`→`logging`）；`default_generation_paths` 接受 `UEP_TTS_MODEL_ROOT`；VOX 資產路徑已是套件相對，不動 | 384 收集、**在有 GPU 的目標機器**上 pass／skip 與基線一致；`validate_generation_paths` 通過（指到既有 9 GB 目錄）；`python -c "import modules"` **不得**解析到 echo_tts（驗證不再污染頂層）；`UEP_INFER_TTS_ENGINE=indextts2|vox` 兩種都 `prepare` 成功（人工，GPU，一次） | 以 `-X importtime`／`sys.modules` 檢查 `utils`、`modules` 未被 echo_tts 佔用 | revert；重裝 editable（舊 repo 仍有 9 GB 權重原位） |
 | **M6 收尾** | 刪 `UEP_INFER_*_REPO`；`setup_infer_env.ps1` 移除五個 editable 與五個路徑參數（§7.3）；舊 repo 打 `migrated-to-core/<sha>` tag 並在 GitHub 設為 archived（**觀察期後**）；README／CLAUDE.md／DECISIONS 更新；清掉 `*.egg-info` | — | 全新機器／全新 venv 只靠 Core repo 與 `uv sync` 能還原環境；七個套件解析位置全在 Core；觀察期 7 天（沿用 D76 習慣）無回退 | `scripts/run_all_tests.ps1` 全綠 | 還原 setup 腳本；舊 repo 取消 archived |
@@ -575,6 +575,60 @@ Core 側已有：`uep/endpoint/`（`CoreApi` 協定、`RpcCoreApi`、HMAC hello�
 | ES（`07e3ff8`） | 1,003 pass／1 xfail／0 fail（junit 計 1,004 tests），176 s | M1：1,003／0／0 | 全過 |
 
 資料目錄：本步未啟動任何程式，EM 測試使用 pytest 暫存目錄；`UEP_DATA_DIR` 未被觸碰。
+
+### 5.2.3 M3 STT 完成紀錄（2026-11-02，THEFANTASIAS，CPU-only）
+
+**狀態：完成，未 push。** 分支 `feature/m3-stt`（`--no-ff` 合回 `feature/subsystem-migration`），簽章 commit：
+
+| commit | 內容 |
+|---|---|
+| subtree merge | `git subtree add --prefix=subsystems/echo_stt ../TestSeparateSTTSystem develop`（不 squash；來源 `8aa9126`），導入後以 `git commit --amend --no-edit -S` 補簽章（`739944a`） |
+| hatch／setup（`45dc5c7`） | hatch `packages` 加入 `subsystems/echo_stt/echo_stt`；`setup_infer_env.ps1` 移除 `-Stt` 與舊 STT repo 的 `-e`；`run_all_tests.ps1` 的 `$migrated` 加入 `stt`；`echo_stt/test_files/`（2.8 MB）移到 `subsystems/echo_stt/tests/data/`，不進 wheel |
+| adapter／console（`d1915e3`） | 見下 |
+
+依賴：echo_stt 宣告的 `numpy`、`pydantic`、`pyyaml`、`rich`、`faster-whisper`、`torch`、`opencc-python-reimplemented` 在 Core lock 內全部已有，`uv lock --check` 無變動，`uv.lock` 未改。
+
+**adapter**：`uep/stream/adapters/input_stt.py`、`input_multichannel.py` 移除 `stt_repo` 參數與 `ensure_subsystem("STT", …)`，`_EchoSttBackend` 直接 import Core 內的 `echo_stt`；`_EchoSttBackend` 新增 `device`／`model_size` 覆寫（深拷貝後改，不污染 `load_config()` 全域快取），並提供公開別名 `EchoSttBackend`。VAD、斷句與 turn 判定維持 `uep/stream/audio/`（EnergyVad、channel_engine）；echo_stt 只走 `MultiChannelSTTEngine.transcribe_segment`（faster-whisper＋後處理），與遷入前行為相同。`inference_wiring.py` 不再要求 `UEP_INFER_STT_REPO`；`UepSettings.infer_stt_repo` 保留相容讀取，設了會被忽略並警告一次。
+
+**console `/stt <wav> [--model 名] [--lang 碼]`**（`uep/console/stt_cmd.py`）：讀 wav（16-bit PCM；非 16 kHz 以線性內插重採樣、多聲道下混），經 `EchoSttBackend` 辨識，印文字、語言、信心、載入與辨識耗時（RTF）。GPU 守門沿用 `UEP_E2E_ALLOW_GPU`：未設為 `1` 時強制 CPU＋`base` 模型並提示；設了才依 `stt_config.yaml`（device auto、large-v3-turbo）。實跑（CPU、base）：`zh_test.wav` 13.9 s 辨識 1.28 s、`en_test.wav` 19.7 s 辨識 5.40 s，文字正確。real 模式其他部分仍為「尚未支援」。
+
+環境切換（共用環境 `venv-inference-312-t211`；執行前 `botctl.py status` 確認 bot 未執行）：`uv pip uninstall echo-stt` → `uv pip install --no-deps -e .`（Core 重裝以納入新套件）。`uv pip freeze` 前後只差一行（舊 STT 的 `-e`），editables 仍在。證據：`echo_stt` 與 `echo_stt.core.multi_channel_engine` 的 `__file__` 指向 `U.E.P-s-Core/subsystems/echo_stt/…`（從 `%TEMP%` 啟動亦同）；`sys.path` 無含 `subsystems` 的項目；`echo_stt.core.config` 的預設設定檔解析為 `subsystems/echo_stt/configs/stt_config.yaml`；`echo_memory`、`echo_thought_core` 指向 Core，`echo_stream`、`echo_tts` 仍指向各自舊 repo。舊環境 `venv-inference-312` 未動。
+
+驗收數字（`CUDA_VISIBLE_DEVICES=""`，`run_all_tests.ps1` 全套一輪）：
+
+| 套件 | 結果 | 基線 | 備註 |
+|---|---|---|---|
+| STT（`subsystems/echo_stt`，在 Core 內跑） | 277 pass／0 skip／0 fail，54 s | 277 | 一致 |
+| Core `tests/uep` | 2,362 pass／1 xfail／1 fail，683 s | 2,355／1 xfail／1 fail | 唯一失敗仍是已知的 `test_real_engine_smoke_through_host`；pass 淨增 7：`/stt` 指令 7 個、wiring 新增 1 個、`console` 骨架參數化少 1 個 |
+| EM | 2,166／1／0，253 s | 2,166／1／0 | 一致 |
+| ES | 1,003／1 xfail／0，181 s | 1,003 | 一致 |
+| TTS | 426／15／0，26 s | 426／15 | 一致 |
+| Session | 294／18／0，4 s | 294／18 | 一致 |
+| bot（`python -m pytest -q`，共用環境） | 1,796 pass／7 fail／35 skip，143 s | 1,796／7／35 | 一致；7 個失敗為既有的 yaml 與 dataclass 預設比對 |
+
+import 邊界：既有的 `test_import_boundary.py` 已把 `echo_stt` 列入 `SUBSYSTEM_NAMES`（只允許 `uep/stream/adapters/` 與 `uep/echo/*_wiring.py` import），console 的 `/stt` 因此經 adapter 的 `EchoSttBackend` 而不直接 import；反向規則（`subsystems/` 不得 import `uep`）同樣涵蓋 `echo_stt`，全數通過。
+
+**bot 影響**：bot `cogs/stt.py:1114` 直接用 `echo_stt.core.multi_channel_engine.MultiChannelSTTEngine`，環境切換後解析到 Core 內的 echo_stt（程式內容與凍結 repo 的 `8aa9126` 相同，未改任何 bot 會走到的路徑）。**未啟動 bot 實測**，bot 基線測試不變是間接證據。
+
+**退役清單（M3 未刪除任何程式；前提：bot 改走 Core 的 STT 路徑、`cogs/stt.py` 不再 import `echo_stt` 的 VAD／segment 路徑後才執行，D103）：**
+
+| 項目 | 位置 | 取代者 | 備註 |
+|---|---|---|---|
+| AdvancedVAD、自適應尾端靜音 | `echo_stt/vad/advanced_vad.py`、`vad/__init__.py` 的 `AdaptiveTrailingSilenceConfig` | `uep/stream/audio/vad.py` EnergyVad | 與 segment 狀態機耦合（muzzle） |
+| 能量 VAD、噪音過濾 | `echo_stt/vad/energy_vad.py`、`noise_filter.py` | 同上 | `MultiChannelSTTEngine` 的 channel 路徑與 `ChannelManager` 仍會用到，須同步退 |
+| segment 狀態機與 channel 管線 | `echo_stt/core/multi_channel_engine.py` 的 channel／worker pool 路徑（保留 `transcribe_segment` 與初始化）、`channel/`（`manager`、`base`、`local_mic`、`discord_channel`）、`pipeline/queue.py`、`pipeline/worker.py` | `uep/stream/audio/channel_engine.py`、`multichannel.py` | bot 目前走這條；退役須先確認 bot 改走 Core |
+| 說話人辨識、關鍵字、輸出聚合 | `echo_stt/speaker/`、`keyword/`、`output/`、`recognition/` | 說話人由 Core 身分層（`uep/turn`、`uep/memory/identity`）；喚醒詞由 `uep/turn/wake` | 不在 ASR 範圍；是否真刪待 bot 路徑確認，且 `identification.py`（1,107 行）需另評估 |
+| 對應測試 | `tests/test_advanced_vad.py`、`test_vad.py`、`test_channel_manager.py`、`test_pipeline.py`、`test_keyword.py`、`test_speaker.py`、`test_multi_channel_engine.py` 中涉及上述路徑的部分 | — | 退役時一併移除，收集數隨之下降，需重記基線 |
+
+保留（ASR 核心）：`core/engine.py`（`STTEngine`／faster-whisper）、`core/config.py`、`core/schemas.py`、`core/multi_channel_schemas.py`、`pipeline/post_process.py`（幻覺過濾與 OpenCC s2twp）、`MultiChannelSTTEngine.initialize()`／`transcribe_segment()`／`shutdown()`。
+
+**與計畫（M3 列）的差異：**
+
+- 未做 `UEP_STT_CONFIG`、`UEP_MODELS_DIR`：預設設定檔路徑（套件上一層的 `configs/stt_config.yaml`）在遷入後自然落在 `subsystems/echo_stt/`；faster-whisper 的 `download_root: null` 走 HF 快取，實際不依賴 `models/stt/whisper`（僅 transformers fallback 讀該相對路徑）。需要覆寫時再補。
+- 「A3（wav 檔→STT）通過」：以 console `/stt` 對 wav 實跑（CPU、base）完成 ASR 這一段；`/wav` 全鏈（STT→LLM→TTS）仍是 real 模式範圍，待 M5／N3，未做。
+- 「`MultiChannelSTTEngine` 能以新路徑 `prepare`」：由 `/stt` 的 `EchoSttBackend`（內部 `MultiChannelSTTEngine.initialize()`）實際載入驗證；GPU 路徑未驗證（本步未佔用 GPU）。
+- 退役相關測試未移除、AdvancedVAD 等程式未刪（任務限制：bot 仍會走到）。
+- `Entry.py`、`run.bat`、`test.bat` 隨 subtree 進入 `subsystems/echo_stt/`，Core 的 hatch 只打包 `echo_stt/echo_stt`，不影響 import；未處理。
 
 ### 5.3 驗收基線（M0 實跑結果）
 

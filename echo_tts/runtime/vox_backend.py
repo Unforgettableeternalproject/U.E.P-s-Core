@@ -41,7 +41,7 @@ from ..config.emotion_presets import EMOTION_LABELS, user_to_strength
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 48000
-SPEED_TIERS = (1.0, 1.1, 1.2)
+SPEED_TIERS = (1.0, 1.1)
 CFG_VALUE = 2.0
 INFERENCE_TIMESTEPS = 10
 DEFAULT_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "vox"
@@ -60,7 +60,7 @@ class LangSpec:
 
 
 LANGS: dict[str, LangSpec] = {
-    "zh": LangSpec(lora=True, default_speed=1.2, preprocess="taiwan"),
+    "zh": LangSpec(lora=True, default_speed=1.0, preprocess="taiwan"),
     "en": LangSpec(lora=False, default_speed=1.0, preprocess=None),
     "ja": LangSpec(lora=False, default_speed=1.0, preprocess="kana"),
 }
@@ -272,7 +272,7 @@ class VoxBackend:
                 self._caches[(lang, tier)] = self._build_cache(spec["mode"], item)
         self._zh_refs = dict(manifest["zh"]["speeds"])
         self._emotion_clips = load_emotion_clips(self.assets_dir)
-        # 暖機：每種語言短、中、長；zh 走 ULT（預設檔位 1.2）
+        # 暖機：每種語言短、中、長；zh 走 ULT（預設檔位 1.0）
         for lang in LANGS:
             for text in WARMUP_TEXTS[lang]:
                 for _ in self._generate(text, lang, None):

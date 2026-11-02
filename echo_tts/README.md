@@ -38,12 +38,12 @@ config：
 
 | 語言 | 模式 | LoRA | 前處理 | 預設語速 |
 |---|---|---|---|---|
-| zh | ULT：加速參考音 + 逐字稿 | 開 | 台灣讀音（`echo_tts/text/taiwan_pronunciation.py`），`normalize=False` | 1.2 |
+| zh | ULT：加速參考音 + 逐字稿 | 開 | 台灣讀音（`echo_tts/text/taiwan_pronunciation.py`），`normalize=False` | 1.0 |
 | en | REF：EV25b | 關 | 無 | 1.0 |
 | ja | REF：JV25b | 關 | 假名化（`echo_tts/text/japanese_kana.py`，pyopenjtalk-plus） | 1.0 |
 
 - `lang=None` 時自動判斷：含假名為 ja，含漢字為 zh，其餘 en。
-- `speed` 取最接近的檔位 1.0 / 1.1 / 1.2；zh 三個檔位各有一份加速參考音，en / ja 目前只有 1.0 檔，其他速度會落到 1.0。
+- `speed` 取最接近的檔位 1.0 / 1.1；zh 兩個檔位各有一份加速參考音，en / ja 目前只有 1.0 檔，其他速度會落到 1.0。
 - 執行緒契約：`optimize=True` 時 torch.compile 的 CUDA graph 綁定執行緒，`prepare()`、`stream()`、`unload()` 必須在同一條執行緒呼叫（Echo Stream 端請用單執行緒 executor）。不同執行緒會立即丟 `RuntimeError`，不會等到 inductor assert；`optimize=False` 不檢查；`unload()` 後重新 `prepare()` 會重設記錄的執行緒。
 - 同時只服務一個請求（內部 lock）；消費端在同一執行緒對 generator `close()` 即可釋放。
 
@@ -62,7 +62,7 @@ b.stream("太好了！", emotion=[0.6, 0, 0, 0, 0, 0, 0.1, 0])         # 8 維�
 - `prepare()` 會用 zh 情緒路徑暖機一次。
 
 assets 結構（`echo_tts/assets/vox/`）：`manifest.json` 記錄每語言、每檔位的 wav、逐字稿與製作方式。
-zh 的 1.1 / 1.2 版本由 `neutral.wav` 重取樣為 16 kHz 單聲道後，以 WSOLA（audiotsm，保音高）加速，逐字稿不變。
+zh 的 1.1 版本由 1.0 參考音（c_t2 seed 9232）重取樣為 16 kHz 單聲道後，以 WSOLA（audiotsm，保音高）加速，逐字稿不變。
 
 模型與 LoRA 不進 git，正式部署位置由使用者決定，透過 config 指定。測試：
 

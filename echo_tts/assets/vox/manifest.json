@@ -7,18 +7,13 @@
       "speeds": {
         "1.0": {
           "wav": "zh_neutral_x1.0.wav",
-          "transcript": "今天早上我先把信箱整理了一遍，接著確認了下午會議要用的資料，等一下還要去超商領包裹，應該可以在天黑之前把事情都處理完。",
-          "method": "V25 neutral.wav 原檔（22.05 kHz，未加速）"
+          "transcript": "咦，你今天怎麼這麼早？我還以為你要加班耶。先坐一下吧，我去倒杯水。",
+          "method": "新參考音 c_t2 seed 9232（22.05 kHz，未加速；TTS-wt-model-eval outputs/new_ref_1102 new_neutral_ref_x1.0.wav）"
         },
         "1.1": {
           "wav": "zh_neutral_x1.1.wav",
-          "transcript": "今天早上我先把信箱整理了一遍，接著確認了下午會議要用的資料，等一下還要去超商領包裹，應該可以在天黑之前把事情都處理完。",
-          "method": "neutral.wav 重取樣 16 kHz 單聲道後，以 WSOLA（audiotsm，保音高）加速 1.1 倍；逐字稿不變"
-        },
-        "1.2": {
-          "wav": "zh_neutral_x1.2.wav",
-          "transcript": "今天早上我先把信箱整理了一遍，接著確認了下午會議要用的資料，等一下還要去超商領包裹，應該可以在天黑之前把事情都處理完。",
-          "method": "neutral.wav 重取樣 16 kHz 單聲道後，以 WSOLA（audiotsm，保音高）加速 1.2 倍；逐字稿不變（ref120）"
+          "transcript": "咦，你今天怎麼這麼早？我還以為你要加班耶。先坐一下吧，我去倒杯水。",
+          "method": "新參考音重取樣 16 kHz 單聲道後，以 WSOLA（audiotsm，保音高）加速 1.1 倍；逐字稿不變（new_neutral_ref_x1.1.wav）"
         }
       }
     },

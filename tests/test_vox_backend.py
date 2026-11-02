@@ -36,14 +36,14 @@ def test_normalize_lang():
 
 
 def test_snap_speed():
-    assert snap_speed(None, "zh") == 1.2
+    assert snap_speed(None, "zh") == 1.0
     assert snap_speed(None, "en") == 1.0
     assert snap_speed(None, "ja") == 1.0
     assert snap_speed(1.0, "zh") == 1.0
     assert snap_speed(1.04, "zh") == 1.0
     assert snap_speed(1.06, "zh") == 1.1
-    assert snap_speed(1.19, "zh") == 1.2
-    assert snap_speed(3.0, "zh") == 1.2
+    assert snap_speed(1.19, "zh", (1.0, 1.1)) == 1.1
+    assert snap_speed(3.0, "zh", (1.0, 1.1)) == 1.1
     assert snap_speed(0.5, "zh") == 1.0
     assert snap_speed(1.2, "en", (1.0,)) == 1.0  # 該語言只有 1.0 檔
     with pytest.raises(ValueError):
@@ -84,7 +84,7 @@ def test_kana_normalizer():
 def test_manifest_loads_and_files_exist():
     m = load_manifest(vb.DEFAULT_ASSETS_DIR)
     assert set(m) == {"zh", "en", "ja"}
-    assert m["zh"]["mode"] == "ult" and sorted(m["zh"]["speeds"]) == [1.0, 1.1, 1.2]
+    assert m["zh"]["mode"] == "ult" and sorted(m["zh"]["speeds"]) == [1.0, 1.1]
     assert all(v["transcript"] for v in m["zh"]["speeds"].values())
     assert m["en"]["mode"] == "ref" and m["ja"]["mode"] == "ref"
 
@@ -145,7 +145,7 @@ class FakeBackend(VoxBackend):
         self.opened = []
         self.lora_calls = []
         self._model = object()
-        self._tiers = {"zh": (1.0, 1.1, 1.2), "en": (1.0,), "ja": (1.0,)}
+        self._tiers = {"zh": (1.0, 1.1), "en": (1.0,), "ja": (1.0,)}
         self._tw = TaiwanPronunciationNormalizer()
         self._caches = {(lg, t): {"lang": lg, "tier": t} for lg, ts in self._tiers.items() for t in ts}
 
@@ -170,7 +170,7 @@ def test_stream_routes_lang_speed_and_dtype():
     chunks = list(b.stream("步驟", speed=None))
     assert len(chunks) == 5 and all(c.dtype == np.float32 and c.ndim == 1 for c in chunks)
     text, cache, _ = b.opened[-1]
-    assert text == "步{zou4}" and cache == {"lang": "zh", "tier": 1.2}
+    assert text == "步{zou4}" and cache == {"lang": "zh", "tier": 1.0}
     list(b.stream("步驟", speed=1.0))
     assert b.opened[-1][1]["tier"] == 1.0
     list(b.stream("hello world"))
@@ -333,7 +333,7 @@ class EmoBackend(FakeBackend):
         super().__init__(**kw)
         self.scale_calls = []
         self._kana = type("K", (), {"normalize": staticmethod(lambda t: t)})()  # 假名化不是這裡要測的
-        self._zh_refs = {t: {"wav": f"ref{t}.wav", "transcript": "中性"} for t in (1.0, 1.1, 1.2)}
+        self._zh_refs = {t: {"wav": f"ref{t}.wav", "transcript": "中性"} for t in (1.0, 1.1)}
         self._emotion_clips = {
             e: {t: {"wav": f"{e}_{t}.wav", "transcript": f"{e}逐字稿{t}"} for t in tiers} for e in ("happy", "sad")
         }
@@ -353,9 +353,9 @@ def test_emotion_uses_reference_and_prompt_and_lora_scale():
     assert cache == {"reference": "ref1.1.wav", "prompt": "happy_0.65.wav", "prompt_text": "happy逐字稿0.65"}
     assert b.scale_calls == [EMOTION_LORA_SCALE, 1.0] and EMOTION_LORA_SCALE == 0.85
     assert b._lora_scale == 1.0
-    # 向量 + 預設 intensity（0.5 → 0.61 缺檔，平手取 0.65）+ 預設語速 1.2
+    # 向量 + 預設 intensity（0.5 → 0.61 缺檔，平手取 0.65）+ 預設語速 1.0
     list(b.stream("你好", emotion=_vec(2, 0.4)))
-    assert b.opened[-1][1] == {"reference": "ref1.2.wav", "prompt": "sad_0.65.wav", "prompt_text": "sad逐字稿0.65"}
+    assert b.opened[-1][1] == {"reference": "ref1.0.wav", "prompt": "sad_0.65.wav", "prompt_text": "sad逐字稿0.65"}
     list(b.stream("你好", emotion="sad", intensity=0.0))
     assert b.opened[-1][1]["prompt"] == "sad_0.57.wav"
 
@@ -370,14 +370,14 @@ def test_neutral_paths_keep_existing_behavior():
     b = EmoBackend()
     for emo in (None, "neutral", [0.0] * 8, "furious"):
         list(b.stream("你好", emotion=emo))
-        assert b.opened[-1][1] == {"lang": "zh", "tier": 1.2}
+        assert b.opened[-1][1] == {"lang": "zh", "tier": 1.0}
     assert b.scale_calls == []
     # 情緒沒有任何片段（例如 calm）：退回中性，不套 0.85
     list(b.stream("你好", emotion="calm"))
-    assert b.opened[-1][1] == {"lang": "zh", "tier": 1.2} and b.scale_calls == []
+    assert b.opened[-1][1] == {"lang": "zh", "tier": 1.0} and b.scale_calls == []
     b._emotion_clips = {}
     list(b.stream("你好", emotion="happy"))
-    assert b.opened[-1][1] == {"lang": "zh", "tier": 1.2} and b.scale_calls == []
+    assert b.opened[-1][1] == {"lang": "zh", "tier": 1.0} and b.scale_calls == []
 
 
 def test_lora_scale_returns_to_neutral_after_emotion():
@@ -503,5 +503,5 @@ def test_info_log_shows_normalized_text_and_settings(caplog):
     assert len(msgs) == 3
     assert "lang=zh mode=COMBO lora=on scale=0.85 speed=1.1 emotion=happy intensity_tier=0.65" in msgs[0]
     assert "'{zhou1}末步{zou4}'" in msgs[0]  # 正規化後（含 pinyin）的文字
-    assert "mode=ULT lora=on scale=1.0 speed=1.2 emotion=None" in msgs[1] and "步{zou4}" in msgs[1]
+    assert "mode=ULT lora=on scale=1.0 speed=1.0 emotion=None" in msgs[1] and "步{zou4}" in msgs[1]
     assert "lang=en mode=REF lora=off" in msgs[2] and "hello world" in msgs[2]

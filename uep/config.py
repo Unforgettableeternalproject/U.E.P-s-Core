@@ -1,13 +1,22 @@
 """uep 設定載入：資料庫連線字串自環境變數或 repo 根 ``.env`` 讀取，不硬編碼。"""
 from __future__ import annotations
 
+import logging
+import re
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+if TYPE_CHECKING:
+    from uep.stream.adapters.think_config import ThinkConfig
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+logger = logging.getLogger(__name__)
+
+_LEGACY_WARNED: set[str] = set()
 
 
 class UepSettings(BaseSettings):
@@ -71,6 +80,85 @@ class UepSettings(BaseSettings):
     infer_host_start_timeout_s: float | None = Field(default=None, validation_alias="UEP_INFER_HOST_START_TIMEOUT_S")
     # 語音／LLM 載入失敗時是否降級（False：沿用原行為，prepare 例外讓 Host 啟動失敗）
     infer_degrade_on_failure: bool = Field(default=True, validation_alias="UEP_INFER_DEGRADE_ON_FAILURE")
+
+    # Think／LLM（N3）：UEP_LLM_* 為正式名稱。舊名 ECHO_STREAM_LLM_*／ECHO_STREAM_OUTPUT_*／OPENAI_* 保留相容讀取，
+    # 使用時每個舊名各警告一次。金鑰只從環境變數或 Core repo 根 ``.env`` 取，SecretStr 不進 repr／日誌。
+    llm_provider: str | None = Field(default=None, validation_alias="UEP_LLM_PROVIDER")
+    llm_model: str | None = Field(default=None, validation_alias="UEP_LLM_MODEL")
+    llm_api: str | None = Field(default=None, validation_alias="UEP_LLM_API")
+    llm_reasoning_effort: str | None = Field(default=None, validation_alias="UEP_LLM_REASONING_EFFORT")
+    llm_max_tokens: int | None = Field(default=None, validation_alias="UEP_LLM_MAX_TOKENS")
+    llm_temperature: float | None = Field(default=None, validation_alias="UEP_LLM_TEMPERATURE")
+    llm_api_key: SecretStr | None = Field(default=None, validation_alias="UEP_LLM_API_KEY")
+    llm_project: str | None = Field(default=None, validation_alias="UEP_LLM_PROJECT")
+    llm_organization: str | None = Field(default=None, validation_alias="UEP_LLM_ORGANIZATION")
+    llm_base_url: str | None = Field(default=None, validation_alias="UEP_LLM_BASE_URL")
+    llm_prompt_cache_key: str | None = Field(default=None, validation_alias="UEP_LLM_PROMPT_CACHE_KEY")
+    llm_output_guard: bool | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_GUARD")
+    llm_output_blocklist_extra: str | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_BLOCKLIST_EXTRA")
+    # 舊名（相容讀取）
+    legacy_llm_provider: str | None = Field(default=None, validation_alias="ECHO_STREAM_LLM_PROVIDER")
+    legacy_llm_model: str | None = Field(default=None, validation_alias="ECHO_STREAM_LLM_MODEL")
+    legacy_llm_api: str | None = Field(default=None, validation_alias="ECHO_STREAM_LLM_API")
+    legacy_llm_reasoning_effort: str | None = Field(default=None, validation_alias="ECHO_STREAM_LLM_REASONING_EFFORT")
+    legacy_llm_max_tokens: int | None = Field(default=None, validation_alias="ECHO_STREAM_LLM_MAX_TOKENS")
+    legacy_llm_temperature: float | None = Field(default=None, validation_alias="ECHO_STREAM_LLM_TEMPERATURE")
+    legacy_llm_prompt_cache_key: str | None = Field(default=None, validation_alias="ECHO_STREAM_LLM_PROMPT_CACHE_KEY")
+    legacy_output_guard: bool | None = Field(default=None, validation_alias="ECHO_STREAM_OUTPUT_GUARD")
+    legacy_output_blocklist_extra: str | None = Field(default=None, validation_alias="ECHO_STREAM_OUTPUT_BLOCKLIST_EXTRA")
+    legacy_openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    legacy_openai_project: str | None = Field(default=None, validation_alias="OPENAI_PROJECT")
+    legacy_openai_org: str | None = Field(default=None, validation_alias="OPENAI_ORG")
+    legacy_openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
+
+    def think_config(self) -> "ThinkConfig":
+        """解析成 Think adapter 的 ThinkConfig：``UEP_LLM_*`` → ``UEP_INFER_LLM_*`` → 舊名（警告一次）→ 預設。"""
+        from uep.stream.adapters.think_config import ThinkConfig
+
+        def pick(new: str, legacy: str, legacy_name: str, *, also: str | None = None):
+            value = getattr(self, new)
+            if value is None and also is not None:
+                value = getattr(self, also)
+            if value is None:
+                value = getattr(self, legacy)
+                if value is not None:
+                    _warn_legacy(legacy_name, new_name_of(new))
+            return value.get_secret_value() if isinstance(value, SecretStr) else value
+
+        defaults = ThinkConfig()
+        extra_raw = pick("llm_output_blocklist_extra", "legacy_output_blocklist_extra", "ECHO_STREAM_OUTPUT_BLOCKLIST_EXTRA")
+        guard = pick("llm_output_guard", "legacy_output_guard", "ECHO_STREAM_OUTPUT_GUARD")
+        max_tokens = pick("llm_max_tokens", "legacy_llm_max_tokens", "ECHO_STREAM_LLM_MAX_TOKENS")
+        cache_key = pick("llm_prompt_cache_key", "legacy_llm_prompt_cache_key", "ECHO_STREAM_LLM_PROMPT_CACHE_KEY")
+        return ThinkConfig(
+            provider=pick("llm_provider", "legacy_llm_provider", "ECHO_STREAM_LLM_PROVIDER", also="infer_llm_provider")
+            or defaults.provider,
+            model=pick("llm_model", "legacy_llm_model", "ECHO_STREAM_LLM_MODEL", also="infer_llm_model") or defaults.model,
+            api=pick("llm_api", "legacy_llm_api", "ECHO_STREAM_LLM_API") or defaults.api,
+            reasoning_effort=pick("llm_reasoning_effort", "legacy_llm_reasoning_effort", "ECHO_STREAM_LLM_REASONING_EFFORT")
+            or defaults.reasoning_effort,
+            max_output_tokens=max_tokens if max_tokens else defaults.max_output_tokens,
+            temperature=pick("llm_temperature", "legacy_llm_temperature", "ECHO_STREAM_LLM_TEMPERATURE"),
+            api_key=pick("llm_api_key", "legacy_openai_api_key", "OPENAI_API_KEY") or None,
+            project=pick("llm_project", "legacy_openai_project", "OPENAI_PROJECT"),
+            organization=pick("llm_organization", "legacy_openai_org", "OPENAI_ORG"),
+            base_url=pick("llm_base_url", "legacy_openai_base_url", "OPENAI_BASE_URL"),
+            prompt_cache_key=(cache_key or "").strip() or None,
+            output_guard_enabled=True if guard is None else bool(guard),
+            output_blocklist_extra=tuple(p.strip() for p in re.split(r"[,，、]", extra_raw or "") if p.strip()),
+        )
+
+
+def new_name_of(field_name: str) -> str:
+    """欄位名轉成正式環境變數名（警告訊息用）。"""
+    return "UEP_" + field_name.upper()
+
+
+def _warn_legacy(old: str, new: str) -> None:
+    """舊環境變數名只警告一次（行程內）。"""
+    if old not in _LEGACY_WARNED:
+        _LEGACY_WARNED.add(old)
+        logger.warning("環境變數 %s 為舊名，請改用 %s（仍相容讀取）。", old, new)
 
 
 @lru_cache(maxsize=1)

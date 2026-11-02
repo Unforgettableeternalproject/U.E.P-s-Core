@@ -58,12 +58,13 @@ def test_disabled_is_passthrough():
     assert OutputGuard(enabled=False).clean(POLLUTED) == (POLLUTED, [])
 
 
-def test_from_config(monkeypatch):
-    monkeypatch.setenv("ECHO_STREAM_OUTPUT_BLOCKLIST_EXTRA", "甲甲,乙乙")
-    guard = OutputGuard.from_config()
-    assert guard.enabled and guard.clean("好甲甲")[0] == "好"
-    monkeypatch.setenv("ECHO_STREAM_OUTPUT_GUARD", "off")
-    assert not OutputGuard.from_config().enabled
+def test_think_config_建立防線():
+    from uep.stream.adapters.think_config import ThinkConfig
+    from uep.stream.adapters.think_llm import LLMThinkStage
+
+    stage = LLMThinkStage(config=ThinkConfig(output_blocklist_extra=("甲甲", "乙乙")))
+    assert stage.output_guard.enabled and stage.output_guard.clean("好甲甲")[0] == "好"
+    assert not LLMThinkStage(config=ThinkConfig(output_guard_enabled=False)).output_guard.enabled
 
 
 class _Backend:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from uep.turn.models import SessionContext
 logger = logging.getLogger(__name__)
 
 MODES = ("fake", "real")
+THINKS = ("fake", "real")
 PRIVATE_SCOPE = "scope_private_owner"
 CONSOLE_SPEAKER = "console:owner"
 DEFAULT_REPLY = "你好，我是回聲。今天天氣不錯。"
@@ -105,17 +107,23 @@ class ConsoleRuntime:
 
 def build_fake_runtime(
     session_factory: sessionmaker[Session], session_dir: Path, *, reply: str = DEFAULT_REPLY, with_tts: bool = True,
-    start: bool = True,
+    start: bool = True, think_factory: Callable[[LatencyTracer], Any] | None = None,
 ) -> ConsoleRuntime:
-    """fake think／speak 驅動的 Core（A0）：文字 → Coordinator → AdmittingSink → wav。"""
+    """fake speak 驅動的 Core：文字 → Coordinator → AdmittingSink → wav。
+
+    預設 think 也是 fake（A0）；``think_factory(tracer)`` 給定時改用該 Think stage（N3：真實 LLM，A1）。
+    """
     session_dir = Path(session_dir)
     session_dir.mkdir(parents=True, exist_ok=True)
     bus = EventBus()
     publisher = EventPublisher(session_factory, bus)
     tracer = LatencyTracer()
-    think = FakeThinkStage(
-        responses=[reply], first_token_delay_s=0.0, token_interval_s=0.0, memory_delay_s=0.0, tracer=tracer,
-    )
+    if think_factory is not None:
+        think = think_factory(tracer)
+    else:
+        think = FakeThinkStage(
+            responses=[reply], first_token_delay_s=0.0, token_interval_s=0.0, memory_delay_s=0.0, tracer=tracer,
+        )
     speak = FakeSpeakStage(first_chunk_extra_s=0.0, rtf=0.0)
     runtime: ConsoleRuntime | None = None
 
@@ -150,18 +158,42 @@ def build_fake_runtime(
         turn_generation_source=host.generation_source, presence_audience=lambda: PRIVATE_SCOPE,
         epoch_store=HostEpochStore(session_dir / "host_epoch.json"), maintenance_interval=None, echo=host,
     )
-    runtime = ConsoleRuntime("fake", core, host, session_factory, think, speak, tracer, session_dir)
+    runtime = ConsoleRuntime("fake" if think_factory is None else "real", core, host, session_factory, think, speak, tracer, session_dir)
     if start:
         core.start()
     return runtime
 
 
-def build_runtime(mode: str, session_factory: sessionmaker[Session], session_dir: Path, **kwargs: Any) -> ConsoleRuntime:
-    if mode == "fake":
-        return build_fake_runtime(session_factory, session_dir, **kwargs)
-    if mode == "real":
-        raise ConsoleError(
-            "real 模式尚未支援：真實 STT／TTS／Think 待 M3／M5／N3 接線後補"
-            "（屆時真實 GPU 路徑需 UEP_E2E_ALLOW_GPU=1）。請改用 --mode fake。"
-        )
-    raise ConsoleError(f"未知的模式：{mode}（可用：{', '.join(MODES)}）")
+def real_think_factory() -> Callable[[LatencyTracer], Any]:
+    """真實 Think（API LLM）的 stage 工廠；設定自 ``UepSettings``（``UEP_LLM_*``），缺金鑰拋 ``ConsoleError``。"""
+    from uep.config import get_settings
+    from uep.stream.adapters.think_config import ThinkConfigError
+    from uep.stream.adapters.think_llm import LLMThinkStage, build_backend
+
+    settings = get_settings()
+    config = settings.think_config()
+    try:
+        backend = build_backend(config=config)  # 缺金鑰在此失敗，不等到第一句話
+    except ThinkConfigError as exc:
+        raise ConsoleError(str(exc)) from exc
+
+    def factory(tracer: LatencyTracer) -> Any:
+        return LLMThinkStage(backend, system_prompt=settings.infer_system_prompt, tracer=tracer, config=config)
+
+    return factory
+
+
+def build_runtime(
+    mode: str, session_factory: sessionmaker[Session], session_dir: Path, *, think: str | None = None, **kwargs: Any,
+) -> ConsoleRuntime:
+    """``fake``：全 fake（A0）。``real``：Think 真實；STT／TTS 待 M3／M5 接線前仍為 fake。
+
+    ``think`` 可獨立覆寫（``--think``）：fake 模式配 ``--think real`` 即「Think 真實、STT／TTS fake」。
+    """
+    if mode not in MODES:
+        raise ConsoleError(f"未知的模式：{mode}（可用：{', '.join(MODES)}）")
+    chosen = think or ("real" if mode == "real" else "fake")
+    if chosen not in THINKS:
+        raise ConsoleError(f"未知的 think：{chosen}（可用：{', '.join(THINKS)}）")
+    factory = real_think_factory() if chosen == "real" else None
+    return build_fake_runtime(session_factory, session_dir, think_factory=factory, **kwargs)

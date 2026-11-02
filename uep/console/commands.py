@@ -1,7 +1,7 @@
 """Console 指令層：以程式方式呼叫 ``Console.execute(line)``，測試與互動 REPL 共用同一條路徑。
 
 層級（D105 Q3）：(b) Core 層隔離與 (c) 端到端的 fake 版由本檔指令驅動；(a) 子系統隔離群
-（``/stt``、``/tts``、``/llm``、``/mem``、``/check``）中 ``/stt`` 已於 M3 接線（``stt_cmd``），其餘只留骨架，待 M5。
+（``/stt``、``/tts``、``/llm``、``/mem``、``/check``）中 ``/stt`` 已於 M3、``/llm`` 已於 N3 接線，其餘只留骨架，待 M5。
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from uep.turn.models import UtteranceFact
 
 TERMINAL_EVENTS = ("turn.completed", "turn.cancelled", "turn.skipped")
 DEFAULT_WAIT_S = 15.0
-SUBSYSTEM_NAMESPACES = ("tts", "llm", "check")
+SUBSYSTEM_NAMESPACES = ("tts", "check")
 
 HELP_TEXT = """\
 指令：
@@ -32,7 +32,8 @@ HELP_TEXT = """\
   /mic               麥克風輸入（尚未實作）
   /stt <wav> [--model 名] [--lang 碼]   (a) 隔離：以 Core adapter＋echo_stt 辨識 wav，印文字與耗時
                      （未設 UEP_E2E_ALLOW_GPU=1 時強制 CPU＋base 模型）
-  /tts /llm /check   (a) 子系統隔離群（待 M5）
+  /llm <文字>        (a) 隔離：直接呼叫 Think（真實 LLM），印切句與耗時（需 UEP_LLM_API_KEY）
+  /tts /check        (a) 子系統隔離群（待 M5）
   /help              本說明
   /quit              結束"""
 
@@ -49,7 +50,7 @@ class Console:
         self.last_turn_id: str | None = None
         self._commands: dict[str, Callable[[str], None]] = {
             "say": self._say, "wav": self._wav, "cancel": self._cancel, "status": self._status,
-            "trace": self._trace, "mem": self._mem, "mic": self._mic, "help": self._help, "stt": self._stt,
+            "trace": self._trace, "mem": self._mem, "mic": self._mic, "help": self._help, "stt": self._stt, "llm": self._llm,
         }
 
     def execute(self, line: str) -> bool:
@@ -193,6 +194,11 @@ class Console:
         from uep.console.stt_cmd import run_stt
 
         run_stt(arg, self.out)
+
+    def _llm(self, arg: str) -> None:
+        from uep.console.llm_cmd import run_llm
+
+        run_llm(arg, self.out)
 
 
 def _wav_seconds(path: Path) -> float:

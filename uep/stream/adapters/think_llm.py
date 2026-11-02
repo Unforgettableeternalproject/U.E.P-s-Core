@@ -44,16 +44,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import hashlib
 import inspect
 import json
 import logging
 import re
+import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from . import config
 from ..contracts.cancellation import CancellationToken, CancelledError
 from ..contracts.stages import MemoryRetriever
 from ..contracts.style import SpeechStyle
@@ -69,6 +71,7 @@ from ..tracer import (
     LatencyTracer,
 )
 from .output_guard import OutputGuard
+from .think_config import ThinkConfig
 
 logger = logging.getLogger(__name__)
 
@@ -231,36 +234,31 @@ class StreamingBackend(Protocol):
 def build_backend(
     provider: str | None = None,
     session_repo: str | None = None,
+    config: ThinkConfig | None = None,
     **overrides: Any,
 ) -> Any:
     """從 SessionControl 的 registry 建一個 backend。
 
     **這是唯一 import echo_thought_core 的地方**，其餘程式碼只認
-    :class:`StreamingBackend` 這個形狀。
+    :class:`StreamingBackend` 這個形狀。設定一律由呼叫端以 :class:`ThinkConfig` 注入，
+    本函式不讀環境變數；``provider`` 與 ``overrides`` 優先於 ``config``。
+    echo_thought_core 已隨 Core 安裝；``session_repo`` 僅作回退用的可選路徑覆寫。
     """
-    config.ensure_subsystem("SESSION", "echo_thought_core", session_repo)
+    cfg_obj = config or ThinkConfig()
+    name = provider or cfg_obj.provider
+    if name != cfg_obj.provider:
+        cfg_obj = dataclasses.replace(cfg_obj, provider=name)
+    cfg_obj.require_credentials()
+    if session_repo:
+        entry = str(Path(session_repo).expanduser().resolve())
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
 
     from echo_thought_core.backends.registry import BackendRegistry
 
-    name = provider or config.get("ECHO_STREAM_LLM_PROVIDER", "openai")
-    cfg: dict[str, Any] = {
-        "model": config.get("ECHO_STREAM_LLM_MODEL", "gpt-5.6-luna"),
-        "api_key": config.get("OPENAI_API_KEY"),
-        "project": config.get("OPENAI_PROJECT"),
-        "organization": config.get("OPENAI_ORG"),
-        "base_url": config.get("OPENAI_BASE_URL"),
-        "api": config.get("ECHO_STREAM_LLM_API", "chat"),
-        "reasoning_effort": config.get("ECHO_STREAM_LLM_REASONING_EFFORT", "high"),
-        "max_output_tokens": int(config.get("ECHO_STREAM_LLM_MAX_TOKENS", "1024")),
-    }
-    temperature = config.get("ECHO_STREAM_LLM_TEMPERATURE")
-    if temperature:
-        cfg["temperature"] = float(temperature)
-    cfg = {k: v for k, v in cfg.items() if v is not None}
-    cfg.update(overrides)
-
-    return BackendRegistry.default().create(name, cfg)
-
+    opts = cfg_obj.backend_options()
+    opts.update(overrides)
+    return BackendRegistry.default().create(name, opts)
 
 
 async def _preemptible(source: AsyncIterator[Any], token: CancellationToken) -> AsyncIterator[Any]:
@@ -385,22 +383,27 @@ class LLMThinkStage:
         memory_resolver: Callable[[str | None], MemoryRetriever | None] | None = None,
         output_guard: OutputGuard | None = None,
         prompt_cache_key: str | None = None,
+        config: ThinkConfig | None = None,
     ) -> None:
         if tool_lead_in not in TOOL_LEAD_IN_MODES:
             raise ValueError(
                 f"tool_lead_in={tool_lead_in!r} 不認得，可用：{', '.join(TOOL_LEAD_IN_MODES)}"
             )
         self._backend = backend
+        self.config = config or ThinkConfig()
+        """Core 注入的 LLM／輸出防線設定；adapter 本身不讀環境變數。"""
         self.prompt_cache_key: str | None = (
-            prompt_cache_key
-            if prompt_cache_key is not None
-            else (config.get("ECHO_STREAM_LLM_PROMPT_CACHE_KEY") or "").strip()
+            prompt_cache_key if prompt_cache_key is not None else (self.config.prompt_cache_key or "").strip()
         ) or None
         """OpenAI ``prompt_cache_key``：同值的請求會被路由到同一快取分片，提高前綴命中率。
-        ``None`` / 空 = 不帶。沒傳參數時讀 ``ECHO_STREAM_LLM_PROMPT_CACHE_KEY``。
+        ``None`` / 空 = 不帶。沒傳參數時取 ``config.prompt_cache_key``（``UEP_LLM_PROMPT_CACHE_KEY``）。
         正常輪與預熱都帶同一個值（兩者必須一致才會命中同一份快取）。"""
-        self.output_guard = output_guard if output_guard is not None else OutputGuard.from_config()
-        """輸出防線：濾掉模型偶發吐出的已知中文污染 token。沒傳就讀 .env 設定。"""
+        self.output_guard = (
+            output_guard
+            if output_guard is not None
+            else OutputGuard(enabled=self.config.output_guard_enabled, extra=self.config.output_blocklist_extra)
+        )
+        """輸出防線：濾掉模型偶發吐出的已知中文污染 token。沒傳就依 ``config`` 建立。"""
         self.system_prompt = system_prompt
         self.split_policy = split_policy or SplitPolicy()
         self.tracer = tracer
@@ -616,7 +619,7 @@ class LLMThinkStage:
     @property
     def backend(self) -> StreamingBackend:
         if self._backend is None:
-            self._backend = build_backend()
+            self._backend = build_backend(config=self.config)
         return self._backend
 
     async def prepare(self) -> None:

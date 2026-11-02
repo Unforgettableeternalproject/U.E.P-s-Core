@@ -166,7 +166,7 @@ def test_cancel_stops_inflight_turn(make_console):
 
 # ---- 骨架與錯誤 ----
 
-@pytest.mark.parametrize("name", ["tts", "llm", "check"])
+@pytest.mark.parametrize("name", ["tts", "check"])
 def test_subsystem_namespaces_are_stubs(make_console, name):
     console, rt, out = make_console()
     console.execute(f"/{name}")
@@ -186,9 +186,16 @@ def test_mem_mic_help_unknown_and_quit(make_console):
 
 # ---- 啟動：模式、資料庫、main ----
 
-def test_real_mode_is_not_supported_yet(session_factory, tmp_path):
-    with pytest.raises(ConsoleError, match="尚未支援"):
+def test_real_mode_requires_llm_key(monkeypatch, session_factory, tmp_path):
+    from uep.config import UepSettings
+
+    monkeypatch.delenv("UEP_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("uep.config.get_settings", lambda: UepSettings(_env_file=None))
+    with pytest.raises(ConsoleError, match="UEP_LLM_API_KEY"):
         build_runtime("real", session_factory, tmp_path)
+    with pytest.raises(ConsoleError, match="UEP_LLM_API_KEY"):
+        build_runtime("fake", session_factory, tmp_path, think="real")
     with pytest.raises(ConsoleError, match="未知的模式"):
         build_runtime("bogus", session_factory, tmp_path)
 
@@ -216,8 +223,13 @@ def test_main_runs_scripted_session(monkeypatch, session_factory, tmp_path):
     assert "turn.completed" in out.text and "Presence：ACTIVE" in out.text
 
 
-def test_main_real_mode_exits_with_message(monkeypatch, session_factory, tmp_path):
+def test_main_real_mode_without_key_exits_with_message(monkeypatch, session_factory, tmp_path):
+    from uep.config import UepSettings
+
+    monkeypatch.delenv("UEP_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("uep.config.get_settings", lambda: UepSettings(_env_file=None))
     monkeypatch.setattr(app, "connect_database", lambda: session_factory)
     out = Capture()
     code = app.main(["--mode", "real", "--session-dir", str(tmp_path)], input_fn=lambda _p: "/quit", out=out)
-    assert code == 2 and "尚未支援" in out.text
+    assert code == 2 and "UEP_LLM_API_KEY" in out.text and "sk-" not in out.text

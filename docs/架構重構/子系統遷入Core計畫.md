@@ -713,12 +713,12 @@ dev-mode-exact = true
 | `core/standalone`、`core/dream_scheduler` | **淘汰**（Core 有 ticket 簽發與自己的 dream loop，F4） |
 | `sinks.py`、`sources.py` | `uep/stream/io/`（console 直接使用） |
 | `fakes/` | 併入 `uep/fakes`／`tests/uep` 支援檔，去重 |
-| `adapters/think_llm` | `uep/stream/adapters/think.py`（N3，依賴已在 Core 的 echo_thought_core） |
+| `adapters/think_llm` | `uep/stream/adapters/think_llm.py`（N3 完成；設定改 `ThinkConfig`／`UEP_LLM_*`，模組名沿用） |
 | `adapters/input_*` | 隨 M3，只留 ASR 呼叫 |
 | `adapters/speak_*` | 隨 M5，§2.3 import 修正為前置 |
 | `adapters/memory_echo` | N5 瘦身，與 Access Layer 重複部分淘汰，只留 echo_memory 呼叫 |
 | `adapters/stt_discord`、`discord_resample` | **不進 Core**（屬 Discord Adapter／bot） |
-| `adapters/output_guard`、`session_store` | 看 think／speak 實作決定（未細讀） |
+| `adapters/output_guard`、`session_store` | `output_guard` 隨 think 保留；`session_store` 淘汰（N3） |
 | `config.py`、`defaults.py`、`cli.py` | **淘汰**（設定併 `UepSettings`＝F1；cli 的 `*-check` 改寫為 console 的 `/check`） |
 | `web/server.py` | 暫不動，之後作 Website Adapter 起點（Q7），不在本里程碑 |
 
@@ -731,7 +731,7 @@ dev-mode-exact = true
 | N1 純層搬入 | contracts＋core 純檔搬進 `uep/stream/`；ES 對應測試搬進 `tests/uep/stream/`；host／sink／policy／outcomes 與 `inference_wiring` 改接新契約；**仍留在 ES 的現存 adapter（`think_llm`、`speak_*`、`input_*`、`memory_echo`）須同步處理**（薄 shim 繼承新型別，或未重寫版原樣搬入 `uep/stream/adapters/`，較簡） | `tests/uep` 全綠；搬入測試與 ES 基線數字一致；邊界測試綠；`uep/` 內 `echo_stream` 0 import；`isinstance` 煙霧測試 | CPU |
 | N2 Console v0（fake）**（已完成，見 §5.5 落地）** | §5.5；用 fakes 跑 A0 | 腳本化 A0 通過；人工跑一次 console | CPU＋PostgreSQL |
 | M3 STT | 見 §5.2（D103 範圍） | 271 測試同基線；A3 | whisper 2.9 GB，GPU 或 CPU（CPU 慢，未量測） |
-| N3 Think 重寫 | `think.py` 去 ES 殘留（設定、session_store、output_guard 決定去留） | A1（文字→真 LLM）通過 | API 金鑰，CPU |
+| N3 Think 重寫**（已完成，見下方 N3 落地）** | 設定改 `ThinkConfig`／`UEP_LLM_*`，session_store 淘汰、output_guard 保留 | A1（文字→真 LLM）通過 | API 金鑰，CPU |
 | M5 TTS | 見 §5.2；speak adapter 進 `uep/stream/adapters/speak_*.py` | A2、A4 | GPU，9 GB 權重 |
 | N5 記憶 adapter 瘦身 | `memory_echo` 去重；**切換 bge-m3（D103；Q5：先切再做 A5，用全新資料目錄，免重建舊索引）** | A5；記憶測試同基線 | embedding CPU 可，GPU 較快 |
 
@@ -773,6 +773,15 @@ dev-mode-exact = true
 - **`fakes/`** 置於 `uep/fakes/stream/`（與 Core 既有 fakes 分開，無重複構件需去重）。`sinks.py`、`sources.py` 置於 `uep/stream/io/`。`stt_discord`、`discord_resample`、`web/` 未搬。
 - **adapters 以「原樣搬入」處理**（不寫薄 shim）：`think_llm`、`speak_indextts`、`speak_vox`、`input_stt`、`input_multichannel`、`memory_echo`、`session_store`、`output_guard` 置於 `uep/stream/adapters/`，僅改相對 import；`uep/echo/*` 與測試全部切到 `uep.stream`，`uep/` 內 `echo_stream` 0 import。型別雙身分由 `tests/uep/stream/test_type_identity.py` 鎖住（adapter 產物 `isinstance` Core 版契約；獨立行程匯入 `uep.stream`／`uep.echo` 全部子模組後 `echo_stream` 不在 `sys.modules`）。
 - 邊界測試（`tests/uep/test_import_boundary.py`）改為：`echo_stream` 在 `uep/` 全面禁止；子系統只允許 `uep/stream/adapters/` 與 `uep/echo/*_wiring.py`；`uep/stream/` 不得 import `uep` 其他部分（含逸出的相對 import），非 adapters 子目錄不得 import 子系統。
+
+**N3 落地（2026-11-02，`feature/n3-think`）**：Think 段改為 Core 版。
+
+- **盤點**：`think_llm.py` 依賴＝`echo_thought_core`（僅 `build_backend`／`to_messages` 兩處 import，BackendRegistry 提供 openai／gemini／ollama，OpenAI 相容 client 在其內）、`uep.stream` 內的 `contracts`／`emotion`（`extract_style`、`marker_prompt`）／`splitter`／`tracer`、`output_guard`，以及 `adapters/config.py`（讀 `ECHO_STREAM_LLM_*`、`OPENAI_*`、prompt cache key、output guard 開關）。`llm_integration` 不在 think 路徑（0 import）；`memory_echo` 只以 `MemoryRetriever` Protocol 注入（recall 工具由 `uep/echo/memory_wiring.py`／Access Layer 提供，Think 不 import）。`emotion` 保留並接線。
+- **接線現況**：`uep/echo/inference_wiring.py` 的 `default_think_backend` → `build_backend`，`build_inference_wiring` 組 `LLMThinkStage(llm, system_prompt=..., split_policy=...)`。`recommended_split_policy` 由 wiring 在 TTS 引擎為 vox 時取 `speak` stage 的建議值，以 `setdefault` 注入 `split_policy`；N3 不改此注入點。
+- **上下文責任（D72 已裁決 (a)，無衝突）**：Think 自己 retrieve 並組 prompt（並行檢索與 prompt cache 的延遲最佳化），Core 事後登記；本步不動這個責任劃分，也不把 `history_limit` 佔位歷史換成 ContextManager。
+- **重寫範圍（保守，行為不變）**：adapter 不再讀環境變數。設定載體 `ThinkConfig`（`uep/stream/adapters/think_config.py`，frozen dataclass，`api_key` 不進 repr）由 `UepSettings.think_config()` 解析後注入 `build_backend(config=...)`、`LLMThinkStage(config=...)`；`uep/stream/` 仍不 import `uep` 其餘部分。命名：`UEP_LLM_{PROVIDER,MODEL,API,REASONING_EFFORT,MAX_TOKENS,TEMPERATURE,API_KEY,PROJECT,ORGANIZATION,BASE_URL,PROMPT_CACHE_KEY,OUTPUT_GUARD,OUTPUT_BLOCKLIST_EXTRA}`；順序為 `UEP_LLM_*` → `UEP_INFER_LLM_{PROVIDER,MODEL}`（既有）→ 舊名 `ECHO_STREAM_LLM_*`／`ECHO_STREAM_OUTPUT_*`／`OPENAI_*`（每個舊名警告一次，日誌不含值）→ 預設（與 ES 相同：openai／gpt-5.6-luna／chat／high／1024）。金鑰只從環境變數或 Core `.env`；provider 為 openai 且缺金鑰時 `ThinkConfigError`（繁中，只提變數名）。
+- **去留**：`output_guard` 保留（隨 think 走，開關／追加詞改走 `UEP_LLM_OUTPUT_GUARD`／`UEP_LLM_OUTPUT_BLOCKLIST_EXTRA`，`from_config` 移除）；`session_store` **淘汰**（Core 零呼叫端，只有 ES `web/server.py` 用過）連同其測試；`adapters/config.py` 的 think 部分已脫鉤，檔案仍因 `speak_*`／`input_*`／`memory_echo` 使用而留到 M5／N5／F1 移除（F1 條件改為這三者全脫鉤）。
+- **模組名**：沿用 `think_llm.py`（表中原寫 `think.py`）——改名要動約 20 個測試的 import 與 `test_type_identity` 清單，沒有行為收益，不做。
 
 ### 5.5 Core 端到端驗收（D104／D105 Q3、Q6）
 
@@ -816,6 +825,12 @@ STT／TTS／embedding 同卡共存壓力（D90）列為 A2–A4 的觀察項。�
 - 輸出：每個 turn 寫 `<session-dir>/<turn_id>/<n>.wav`；`host_epoch.json` 也在 `--session-dir`。
 - 資料層：連線沿用 `UEP_DATABASE_URL`（`uep/config.py`，env 優先於 `.env`）；連不上、未設定或尚未 `alembic upgrade head` 皆以繁中訊息結束（exit 2），訊息不含連線字串。console 直接使用該庫，不自動 migrate。
 - 與 §5.5 原設計的差異：v0 不含 `--play`、`/mem` 查詢、`/check`；`/wav` 不分塊 `feed`（fake 模式無真輸入 stage）。
+
+**N3 落地（2026-11-02，`feature/n3-think`）**：A1（文字→真 LLM→fake TTS）可跑。
+
+- 旗標：`--mode real` ＝ Think 真實，STT／TTS 在 M3 接線與 M5 前仍為 fake（`/wav` 本來就是 fake STT）；`--think real|fake` 獨立覆寫（`--think real` 配預設 fake 模式＝「Think 真實、STT／TTS fake」，擇簡不另設 `--no-tts` 組合語意；`--no-tts` 仍只丟棄音訊）。啟動時即建 backend，缺金鑰 exit 2 並指出 `UEP_LLM_API_KEY`。Think 是 API，不需 `UEP_E2E_ALLOW_GPU`。
+- `/llm <文字>`：(a) 子系統隔離，直接用 `ThinkConfig`＋`LLMThinkStage` 呼叫（不經 Core、無記憶、無歷史），印 provider／model、每句 `[n] +秒`、首句延遲、句數、總耗時；缺金鑰、後端建立失敗、串流失敗各自印原因不中止 console。實作 `uep/console/llm_cmd.py`，測試用 fake stage，不打真實 API。
+- 仍待：`/tts`、`/check`（M5）。
 
 ## 6. git 歷史處理
 

@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 ADAPTER_MODULES = (
     "think_llm", "speak_indextts", "speak_vox", "input_stt", "input_multichannel",
-    "memory_echo", "session_store", "output_guard",
+    "memory_echo", "think_config", "output_guard",
 )
 
 

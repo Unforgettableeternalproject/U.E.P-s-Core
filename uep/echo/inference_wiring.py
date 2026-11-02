@@ -253,6 +253,18 @@ def _require_repo(path: Path | None, env: str, what: str) -> Path:
     return Path(path)
 
 
+_TTS_REPO_WARNED = False
+
+
+def _warn_tts_repo_ignored(path: Path) -> None:
+    """``UEP_INFER_TTS_REPO`` 在 M5 後不再生效：行程內只警告一次。"""
+    global _TTS_REPO_WARNED
+    if _TTS_REPO_WARNED:
+        return
+    _TTS_REPO_WARNED = True
+    logger.warning("UEP_INFER_TTS_REPO（%s）已不再使用：echo_tts 已遷入 Core（subsystems/echo_tts），此設定被忽略", path)
+
+
 _STT_REPO_WARNED = False
 
 
@@ -273,13 +285,13 @@ def _ensure_importable(path: Path) -> None:
 
 def default_tts_backend(cfg: InferenceConfig) -> Any:
     """預建 ``IndexTTS2Backend``（只存路徑與旗標，不載權重；``load()`` 在 SpeakStage.prepare）。"""
-    repo = _require_repo(cfg.tts_repo, "UEP_INFER_TTS_REPO", "TTS")
-    _ensure_importable(repo)
+    if cfg.tts_repo is not None:
+        _warn_tts_repo_ignored(cfg.tts_repo)
     from echo_tts.runtime.indextts_backend import IndexTTS2Backend
     from echo_tts.runtime.indextts_generate import default_generation_paths
 
     return IndexTTS2Backend(
-        paths=default_generation_paths(repo), device=cfg.tts_device, use_fp16=cfg.tts_fp16,
+        paths=default_generation_paths(), device=cfg.tts_device, use_fp16=cfg.tts_fp16,
         use_accel=cfg.tts_use_accel,
     )
 
@@ -347,12 +359,12 @@ def _build_vox_speak(cfg: InferenceConfig, extra: Mapping[str, Any]) -> Any:
         reason = f"{VOX_ADAPTER_MISSING}: {type(exc).__name__}: {exc}"
         logger.error("VOX adapter 無法載入，speak 標為 not ready：%s", reason)
         return _VoxUnavailableStage(reason)
-    # 簽章（ES 暫定）：VoxSpeakStage(*, backend, tts_repo, backend_config, sample_rate, language, speed, ...)。
+    # 簽章：VoxSpeakStage(*, backend, backend_config, sample_rate, language, speed, ...)。
     # 不傳 lora_scale／emotion_*／use_accel／warmup（暖機固定在 prepare）；language、speed 只在明確設定時才傳，
     # 其餘交給 backend 決定（zh 預設 1.2、en／ja 1.0）。
     vox_kwargs: dict[str, Any] = {}
     if cfg.tts_repo is not None:
-        vox_kwargs["tts_repo"] = str(cfg.tts_repo)
+        _warn_tts_repo_ignored(cfg.tts_repo)
     if cfg.vox_config:
         vox_kwargs["backend_config"] = dict(cfg.vox_config)
     if cfg.tts_language is not None:

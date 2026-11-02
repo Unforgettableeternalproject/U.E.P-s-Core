@@ -1,7 +1,7 @@
 """Console 指令層：以程式方式呼叫 ``Console.execute(line)``，測試與互動 REPL 共用同一條路徑。
 
 層級（D105 Q3）：(b) Core 層隔離與 (c) 端到端的 fake 版由本檔指令驅動；(a) 子系統隔離群
-（``/stt``、``/tts``、``/llm``、``/mem``、``/check``）中 ``/stt`` 已於 M3、``/llm`` 已於 N3 接線，其餘只留骨架，待 M5。
+（``/stt``、``/tts``、``/llm``、``/mem``、``/check``）中 ``/stt`` 已於 M3、``/llm`` 已於 N3、``/tts`` 已於 M5 接線，其餘只留骨架。
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from uep.turn.models import UtteranceFact
 
 TERMINAL_EVENTS = ("turn.completed", "turn.cancelled", "turn.skipped")
 DEFAULT_WAIT_S = 15.0
-SUBSYSTEM_NAMESPACES = ("tts", "check")
+SUBSYSTEM_NAMESPACES = ("check",)
 
 HELP_TEXT = """\
 指令：
@@ -33,7 +33,9 @@ HELP_TEXT = """\
   /stt <wav> [--model 名] [--lang 碼]   (a) 隔離：以 Core adapter＋echo_stt 辨識 wav，印文字與耗時
                      （未設 UEP_E2E_ALLOW_GPU=1 時強制 CPU＋base 模型）
   /llm <文字>        (a) 隔離：直接呼叫 Think（真實 LLM），印切句與耗時（需 UEP_LLM_API_KEY）
-  /tts /check        (a) 子系統隔離群（待 M5）
+  /tts <文字> [--engine vox|indextts2]   (a) 隔離：以 Core Speak adapter 合成並寫 wav，印首音延遲與總耗時
+                     （需 GPU；未設 UEP_E2E_ALLOW_GPU=1 時提示並結束該指令）
+  /check             (a) 子系統隔離群（尚未支援）
   /help              本說明
   /quit              結束"""
 
@@ -50,7 +52,7 @@ class Console:
         self.last_turn_id: str | None = None
         self._commands: dict[str, Callable[[str], None]] = {
             "say": self._say, "wav": self._wav, "cancel": self._cancel, "status": self._status,
-            "trace": self._trace, "mem": self._mem, "mic": self._mic, "help": self._help, "stt": self._stt, "llm": self._llm,
+            "trace": self._trace, "mem": self._mem, "mic": self._mic, "help": self._help, "stt": self._stt, "llm": self._llm, "tts": self._tts,
         }
 
     def execute(self, line: str) -> bool:
@@ -65,7 +67,7 @@ class Console:
         if name in ("quit", "exit", "q"):
             return False
         if name in SUBSYSTEM_NAMESPACES:
-            self.out(f"/{name}：(a) 子系統隔離尚未支援（待 M5 接線）。")
+            self.out(f"/{name}：(a) 子系統隔離尚未支援。")
             return True
         handler = self._commands.get(name)
         if handler is None:
@@ -199,6 +201,11 @@ class Console:
         from uep.console.llm_cmd import run_llm
 
         run_llm(arg, self.out)
+
+    def _tts(self, arg: str) -> None:
+        from uep.console.tts_cmd import run_tts
+
+        run_tts(arg, self.out, out_dir=self.rt.session_dir)
 
 
 def _wav_seconds(path: Path) -> float:

@@ -396,3 +396,13 @@ async def test_停頓未設定時行為不變():
     assert sum(c.duration_s for c in chunks if c.sentence_index == 0) == pytest.approx(
         0.16 + 0.015, abs=0.002
     )
+
+
+def test_build_backend_預設權重目錄依_UEP_TTS_MODELS_DIR(monkeypatch, tmp_path):
+    # echo_tts 已遷入 Core：直接 import，model_dir／lora_dir 未給時補預設；明確給的值優先
+    monkeypatch.setenv("UEP_TTS_MODELS_DIR", str(tmp_path))
+    backend = VoxSpeakStage()._build_backend()
+    assert backend.model_dir == tmp_path / "VoxCPM2"
+    assert backend.lora_dir == tmp_path / "lora_tw" / "step_0000600"
+    explicit = VoxSpeakStage(backend_config={"model_dir": "m", "lora_dir": "l"})._build_backend()
+    assert str(explicit.model_dir) == "m" and str(explicit.lora_dir) == "l"

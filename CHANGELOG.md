@@ -3787,3 +3787,51 @@
 
 ---
 
+### Add 'subsystems/echo_tts/' from commit '5626ce8a1ac5a194a6351eb3b070a98345345b3c'
+
+> Date: Mon, 02 Nov 2026 15:15:28 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `8c1afdd1b06a14aae29c5fef4359f92178822302`
+
+---
+
+### refactor: echo_tts 遷入後移除頂層 modules/utils 依賴並新增權重路徑解析. 11/02
+
+> Date: Mon, 02 Nov 2026 15:35:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `4ecba4fac8cfeb5150ec6ea59e38b4d7afabb5f5`
+
+---
+
+### feat: Core speak adapter 改用 Core 內 echo_tts 並實作 console /tts. 11/02
+
+> Date: Mon, 02 Nov 2026 15:35:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `1d4eafbfc2a833f14c8d313845b96f1b15067a20`
+
+---
+
+### docs: 新增 M5 TTS 遷入完成紀錄與權重盤點. 11/02
+
+> Date: Mon, 02 Nov 2026 16:04:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `0dd0c5fcdc1f04d5f5a79a04227f07eb88af3df1`
+
+---
+

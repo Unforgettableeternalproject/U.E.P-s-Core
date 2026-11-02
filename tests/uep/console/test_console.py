@@ -166,7 +166,7 @@ def test_cancel_stops_inflight_turn(make_console):
 
 # ---- 骨架與錯誤 ----
 
-@pytest.mark.parametrize("name", ["tts", "check"])
+@pytest.mark.parametrize("name", ["check"])
 def test_subsystem_namespaces_are_stubs(make_console, name):
     console, rt, out = make_console()
     console.execute(f"/{name}")
@@ -233,3 +233,18 @@ def test_main_real_mode_without_key_exits_with_message(monkeypatch, session_fact
     out = Capture()
     code = app.main(["--mode", "real", "--session-dir", str(tmp_path)], input_fn=lambda _p: "/quit", out=out)
     assert code == 2 and "UEP_LLM_API_KEY" in out.text and "sk-" not in out.text
+
+
+def test_tts_real_需要GPU環境變數且可拒絕未知值(monkeypatch, session_factory, tmp_path):
+    monkeypatch.delenv("UEP_E2E_ALLOW_GPU", raising=False)
+    with pytest.raises(ConsoleError, match="UEP_E2E_ALLOW_GPU"):
+        build_runtime("fake", session_factory, tmp_path, tts="real")
+    with pytest.raises(ConsoleError, match="未知的 tts"):
+        build_runtime("fake", session_factory, tmp_path, tts="bogus")
+
+
+def test_tts_指令未設GPU環境變數時提示並結束(monkeypatch, make_console):
+    monkeypatch.delenv("UEP_E2E_ALLOW_GPU", raising=False)
+    console, _rt, out = make_console()
+    assert console.execute("/tts 你好") is True
+    assert "UEP_E2E_ALLOW_GPU=1" in out.text

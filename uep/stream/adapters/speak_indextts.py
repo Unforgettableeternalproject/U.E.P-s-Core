@@ -57,7 +57,6 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from . import config
 from ..contracts.cancellation import CancellationToken, CancelledError, CancelReason
 from ..contracts.style import EMOTION_DIMENSIONS, SpeechStyle
 from ..contracts.types import TTS_SAMPLE_RATE, AudioChunk, Sentence
@@ -422,7 +421,6 @@ class IndexTTS2SpeakStage:
         self,
         *,
         backend: Any | None = None,
-        tts_repo: str | Path | None = None,
         device: str | None = None,
         use_fp16: bool | None = None,
         use_accel: bool | None = None,
@@ -442,26 +440,25 @@ class IndexTTS2SpeakStage:
         segment_silence_ms: float = 15.0,
     ) -> None:
         self._backend = backend
-        self._tts_repo = Path(tts_repo) if tts_repo else None
-        self.device = device or config.get("ECHO_STREAM_TTS_DEVICE", "cuda")
+        self.device = device or "cuda"
         self.use_fp16 = (
-            use_fp16 if use_fp16 is not None else config.get_bool("ECHO_STREAM_TTS_FP16", True)
+            use_fp16 if use_fp16 is not None else True
         )
         # IndexTTS2Backend 的 use_accel 預設為 False；保留該預設，避免整合層
         # 未經實機驗收就改變推理路徑。需要加速時可由參數或環境設定明確開啟。
         self.use_accel = (
             use_accel
             if use_accel is not None
-            else config.get_bool("ECHO_STREAM_TTS_USE_ACCEL", False)
+            else False
         )
-        self.queue_size = queue_size or int(config.get("ECHO_STREAM_TTS_QUEUE", "2"))
+        self.queue_size = queue_size or 2
         self.sentence_buffer = sentence_buffer
         self.sample_rate = sample_rate
         self.language = language
         self.emotion_vector = emotion_vector
         self.emotion_overrides = emotion_overrides
         self.speed = (
-            speed if speed is not None else config.get_float("ECHO_STREAM_TTS_SPEED", 0.0)
+            speed if speed is not None else 0.0
         )
         """語速。引擎裡是 ``stretch_ratio = config_stretch_ratio - speed × 0.5``
         （config 預設 1.72，stretch 越大越慢），範圍 -1.0 ~ 1.0。
@@ -567,12 +564,11 @@ class IndexTTS2SpeakStage:
 
     def _build_backend(self) -> Any:
         """建立真的 IndexTTS2Backend。**只有這裡 import echo_tts。**"""
-        repo = config.ensure_subsystem("TTS", "echo_tts", self._tts_repo)
-
+        # echo_tts 已遷入 Core（M5），權重位置見 echo_tts.config.model_paths
         from echo_tts.runtime.indextts_backend import IndexTTS2Backend
         from echo_tts.runtime.indextts_generate import default_generation_paths
 
-        paths = default_generation_paths(repo)
+        paths = default_generation_paths()
         return IndexTTS2Backend(
             paths=paths,
             device=self.device,

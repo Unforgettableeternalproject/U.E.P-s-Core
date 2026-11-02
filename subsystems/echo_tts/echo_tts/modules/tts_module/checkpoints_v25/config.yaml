@@ -1,0 +1,183 @@
+dataset:
+    bpe_model: bpe.model
+    sample_rate: 24000
+    squeeze: false
+    mel:
+        sample_rate: 24000
+        n_fft: 1024
+        hop_length: 256
+        win_length: 1024
+        n_mels: 100
+        mel_fmin: 0
+        normalize: false
+gpt:
+    model_dim: 1280
+    max_mel_tokens: 1815
+    max_text_tokens: 600
+    heads: 20
+    use_mel_codes_as_input: true
+    mel_length_compression: 1024
+    layers: 24
+    number_text_tokens: 60509
+    number_mel_codes: 8194
+    start_mel_token: 8192
+    stop_mel_token: 8193
+    start_text_token: 0
+    stop_text_token: 1
+    train_solo_embeddings: false
+    condition_type: "conformer_perceiver"
+    condition_module:
+        output_size: 512
+        linear_units: 2048
+        attention_heads: 8
+        num_blocks: 6
+        input_layer: "conv2d2"
+        perceiver_mult: 2
+    emo_condition_module:
+        output_size: 512
+        linear_units: 1024
+        attention_heads: 4
+        num_blocks: 4
+        input_layer: "conv2d2"
+        perceiver_mult: 2
+semantic_codec:
+    codebook_size: 8192
+    hidden_size: 1024
+    codebook_dim: 8
+    vocos_dim: 384
+    vocos_intermediate_dim: 2048
+    vocos_num_layers: 12
+    # 明寫上游預設值：omegaconf 2.0.x 對缺失鍵回傳 None 會蓋掉 EnhancedCodec 的參數預設
+    num_quantizers: 1
+    downsample_scale: 2
+s2mel:
+    preprocess_params:
+        sr: 22050
+        spect_params:
+            n_fft: 1024
+            win_length: 1024
+            hop_length: 256
+            n_mels: 80
+            fmin: 0
+            fmax: "None"
+    dit_type: "DiT"
+    reg_loss_type: "l1"
+    style_encoder:
+        dim: 192
+    length_regulator:
+        channels: 512
+        is_discrete: false
+        in_channels: 1024
+        content_codebook_size: 2048
+        sampling_ratios: [1, 1, 1, 1]
+        vector_quantize: false
+        n_codebooks: 1
+        quantizer_dropout: 0.0
+        f0_condition: false
+        n_f0_bins: 512
+    DiT:
+        hidden_dim: 512
+        num_heads: 8
+        depth: 13
+        class_dropout_prob: 0.1
+        block_size: 8192
+        in_channels: 80
+        style_condition: true
+        final_layer_type: 'wavenet'
+        target: 'mel'
+        content_dim: 512
+        content_codebook_size: 1024
+        content_type: 'discrete'
+        f0_condition: false
+        n_f0_bins: 512
+        content_codebooks: 1
+        is_causal: false
+        long_skip_connection: true
+        zero_prompt_speech_token: false
+        time_as_token: false
+        style_as_token: false
+        uvit_skip_connection: true
+        add_resblock_in_transformer: false
+    wavenet:
+        hidden_dim: 512
+        num_layers: 8
+        kernel_size: 5
+        dilation_rate: 1
+        p_dropout: 0.2
+        style_condition: true
+gpt_checkpoint: gpt.pth
+w2v_stat: wav2vec2bert_stats.pt
+s2mel_checkpoint: s2mel.pth
+emo_matrix: feat2.pt
+spk_matrix: feat1.pt
+emo_num: [3, 17, 2, 8, 4, 5, 10, 24]
+qwen_emo_path: qwen0.6bemo4-merge/
+vocoder:
+    type: "bigvgan"
+    name: "nvidia/bigvgan_v2_22khz_80band_256x"
+
+# ─── 情感控制（echo_tts 自訂區段）───
+# ⚠️ lite_engine 讀的是本檔。modules/tts_module/config.yaml 的同名區段
+#    不會生效，改那邊沒有用——兩邊要同步。
+# 數值由 2.5 聽感盲測定案（艾斯維爾 2026-08-19）：
+#   引擎預設 0.65，可用區間 0.57 ~ 0.65（2026-11-01 上緣由 0.73 收斂）
+emotion:
+  max_strength: 0.65   # 情感向量總和目標
+  default: null        # 預設情感向量 (null = 角色原聲)
+
+  # 只保留 calm 一項 bias。上游原值為
+  # [0.9375, 0.875, 1.0, 1.0, 0.9375, 0.9375, 0.6875, 0.5625]，
+  # 但實測其餘七維在同總和下齊平即可，套 bias 反而讓強度分級對不齊。
+  # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+  emo_bias: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5625]
+  emo_bias_cap: 0.65
+
+  merge_alpha: 1.0     # merge_emovec 融合強度
+
+  # 語言別情感增益。2.5 定案後日文不再需要 1.3x 補償
+  # （0.65 是「最終總和」定義，日文梯度與中英同值即通過）。
+  lang_gain: {}
+
+# ─── Poise breathing system（echo_tts 自訂區段，同 2.0 設定）───
+poise:
+  enabled: true
+  max_level: 1                   # 休息層級上限：0=靜音 1=呼吸「......」
+                                 # 2=輕量銜接詞 3=敘事插入 4=動作描述
+                                 # 2026-08-19 定案：封在 1，不插入任何銜接詞
+  potency: 0.45
+  count: 5.0
+  count_jitter: 0.3
+  min_segments_to_trigger: 3
+  min_accumulation: 4
+  potency_jitter: 0.3
+  emotion_correction_enabled: true
+  sfx_dir: modules/tts_module/sfx
+
+# ─── GPT 採樣（echo_tts 自訂區段）───
+# 對齊上游 infer_v2_5 預設（top_p 0.8 / top_k 30）。原引擎預設 top_p 1.0 / top_k 50
+# 是全分布採樣，低機率 token 容易漏進來，codes 長度變異大（同句 160-250）。
+# num_beams 維持 1：accel 路徑（CUDA Graph）只支援單序列，beam 會退回慢速 HF generate；
+# length_penalty 0.0 僅在 num_beams>1 時有意義（原始 log-prob 總和偏好短序列）。
+gpt_sampling:
+  top_p: 0.8
+  top_k: 30
+  length_penalty: 0.0
+
+# ─── 進階優化（echo_tts 自訂區段；lite_engine 讀取的是本檔，不是 modules/tts_module/config.yaml）───
+advanced_optimization:
+  # S2Mel CFM estimator torch.compile：sm_120 (RTX 5070 Ti) 於 2026-08-19 實測「能跑」
+  # （同 shape warm 1.44x、音訊健全），但變動文本長度會觸發 dynamo stride 重編譯，
+  # 每次 15-40s（實測 3 輪內兩度重編）——互動式使用體驗不可接受，預設關閉。
+  # 僅建議固定文本的批次工作負載手動開啟。
+  compile_s2mel: false
+  # use_torch_compile（GPT/S2Mel/BigVGAN 全模型 compile）維持關閉：
+  # GPT 走 AccelInferenceEngine 時不生效，S2Mel/BigVGAN 在 sm_120 未驗證
+  use_torch_compile: false
+  enable_warmup: true
+  warmup_text: "你好，這是預熱測試。"
+  warmup_iterations: 1
+  # cuDNN benchmark 逐 shape 搜尋演算法（每個新 mel 長度 ~1-1.3s），
+  # TTS 段落長度永遠不同 → 每段都在付搜尋稅（BigVGAN 曾因此 4.0s → 關閉後 0.25s）
+  cudnn_benchmark: false
+
+version: 2.5

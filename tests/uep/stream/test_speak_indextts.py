@@ -372,25 +372,13 @@ def test_build_backend明確傳遞可配置的use_accel(monkeypatch):
     backend_module = types.ModuleType("echo_tts.runtime.indextts_backend")
     backend_module.IndexTTS2Backend = BackendFactory
     generate_module = types.ModuleType("echo_tts.runtime.indextts_generate")
-    generate_module.default_generation_paths = lambda repo: "fake-paths"
+    generate_module.default_generation_paths = lambda *a, **k: "fake-paths"
     for name in ("echo_tts", "echo_tts.runtime"):
         package = types.ModuleType(name)
         package.__path__ = []
         monkeypatch.setitem(sys.modules, name, package)
     monkeypatch.setitem(sys.modules, "echo_tts.runtime.indextts_backend", backend_module)
     monkeypatch.setitem(sys.modules, "echo_tts.runtime.indextts_generate", generate_module)
-    monkeypatch.setattr(
-        "uep.stream.adapters.speak_indextts.config.ensure_importable", lambda repo: None
-    )
-    monkeypatch.setattr(
-        "uep.stream.adapters.speak_indextts.config.subsystem_path", lambda kind: "fake-repo"
-    )
-    monkeypatch.delenv("ECHO_STREAM_TTS_USE_ACCEL", raising=False)
-    # 隔離開發機的 .env——config.get 在環境變數缺席時會退回讀它
-    monkeypatch.setattr(
-        "uep.stream.adapters.speak_indextts.config._dotenv_values", lambda: {}
-    )
-
     stage = IndexTTS2SpeakStage(use_accel=True)
     stage._build_backend()
     assert captured["use_accel"] is True

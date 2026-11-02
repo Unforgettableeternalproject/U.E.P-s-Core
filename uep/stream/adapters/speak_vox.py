@@ -40,7 +40,6 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from . import config
 from ..contracts.cancellation import CancellationToken, CancelledError, CancelReason
 from ..contracts.style import SpeechStyle
 from ..contracts.types import TTS_SAMPLE_RATE, AudioChunk, Sentence
@@ -60,15 +59,15 @@ VOX_SPLIT_FIRST_MAX = 24.0
 VOX_SPLIT_MIN = 30.0
 VOX_SPLIT_MAX = 80.0
 
-VOX_BACKEND_MODULE = "echo_tts.runtime.vox_backend"
-"""VoxBackend 所在模組（TTS repo 內）。路徑是假設，TTS 端落地後以實際為準。"""
+DEFAULT_QUEUE_SIZE = 12
+"""音訊通道上限（chunk 數）預設值；M5 前由 ES 的 ``ECHO_STREAM_VOX_QUEUE`` 環境變數覆寫，已移除，改由建構參數 ``queue_size`` 指定。"""
 
 
 class VoxSpeakStage:
     """把 VoxBackend 包成 SpeakStage。
 
     ``backend`` 可注入（測試用假 backend）；None 時在 :meth:`prepare`
-    才延遲 import TTS repo 的 ``VoxBackend``，模組頂層不碰 TTS repo。
+    才延遲 import Core 內 ``echo_tts`` 的 ``VoxBackend``，模組頂層不碰 echo_tts。
     """
 
     name = "vox"
@@ -77,7 +76,6 @@ class VoxSpeakStage:
         self,
         *,
         backend: Any | None = None,
-        tts_repo: str | Path | None = None,
         backend_config: dict | None = None,
         sample_rate: int = TTS_SAMPLE_RATE,
         language: str | None = None,
@@ -90,7 +88,6 @@ class VoxSpeakStage:
         secondary_pause_ms: float | None = None,
     ) -> None:
         self._backend = backend
-        self._tts_repo = Path(tts_repo) if tts_repo else None
         self.backend_config = backend_config
         self.sample_rate = sample_rate
         self.language = language
@@ -98,7 +95,7 @@ class VoxSpeakStage:
         """stage 預設語速；句子的 ``SpeechStyle.speed`` 非 1.0 時優先。
         都沒有就傳 None，由 backend 決定。"""
         self.sentence_buffer = sentence_buffer
-        self.queue_size = queue_size or int(config.get("ECHO_STREAM_VOX_QUEUE", "12"))
+        self.queue_size = queue_size or DEFAULT_QUEUE_SIZE
         """音訊通道上限（chunk 數）。VOX 一個 chunk 約 160ms，這個值就是合成能領先
         播放多少：IndexTTS 那組的 2（約 320ms）在句間換新一次 backend 呼叫、又和
         Whisper 搶 GPU 時會欠流（11/01 實測接縫雜音）。12 ≈ 1.9s 的餘裕；取消時
@@ -153,12 +150,14 @@ class VoxSpeakStage:
         self._prepared = True
 
     def _build_backend(self) -> Any:
-        """建立真的 VoxBackend。**只有這裡 import TTS repo。**"""
-        import importlib
+        """建立真的 VoxBackend（echo_tts 已遷入 Core）。**只有這裡 import echo_tts。**
 
-        config.ensure_subsystem("TTS", "echo_tts", self._tts_repo)
-        module = importlib.import_module(VOX_BACKEND_MODULE)
-        return module.VoxBackend(self.backend_config or {})
+        ``model_dir``／``lora_dir`` 未給時依 ``UEP_TTS_MODELS_DIR``（預設 ``~/.uep/models/vox``）補上。
+        """
+        from echo_tts.config.model_paths import with_default_vox_paths
+        from echo_tts.runtime.vox_backend import VoxBackend
+
+        return VoxBackend(with_default_vox_paths(self.backend_config))
 
     async def aclose(self) -> None:
         backend = self._backend

@@ -1,0 +1,23 @@
+# ══════════════════════════════════════════════════════════════
+#  本專案不維護獨立的虛擬環境與依賴清單。
+#
+#  所有測試子系統專案（TestSeparateSTTSystem、TestSeparateTTSSystem、
+#  TestSeperateMemorySystem、TestSeparateSessionControl 等）一律使用
+#  主專案 U.E.P-s-Core 的 Python 環境：
+#
+#    C:\Users\Bernie\source\repos\Unforgettableeternalproject\U.E.P-s-Core\env\
+#
+#  如需安裝新套件，請在主專案環境中執行：
+#    U.E.P-s-Core\env\Scripts\pip install <package>
+#
+#  測試與執行：
+#    test.bat          — 使用主專案 Python 跑 pytest
+#    run.bat           — 使用主專案 Python 啟動 CLI
+# ══════════════════════════════════════════════════════════════
+#
+#  ── IndexTTS 2.5 遷移新增相依（2026-08-19，已裝入主專案 env）──
+#    modelscope==1.27.0        （上游 infer 頂層 import）
+#    wetext>=0.0.9             （NeMo 文本正規化，Windows 用）
+#    descript-audiotools==0.7.2（s2mel dac 模組；注意會把 protobuf 降到 3.19.6）
+#    fugashi + unidic-lite     （日語 G2P；已改惰性載入，僅 language=ja 需要）
+# ══════════════════════════════════════════════════════════════

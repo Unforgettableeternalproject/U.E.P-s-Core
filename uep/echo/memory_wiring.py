@@ -97,7 +97,10 @@ class EchoEngineFactory:
         from echo_memory import MemoryEngine
         from echo_memory.namespace import resolve_namespace_path
 
-        check_embedding_index(resolve_namespace_path(Path(data_root), namespace_id), self._embedding_model)
+        ns_path = resolve_namespace_path(Path(data_root), namespace_id)
+        # EM 把索引存在 <namespace>/episodic/（engine: storage_path / "episodic"）；舊版面放在 namespace 根，兩處都檢查
+        for index_dir in (ns_path / "episodic", ns_path):
+            check_embedding_index(index_dir, self._embedding_model)
         if self._min_similarity is not None:
             # EM 的檢索下限只認 EM 全域設定（retrieve 未帶 min_similarity 時讀它），Access Layer 不逐次傳
             from echo_memory.config import get_config

@@ -4027,3 +4027,15 @@
 
 ---
 
+### fix: 記憶索引守門改檢查 episodic 子目錄. 11/02
+
+> Date: Mon, 02 Nov 2026 22:29:25 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `d79b5610865895875c1dc2310041f5ecab54014d`
+
+---
+

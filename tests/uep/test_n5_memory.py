@@ -77,12 +77,13 @@ def test_factory_遇舊目錄拒絕建_engine_且不動舊檔(tmp_path):
     from echo_memory.namespace import resolve_namespace_path
 
     old = resolve_namespace_path(tmp_path / "mem", "local-default")
-    _write_index(old, BGE_SMALL, 512)
-    snapshot = {p.name: p.read_bytes() for p in old.iterdir()}
+    episodic = old / "episodic"  # EM 實際存放位置（engine: storage_path / "episodic"）
+    _write_index(episodic, BGE_SMALL, 512)
+    snapshot = {p.name: p.read_bytes() for p in episodic.iterdir()}
     wiring = build_memory_wiring(embedding_backend="sentence-transformers", embedding_model=BGE_M3)
     with pytest.raises(EmbeddingIndexMismatch):
         wiring.engine_factory("local-default", tmp_path / "mem")
-    assert {p.name: p.read_bytes() for p in old.iterdir()} == snapshot
+    assert {p.name: p.read_bytes() for p in episodic.iterdir()} == snapshot
 
 
 def test_min_similarity_設定會套到_EM_全域設定(tmp_path):

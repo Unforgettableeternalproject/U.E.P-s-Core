@@ -32,7 +32,7 @@
 查事件：
 1. 新 Core 事件 → INDEX.md §4 查「事件名 → 定義檔 → 發布者／訂閱者」；定義與欄位以契約文件為準（INDEX §3 的連結）。
 2. 舊事件（`SystemEvent` 44 項）→ INDEX.md §4 legacy 區段指到 T-01 對照表 §4.1 的分類表，那裡有 file:line。
-3. 找不到才 `grep -rn "EVENT_NAME" uep/ core/ modules/`，並回頭補列。
+3. 找不到才 `grep -rn "EVENT_NAME" uep/ subsystems/`，並回頭補列。
 
 查契約：INDEX.md §3 找契約名 → 取得「定義檔／文件章節」與「權威擁有者」→ 對應的 INV 與驗證案例在契約文件內；契約對應的 V 項在 TRACKING.md 以契約名 grep。
 

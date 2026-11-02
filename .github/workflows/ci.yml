@@ -146,7 +146,7 @@ jobs:
           [ "${{ needs.lint.result }}" = "success" ] && [ "${{ needs.core.result }}" = "success" ] && [ "${{ needs.subsystems.result }}" = "success" ]
 
   # 注意：版本 tagging 由以下現有 workflow 處理：
-  #   - auto-version-tag.yml → develop 分支 config.yaml 版本變更時
+  #   - auto-version-tag.yml → develop 分支 pyproject.toml 版本變更時
   #   - hotfix-tag.yml → hotfix/* 分支推送時
   #   - release.yml → release/* PR 合併到 main 時
   #   - update-version-history.yml → 任何 tag 建立時

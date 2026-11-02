@@ -4015,3 +4015,15 @@
 
 ---
 
+### chore: 修正 Legacy 刪除後的引用. 11/02
+
+> Date: Mon, 02 Nov 2026 22:06:49 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `788704e15d144349d6c30861733a70b5664e27d3`
+
+---
+

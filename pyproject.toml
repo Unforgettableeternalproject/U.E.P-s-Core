@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "uep"
 version = "0.0.0"
-description = "U.E.P 新 Core（頂層 uep/ 套件；舊碼 core/、modules/ 原地保留）"
+description = "U.E.P 新 Core（頂層 uep/ 套件；舊碼已刪除，最後狀態見 tag legacy-final-v0.9.4）"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 # core：新 Core 本體，不含 torch
@@ -169,7 +169,7 @@ packages = [
 dev-mode-exact = true
 
 [tool.pytest.ini_options]
-# 新 Core 測試；legacy 測試仍以 unit_tests/、integration_tests/ 明確指定路徑執行
+# 新 Core 測試；子系統測試由 scripts/run_all_tests.ps1 在各自目錄執行
 testpaths = ["tests/uep"]
 # N1：自 ES 搬入的 tests/uep/stream 依賴 auto 模式（async 測試與 async fixture 不另標記）
 asyncio_mode = "auto"

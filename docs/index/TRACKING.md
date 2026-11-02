@@ -87,7 +87,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 
 | ID | 內容 | 影響的卡 | 對應 D |
 |---|---|---|---|
-| A1 | Core 從頭重新設計；`core/`、`modules/` 視為 legacy | T-08、T-09 | D16、D19 |
+| A1 | Core 從頭重新設計；core/、modules/ 視為 legacy | T-08、T-09 | D16、D19 |
 | A2 | 建立 Index 與 Tracking | T-02 | — |
 | A3 | 啟用 Lore Vault 任務層管理本次重構 | 全部 | — |
 | A4 | Event Bus 程式碼沿用並加 durable journal；Session 只沿用語意與 ID | T-08、T-09 | D16 |

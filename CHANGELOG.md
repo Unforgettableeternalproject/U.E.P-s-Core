@@ -3739,3 +3739,15 @@
 
 ---
 
+### chore: 導入 STT 子系統的 hatch 與環境設定. 11/02
+
+> Date: Mon, 02 Nov 2026 14:18:05 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `f7d350817c6203b81d88675d23e5f9e86e115643`
+
+---
+

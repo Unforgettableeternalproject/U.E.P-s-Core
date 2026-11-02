@@ -160,6 +160,8 @@ packages = [
     "subsystems/echo_memory/echo_memory",
     "subsystems/echo_memory/llm_integration",
     "subsystems/echo_memory/mcp_server",
+    # 子系統 STT：只保留 ASR 路徑（D103），其依賴（faster-whisper、opencc 等）已在 inference extra
+    "subsystems/echo_stt/echo_stt",
 ]
 # editable 只暴露各套件本身，不把 subsystems/<name>/ 放進 sys.path（避免 tests／configs／Entry 同名遮蔽）
 dev-mode-exact = true

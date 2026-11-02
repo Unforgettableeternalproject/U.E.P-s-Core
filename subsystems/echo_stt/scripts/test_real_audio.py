@@ -43,7 +43,7 @@ from echo_stt.core.multi_channel_schemas import TranscriptEntry
 from echo_stt.output.formatter import TranscriptFormatter
 
 console = Console()
-TEST_DIR = Path(__file__).resolve().parent.parent / "echo_stt" / "test_files"
+TEST_DIR = Path(__file__).resolve().parent.parent / "tests" / "data"
 
 
 def load_audio(path: Path, target_sr: int = 16000) -> np.ndarray:

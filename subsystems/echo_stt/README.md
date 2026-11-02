@@ -69,7 +69,6 @@ TestSeparateSTTSystem/
     ├── pipeline/          # Post-processing (hallucination filter, OpenCC s2twp)
     ├── recognition/       # Recognition modes (manual / continuous / streaming)
     ├── speaker/           # Speaker identification (pyannote embedding)
-    ├── test_files/        # Audio test files
     └── vad/               # Voice Activity Detection (Energy VAD + Silero VAD)
 ```
 

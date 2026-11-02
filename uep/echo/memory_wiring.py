@@ -114,6 +114,13 @@ class EchoEngineFactory:
         return MemoryEngine(**kwargs)
 
 
+def warmup_embedding(model: str, device: str) -> None:
+    """宿主啟動時預載行程共用的 sentence-transformers 模型（EM 的模組級 ``warmup``），之後所有 engine 共用同一份。"""
+    from echo_memory.storage.episodic import warmup
+
+    warmup(model, device)
+
+
 class QueryEmbedder:
     """量測用：與記憶檢索同一條 query embedding 路徑（``EpisodicMemory.generate_query_embedding``），不碰任何記憶資料
     （storage 指向呼叫端給的暫存目錄）。給 console ``/mem embed``。"""

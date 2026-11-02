@@ -3991,3 +3991,15 @@
 
 ---
 
+### docs: 舊架構文件移入 docs/archive/legacy-v0.9.4. 11/02
+
+> Date: Mon, 02 Nov 2026 22:04:02 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `ebe0b147bb5c666e94a7ec418bac1913ac3420a5`
+
+---
+

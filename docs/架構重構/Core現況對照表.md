@@ -16,7 +16,7 @@
   4. `pytest unit_tests/test_session_lifecycle.py`：21 passed、4 skipped。
   5. `importlib.machinery.PathFinder.find_spec('workflows', ['modules/sys_module'])`（只解析路徑、不執行模組）：解析到 `modules/sys_module/workflows/__init__.py`，即套件勝過同名 `workflows.py`。
 - 以上測試只證明單元層行為與可收集性，**不等於**端到端管線可運作。端到端（STT→NLP→LLM→TTS）沒有任何執行證據。
-- 設計主張來源縮寫：SDD = `docs/SDD/0x_*.md`；CLAUDE = 專案 `CLAUDE.md`。
+- 設計主張來源縮寫：SDD = `docs/archive/legacy-v0.9.4/SDD/0x_*.md`；CLAUDE = 專案 `CLAUDE.md`。
 
 ---
 

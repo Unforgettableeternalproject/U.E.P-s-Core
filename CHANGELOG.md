@@ -3955,3 +3955,15 @@
 
 ---
 
+### ci: CI 改為驗證新架構 (Py3.12/uv/PostgreSQL). 11/02
+
+> Date: Mon, 02 Nov 2026 21:37:46 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `fdb9b2de1fd00657c1e6fe319c36cda6c2db5cd8`
+
+---
+

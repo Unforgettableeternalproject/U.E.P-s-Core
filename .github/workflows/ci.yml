@@ -1,52 +1,149 @@
 name: CI
 
+# 驗證新架構：uep/ 本體 + subsystems/*（Python 3.12、uv 鎖定依賴）。
+# Legacy 的 core/、modules/、utils/、unit_tests/ 退場中，不再於 CI 檢查。
+#
+# CPU-only 範圍（不安裝 inference extra，即不裝 torch／voxcpm／faster-whisper 等 GPU 大套件，
+# 因 uv.lock 把 torch 鎖在 cu128 index，Linux 上會拉下數 GB 的 CUDA 套件）：
+#   - tests/uep                    ：全跑（需要 PostgreSQL，由 service container 提供）
+#   - subsystems/echo_thought_core ：全跑（排除 e2e marker）
+#   - subsystems/echo_memory       ：全跑（只需補裝 numpy 等純 CPU 依賴）
+#   - subsystems/echo_stt          ：跑除 tests/test_engine.py 以外的全部測試
+# 明確排除：
+#   - echo_stt/tests/test_engine.py：模組頂層 import torch，需 inference extra
+#   - subsystems/echo_tts 全部測試 ：所有測試模組都 import torch／omegaconf／soundfile 等推論依賴
+#   以上排除項目維持本機閘門（scripts/run_all_tests.ps1，GPU 環境）驗證。
+
 on:
   push:
-    branches: [main, develop, staging]
+    branches: [main, master, develop, staging]
   pull_request:
-    branches: [main, develop, staging]
+    branches: [main, master, develop, staging]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONIOENCODING: utf-8
+  CUDA_VISIBLE_DEVICES: ""
 
 jobs:
-  ci:
-    name: Lint & Test
+  lint:
+    name: Lint (ruff)
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        python-version: ['3.10']
-
+    timeout-minutes: 10
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: 'pip'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # 安裝主要依賴（跳過 GPU 相關的套件）
-          pip install pydantic pyyaml requests aiohttp websockets
-          pip install flake8 pytest
+        run: uv sync --frozen
 
-      - name: Lint (flake8)
-        run: python -m flake8 core/ modules/ utils/ --max-line-length=120 --count --show-source --statistics
-        # PR 時必須通過，普通 push 可以暫時跳過
-        continue-on-error: ${{ github.event_name != 'pull_request' }}
+      # 現況 uep/ 有約 69 項 ruff 違規（含 I001／RUF022 等多數可 --fix）；先不擋 CI，清理後移除 continue-on-error
+      - name: Ruff check uep/
+        run: uv run --frozen --no-sync ruff check uep/ --output-format=github
+        continue-on-error: true
 
-      - name: Unit tests
+  core:
+    name: Core tests (tests/uep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: uep
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      UEP_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/uep
+      # conftest 規定測試庫名必須以 _test 結尾，且不得與 UEP_DATABASE_URL 相同
+      UEP_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/uep_test
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # 只裝 core 依賴 + dev group；tests/uep/test_n5_memory.py 需要 numpy
+      - name: Install dependencies
         run: |
-          python -m pytest unit_tests/ -v --tb=short --no-header \
-            --ignore=unit_tests/test_stt_module.py \
-            --ignore=unit_tests/test_tts_module.py \
-            --ignore=unit_tests/test_llm_module.py \
-            --ignore=unit_tests/test_mem_module.py \
-            -k "not gpu and not cuda and not whisper and not faiss"
-        # 排除需要 GPU/模型的測試；PR 時其餘測試必須通過
-        continue-on-error: ${{ github.event_name != 'pull_request' }}
+          uv sync --frozen
+          uv pip install numpy==2.0.0
+
+      - name: Create test database
+        run: psql -h localhost -U postgres -c "CREATE DATABASE uep_test"
+
+      - name: Alembic upgrade head
+        run: uv run --frozen --no-sync alembic upgrade head
+
+      - name: tests/uep
+        run: uv run --frozen --no-sync pytest -p no:cacheprovider tests/uep -v --tb=short --durations=15
+
+  subsystems:
+    name: Subsystem tests (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: echo_thought_core
+            dir: subsystems/echo_thought_core
+            pytest_args: -o addopts= -m "not e2e"
+          - name: echo_memory
+            dir: subsystems/echo_memory
+            pytest_args: ""
+          - name: echo_stt
+            dir: subsystems/echo_stt
+            # test_engine.py 頂層 import torch，需 inference extra，CI 排除
+            pytest_args: --ignore=tests/test_engine.py
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # 各子系統測試的純 CPU 依賴版本與 pyproject.toml 的 inference extra 一致
+      - name: Install dependencies
+        run: |
+          uv sync --frozen
+          uv pip install numpy==2.0.0 networkx==3.7 apscheduler==3.11.2
+
+      # 各子系統 tests/ 同名、conftest 各自獨立，需在各自目錄以獨立行程執行
+      - name: pytest (${{ matrix.name }})
+        working-directory: ${{ matrix.dir }}
+        run: uv run --frozen --no-sync --project "$GITHUB_WORKSPACE" pytest -p no:cacheprovider ${{ matrix.pytest_args }} -v --tb=short --durations=15
+
+  # 彙總 job：沿用原本的 check 名稱「Lint & Test」，方便既有的 PR 規則／習慣對應
+  gate:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    needs: [lint, core, subsystems]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "lint=${{ needs.lint.result }} core=${{ needs.core.result }} subsystems=${{ needs.subsystems.result }}"
+          [ "${{ needs.lint.result }}" = "success" ] && [ "${{ needs.core.result }}" = "success" ] && [ "${{ needs.subsystems.result }}" = "success" ]
 
   # 注意：版本 tagging 由以下現有 workflow 處理：
   #   - auto-version-tag.yml → develop 分支 config.yaml 版本變更時

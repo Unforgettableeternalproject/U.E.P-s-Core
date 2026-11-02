@@ -3727,3 +3727,51 @@
 
 ---
 
+### Add 'subsystems/echo_stt/' from commit '8aa91268bbfcd5b42e1a3b10ff612699c9a22cc7'
+
+> Date: Mon, 02 Nov 2026 14:13:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `09ca366e630bdbe018da24587e2a3a91dea831da`
+
+---
+
+### chore: 導入 STT 子系統的 hatch 與環境設定. 11/02
+
+> Date: Mon, 02 Nov 2026 14:18:05 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `f7d350817c6203b81d88675d23e5f9e86e115643`
+
+---
+
+### feat: Core adapter 改用 Core 內的 echo_stt 並實作 console /stt. 11/02
+
+> Date: Mon, 02 Nov 2026 14:18:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `6f12e12741459046d28c476e3dde551a901303f4`
+
+---
+
+### docs: 新增 M3 STT 遷入完成紀錄與退役清單. 11/02
+
+> Date: Mon, 02 Nov 2026 14:41:53 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `f69ea1502058899b9d962c195c9fa4de8355a95c`
+
+---
+

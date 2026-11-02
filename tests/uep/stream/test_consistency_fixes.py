@@ -177,6 +177,12 @@ def test_STT_adapter不改寫load_config的全域快取(monkeypatch):
     assert shared["multi_channel"]["enabled"] is False, "全域快取被改寫"
     assert received[0]["multi_channel"]["enabled"] is True
 
+    # M3：device／model_size 覆寫也只落在深拷貝上（console /stt 的 CPU 守門用）
+    shared["whisper"] = {"device": "auto", "model_size": "large-v3-turbo"}
+    _EchoSttBackend(device="cpu", model_size="base")
+    assert shared["whisper"] == {"device": "auto", "model_size": "large-v3-turbo"}, "全域快取被改寫"
+    assert received[1]["whisper"] == {"device": "cpu", "model_size": "base"}
+
 
 # --- 整潔：並行安全探針 ---
 

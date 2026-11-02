@@ -43,7 +43,6 @@ class MultiChannelSttInputStage:
         self,
         *,
         backend: TranscriberBackend | None = None,
-        stt_repo: str | None = None,
         policy: TurnPolicy | None = None,
         language: str | None = None,
         min_confidence: float | None = None,
@@ -68,7 +67,6 @@ class MultiChannelSttInputStage:
     ) -> None:
         self._backend = backend
         self._owns_backend = backend is None
-        self._stt_repo = stt_repo
         self.policy = policy or TurnPolicy()
         self.language = language or config.get("ECHO_STREAM_STT_LANGUAGE")
         self.min_confidence = (
@@ -115,8 +113,7 @@ class MultiChannelSttInputStage:
         self._prepared = True
 
     def _build_backend(self) -> TranscriberBackend:
-        """建立真的 echo_stt backend。**只有這裡 import echo_stt**（經 input_stt）。"""
-        config.ensure_subsystem("STT", "echo_stt", self._stt_repo)
+        """建立真的 echo_stt backend。**只有這裡 import echo_stt**（經 input_stt；M3 起 echo_stt 在 Core 內）。"""
         return _EchoSttBackend(language=self.language)
 
     async def aclose(self) -> None:

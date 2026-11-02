@@ -1,0 +1,88 @@
+======================================================================
+TEST 1: English (en_test.wav, 19.7s)
+======================================================================
+
+Speaker [00:00.2]: Do you like pancakes?
+Speaker [00:02.0]: I do like pancakes a lot. They are sweet and delicious.
+Speaker [00:06.0]: especially with maple syrups on top. Magnificent. What?
+Speaker [00:10.1]: You prefer waffles over pancakes?
+Speaker [00:12.7]: I don't know about that. Waffles are good as well, but I do not like its texture.
+  [5 entries]
+
+======================================================================
+TEST 2: Chinese (zh_test.wav, 13.9s)
+======================================================================
+
+Speaker [00:00.2]: 莫夫從來都是最有優勢的一方
+Speaker [00:03.5]: 这规公的不只是他的知识以及计划能力 其领导能力与花束成功的 让很多原先的敌人愿意待在身旁为他公
+  [2 entries]
+
+======================================================================
+TEST 3: Dual Channel (EN + ZH parallel)
+======================================================================
+
+English [00:00.2]: Do you like pancakes?
+Chinese [00:00.3]: 莫夫從來都是最有優勢的一方
+English [00:02.0]: I do like pancakes a lot. They are sweet and delicious.
+Chinese [00:03.6]: 这规公的不只是他的知识以及计划能力 其领导能力与花束成功的 让很多原先的敌人愿意待在身旁为他公
+English [00:06.0]: especially with maple syrups on top. Magnificent. What?
+English [00:10.1]: You prefer waffles over pancakes?
+English [00:12.7]: I don't know about that. Waffles are good as well, but I do not like its texture.
+  [EN: 5 entries, ZH: 2 entries, Total: 7]
+
+======================================================================
+TEST 4: Discord Multi-Speaker (multi_test.mp3, 60.2s)
+======================================================================
+
+Discord [00:00.2]: Thank you very much.
+Discord [00:02.3]: I can't do it like that much.
+Discord [00:04.6]: 那我們就沒有花鐵了 因為壓力不太大 所以沒有花鐵 愛! 壓力 愛! 壓力 Matt 愛! 趕緊這個 沒有把自己講 愛!
+Discord [00:15.7]: 他辣的怎么还没有回来啊那个机
+Discord [00:19.2]: Thank you. Thank you.
+Discord [00:22.6]: 嗯? 嗯? 誰呢問? 假的呀? 假的 他 他被叫幫忙吧 還在幹嘛? 對啊 我其實沒聽到他做什麼 他 他就被抓走 準備被 everyone抓走去
+Discord [00:38.0]: You come out, but you don't have a sword.
+Discord [00:41.1]: 你去幹嘛了 對 對
+Discord [00:45.3]: Моя моя была была. Моя упутуетер.
+Discord [00:48.6]: then you might use
+  [10 entries, audio: 37.2s]
+
+--- SRT ---
+1
+00:00:00,201 --> 00:00:00,851
+[Discord] Thank you very much.
+
+2
+00:00:02,301 --> 00:00:02,951
+[Discord] I can't do it like that much.
+
+3
+00:00:04,601 --> 00:00:13,851
+[Discord] 那我們就沒有花鐵了 因為壓力不太大 所以沒有花鐵 愛! 壓力 愛! 壓力 Matt 愛! 趕緊這個 沒有把自己講 愛!
+
+4
+00:00:15,651 --> 00:00:18,351
+[Discord] 他辣的怎么还没有回来啊那个机
+
+5
+00:00:19,201 --> 00:00:21,501
+[Discord] Thank you. Thank you.
+
+6
+00:00:22,601 --> 00:00:37,801
+[Discord] 嗯? 嗯? 誰呢問? 假的呀? 假的 他 他被叫幫忙吧 還在幹嘛? 對啊 我其實沒聽到他做什麼 他 他就被抓走 準備被 everyone抓走去
+
+7
+00:00:38,001 --> 00:00:39,251
+[Discord] You come out, but you don't have a sword.
+
+8
+00:00:41,051 --> 00:00:43,451
+[Discord] 你去幹嘛了 對 對
+
+9
+00:00:45,301 --> 00:00:47,501
+[Discord] Моя моя была была. Моя упутуетер.
+
+10
+00:00:48,551 --> 00:00:49,151
+[Discord] then you might use

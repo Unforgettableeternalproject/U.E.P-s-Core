@@ -42,6 +42,7 @@ class UepSettings(BaseSettings):
     # 推理 Host 組裝（P3 S6，uep/echo/inference_wiring.py）：子系統 repo 路徑一律由設定明確給（不猜同層目錄；
     # ES 的同層猜測在非 editable 安裝下指向 site-packages 之上而失效）。未設定時對應的 stage 拒絕組裝。
     infer_tts_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_TTS_REPO")
+    # M3：echo_stt 已遷入 Core，此設定不再需要（相容讀取，設了會被忽略並警告一次）
     infer_stt_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_STT_REPO")
     # Session 已遷入 Core（subsystems/echo_thought_core）：預設不設，由 Core 的 editable 安裝提供；僅作可選覆寫
     infer_session_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_SESSION_REPO")

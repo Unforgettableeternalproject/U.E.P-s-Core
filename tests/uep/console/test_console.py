@@ -166,7 +166,7 @@ def test_cancel_stops_inflight_turn(make_console):
 
 # ---- 骨架與錯誤 ----
 
-@pytest.mark.parametrize("name", ["stt", "tts", "llm", "check"])
+@pytest.mark.parametrize("name", ["tts", "llm", "check"])
 def test_subsystem_namespaces_are_stubs(make_console, name):
     console, rt, out = make_console()
     console.execute(f"/{name}")

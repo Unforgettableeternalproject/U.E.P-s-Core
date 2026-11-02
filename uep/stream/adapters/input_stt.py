@@ -96,7 +96,6 @@ class SttInputStage:
         self,
         *,
         backend: TranscriberBackend | None = None,
-        stt_repo: str | None = None,
         turn_detector: TurnDetector | None = None,
         policy: TurnPolicy | None = None,
         vad: EnergyVad | None = None,
@@ -111,7 +110,6 @@ class SttInputStage:
         partial_min_speech_s: float = 2.0,
     ) -> None:
         self._backend = backend
-        self._stt_repo = stt_repo
         self.policy = policy or TurnPolicy()
         self.turn_detector = turn_detector or SilenceTurnDetector(self.policy)
         self.vad = vad or EnergyVad()
@@ -189,8 +187,7 @@ class SttInputStage:
         self._prepared = True
 
     def _build_backend(self) -> TranscriberBackend:
-        """建立真的 echo_stt backend。**只有這裡 import echo_stt。**"""
-        config.ensure_subsystem("STT", "echo_stt", self._stt_repo)
+        """建立真的 echo_stt backend。**只有這裡 import echo_stt**（M3 起 echo_stt 在 Core 內，直接 import）。"""
         return _EchoSttBackend(language=self.language)
 
     async def aclose(self) -> None:
@@ -389,7 +386,9 @@ class _EchoSttBackend:
     才加的東西，不該因為換了入口就丟掉。
     """
 
-    def __init__(self, language: str | None = None) -> None:
+    def __init__(
+        self, language: str | None = None, *, device: str | None = None, model_size: str | None = None
+    ) -> None:
         from echo_stt.core.config import load_config
         from echo_stt.core.multi_channel_engine import MultiChannelSTTEngine
 
@@ -399,6 +398,11 @@ class _EchoSttBackend:
         # transcribe_segment 需要引擎初始化，而初始化被 enabled 旗標擋著。
         # 這裡是程式化使用，不受子系統 yaml 的預設值管——強制打開。
         cfg.setdefault("multi_channel", {})["enabled"] = True
+        # 程式化覆寫（深拷貝後改，不污染全域快取）：console /stt 在未許可 GPU 時強制 CPU＋小模型
+        if device is not None:
+            cfg.setdefault("whisper", {})["device"] = device
+        if model_size is not None:
+            cfg.setdefault("whisper", {})["model_size"] = model_size
         self._language = language
         self._engine = MultiChannelSTTEngine(config=cfg)
         if not self._engine.initialize():
@@ -427,7 +431,11 @@ class _EchoSttBackend:
         self._engine.shutdown()
 
 
+# 公開別名：console `/stt` 等子系統隔離入口經 adapter 取得 backend，不直接 import echo_stt
+EchoSttBackend = _EchoSttBackend
+
 __all__ = [
+    "EchoSttBackend",
     "SttInputStage",
     "TranscriberBackend",
     "TranscriptionResult",

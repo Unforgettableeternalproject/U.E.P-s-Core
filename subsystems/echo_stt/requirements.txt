@@ -1,0 +1,16 @@
+# ══════════════════════════════════════════════════════════════
+#  本專案不維護獨立的虛擬環境與依賴清單。
+#
+#  所有測試子系統專案（TestSeparateSTTSystem、TestSeparateTTSSystem、
+#  TestSeperateMemorySystem、TestSeparateSessionControl 等）一律使用
+#  主專案 U.E.P-s-Core 的 Python 環境：
+#
+#    C:\Users\Bernie\source\repos\Unforgettableeternalproject\U.E.P-s-Core\env\
+#
+#  如需安裝新套件，請在主專案環境中執行：
+#    U.E.P-s-Core\env\Scripts\pip install <package>
+#
+#  測試與執行：
+#    test.bat          — 使用主專案 Python 跑 pytest
+#    run.bat           — 使用主專案 Python 啟動 CLI
+# ══════════════════════════════════════════════════════════════

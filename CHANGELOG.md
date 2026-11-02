@@ -3715,3 +3715,15 @@
 
 ---
 
+### feat: 新增 Core 端到端驗收 Console v0. 11/02
+
+> Date: Mon, 02 Nov 2026 14:11:56 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/n2-console`
+
+> Commit: `e4c1398be3f7d5250ebe9604f65da44dc58dd03f`
+
+---
+

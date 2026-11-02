@@ -43,7 +43,7 @@ param(
     [ValidateSet('es', 'em', 'stt', 'session', 'tts', 'core')]
     [string[]]$Only,
     [string]$SiblingRoot,
-    [string]$Python = (Join-Path $env:USERPROFILE '.uep\venv-inference-312\Scripts\python.exe'),
+    [string]$Python = (Join-Path $env:USERPROFILE '.uep\venv-inference-312-t211\Scripts\python.exe'),
     [int]$TimeoutSec = 600,
     [int]$CoreTimeoutSec = 1800,
     [string]$PytestExtra = '',

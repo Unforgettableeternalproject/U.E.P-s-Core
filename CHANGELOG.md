@@ -3655,3 +3655,15 @@
 
 ---
 
+### chore: 共用環境預設改為 torch 2.11 的 venv-inference-312-t211. 11/02
+
+> Date: Mon, 02 Nov 2026 12:47:39 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `53bd2b9d6e713aca939d5afdea2632b35ea95428`
+
+---
+

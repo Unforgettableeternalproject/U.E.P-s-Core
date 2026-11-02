@@ -1,4 +1,4 @@
-# 建置／更新共用推理環境（Python 3.12；預設 $env:USERPROFILE\.uep\venv-inference-312，不動 .venv、env/）。
+# 建置／更新共用推理環境（Python 3.12；預設 $env:USERPROFILE\.uep\venv-inference-312-t211，torch 2.11；舊 venv-inference-312 為 torch 2.7 回滾用，勿再更新）。
 # 用法：scripts/setup_infer_env.ps1 [-Es <路徑>] [-Tts <路徑>] [-Stt <路徑>] [-EnvPath <路徑>]
 # 第三方套件由 Core 的 uv.lock 管理（inference extra 加預設 dev group），以 --inexact 同步，不會移除已 editable 安裝的子系統。
 # Session（echo_thought_core）與記憶（echo_memory／llm_integration／mcp_server）已遷入 Core（subsystems/），
@@ -16,7 +16,7 @@ $sibling = Split-Path -Parent $root
 if (-not $Es) { $Es = Join-Path $sibling "Echo-Stream" }
 if (-not $Tts) { $Tts = Join-Path $sibling "TestSeparateTTSSystem" }
 if (-not $Stt) { $Stt = Join-Path $sibling "TestSeparateSTTSystem" }
-if (-not $EnvPath) { $EnvPath = Join-Path $env:USERPROFILE ".uep\venv-inference-312" }
+if (-not $EnvPath) { $EnvPath = Join-Path $env:USERPROFILE ".uep\venv-inference-312-t211" }
 Set-Location $root
 $env:UV_PROJECT_ENVIRONMENT = $EnvPath
 uv sync --frozen --extra inference --inexact

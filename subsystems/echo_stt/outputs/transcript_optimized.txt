@@ -1,0 +1,77 @@
+Echo STT Optimization Test Results
+Date: 2026-06-17
+Model: large-v3-turbo int8 | VAD: Silero | PostProcess: hallu_filter + s2twp
+
+======================================================================
+TEST 1: English (en_test.wav, 19.7s) [language=auto]
+======================================================================
+
+Speaker [00:00.7]: Do you like pancakes? I do like pancakes a lot. They are sweet and delicious. Especially with maple syrups on top. Magnificent. What? You prefer waffles over pancakes? Um, I don't know about that. Waffles are good as well.
+  [1 entries]
+
+======================================================================
+TEST 2: Chinese (zh_test.wav, 13.9s) [language=zh]
+======================================================================
+
+Speaker [00:00.5]: 莫夫從來都是最有優勢的一方
+  [1 entries]
+
+======================================================================
+TEST 3: Dual Channel (EN + ZH parallel) [language=auto]
+======================================================================
+
+English [00:00.4]: Do you like pancakes? I do like pancakes a lot. They are sweet and delicious. Especially with maple syrups on top. Magnificent. What? You prefer waffles over pancakes? Um, I don't know about that. Waffles are good as well.
+Chinese [00:00.7]: 莫夫從來都是最有優勢的一方
+  [EN: 1 entries, ZH: 1 entries, Total: 2]
+
+======================================================================
+TEST 4: Discord Multi-Speaker (multi_test.mp3, 60s) [language=zh]
+======================================================================
+
+Discord [00:01.6]: 佛羅戰士喔
+Discord [00:04.6]: 之前都說陳李仁真會玩 阿媽你比我還像陳李仁
+Discord [00:11.5]: 躺著玩,坐著玩,趴著玩,還是心搭最好玩 有點麻煩
+Discord [00:22.0]: 還是別人的G8最好玩
+Discord [00:26.0]: 還要別人這輩子算是沒了 我以為你也說兩個搖桿喜聞
+Discord [00:34.9]: 你才是城裡人吧 你在說什麼啊 都玩兩個了 那為什麼不玩三個 你怎麼可以這麼爛驚啊 人不可以這麼爛驚啊
+Discord [00:49.9]: 中文字幕志願者 李宗盛
+Discord [00:52.5]: 不可不可以嗎
+Discord [00:54.5]: 怎麼可以這麼拍 可以吧
+  [9 entries, audio: 42.1s, transcribe: 5.9s]
+
+--- SRT ---
+1
+00:00:01,558 --> 00:00:03,608
+[Discord] 佛羅戰士喔
+
+2
+00:00:04,608 --> 00:00:10,208
+[Discord] 之前都說陳李仁真會玩 阿媽你比我還像陳李仁
+
+3
+00:00:11,508 --> 00:00:16,558
+[Discord] 躺著玩,坐著玩,趴著玩,還是心搭最好玩 有點麻煩
+
+4
+00:00:21,958 --> 00:00:25,258
+[Discord] 還是別人的G8最好玩
+
+5
+00:00:25,958 --> 00:00:31,858
+[Discord] 還要別人這輩子算是沒了 我以為你也說兩個搖桿喜聞
+
+6
+00:00:34,858 --> 00:00:49,858
+[Discord] 你才是城裡人吧 你在說什麼啊 都玩兩個了 那為什麼不玩三個 你怎麼可以這麼爛驚啊 人不可以這麼爛驚啊
+
+7
+00:00:49,908 --> 00:00:51,458
+[Discord] 中文字幕志願者 李宗盛
+
+8
+00:00:52,458 --> 00:00:53,808
+[Discord] 不可不可以嗎
+
+9
+00:00:54,508 --> 00:00:56,808
+[Discord] 怎麼可以這麼拍 可以吧

@@ -3727,3 +3727,15 @@
 
 ---
 
+### Add 'subsystems/echo_stt/' from commit '8aa91268bbfcd5b42e1a3b10ff612699c9a22cc7'
+
+> Date: Mon, 02 Nov 2026 14:13:38 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m3-stt`
+
+> Commit: `09ca366e630bdbe018da24587e2a3a91dea831da`
+
+---
+

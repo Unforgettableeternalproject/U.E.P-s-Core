@@ -10,6 +10,11 @@
           "transcript": "咦，你今天怎麼這麼早？我還以為你要加班耶。先坐一下吧，我去倒杯水。",
           "method": "新參考音 c_t2 seed 9232（22.05 kHz，未加速；TTS-wt-model-eval outputs/new_ref_1102 new_neutral_ref_x1.0.wav）"
         },
+        "1.05": {
+          "wav": "zh_neutral_x1.05.wav",
+          "transcript": "咦，你今天怎麼這麼早？我還以為你要加班耶。先坐一下吧，我去倒杯水。",
+          "method": "由 zh_neutral_x1.0.wav（22.05 kHz 單聲道）直接以 WSOLA（audiotsm，保音高）加速 1.05 倍；保留 22.05 kHz 原取樣率、不降採樣到 16 kHz；逐字稿不變（9.30 s -> 8.80 s）"
+        },
         "1.1": {
           "wav": "zh_neutral_x1.1.wav",
           "transcript": "咦，你今天怎麼這麼早？我還以為你要加班耶。先坐一下吧，我去倒杯水。",

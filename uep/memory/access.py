@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import inspect
 import logging
 import re
 import threading
@@ -37,6 +36,7 @@ from uep.memory.protocol import (
     worst_status,
 )
 from uep.memory.sink import MEMORY_ACTOR, MEMORY_SOURCE
+from uep.stream.contracts import memory_tools as _contract
 
 logger = logging.getLogger("uep.memory.access")
 
@@ -51,29 +51,12 @@ _PRIVATE_SCOPE = re.compile(r"scope_private_([A-Za-z0-9]+)")
 TOOL_CLASSES: Mapping[str, str] = {
     "deep_recall": "internal_read", "force_remember": "reversible_local", "member_recall": "internal_read",
 }
-MEMBER_RECALL = "member_recall"
-# 與 ES 的 MEMBER_RECALL_SCHEMA 對齊（uep.stream.adapters.memory_echo，e31eac0；不 import）。真 echo_memory 的工具宣告
-# 沒有 member_recall，所以由 Access Layer 自己提供 schema 並直接實作（不走通用 tool backend）。
-MEMBER_RECALL_SCHEMA: Mapping[str, Any] = {
-    "name": MEMBER_RECALL,
-    "description": (
-        "查詢同一個伺服器裡某位成員在共享記憶中可被看到的內容（例如使用者問「你認識某某嗎？"
-        "他最近在玩什麼？」）。member 填成員的名稱；query 可選，填想了解的主題，留空則取最近的內容。"
-        "只在使用者明確問到特定成員時呼叫；查不到只代表目前沒有可用的共享內容。"
-        "Look up what is shared about one named member of this server; call only when the "
-        "user asks about that member."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "member": {"type": "string", "description": "成員名稱（顯示名稱或暱稱）。"},
-            "query": {"type": "string", "description": "想了解的主題，可留空。"},
-        },
-        "required": ["member"],
-    },
-}
-_UNKNOWN_MEMBER_LABEL = "這位成員"
-_MEMBER_LABEL_MAX = 40
+# member_recall 的 schema 與成員標籤常數取自共用契約（uep.stream.contracts.memory_tools，N5 去重）；Access Layer 為權威並再匯出。
+# 真 echo_memory 的工具宣告沒有 member_recall，所以由 Access Layer 自己提供 schema 並直接實作（不走通用 tool backend）。
+MEMBER_RECALL = _contract.MEMBER_RECALL
+MEMBER_RECALL_SCHEMA: Mapping[str, Any] = _contract.MEMBER_RECALL_SCHEMA
+_UNKNOWN_MEMBER_LABEL = _contract.UNKNOWN_MEMBER_LABEL
+_MEMBER_LABEL_MAX = _contract.MEMBER_LABEL_MAX_CHARS
 
 
 class MemoryRuntime(Protocol):
@@ -615,15 +598,7 @@ class MemoryAccessLayer:
             return {"success": False, "result": "tool failed", "code": "failed"}
 
 
-def _declares_param(fn: Any, name: str) -> bool:
-    """``fn`` 的簽名是否明確宣告名為 ``name`` 的參數；只有 ``**kwargs`` 或簽名讀不到都算否（與 ES 同規則）。"""
-    try:
-        param = inspect.signature(fn).parameters.get(name)
-    except (TypeError, ValueError):
-        return False
-    return param is not None and param.kind in (
-        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY,
-    )
+_declares_param = _contract.declares_param
 
 
 def _member_empty(label: str) -> str:

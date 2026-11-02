@@ -29,6 +29,7 @@ HELP_TEXT = """\
   /status            Presence／Interaction 軸、turn 狀態、host 健康
   /trace [all]       最近 turn 的 tracer 事件與延遲（all＝全部 turn 摘要）
   /mem [查詢]        記憶（v0 fake 模式未組裝記憶）
+  /mem embed <文字> [--device cpu|cuda] [--n 次數]   (a) 隔離：量 query embedding 載入／首查／p50／p95（cuda 需 UEP_E2E_ALLOW_GPU=1）
   /mic               麥克風輸入（尚未實作）
   /stt <wav> [--model 名] [--lang 碼]   (a) 隔離：以 Core adapter＋echo_stt 辨識 wav，印文字與耗時
                      （未設 UEP_E2E_ALLOW_GPU=1 時強制 CPU＋base 模型）
@@ -187,6 +188,12 @@ class Console:
         self.out("journal 事件：" + " > ".join(self._turn_kinds(turn_id)))
 
     def _mem(self, arg: str) -> None:
+        sub, _, rest = arg.strip().partition(" ")
+        if sub.lower() == "embed":
+            from uep.console.mem_cmd import run_mem_embed
+
+            run_mem_embed(rest, self.out)
+            return
         self.out("/mem：fake 模式未組裝記憶（A5 待 N5）。" + (f"查詢「{arg}」略過。" if arg else ""))
 
     def _mic(self, _arg: str) -> None:

@@ -41,12 +41,17 @@ class UepSettings(BaseSettings):
     # 未設定時不組裝真記憶（fail-closed，不猜預設位置）
     memory_data_root: Path | None = Field(default=None, validation_alias="UEP_MEMORY_DATA_ROOT")
     memory_device: str = Field(default="cpu", validation_alias="UEP_MEMORY_DEVICE")
-    # EM 已遷入 Core（subsystems/echo_memory），其 ``.env`` 查找不再落在舊 EM repo 根。真 engine 的 embedding 後端與模型
-    # 本來就只認建構參數（MemoryEngine 的參數預設，不讀 EMBEDDING_* 環境變數），所以這裡明確給出遷入前實際生效的值，
-    # 讓行為不隨 ``.env`` 位置改變而漂移。這是 Q8 裁決前的維持現狀做法；要改用 ollama 請設 UEP_MEMORY_EMBEDDING_*，
-    # 並注意 embedding 維度變動會讓既有資料目錄的索引判定需重建。API 金鑰不在此處，照舊由行程環境變數提供。
+    # N5（D103／D105 Q5）：Core 記憶路徑統一 ``BAAI/bge-m3``（1024 維），由 sentence-transformers 在本機直載，脫離 Ollama
+    # （bot 實測 Ollama embed 2004ms 超過 2.0s 上限而降級）。真 engine 的 embedding 後端與模型只認建構參數（MemoryEngine 的
+    # 參數預設，不讀 EMBEDDING_* 環境變數），所以這裡明確給出，不隨 ``.env`` 位置或行程環境漂移。
+    # 換模型必須用**全新的資料目錄**（``UEP_MEMORY_DATA_ROOT``，例如在舊目錄名後加 ``-bgem3``）：舊目錄的
+    # ``embedding_index.json`` 是 bge-small-zh（512 維），Core 的 EchoEngineFactory 偵測到 model／維度不符會拒絕建 engine，
+    # 不會悄悄重建或混用舊索引。舊目錄不動不刪。API 金鑰不在此處，照舊由行程環境變數提供。
     memory_embedding_backend: str | None = Field(default="sentence-transformers", validation_alias="UEP_MEMORY_EMBEDDING_BACKEND")
-    memory_embedding_model: str | None = Field(default="BAAI/bge-small-zh-v1.5", validation_alias="UEP_MEMORY_EMBEDDING_MODEL")
+    memory_embedding_model: str | None = Field(default="BAAI/bge-m3", validation_alias="UEP_MEMORY_EMBEDDING_MODEL")
+    # 向量檢索的 cosine 下限；未設時沿用 EM 的 ``RETRIEVAL_MIN_SIMILARITY``（預設 0.35）。bge-m3 對短中文的 cosine 分布偏高
+    # （N5 實測：相關 0.49–0.69、無關最近鄰 0.30–0.56，重疊大），0.35 幾乎不過濾；要收緊以 A5 實資料校準後在此設定。
+    memory_min_similarity: float | None = Field(default=None, validation_alias="UEP_MEMORY_MIN_SIMILARITY")
 
     # 推理 Host 組裝（P3 S6，uep/echo/inference_wiring.py）：子系統 repo 路徑一律由設定明確給（不猜同層目錄；
     # ES 的同層猜測在非 editable 安裝下指向 site-packages 之上而失效）。未設定時對應的 stage 拒絕組裝。

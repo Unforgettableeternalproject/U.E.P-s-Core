@@ -28,10 +28,10 @@ from uep.echo.memory import GuildRoster
 from uep.echo.metrics import Metrics
 from uep.memory.access import MEMBER_RECALL, TOOL_CLASSES
 from uep.memory.protocol import MemoryPort
+from uep.stream.contracts.memory_tools import DEFAULT_TOOL_MAX_CHARS
 
 logger = logging.getLogger("uep.echo.tools")
 
-DEFAULT_TOOL_MAX_CHARS = 1500
 MEMBER_NOT_FOUND = "無法確認是哪位成員，請先向使用者確認名字。"
 _NAME_MAX = 80
 ActionRecorder = Callable[[str, str, str, str], None]

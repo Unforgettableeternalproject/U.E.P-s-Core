@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -48,9 +47,6 @@ class IndexTTS2Backend:
             return
 
         validate_generation_paths(self.paths)
-        engine_root = str(self.paths.engine_root)
-        if engine_root not in sys.path:
-            sys.path.insert(0, engine_root)
 
         factory = self.engine_factory or self._default_engine_factory()
         self.engine = factory(
@@ -255,6 +251,6 @@ class IndexTTS2Backend:
 
     @staticmethod
     def _default_engine_factory() -> EngineFactory:
-        from modules.tts_module.lite_engine import IndexTTSLite
+        from echo_tts.modules.tts_module.lite_engine import IndexTTSLite
 
         return IndexTTSLite

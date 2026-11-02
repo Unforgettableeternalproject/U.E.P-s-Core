@@ -3799,3 +3799,15 @@
 
 ---
 
+### refactor: echo_tts 遷入後移除頂層 modules/utils 依賴並新增權重路徑解析. 11/02
+
+> Date: Mon, 02 Nov 2026 15:35:12 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `4ecba4fac8cfeb5150ec6ea59e38b4d7afabb5f5`
+
+---
+

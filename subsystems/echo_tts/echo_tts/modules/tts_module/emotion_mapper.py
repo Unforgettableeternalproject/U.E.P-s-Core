@@ -16,7 +16,7 @@ Status Manager (Plutchik's Wheel) → IndexTTS 8D Vector
 from typing import List, Dict, Optional
 
 try:
-    from utils.debug_helper import debug_log
+    from echo_tts.utils.log_helper import debug_log
 except ImportError:  # 獨立測試專案沒有主專案的 utils，退化成 no-op
     def debug_log(level: int, message: str) -> None:
         pass

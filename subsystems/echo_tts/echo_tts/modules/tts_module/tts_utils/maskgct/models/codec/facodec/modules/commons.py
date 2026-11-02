@@ -216,11 +216,11 @@ def load_F0_models(path):
 
 
 # Generators
-from modules.dac.model.dac import Encoder, Decoder
+from echo_tts.modules.tts_module.s2mel.dac.model.dac import Encoder, Decoder
 from .quantize import FAquantizer, FApredictors
 
 # Discriminators
-from modules.dac.model.discriminator import Discriminator
+from echo_tts.modules.tts_module.s2mel.dac.model.discriminator import Discriminator
 
 
 def build_model(args):

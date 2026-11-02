@@ -15,13 +15,7 @@ from .conformer.subsampling import (Conv2dSubsampling2,
                                                 Conv2dSubsampling8,
                                                 LinearNoSubsampling)
 
-try:
-    from tts_utils.common import make_pad_mask
-except ImportError:
-    import sys
-    import os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-    from tts_utils.common import make_pad_mask
+from ..tts_utils.common import make_pad_mask
 
 
 class PositionwiseFeedForward(torch.nn.Module):

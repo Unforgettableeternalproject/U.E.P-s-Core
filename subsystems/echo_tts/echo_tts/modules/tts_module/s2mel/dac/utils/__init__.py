@@ -3,7 +3,7 @@ from pathlib import Path
 import argbind
 from audiotools import ml
 
-from modules.tts_module.s2mel.dac import model
+from echo_tts.modules.tts_module.s2mel.dac import model
 
 DAC = model.DAC
 Accelerator = ml.Accelerator

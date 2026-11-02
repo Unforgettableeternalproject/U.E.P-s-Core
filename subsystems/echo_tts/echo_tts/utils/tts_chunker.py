@@ -3,7 +3,7 @@ import asyncio
 from typing import List, Optional, Dict, Any
 from collections import deque
 import time
-from utils.debug_helper import info_log, error_log, debug_log
+from echo_tts.utils.log_helper import info_log, error_log, debug_log
 
 class TTSChunker:
     def __init__(self, 

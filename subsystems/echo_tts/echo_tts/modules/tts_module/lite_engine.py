@@ -47,7 +47,7 @@ if not hasattr(_pu, "is_torch_greater_or_equal_than_1_13"):
 
 # 導入系統日誌工具
 try:
-    from utils.debug_helper import debug_log, info_log, error_log
+    from echo_tts.utils.log_helper import debug_log, info_log, error_log
     _HAS_SYSTEM_LOG = True
 except ImportError:
     _HAS_SYSTEM_LOG = False

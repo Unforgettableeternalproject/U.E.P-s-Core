@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import sys
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+
+from echo_tts.config.model_paths import indextts_weights_root
 
 
 @dataclass(frozen=True)
@@ -32,16 +33,18 @@ class GenerationPaths:
 
 
 def default_generation_paths(project_root: str | Path | None = None) -> GenerationPaths:
-    root = Path(project_root or Path.cwd()).resolve()
+    # 未指定時以套件所在位置推算（遷入 Core 後不再依賴 cwd 或舊 TTS repo 路徑）
+    root = Path(project_root or Path(__file__).resolve().parents[2]).resolve()
     engine_root = root / "echo_tts"
     # IndexTTS 2.5 遷移（2026-08-19）：模型目錄與角色特徵切換至 v25
-    model_dir = engine_root / "modules" / "tts_module" / "checkpoints_v25"
+    weights_root = indextts_weights_root(engine_root)
+    model_dir = weights_root / "modules" / "tts_module" / "checkpoints_v25"
     return GenerationPaths(
         project_root=root,
         engine_root=engine_root,
         model_dir=model_dir,
         cfg_path=model_dir / "config.yaml",
-        character_path=engine_root / "models" / "tts" / "uep_v25.pt",
+        character_path=weights_root / "models" / "tts" / "uep_v25.pt",
     )
 
 
@@ -90,11 +93,8 @@ def generate_with_indextts2(
         output = paths.project_root / output
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    engine_root = str(paths.engine_root)
-    if engine_root not in sys.path:
-        sys.path.insert(0, engine_root)
 
-    from modules.tts_module.lite_engine import IndexTTSLite
+    from echo_tts.modules.tts_module.lite_engine import IndexTTSLite
 
     engine = IndexTTSLite(
         cfg_path=str(paths.cfg_path),

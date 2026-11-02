@@ -1,6 +1,6 @@
 from dac.nn.quantize import ResidualVectorQuantize
 from torch import nn
-from modules.wavenet import WN
+from .wavenet import WN
 import torch
 import torchaudio
 import torchaudio.functional as audio_F

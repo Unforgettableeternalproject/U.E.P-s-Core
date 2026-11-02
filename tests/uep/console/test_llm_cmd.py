@@ -58,3 +58,30 @@ def test_stream_失敗顯示原因():
             yield  # pragma: no cover
 
     assert "LLM 呼叫失敗" in _run("你好", factory=lambda cfg, prompt, tracer: Bad())
+
+
+def test_連續兩次呼叫_client_在同一_loop_內關閉且無未處理例外():
+    import asyncio
+    import gc
+
+    closed_loops: list[asyncio.AbstractEventLoop] = []
+
+    class Client:
+        """模擬綁 loop 的 async client：必須在建立它的 loop 還活著時關閉。"""
+
+        async def aclose(self):
+            closed_loops.append(asyncio.get_running_loop())
+
+    class Backend(_Backend):
+        _async_client = Client()
+
+        async def aclose(self):
+            await self._async_client.aclose()
+
+    def factory(cfg, prompt, tracer):
+        return LLMThinkStage(Backend(), system_prompt=prompt, tracer=tracer, config=cfg)
+
+    for _ in range(2):
+        assert "首句" in _run("你好", factory=factory)
+    gc.collect()
+    assert len(closed_loops) == 2 and all(lp.is_closed() for lp in closed_loops)

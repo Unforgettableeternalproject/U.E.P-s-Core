@@ -179,7 +179,7 @@ def test_mem_mic_help_unknown_and_quit(make_console):
     console.execute("/mic")
     console.execute("/help")
     console.execute("/nope")
-    assert "記憶" in out.text and "尚未實作" in out.text and "/say" in out.text and "未知指令 /nope" in out.text
+    assert "未組裝記憶" in out.text and "需要真實 STT" in out.text and "/say" in out.text and "未知指令 /nope" in out.text
     assert console.execute("/quit") is False
     assert console.execute("") is True
 

@@ -12,25 +12,32 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from uep.console.rig import CONSOLE_SPEAKER, ConsoleRuntime
+from uep.console.rig import CONSOLE_ACTOR, CONSOLE_SPEAKER, PRIVATE_SCOPE, ConsoleRuntime
 from uep.events.models import EventRow
 from uep.state.coordinator import Axis
 from uep.turn.models import UtteranceFact
 
 TERMINAL_EVENTS = ("turn.completed", "turn.cancelled", "turn.skipped")
 DEFAULT_WAIT_S = 15.0
+STT_WAIT_S = 60.0
+"""語音路徑等「辨識完成並開 turn」的上限（首次辨識含 CUDA 暖機餘波）。"""
+FEED_CHUNK_S = 0.1
+FEED_TAIL_SILENCE_S = 1.6
+"""餵完音訊後補的靜音長度，讓 VAD／turn 判定看到足夠的停頓而結束這句話。"""
 SUBSYSTEM_NAMESPACES = ("check",)
 
 HELP_TEXT = """\
 指令：
   /say <文字>        送出一句話（無指令的輸入行等同 /say），等該 turn 結束並顯示結果
-  /wav <路徑>        以音檔當輸入；fake 模式由 fake STT 產 utterance（不做真辨識）
+  /wav <路徑>        以音檔當輸入；real 模式經真實 STT（餵進 Host）跑整條 turn，fake 模式由 fake STT 產 utterance
   /cancel            取消進行中的 turn（宿主取消）
   /status            Presence／Interaction 軸、turn 狀態、host 健康
   /trace [all]       最近 turn 的 tracer 事件與延遲（all＝全部 turn 摘要）
-  /mem [查詢]        記憶（v0 fake 模式未組裝記憶）
+  /mem               real 模式：目前 namespace、episode 數、最近寫入（fake 模式未組裝記憶）
+  /mem recall <文字> real 模式：經 Core Access Layer 檢索（不排除任何 session）
+  /session new       開新 session（新 conversation／segment：清 Think 歷史，記憶不再因同 session 被排除）
   /mem embed <文字> [--device cpu|cuda] [--n 次數]   (a) 隔離：量 query embedding 載入／首查／p50／p95（cuda 需 UEP_E2E_ALLOW_GPU=1）
-  /mic               麥克風輸入（尚未實作）
+  /mic               麥克風輸入：Enter 開始、再按 Enter 結束，錄音送進 STT 跑整條 turn（需 real STT 與 sounddevice）
   /stt <wav> [--model 名] [--lang 碼]   (a) 隔離：以 Core adapter＋echo_stt 辨識 wav，印文字與耗時
                      （未設 UEP_E2E_ALLOW_GPU=1 時強制 CPU＋base 模型）
   /llm <文字>        (a) 隔離：直接呼叫 Think（真實 LLM），印切句與耗時（需 UEP_LLM_API_KEY）
@@ -45,15 +52,21 @@ class Console:
     """單一 Core 執行期的指令介面；``execute`` 回傳 False 表示要結束。"""
 
     def __init__(
-        self, runtime: ConsoleRuntime, out: Callable[[str], None] = print, wait_s: float = DEFAULT_WAIT_S
+        self, runtime: ConsoleRuntime, out: Callable[[str], None] = print, wait_s: float = DEFAULT_WAIT_S,
+        *, input_fn: Callable[[str], str] = input, mic_factory: Callable[[], object] | None = None,
+        stt_wait_s: float = STT_WAIT_S, feed_sleep: bool = True,
     ) -> None:
         self.rt = runtime
         self.out = out
         self.wait_s = wait_s
+        self.input_fn = input_fn
+        self.mic_factory = mic_factory
+        self.stt_wait_s = stt_wait_s
+        self.feed_sleep = feed_sleep
         self.last_turn_id: str | None = None
         self._commands: dict[str, Callable[[str], None]] = {
             "say": self._say, "wav": self._wav, "cancel": self._cancel, "status": self._status,
-            "trace": self._trace, "mem": self._mem, "mic": self._mic, "help": self._help, "stt": self._stt, "llm": self._llm, "tts": self._tts,
+            "trace": self._trace, "mem": self._mem, "session": self._session, "mic": self._mic, "help": self._help, "stt": self._stt, "llm": self._llm, "tts": self._tts,
         }
 
     def execute(self, line: str) -> bool:
@@ -96,6 +109,9 @@ class Console:
             self.out("用法：/wav <路徑>")
             return
         path = Path(arg.strip('"'))
+        if self.rt.input_stage is not None:
+            self._wav_real(path)
+            return
         try:
             with wave.open(str(path), "rb") as w:
                 seconds = w.getnframes() / float(w.getframerate())
@@ -107,26 +123,78 @@ class Console:
         self.out(f"fake STT：{text}")
         self._submit(text, duration_ms=int(seconds * 1000))
 
+    def _wav_real(self, path: Path) -> None:
+        from uep.console.stt_cmd import load_wav_16k_mono
+
+        try:
+            pcm, seconds = load_wav_16k_mono(path)
+        except (OSError, wave.Error, EOFError, ValueError) as exc:
+            self.out(f"無法讀取 wav：{path}（{type(exc).__name__}：{exc}）")
+            return
+        self.out(f"真實 STT：{path.name}（{seconds:.1f} 秒）餵入 Host…")
+        self._feed_audio(pcm)
+
+    def _feed_audio(self, pcm: bytes) -> None:
+        """16 kHz mono int16 PCM 分塊餵進 Host 的輸入 stage（含尾端靜音），等 STT 產生 utterance 與整個 turn 結束。"""
+        rt = self.rt
+        before = len(rt.submissions)
+        chunk = int(16000 * FEED_CHUNK_S) * 2
+        pcm = pcm + bytes(int(16000 * FEED_TAIL_SILENCE_S) * 2)
+        t0 = time.perf_counter()
+        for i in range(0, len(pcm), chunk):
+            if not rt.host.feed(CONSOLE_SPEAKER, pcm[i:i + chunk]):
+                self.out("音訊未被接受（Presence 非 ACTIVE 或輸入 stage 不可用）。")
+                return
+            if self.feed_sleep:
+                time.sleep(FEED_CHUNK_S / 10)  # 不即時，但避免瞬間塞滿聲道佇列
+        deadline = time.monotonic() + self.stt_wait_s
+        while len(rt.submissions) <= before and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if len(rt.submissions) <= before:
+            self.out(f"STT 在 {self.stt_wait_s:.0f} 秒內沒有產生 utterance（可能被幻覺過濾或為純雜訊）。")
+            return
+        fact, result = rt.submissions[before]
+        self.out(f"STT 辨識（餵入後 {time.perf_counter() - t0:.2f} 秒）：{fact.text}")
+        self._report_turn(result)
+
     def _submit(self, text: str, **over) -> None:
         rt = self.rt
         rt.seq += 1
         fact = UtteranceFact(speaker_ref=CONSOLE_SPEAKER, text=text, seq=rt.seq, **over)
-        result = rt.host.submit_utterance(fact)
+        self._report_turn(rt.host.submit_utterance(fact))
+
+    def _report_turn(self, result) -> None:
+        rt = self.rt
         if result.ticket is None:
             self.out(f"未開 turn：{result.reason_code}")
             return
         turn_id = result.ticket.turn_id
         self.last_turn_id = turn_id
+        started = time.perf_counter()
         kinds = self._wait_terminal(turn_id)
         if not kinds or kinds[-1] not in TERMINAL_EVENTS:
             self.out(f"turn {turn_id} 逾時未結束（{self.wait_s:.0f} 秒），事件：{' > '.join(kinds)}")
             return
-        self.out(f"turn {turn_id}：{kinds[-1]}")
-        reply = next((spoken for tid, spoken, _gen in rt.think.committed if tid == turn_id), None)
+        self.out(f"turn {turn_id}：{kinds[-1]}（{time.perf_counter() - started:.2f} 秒）")
+        reply = self._reply_text(turn_id) if kinds[-1] == "turn.completed" else None  # 被取消的輪沒有（完整）回應
         if reply:
             self.out(f"回應：{reply}")
+        trace = rt.tracer.get(turn_id)
+        if trace is not None and trace.ttfa_ms is not None:
+            self.out(f"TTFA：{trace.ttfa_ms:.0f} ms")
         for wav in rt.wavs.get(turn_id, []):
             self.out(f"音訊：{wav}（{_wav_seconds(wav):.1f} 秒）")
+
+    def _reply_text(self, turn_id: str) -> str | None:
+        """該 turn 的回應文字：fake Think 有 ``committed``；真實 Think 取歷史中最後一則 assistant（turn 已結束，輪是序列的）。"""
+        think = self.rt.think
+        committed = getattr(think, "committed", None)
+        if committed is not None:
+            return next((spoken for tid, spoken, _gen in committed if tid == turn_id), None)
+        for message in reversed(getattr(think, "history", [])):
+            if message.get("role") == "assistant":
+                return str(message.get("content", ""))
+        return None
 
     def _wait_terminal(self, turn_id: str) -> list[str]:
         deadline = time.monotonic() + self.wait_s
@@ -194,10 +262,72 @@ class Console:
 
             run_mem_embed(rest, self.out)
             return
-        self.out("/mem：fake 模式未組裝記憶（A5 待 N5）。" + (f"查詢「{arg}」略過。" if arg else ""))
+        rt = self.rt
+        if rt.memory_host is None:
+            self.out("/mem：此模式未組裝記憶（用 --mode real 或 --memory real）。" + (f"查詢「{arg}」略過。" if arg else ""))
+            return
+        if sub.lower() == "recall":
+            self._mem_recall(rest.strip())
+            return
+        from uep.console.real_rig import memory_status_lines
+
+        for line in memory_status_lines(rt.memory_host, rt.memory_root):
+            self.out(line)
+
+    def _mem_recall(self, query: str) -> None:
+        if not query:
+            self.out("用法：/mem recall <文字>")
+            return
+        t0 = time.perf_counter()
+        # session_id 給一個不存在的值：不排除任何既有 episode（展示記憶本身，不受目前 session 影響）
+        res = self.rt.memory_host.access.retrieve(
+            PRIVATE_SCOPE, query, PRIVATE_SCOPE, actor_id=CONSOLE_ACTOR, session_id="console_recall",
+        )
+        elapsed = time.perf_counter() - t0
+        reason = f"　原因={res.degraded_reason}" if res.degraded_reason else ""
+        self.out(f"recall（{elapsed * 1000:.0f} ms）狀態={res.memory_status.value}{reason}")
+        self.out(res.text.strip() or "（無命中）")
+
+    def _session(self, arg: str) -> None:
+        if arg.strip().lower() != "new":
+            self.out("用法：/session new")
+            return
+        from uep.ids import new_id
+        from uep.turn.models import SessionContext
+
+        old = self.rt.host._session
+        ctx = SessionContext(
+            conversation_id=new_id("conv"), segment_id=new_id("seg"), audience_scope=old.audience_scope,
+            session_ref=f"console{int(time.time() * 1000)}", platform=old.platform,
+        )
+        self.rt.host.set_session(ctx)
+        self.out(f"已開新 session：conversation={ctx.conversation_id}（Think 歷史已清，記憶不排除舊 session 的 episode）")
 
     def _mic(self, _arg: str) -> None:
-        self.out("/mic：麥克風輸入尚未實作（A4，待 M5）。")
+        rt = self.rt
+        if rt.input_stage is None:
+            self.out("/mic：需要真實 STT（--mode real 或 --stt real）。")
+            return
+        from uep.console.audio_io import AudioIoError, SoundDeviceMic
+
+        mic = self.mic_factory() if self.mic_factory is not None else SoundDeviceMic()
+        self.out("按 Enter 開始錄音…")
+        self.input_fn("")
+        try:
+            mic.start()
+        except AudioIoError as exc:
+            self.out(f"/mic：{exc}")
+            return
+        self.out("錄音中，再按 Enter 結束（建議戴耳機，外放會被麥克風收回而自我觸發）。")
+        try:
+            self.input_fn("")
+        finally:
+            pcm = mic.stop()
+        if not pcm:
+            self.out("沒有錄到音訊。")
+            return
+        self.out(f"錄到 {len(pcm) / 32000:.1f} 秒，送進 STT…")
+        self._feed_audio(pcm)
 
     def _stt(self, arg: str) -> None:
         from uep.console.stt_cmd import run_stt

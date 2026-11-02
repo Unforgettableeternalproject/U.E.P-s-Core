@@ -41,6 +41,8 @@ class UepSettings(BaseSettings):
     # 未設定時不組裝真記憶（fail-closed，不猜預設位置）
     memory_data_root: Path | None = Field(default=None, validation_alias="UEP_MEMORY_DATA_ROOT")
     memory_device: str = Field(default="cpu", validation_alias="UEP_MEMORY_DEVICE")
+    # bge-m3 embedding 的裝置（艾斯維爾裁決：預設 CPU）；未設時沿用 memory_device
+    memory_embedding_device: str | None = Field(default=None, validation_alias="UEP_MEMORY_EMBEDDING_DEVICE")
     # N5（D103／D105 Q5）：Core 記憶路徑統一 ``BAAI/bge-m3``（1024 維），由 sentence-transformers 在本機直載，脫離 Ollama
     # （bot 實測 Ollama embed 2004ms 超過 2.0s 上限而降級）。真 engine 的 embedding 後端與模型只認建構參數（MemoryEngine 的
     # 參數預設，不讀 EMBEDDING_* 環境變數），所以這裡明確給出，不隨 ``.env`` 位置或行程環境漂移。

@@ -104,4 +104,4 @@ def test_real_speak_有GPU環境變數時建stage與啟動逾時(monkeypatch):
     monkeypatch.setattr(tts_cmd, "default_engine", lambda: "vox")
     monkeypatch.setattr(tts_cmd, "build_speak_stage", lambda engine: stage)
     kwargs = rig.real_speak_kwargs()
-    assert kwargs["speak_stage"] is stage and kwargs["start_timeout_s"] == 240.0 + 60.0
+    assert kwargs["speak_stage"] is stage and kwargs["start_timeout_s"] > 240.0

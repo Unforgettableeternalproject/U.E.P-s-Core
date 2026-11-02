@@ -42,10 +42,11 @@ def parse_args(arg: str) -> tuple[str, str | None]:
 
 
 def default_engine() -> str:
-    """未指定 ``--engine`` 時取 Core 設定的引擎（``UEP_INFER_TTS_ENGINE``）。"""
+    """未指定 ``--engine`` 時取 ``UEP_INFER_TTS_ENGINE``；沒明確設定則預設 VOX。"""
     from uep.config import get_settings
+    from uep.console.real_rig import tts_engine
 
-    return get_settings().infer_tts_engine
+    return tts_engine(get_settings())
 
 
 def build_speak_stage(engine: str) -> Any:

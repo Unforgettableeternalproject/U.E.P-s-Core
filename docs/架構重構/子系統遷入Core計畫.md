@@ -899,6 +899,30 @@ STT／TTS／embedding 同卡共存壓力（D90）列為 A2–A4 的觀察項。�
 - **A5 自動化**（`tests/uep/test_n5_memory.py`）：新資料目錄下 寫入→recall、重啟同目錄仍可 recall、manifest 為 bge-m3／1024（確定性雜湊 embedder，不載模型）；舊 bge-small 目錄被拒且檔案不變；本機 HF 快取有 bge-m3 時多跑一個真模型 CPU 版（「我養了一隻叫小橘的貓」→「你記得我的寵物嗎」命中小橘；快取沒有就 skip，測試不下載）。「換 session 後問貓叫什麼」的真 LLM 手動段仍待 Core 真記憶組裝。
 - **測試**（`scripts/run_all_tests.ps1` 全套，共用環境 echo_tts 已切到 Core，無需 PYTHONPATH）：Core `tests/uep` 2404 pass／0 失敗（基線 2385／1 已知失敗；新增 19 個測試，`test_real_engine_smoke_through_host` 本次通過，未改其邏輯，原失敗原因未查明，不歸因於 bge-m3 切換）；EM 2166 pass／1 skip；STT 277；Session 294／18 skip；TTS 469／15 skip；ES 1003 pass／0 失敗（基線 2 項 test_web 切換效應失敗此次未出現）。bot repo 未修改，未跑其測試。
 
+**real 模式落地（2026-11-02，`feature/e2e-real`）**：`python -m uep.console --mode real` 一次組裝 STT／Think／Speak／記憶，A0–A5 皆可由人手動驗。
+
+- **組裝**：STT＝`MultiChannelSttInputStage`（echo_stt faster-whisper，設定檔 `stt_config.yaml`，音訊經 `host.feed`）；Think＝真實 LLM＋`UEP_INFER_SYSTEM_PROMPT`；Speak＝VOX 預設（明確設 `UEP_INFER_TTS_ENGINE` 才改）；記憶＝EM engine＋bge-m3，資料根取 `UEP_MEMORY_DATA_ROOT`，未設用全新開發目錄 `~/.uep/data/console-memory-bgem3`（啟動時印出路徑）。獨立旗標：`--stt|--tts|--think|--memory real|fake`、`--play`。
+- **embedding 裝置**：bge-m3 預設 **CPU**（艾斯維爾裁決），`UEP_MEMORY_EMBEDDING_DEVICE`（新增，其次 `UEP_MEMORY_DEVICE`）可覆寫。EM 的 sentence-transformers 模型已改為**行程共用**（模組級快取＋`warmup(model, device)`，commit af5ad72），console 於建 engine 前預載。
+- **GPU 守門**：真實 STT／TTS（或 embedding 設為非 cpu）需 `UEP_E2E_ALLOW_GPU=1`，否則 exit 2 並說明；缺 LLM 金鑰先於 GPU 守門報錯。
+- **warmup 與逾時**：記憶 embedding、TTS（VOX）、ASR（含一次推論暖機）、Think 皆在接受第一個輸入前完成，啟動時印各自耗時；Host 啟動逾時沿用 `UEP_INFER_HOST_START_TIMEOUT_S`，未設則 speak（VOX 240）＋think＋input prepare 逾時加 30 秒餘裕（288 秒）。
+- **指令**：`/wav <檔>` 在 real 模式分塊餵 Host 輸入 stage（尾端補 1.6 秒靜音）走真實 STT；`/mic` Enter 開始、Enter 結束（`sounddevice`，**共用環境目前未安裝**，需 `uv pip install sounddevice`，缺少時印安裝提示）；`/mem` 顯示 namespace／episode 數／最近寫入，`/mem recall <文字>` 走 Access Layer；`/session new` 開新 conversation／segment（清 Think 歷史，記憶才不因同 session 被排除）；音訊一律寫 wav，`--play` 同步本機播放（亦需 sounddevice；請戴耳機）。
+- **實跑（THEFANTASIAS，GPU：VOX＋whisper，bge-m3 CPU，此次為艾斯維爾釋出 GPU 時的一次實跑）**：warmup TTS 74–101 秒、STT 6–8 秒、記憶 embedding 17–25 秒（CPU 冷載，含首次）、Think 0 秒。三輪（介紹／養貓小橘／新 session 問寵物）TTFA 3179／1934／2662 ms，總耗時 13.3／7.0／8.1 秒；回應帶 U.E.P 人設；第三輪（新 session，Think 歷史已清）答出「小橘」，journal 有 `action.executed`（deep_recall），`/mem recall 寵物` 65 ms 命中 3 筆。GPU 總用量峰值 10.6 GB（基線 2.3 GB，增量約 8.3 GB）。`zh_test.wav`（13.9 秒）STT 1.65 秒出字「莫夫從來都是最有優勢的一方」，該 utterance 開的 turn 隨即被後續分段取消（長音檔被切成多個 utterance 的 barge-in 行為，非失敗）。
+- **後續補量**：GPU 讓給 bot 期間，A3/A4 的耳機、麥克風與 `--play` 路徑未實測（無 sounddevice）。
+
+**A0–A8 目前可驗狀態**：
+
+| # | 狀態 | 設備／前置 | 驗法 |
+|---|---|---|---|
+| A0 | 自動化通過 | PostgreSQL | pytest |
+| A1 | 通過（實跑） | API 金鑰 | `--mode real --tts fake --stt fake --memory fake` 或 real，`/say` |
+| A2 | 通過（實跑，TTFA 1.9–3.2 秒） | GPU＋`UEP_E2E_ALLOW_GPU=1` | `/say`，看 TTFA 與 wav |
+| A3 | `/wav` 通過（實跑）；與 LLM／TTS 串接見上 | GPU | `/wav subsystems/echo_stt/tests/data/zh_test.wav` |
+| A4 | 可手動驗，未實測 | GPU＋耳機＋`uv pip install sounddevice` | `--play`，`/mic`，說話中 `/cancel` |
+| A5 | 通過（實跑，新 session 命中） | bge-m3 CPU | 「我養了一隻叫小橘的貓」→`/session new`→「你記得我的寵物叫什麼嗎」 |
+| A6 | pytest 為主，console 無入口 | CPU | 待補（多人定址需平台 Adapter） |
+| A7 | 降級／Stop 有 pytest；Stop 實機未驗 | CPU／GPU | `--tts fake` 觀降級；實機待補 |
+| A8 | 數字已有一組（見上），未與 ES 基線 5.1 秒系統比對 | GPU | `/trace` |
+
 ## 6. git 歷史處理
 
 ### 6.1 三種做法比較

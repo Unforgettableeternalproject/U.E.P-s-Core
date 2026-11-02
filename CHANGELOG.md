@@ -3811,3 +3811,15 @@
 
 ---
 
+### feat: Core speak adapter 改用 Core 內 echo_tts 並實作 console /tts. 11/02
+
+> Date: Mon, 02 Nov 2026 15:35:22 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `1d4eafbfc2a833f14c8d313845b96f1b15067a20`
+
+---
+

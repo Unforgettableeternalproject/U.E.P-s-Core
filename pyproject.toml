@@ -162,6 +162,8 @@ packages = [
     "subsystems/echo_memory/mcp_server",
     # 子系統 STT：只保留 ASR 路徑（D103），其依賴（faster-whisper、opencc 等）已在 inference extra
     "subsystems/echo_stt/echo_stt",
+    # 子系統 TTS：IndexTTS2／VOX；依賴（voxcpm、torch、transformers、peft 等）已在 inference extra，權重不進 git（UEP_TTS_MODELS_DIR）
+    "subsystems/echo_tts/echo_tts",
 ]
 # editable 只暴露各套件本身，不把 subsystems/<name>/ 放進 sys.path（避免 tests／configs／Entry 同名遮蔽）
 dev-mode-exact = true

@@ -58,8 +58,8 @@ if (-not (Test-Path $Python)) { throw "找不到共用環境 Python：$Python" }
 if (-not $LogDir) { $LogDir = Join-Path $env:TEMP ("uep-gate\" + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-# 已遷入 Core 的子系統：不論 Layout 一律走 subsystems/<name>（M1：Session、M2：EM、M3：STT）。後續里程碑遷入時在此追加
-$migrated = @('session', 'em', 'stt')
+# 已遷入 Core 的子系統：不論 Layout 一律走 subsystems/<name>（M1：Session、M2：EM、M3：STT、M5：TTS）。後續里程碑遷入時在此追加
+$migrated = @('session', 'em', 'stt', 'tts')
 
 # 子系統名稱 -> 兄弟 repo 目錄名 / 遷入後 subsystems 下的目錄名 / 原本的 pytest 參數
 # Session 的 addopts 在遷入後已移除 --cov；此處仍以 -o addopts= 清掉並顯式保留 e2e 排除，與 M0 基線命令一致
@@ -102,6 +102,16 @@ function Read-Summary([string]$text) {
 if (-not $AllowGpu) { $env:CUDA_VISIBLE_DEVICES = '' }
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONDONTWRITEBYTECODE = '1'
+
+# M5：TTS 權重不進 git。未指定 UEP_TTS_INDEXTTS_DIR 時，過渡期沿用舊 TTS repo 內既有的 IndexTTS2 權重（不複製、不搬動）；
+# 權重搬到使用者決定的新位置後，設該環境變數即可，此段可移除（M6）。
+if (-not $env:UEP_TTS_INDEXTTS_DIR) {
+    $legacyTtsRoot = Join-Path $SiblingRoot 'TestSeparateTTSSystem\echo_tts'
+    if (Test-Path (Join-Path $legacyTtsRoot 'modules/tts_module/checkpoints_v25')) {
+        $env:UEP_TTS_INDEXTTS_DIR = $legacyTtsRoot
+        Write-Host "   TTS 權重: 沿用舊位置 $legacyTtsRoot（UEP_TTS_INDEXTTS_DIR）"
+    }
+}
 
 Write-Host "== 本地閘門  Layout=$Layout  GPU=$(if ($AllowGpu) { '允許' } else { '停用 (CUDA_VISIBLE_DEVICES=空)' })  逾時=${TimeoutSec}s (Core ${CoreTimeoutSec}s)"
 Write-Host "   Python : $Python"

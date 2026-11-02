@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 MODES = ("fake", "real")
 THINKS = ("fake", "real")
+TTS_CHOICES = ("fake", "real")
 PRIVATE_SCOPE = "scope_private_owner"
 CONSOLE_SPEAKER = "console:owner"
 DEFAULT_REPLY = "你好，我是回聲。今天天氣不錯。"
@@ -108,6 +109,7 @@ class ConsoleRuntime:
 def build_fake_runtime(
     session_factory: sessionmaker[Session], session_dir: Path, *, reply: str = DEFAULT_REPLY, with_tts: bool = True,
     start: bool = True, think_factory: Callable[[LatencyTracer], Any] | None = None,
+    speak_stage: Any | None = None, start_timeout_s: float | None = None,
 ) -> ConsoleRuntime:
     """fake speak 驅動的 Core：文字 → Coordinator → AdmittingSink → wav。
 
@@ -124,7 +126,9 @@ def build_fake_runtime(
         think = FakeThinkStage(
             responses=[reply], first_token_delay_s=0.0, token_interval_s=0.0, memory_delay_s=0.0, tracer=tracer,
         )
-    speak = FakeSpeakStage(first_chunk_extra_s=0.0, rtf=0.0)
+    # M5：speak_stage 給定時用真實 Speak（TTS adapter）；Host 啟動逾時需涵蓋模型載入
+    speak = speak_stage if speak_stage is not None else FakeSpeakStage(first_chunk_extra_s=0.0, rtf=0.0)
+    host_extra: dict[str, Any] = {} if start_timeout_s is None else {"start_timeout_s": start_timeout_s}
     runtime: ConsoleRuntime | None = None
 
     def on_flush(sink: ConsoleWavSink, path: Path) -> None:
@@ -150,7 +154,7 @@ def build_fake_runtime(
     host = EchoPipelineHost(
         publisher=publisher, think=think, speak=speak, sink_factory=sink_factory, session=session,
         identity=IdentityDirectory({CONSOLE_SPEAKER: "actor_a"}, {"actor_a": "owner"}), tracer=tracer,
-        endpoint_kwargs={"tick_interval": 0.05},
+        endpoint_kwargs={"tick_interval": 0.05}, **host_extra,
     )
     core = assemble_core(
         session_factory, bus=bus, publisher=publisher, control=InProcessControlChannel(), adapter=host.adapter,
@@ -183,17 +187,39 @@ def real_think_factory() -> Callable[[LatencyTracer], Any]:
     return factory
 
 
-def build_runtime(
-    mode: str, session_factory: sessionmaker[Session], session_dir: Path, *, think: str | None = None, **kwargs: Any,
-) -> ConsoleRuntime:
-    """``fake``：全 fake（A0）。``real``：Think 真實；STT／TTS 待 M3／M5 接線前仍為 fake。
+def real_speak_kwargs(env: dict[str, str] | None = None) -> dict[str, Any]:
+    """真實 Speak stage 與 Host 啟動逾時（M5）；TTS 需要 GPU，未設 ``UEP_E2E_ALLOW_GPU=1`` 拒絕（不載任何模型）。"""
+    from uep.console.tts_cmd import build_speak_stage, default_engine, gpu_allowed, prepare_timeout_s
 
-    ``think`` 可獨立覆寫（``--think``）：fake 模式配 ``--think real`` 即「Think 真實、STT／TTS fake」。
+    if not gpu_allowed(env):
+        raise ConsoleError("真實 TTS 需要 GPU：請確認 GPU 空閒後設 UEP_E2E_ALLOW_GPU=1，或改用 --tts fake")
+    engine = default_engine()
+    try:
+        stage = build_speak_stage(engine)
+    except Exception as exc:  # noqa: BLE001 - 轉成啟動失敗訊息
+        raise ConsoleError(f"TTS 後端建立失敗：{type(exc).__name__}：{exc}") from exc
+    # Host 啟動依序 prepare：speak 逾時 + 其餘 stage 的餘裕
+    return {"speak_stage": stage, "start_timeout_s": prepare_timeout_s(engine) + 60.0}
+
+
+def build_runtime(
+    mode: str, session_factory: sessionmaker[Session], session_dir: Path, *, think: str | None = None,
+    tts: str | None = None, **kwargs: Any,
+) -> ConsoleRuntime:
+    """``fake``：全 fake（A0）。``real``：Think 與 Speak（TTS）真實；STT 待接線前仍為 fake。
+
+    ``think``、``tts`` 可各自獨立覆寫（``--think``、``--tts``）：fake 模式配 ``--think real`` 即「Think 真實、STT／TTS fake」，
+    ``--mode real --tts fake`` 即「Think 真實、TTS fake」。真實 TTS 需 GPU 守門（``UEP_E2E_ALLOW_GPU=1``）。
     """
     if mode not in MODES:
         raise ConsoleError(f"未知的模式：{mode}（可用：{', '.join(MODES)}）")
     chosen = think or ("real" if mode == "real" else "fake")
     if chosen not in THINKS:
         raise ConsoleError(f"未知的 think：{chosen}（可用：{', '.join(THINKS)}）")
+    chosen_tts = tts or ("real" if mode == "real" else "fake")
+    if chosen_tts not in TTS_CHOICES:
+        raise ConsoleError(f"未知的 tts：{chosen_tts}（可用：{', '.join(TTS_CHOICES)}）")
     factory = real_think_factory() if chosen == "real" else None
+    if chosen_tts == "real":
+        kwargs.update(real_speak_kwargs())
     return build_fake_runtime(session_factory, session_dir, think_factory=factory, **kwargs)

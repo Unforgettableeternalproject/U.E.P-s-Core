@@ -114,17 +114,27 @@ def test_stt_模式選擇():
 
 
 def test_缺子系統路徑_fail_closed():
-    # 沒注入 backend 且沒設路徑：不猜同層目錄，直接拒絕組裝
-    with pytest.raises(InferenceWiringError, match="UEP_INFER_TTS_REPO"):
-        build_inference_wiring(InferenceConfig(), think_backend=FakeLlm(), stt_backend=FakeStt())
-    # STT 已遷入 Core（M3）：不設 UEP_INFER_STT_REPO 不再被拒絕（見 test_stt_不需路徑_設了會被忽略並警告一次）
-    # Session 已遷入 Core：不設 UEP_INFER_SESSION_REPO 不再被拒絕（見 test_think_backend_預設不需_session_路徑）
+    # TTS（M5）、STT（M3）、Session 都已遷入 Core：不設 *_REPO 不再被拒絕；只有 Session 的可選覆寫設了就必須存在
     with pytest.raises(InferenceWiringError, match="UEP_INFER_SESSION_REPO.*不存在"):
         default_think_backend(InferenceConfig(session_repo=Path("Z:/不存在的路徑")))
-    with pytest.raises(InferenceWiringError, match="不存在"):
+    # 沒設 TTS 路徑、也沒注入 backend：可組裝（backend 在 prepare 才建，這裡不載模型）
+    w = build_inference_wiring(InferenceConfig(), think_backend=FakeLlm(), stt_backend=FakeStt())
+    assert w.speak is not None
+
+
+def test_tts_不需路徑_設了會被忽略並警告一次(caplog, tmp_path):
+    import logging
+
+    import uep.echo.inference_wiring as iw
+
+    iw._TTS_REPO_WARNED = False
+    cfg = InferenceConfig(tts_repo=Path("Z:/不存在的路徑"))
+    with caplog.at_level(logging.WARNING, logger="uep.echo.inference_wiring"):
+        build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm(), stt_backend=FakeStt())
         build_inference_wiring(
-            InferenceConfig(tts_repo=Path("Z:/不存在的路徑")), think_backend=FakeLlm(), stt_backend=FakeStt(),
+            InferenceConfig(tts_engine="vox", tts_repo=tmp_path), think_backend=FakeLlm(), stt_backend=FakeStt(),
         )
+    assert len([r for r in caplog.records if "UEP_INFER_TTS_REPO" in r.getMessage()]) == 1
 
 
 def test_stt_不需路徑_設了會被忽略並警告一次(caplog, tmp_path):
@@ -133,12 +143,12 @@ def test_stt_不需路徑_設了會被忽略並警告一次(caplog, tmp_path):
     import uep.echo.inference_wiring as iw
 
     # 沒設路徑、沒注入 backend：可組裝（backend 在 prepare 才建，這裡不載模型）
-    w = build_inference_wiring(InferenceConfig(tts_repo=tmp_path), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+    w = build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
     assert w.input_stage is not None
     assert not hasattr(w.input_stage, "_stt_repo")
     # 設了舊路徑：忽略，且行程內只警告一次
     iw._STT_REPO_WARNED = False
-    cfg = InferenceConfig(tts_repo=tmp_path, stt_repo=Path("Z:/不存在的路徑"))
+    cfg = InferenceConfig(stt_repo=Path("Z:/不存在的路徑"))
     with caplog.at_level(logging.WARNING, logger="uep.echo.inference_wiring"):
         build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
         build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
@@ -368,7 +378,7 @@ def test_vox_引擎_參數映射_不傳_lora_與_warmup(monkeypatch, tmp_path):
         cfg, tts_backend_factory=boom, think_backend=FakeLlm(), stt_backend=FakeStt(),
     )
     assert isinstance(w.speak, fake_cls)
-    assert captured == {"tts_repo": str(tmp_path), "backend_config": {"cache_dir": "x"}}
+    assert captured == {"backend_config": {"cache_dir": "x"}}
     assert "lora_scale" not in captured and "warmup" not in captured
     # tts_speed／language 明確設定才傳
     captured.clear()

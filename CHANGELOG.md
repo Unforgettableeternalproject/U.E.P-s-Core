@@ -3823,3 +3823,15 @@
 
 ---
 
+### docs: 新增 M5 TTS 遷入完成紀錄與權重盤點. 11/02
+
+> Date: Mon, 02 Nov 2026 16:04:17 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/m5-tts`
+
+> Commit: `0dd0c5fcdc1f04d5f5a79a04227f07eb88af3df1`
+
+---
+

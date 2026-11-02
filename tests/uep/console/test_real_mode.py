@@ -114,7 +114,7 @@ def real_like(session_factory, tmp_path):
         out = Capture()
         made.append(rt)
         console = Console(
-            rt, out=out, wait_s=10.0, stt_wait_s=10.0, feed_sleep=False,
+            rt, out=out, wait_s=10.0, stt_wait_s=10.0, feed_sleep=False, settle_s=0.2,
             input_fn=lambda _p: "", mic_factory=over.pop("mic_factory", None),
         )
         return console, rt, out, stage
@@ -303,3 +303,52 @@ def test_記憶_embedding_預設_cpu_可由設定覆寫():
     assert real_rig.memory_device(UepSettings(_env_file=None, UEP_MEMORY_EMBEDDING_DEVICE=None)) == "cpu"
     assert real_rig.memory_device(types.SimpleNamespace(memory_embedding_device="cuda", memory_device="cpu")) == "cuda"
     assert real_rig.memory_device(types.SimpleNamespace(memory_embedding_device=None, memory_device="cuda")) == "cuda"
+
+
+# ---- /wav 長音檔：VAD 切成多段 utterance ----
+
+ZH_WAV = Path(__file__).resolve().parents[3] / "subsystems" / "echo_stt" / "tests" / "data" / "zh_test.wav"
+
+
+class _SeqBackend:
+    """假 STT backend：每段回「第 N 句」，記錄每段長度（秒）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    def transcribe(self, pcm: bytes, sample_rate: int):
+        from uep.stream.adapters.input_stt import TranscriptionResult
+
+        self.calls.append(len(pcm) / 2 / sample_rate)
+        return TranscriptionResult(text=f"第{len(self.calls)}句", language="zh", confidence=0.9)
+
+
+@pytest.mark.skipif(not ZH_WAV.exists(), reason="缺 zh_test.wav")
+def test_wav_長音檔被切成多句時追到最後一個_turn(session_factory, tmp_path):
+    """回歸：zh_test.wav 在 2.9–3.6 秒有 0.7 秒停頓，被切成兩句；後句開的 turn 依「同 owner 新回覆取代」
+    取消前句（設計行為）。原本 console 只追第一個 turn，因此回報「turn.cancelled」而跑不完整一輪。"""
+    from uep.fakes.stream.stages import FakeThinkStage
+    from uep.stream.adapters.input_multichannel import MultiChannelSttInputStage
+
+    backend = _SeqBackend()
+
+    def slow_think(tracer):
+        return FakeThinkStage(
+            responses=["好的，我來回答。"], first_token_delay_s=0.0, token_interval_s=0.5, memory_delay_s=0.0, tracer=tracer,
+        )
+
+    rt = build_fake_runtime(
+        session_factory, tmp_path / "e2e", input_stage=MultiChannelSttInputStage(backend=backend), think_factory=slow_think,
+    )
+    try:
+        out = Capture()
+        console = Console(rt, out=out, wait_s=20.0, stt_wait_s=20.0, feed_sleep=False, settle_s=3.0, input_fn=lambda _p: "")
+        console.execute(f"/wav {ZH_WAV}")
+        assert len(backend.calls) == 2 and len(rt.submissions) == 2  # VAD 把音檔切成兩段 utterance
+        first, second = (result.ticket.turn_id for _fact, result in rt.submissions)
+        assert f"turn {first}：turn.cancelled" in out.text  # 前句被後句取代（設計行為）
+        assert f"turn {second}：turn.completed" in out.text and "回應：好的，我來回答。" in out.text
+        assert console.last_turn_id == second
+        assert console._turn_kinds(first)[-1] == "turn.cancelled"
+    finally:
+        rt.core.shutdown()

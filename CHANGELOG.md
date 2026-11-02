@@ -3883,3 +3883,15 @@
 
 ---
 
+### fix: console /wav 長音檔多句時追到最後一個 turn. 11/02
+
+> Date: Mon, 02 Nov 2026 19:36:48 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `fix/wav-turn-cancel`
+
+> Commit: `a2cccdd2d1f43026cd0b3c10b538398c55ca3158`
+
+---
+

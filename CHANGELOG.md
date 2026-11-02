@@ -3859,3 +3859,15 @@
 
 ---
 
+### fix: /llm 的 async client 在同一 event loop 內關閉. 11/02
+
+> Date: Mon, 02 Nov 2026 19:16:05 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/e2e-real`
+
+> Commit: `fe32795b815cbe218234738059b5c91dc65cd208`
+
+---
+

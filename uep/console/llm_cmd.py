@@ -57,6 +57,20 @@ def run_coro(coro: Any) -> Any:
     return box.get("value")
 
 
+async def _close_stage(stage: Any) -> None:
+    """在當前 loop 內關閉 stage（優先 ``aclose``，其次 ``close``）；收尾失敗不影響結果顯示。"""
+    for name in ("aclose", "close"):
+        closer = getattr(stage, name, None)
+        if callable(closer):
+            try:
+                result = closer()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+
 def run_llm(
     arg: str,
     out: Callable[[str], None],
@@ -87,23 +101,19 @@ def run_llm(
     stamps: list[tuple[float, str]] = []
 
     async def _go() -> None:
-        async for sentence in stage.stream(utterance, CancellationToken()):
-            stamps.append((time.perf_counter() - t0, sentence.text))
+        # 串流與關閉必須在同一個 event loop 內：backend 的 async client（連線池）綁定建立它的 loop，
+        # 留到 GC 才 aclose 會排程到已關閉的 loop（Event loop is closed、Task exception never retrieved）
+        try:
+            async for sentence in stage.stream(utterance, CancellationToken()):
+                stamps.append((time.perf_counter() - t0, sentence.text))
+        finally:
+            await _close_stage(stage)
 
     try:
         run_coro(_go())
     except Exception as exc:  # noqa: BLE001
         out(f"LLM 呼叫失敗：{type(exc).__name__}：{exc}")
         return
-    finally:
-        close = getattr(stage, "close", None)
-        if callable(close):
-            try:
-                result = close()
-                if asyncio.iscoroutine(result):
-                    run_coro(result)
-            except Exception:  # noqa: BLE001 - 收尾失敗不影響結果顯示
-                pass
     total = time.perf_counter() - t0
     if not stamps:
         out(f"（無輸出句子）總耗時 {total:.2f} 秒")

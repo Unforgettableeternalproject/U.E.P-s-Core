@@ -166,6 +166,26 @@ def test_think_backend_預設不需_session_路徑(monkeypatch, tmp_path):
     assert seen["session_repo"] == str(tmp_path)  # 明確指定仍可覆寫
 
 
+def test_think_backend_有_ThinkConfig_時新名優先於舊_INFER_LLM(monkeypatch):
+    import uep.stream.adapters.think_llm as think_llm
+
+    for key in ("UEP_LLM_PROVIDER", "UEP_LLM_MODEL", "UEP_INFER_LLM_PROVIDER", "UEP_INFER_LLM_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("UEP_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("UEP_LLM_MODEL", "new-model")
+    monkeypatch.setenv("UEP_INFER_LLM_PROVIDER", "other")
+    monkeypatch.setenv("UEP_INFER_LLM_MODEL", "old-model")
+    seen: dict = {}
+    monkeypatch.setattr(
+        think_llm, "build_backend", lambda provider=None, **kw: seen.update(provider=provider, **kw) or "backend"
+    )
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert default_think_backend(cfg) == "backend"
+    assert seen["provider"] is None  # 交給 ThinkConfig（UEP_LLM_*）
+    assert "model" not in seen  # 不以舊 UEP_INFER_LLM_MODEL 覆寫
+    assert seen["config"].provider == "openai" and seen["config"].model == "new-model"
+
+
 def test_from_settings_讀環境變數(monkeypatch, tmp_path):
     monkeypatch.setenv("UEP_INFER_TTS_REPO", str(tmp_path))
     monkeypatch.setenv("UEP_INFER_STT_MODE", "single")

@@ -4039,3 +4039,15 @@
 
 ---
 
+### fix: 有 ThinkConfig 時不再套用舊 INFER_LLM 覆寫. 11/02
+
+> Date: Mon, 02 Nov 2026 22:29:55 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `ec48d5a9f34cb7f719cc76bff10e2e1174ca84a1`
+
+---
+

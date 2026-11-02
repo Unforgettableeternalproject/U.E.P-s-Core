@@ -308,11 +308,14 @@ def default_think_backend(cfg: InferenceConfig) -> Any:
     from uep.stream.adapters.think_llm import build_backend
 
     overrides: dict[str, Any] = {}
-    if cfg.llm_model:
-        overrides["model"] = cfg.llm_model
-    return build_backend(
-        cfg.llm_provider, session_repo=str(repo) if repo is not None else None, config=cfg.think, **overrides,
-    )
+    provider = None
+    if cfg.think is None:
+        # 沒有解析好的 ThinkConfig 的呼叫端才套舊的 UEP_INFER_LLM_* fallback；
+        # 有 ThinkConfig 時 provider／model 已依 UEP_LLM_* 優先解析，不可再被舊值覆寫
+        provider = cfg.llm_provider
+        if cfg.llm_model:
+            overrides["model"] = cfg.llm_model
+    return build_backend(provider, session_repo=str(repo) if repo is not None else None, config=cfg.think, **overrides)
 
 
 class _VoxUnavailableStage:

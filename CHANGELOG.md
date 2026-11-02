@@ -3895,3 +3895,15 @@
 
 ---
 
+### docs: 新增 Core 驗收 Console 使用指南. 11/02
+
+> Date: Mon, 02 Nov 2026 20:13:03 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/subsystem-migration`
+
+> Commit: `4991d1a7ab44d1143bb0a8abe57d736b82eaa2b2`
+
+---
+

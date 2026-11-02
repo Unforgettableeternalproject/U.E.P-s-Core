@@ -36,9 +36,9 @@ agent-candidates = [
 # inference：STT／TTS 等重型推論依賴（3.12 推理 Host，T-20；GPU 行為待基準比對）
 # 不收 fairseq、pyworld：只服務 deprecated/ 的 RVC，RVC 工具留在 Python 3.10 的 env/（A14）
 inference = [
-    "torch==2.7.0",
-    "torchaudio==2.7.0",
-    "torchvision==0.22.0",
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
+    "torchvision==0.26.0",
     "faster-whisper==1.2.1",
     "ctranslate2==4.8.0",
     "numpy==2.0.0",
@@ -82,7 +82,7 @@ inference = [
     # 原排除套件的 3.12 方案
     "PyAudio==0.2.14",
     "py-cord[voice]",
-    "triton-windows>=3.3,<3.4; sys_platform == 'win32'",
+    "triton-windows>=3.6,<3.7; sys_platform == 'win32'",
     "flash-attn; sys_platform == 'win32'",
     # VOX TTS：在現行 torch 2.7／transformers 4.48 下驗證；訓練與 WebUI 依賴由 override-dependencies 排除
     "voxcpm==2.0.3",
@@ -142,7 +142,7 @@ torch = [{ index = "pytorch-cu128", extra = "inference" }]
 torchaudio = [{ index = "pytorch-cu128", extra = "inference" }]
 torchvision = [{ index = "pytorch-cu128", extra = "inference" }]
 # 第三方預編 wheel（mjun0812，含 sm_100／sm_120，適用 RTX 5070 Ti）；官方無 Windows wheel
-flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.10/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" }
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" }
 # DAVE 支援的 py-cord（PR #3159），與 env/ 對齊；正式版 2.8.1 缺 Sink.__sink_listeners__
 py-cord = { git = "https://github.com/Pycord-Development/pycord", rev = "05cf65fa6d81567a8a4347ac961a093981554137", extra = "inference" }
 

@@ -3622,3 +3622,15 @@
 
 ---
 
+### chore: 試行升級 torch 2.11. 11/02
+
+> Date: Mon, 02 Nov 2026 12:26:58 +0800
+
+> Author: Bernie <ptyc4076@gmail.com>
+
+> Branch: `feature/torch-2.11`
+
+> Commit: `0253ce9e47f3fcac5d454e94d1df445f8c83eaa3`
+
+---
+

@@ -6,7 +6,7 @@ Runtime 是可替換的推理／工具迴圈，只能提出 RuntimeEvent；run�
 """
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
@@ -109,3 +109,72 @@ class Runtime(Protocol):
         ``status``、``degraded``、``partial``；不含 excluded_summary。
         """
         ...
+
+
+def check_tools_match_capability(
+    request: RuntimeRequest, tools: Sequence[Mapping[str, Any]], expected: Sequence[Mapping[str, Any]], *,
+    seq: int = 0, builtin_tools: Sequence[Any] = (),
+) -> RuntimeEvent | None:
+    """D60 啟動斷言（Agent 架構提案 §6.2、TC-1）：attempt 開始前，Runtime 把**將送給 provider 的 tools**（``tools``）
+    與 ``expected``（呼叫端傳入 ``uep.tools.render.render_tools(request.capability_set)`` 的結果）做**整份**比對：
+    名稱集合、每個工具的 ``type``／``description``／``parameters`` 都要相等，不重複，且沒有任何 hosted／built-in
+    工具（``builtin_tools`` 必須為空）；``expected`` 的名稱集合本身也必須等於 ``capability_set`` 的名稱集合。
+    項目必須是映射，裸字串之類一律不合法。全部符合回傳 None（可以啟動）。
+
+    否則回傳 ``error`` 事件 ``CAPABILITY_MISSING``（``retryable=False``），Runtime 須 yield 它並拒絕啟動，
+    不得送出請求。多給、少給、內容被改過都算。``detail`` 只含工具名稱與固定說明，不含 description／schema 內容。
+    這個檔案不 import uep.tools，避免協定層反向依賴；渲染由呼叫端負責。"""
+    capability_names = _capability_names(request.capability_set)
+    problems: list[str] = []
+    sent, sent_problem = _index_tools(tools)
+    wanted, wanted_problem = _index_tools(expected)
+    problems += sent_problem + [f"預期清單{p}" for p in wanted_problem]
+    if builtin_tools:
+        problems.append("hosted／built-in 工具必須為空")
+    if set(wanted) != capability_names:
+        problems.append("預期清單與 capability_set 的工具名稱不一致")
+    missing, extra = sorted(set(wanted) - set(sent)), sorted(set(sent) - set(wanted))
+    if missing:
+        problems.append(f"少給：{missing}")
+    if extra:
+        problems.append(f"多給：{extra}")
+    changed = sorted(n for n in set(sent) & set(wanted) if _plain(sent[n]) != _plain(wanted[n]))
+    if changed:
+        problems.append(f"內容與預期不符：{changed}")
+    if not problems:
+        return None
+    return RuntimeEvent(
+        attempt_id=request.attempt_id, seq=seq, kind="error",
+        error={"code": "CAPABILITY_MISSING", "retryable": False, "detail": "；".join(problems)},
+    )
+
+
+def _index_tools(tools: Sequence[Any]) -> tuple[dict[str, Mapping[str, Any]], list[str]]:
+    """name -> 工具項目；回報非映射、非 function、無名稱、重複的項目（不含內容）。"""
+    index: dict[str, Mapping[str, Any]] = {}
+    problems: list[str] = []
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, Mapping) else None
+        name = function.get("name") if isinstance(function, Mapping) else None
+        if not isinstance(tool, Mapping) or tool.get("type") != "function" or not isinstance(name, str) or not name:
+            problems.append("含非 function 型別或格式不合的工具項目")
+        elif name in index:
+            problems.append("tools 含重複名稱")
+        else:
+            index[name] = tool
+    return index, problems
+
+
+def _plain(node: Any) -> Any:
+    """映射／序列正規化成 dict／list，使唯讀視圖與一般容器可以比較。"""
+    if isinstance(node, Mapping):
+        return {k: _plain(v) for k, v in node.items()}
+    if isinstance(node, (list, tuple)):
+        return [_plain(v) for v in node]
+    return node
+
+
+def _capability_names(capability_set: Mapping[str, Any]) -> frozenset[str]:
+    tools = capability_set.get("tools", ()) if isinstance(capability_set, Mapping) else ()
+    names = (item.get("tool") if isinstance(item, Mapping) else item for item in tools)
+    return frozenset(n for n in names if isinstance(n, str) and n)

@@ -1,0 +1,75 @@
+{
+  "deep_recall": {
+    "additionalProperties": false,
+    "properties": {
+      "query": {
+        "description": "The search query to find relevant memories.",
+        "type": "string"
+      },
+      "top_k": {
+        "description": "Number of memories to retrieve (default 10, maximum 20).",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "type": "object"
+  },
+  "force_remember": {
+    "additionalProperties": false,
+    "properties": {
+      "content": {
+        "description": "The information to store in long-term memory.",
+        "type": "string"
+      },
+      "content_origin": {
+        "description": "Optional. Where the stored content actually came from: 'user' (the user said it), 'agent' (your own statement or inference), 'tool' (a tool result), or 'unknown'. Omit if you are not sure; omitted is recorded as 'unknown', never assumed to be the user.",
+        "enum": [
+          "user",
+          "agent",
+          "tool",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "origin_evidence_ids": {
+        "description": "Optional. Evidence ids (ev_...) of the earlier statements this content comes from, if you know them.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "reason": {
+        "description": "Why this information is important enough to remember.",
+        "type": "string"
+      },
+      "salience": {
+        "description": "Importance score between 0.0 and 1.0 (default 0.85). Higher means more important.",
+        "type": "number"
+      }
+    },
+    "required": [
+      "content",
+      "reason"
+    ],
+    "type": "object"
+  },
+  "member_recall": {
+    "additionalProperties": false,
+    "properties": {
+      "member": {
+        "description": "成員名稱（顯示名稱或暱稱）。",
+        "type": "string"
+      },
+      "query": {
+        "description": "想了解的主題，可留空。",
+        "type": "string"
+      }
+    },
+    "required": [
+      "member"
+    ],
+    "type": "object"
+  }
+}

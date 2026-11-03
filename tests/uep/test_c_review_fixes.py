@@ -21,7 +21,7 @@ from tests.uep.test_agent_tool_path import (
     _events,
 )
 from tests.uep.test_memory_tool_executor import CTX, RecordingPort, _params, make_roster
-from tests.uep.test_task_model import add_action, mgr  # noqa: F401  fixture 沿用 test_task_model
+from tests.uep.test_task_model import add_action, executor, mgr  # noqa: F401  mgr 依賴 executor，兩個 fixture 一併匯入
 from tests.uep.test_turn_task import events_of, force_status, turn_task
 from uep.adapters.tool import ToolCall
 from uep.stream.adapters.think_agent import AgentThinkStage
@@ -217,9 +217,9 @@ def test_db_stuck_tool_finish_is_bounded_action_unknown_and_task_failed(session_
 
     cache = TurnOutcomeCache()
     port = _BlockingPort()
-    executor = MemoryToolExecutor(port, make_roster(), cache=cache)
+    memory_executor = MemoryToolExecutor(port, make_roster(), cache=cache)
     tm = TaskManager(session_factory, EventPublisher(session_factory, EventBus()),
-                     {"core_memory": executor}, tool_resolver=memory_registry())
+                     {"core_memory": memory_executor}, tool_resolver=memory_registry())
     turns = AgentToolTurns(tm, memory_registry(), cache, finish_timeout_s=0.5)
     turn_id = new_id("turn")
     ctx = _ctx(turn_id)
@@ -263,9 +263,9 @@ def test_db_cancel_in_flight_leaves_correct_task_state_and_empty_cache(session_f
 
     cache = TurnOutcomeCache()
     slow = SlowPort()
-    executor = MemoryToolExecutor(slow, make_roster(), cache=cache)
+    memory_executor = MemoryToolExecutor(slow, make_roster(), cache=cache)
     tm = TaskManager(session_factory, EventPublisher(session_factory, EventBus()),
-                     {"core_memory": executor}, tool_resolver=memory_registry())
+                     {"core_memory": memory_executor}, tool_resolver=memory_registry())
     turns = AgentToolTurns(tm, memory_registry(), cache, finish_timeout_s=2.0)
     turn_id = new_id("turn")
     ctx = _ctx(turn_id)

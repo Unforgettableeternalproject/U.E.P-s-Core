@@ -52,6 +52,7 @@ from uep.stream.coordinator import TurnCoordinator
 from uep.stream.tracer import LatencyTracer
 
 from uep.contracts.presence import AcquireResult, GateDecision
+from uep.decision.hub import DecisionHub
 from uep.echo.config import EchoOutputConfig
 from uep.echo.endpoint import DeferredCoreApi, EchoEndpoint, StopNotice
 from uep.echo.loop import EsLoop
@@ -97,7 +98,8 @@ from uep.turn.orchestrator import (
     TurnOrchestrator,
     attempt_label,
 )
-from uep.turn.proposer import TickingProposer, TurnProposer
+from uep.turn.proposer import RespondProposer, TickingProposer, TurnProposer
+from uep.turn.registry import create_proposer
 from uep.turn.speech_filter import PassMarkerFilter
 from uep.turn.wake import WakeDetector
 
@@ -161,9 +163,10 @@ class EchoPipelineHost:
         roster: GuildRoster | None = None,
         proposer: TurnProposer | None = None,
         aggregator: TurnAggregator | None = None,
-        shadow_proposers: Sequence[TurnProposer] = (),
+        shadow_proposers: Sequence[TurnProposer] | None = None,
         on_shadow: Callable[[ShadowRecord], None] | None = None,
         decision: DecisionConfig | None = None,
+        decision_hub: DecisionHub | None = None,
         input_stage: Any = None,
         tracer: LatencyTracer | None = None,
         generations: TurnGenerations | None = None,
@@ -212,6 +215,15 @@ class EchoPipelineHost:
         if endpoint is None:
             self.endpoint.set_on_stop(self._on_endpoint_stop)
         wake = getattr(proposer, "wake", None)
+        # shadow：呼叫端明確傳入（含空序列）就以呼叫端為準；None 才依 DecisionConfig.shadow_proposer_ids 自動組裝
+        if shadow_proposers is None:
+            primary_id = getattr(proposer, "proposer_id", None) or RespondProposer.proposer_id
+            shadow_proposers = tuple(
+                create_proposer(pid, config=self._decision)
+                for pid in dict.fromkeys(self._decision.shadow_proposer_ids)
+                if pid != primary_id
+            )
+        self.decision_hub = decision_hub if decision_hub is not None else DecisionHub()
         self.orchestrator = TurnOrchestrator(
             publisher, self.generations, auth_provider=self.endpoint.lease_auth, persona_id=persona_id,
             proposer=proposer, aggregator=aggregator, shadow_proposers=shadow_proposers, on_shadow=on_shadow,
@@ -219,7 +231,7 @@ class EchoPipelineHost:
                 self._decision.gate, self._decision.bot_identity
             ),
             participants=self._participant_count, veto=self._veto, decision=self._decision,
-            identity=identity, snapshot_version=lambda: self.policy.version,
+            identity=identity, snapshot_version=lambda: self.policy.version, decision_hub=self.decision_hub,
         )
         self._wire_decision_slot()
         self._tick_thread: threading.Thread | None = None

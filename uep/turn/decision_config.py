@@ -118,3 +118,6 @@ class DecisionConfig:
     barge_in_cooldown_s: float = 8.0
     # 宿主驅動 ``Orchestrator.tick`` 的間隔（秒）；bot 的 tick 建議 200-500ms
     tick_interval_s: float = 0.25
+    # DL-1b：Host 自動組裝的 shadow proposer（``proposer_id``，經 registry 建立）；與主 proposer 同 id 者略過，空 tuple 關閉。
+    # 呼叫端明確傳入 shadow_proposers 時以呼叫端為準，不看此欄位
+    shadow_proposer_ids: tuple[str, ...] = ("rules.default",)

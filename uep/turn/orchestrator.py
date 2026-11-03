@@ -32,15 +32,22 @@ import logging
 import re
 import threading
 import time
-from collections import Counter, OrderedDict, deque
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future
-from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from secrets import token_hex
 
 from uep.contracts.presence import AuthorizationTuple
+from uep.decision.contracts import DecisionRequest
+from uep.decision.hub import DecisionHub
+from uep.decision.turn_reply import (
+    KIND_TURN_REPLY,
+    ShadowRecord,
+    TurnReplyEngine,
+    result_to_proposal,
+    turn_reply_spec,
+)
 from uep.events.envelope import EventDraft, TrustedContext
 from uep.events.publisher import EventPublisher
 from uep.ids import new_id
@@ -77,7 +84,6 @@ from uep.turn.proposer import (
     Interjection,
     ListenerAware,
     ParticipantAware,
-    ProposerGuard,
     RespondProposer,
     TickingProposer,
     TurnProposer,
@@ -141,21 +147,6 @@ class _Intake:
     trace_id: str | None
 
 
-@dataclass(frozen=True)
-class ShadowRecord:
-    """shadow proposer 與主 proposer 的比對（只在記憶體與 metrics，不寫 journal、不提 CC-7）。"""
-
-    candidate_id: str
-    shadow_id: str
-    primary_mode: str
-    primary_reason: str
-    shadow_mode: str | None  # None = 例外或驗證失敗
-    shadow_reason: str | None
-    agree: bool
-    status: str  # ok／error／late
-    elapsed_ms: int
-
-
 class TurnOrchestrator:
     def __init__(
         self,
@@ -195,11 +186,16 @@ class TurnOrchestrator:
         self._decision = decision or DecisionConfig()
         budget = self._decision.proposer_budget_ms
         self._budget_s: float | None = budget / 1000.0 if budget > 0 else None
-        self._guard = ProposerGuard("primary")
-        self._shadows = [(sp, ProposerGuard(f"shadow{i}")) for i, sp in enumerate(shadow_proposers)]
-        self._on_shadow = on_shadow
-        self.shadow_log: deque[ShadowRecord] = deque(maxlen=256)
-        self._shadow_pending: set[Future[object]] = set()
+        # DL-1 P0：primary／shadow proposer 與 guard 搬進中樞的 turn.reply engine；這裡保留別名供 tick、回饋與關閉使用
+        self._reply_engine = TurnReplyEngine(
+            self._proposer, budget_s=self._budget_s, metrics=self.metrics,
+            shadow_proposers=shadow_proposers, on_shadow=on_shadow,
+        )
+        self.hub = DecisionHub()
+        self.hub.register(turn_reply_spec(self._decision.proposer_budget_ms), self._reply_engine)
+        self._guard = self._reply_engine.guard
+        self._shadows = self._reply_engine.shadows
+        self.shadow_log = self._reply_engine.shadow_log
         self._identity = identity
         self._snapshot_version = snapshot_version
         self._ttl = ticket_ttl
@@ -247,12 +243,7 @@ class TurnOrchestrator:
 
     def wait_shadow(self, timeout: float | None = None) -> bool:
         """等所有進行中的 shadow 比對完成（測試與診斷用）；回傳是否全部完成。"""
-        with self._lock:
-            pending = set(self._shadow_pending)
-        if not pending:
-            return True
-        _done, not_done = futures_wait(pending, timeout=timeout)
-        return not not_done
+        return self._reply_engine.wait_shadow(timeout)
 
     def clear_aggregation(self) -> None:
         """audience 切換：丟棄 aggregator 內尚未成 turn 的緩衝，並讓 proposer 清掉它的狀態
@@ -524,31 +515,13 @@ class TurnOrchestrator:
         return dataclasses.replace(fact, speaker_ref=speaker, language=language)
 
     def _propose(self, candidate: TurnCandidate) -> Proposal:
-        """在 Core 端、預算內執行 proposer；逾時、例外、驗證失敗一律回 D80 預設並計 telemetry。
-
-        模型輸出視為不受信資料：只接受 schema 內的列舉與安全字元集（``validate_proposal``）。
-        """
-        proposal, status = self._guard.call(self._proposer.propose, candidate, self._budget_s)
-        if status == "busy":
-            # 上一個呼叫還沒回來（卡住）：立即回預設，不排隊也不等預算
-            self.metrics["proposer.busy"] += 1
-            result = fallback_proposal(candidate, "proposer_busy")
-        elif status == "timeout":
-            self.metrics["proposer.timeout"] += 1
-            result = fallback_proposal(candidate, "proposer_timeout")
-        elif status != "ok":
-            self.metrics["proposer.error"] += 1
-            result = fallback_proposal(candidate, "proposer_error")
-        else:
-            bad = validate_proposal(proposal)
-            if bad is None:
-                result = proposal
-            else:
-                logger.warning("Proposal 驗證失敗（%s），回預設", bad)
-                self.metrics["proposer.invalid"] += 1
-                result = fallback_proposal(candidate, "proposal_invalid")
-        self._run_shadows(candidate, result)
-        return result
+        """向決策中樞請求 ``turn.reply``；預算、busy／逾時／例外／驗證失敗的 D80 預設與 shadow 都在中樞內處理。"""
+        request = DecisionRequest(
+            request_id=f"{self.run_id}:{candidate.candidate_id}", kind=KIND_TURN_REPLY,
+            subject={"conversation_id": candidate.ctx.conversation_id, "candidate_id": candidate.candidate_id},
+            allowed_outcomes=tuple(m.value for m in ReplyMode), deadline=candidate.deadline, native=candidate,
+        )
+        return result_to_proposal(self.hub.decide(KIND_TURN_REPLY, request))
 
     def _apply_interaction(self, candidate: TurnCandidate, proposal: Proposal) -> Proposal:
         """Proposal.interaction_to 以 ``core.decision`` 向 CC-7 提請求（只在 Interaction 軸）。
@@ -592,61 +565,6 @@ class TurnOrchestrator:
             return rejected("decision.cc7_rejected")
         self.metrics["decision.cc7_accepted"] += 1
         return proposal
-
-    # ---- shadow mode ----
-
-    def _run_shadows(self, candidate: TurnCandidate, primary: Proposal) -> None:
-        """shadow proposer 與主決策同候選並行執行，只記錄差異：不寫 journal、不提 CC-7、不影響 ticket。"""
-        for shadow, guard in self._shadows:
-            started = time.monotonic()
-            future = guard.submit(shadow.propose, candidate)
-            if future is None:
-                self.metrics["shadow.skipped_busy"] += 1  # 上一個 shadow 呼叫還在跑：跳過，佇列有界
-                continue
-            with self._lock:
-                self._shadow_pending.add(future)
-            future.add_done_callback(
-                lambda f, g=shadow, c=candidate, p=primary, t=started: self._record_shadow(f, g, c, p, t)
-            )
-
-    def _record_shadow(
-        self, future: Future[object], shadow: TurnProposer, candidate: TurnCandidate, primary: Proposal, started: float
-    ) -> None:
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        shadow_id = getattr(shadow, "proposer_id", type(shadow).__name__)
-        mode: str | None = None
-        reason: str | None = None
-        status = "ok"
-        try:
-            result = future.result()
-            if validate_proposal(result) is not None:
-                status = "error"
-            else:
-                assert isinstance(result, Proposal)
-                mode, reason = result.reply_mode.value, result.reason_code
-                if result.proposer_id != "unknown":
-                    shadow_id = result.proposer_id
-                if self._budget_s is not None and elapsed_ms > self._budget_s * 1000:
-                    status = "late"
-        except BaseException:  # noqa: BLE001 - shadow 的任何失敗都只記錄
-            status = "error"
-        record = ShadowRecord(
-            candidate_id=candidate.candidate_id, shadow_id=str(shadow_id)[:64],
-            primary_mode=primary.reply_mode.value, primary_reason=primary.reason_code,
-            shadow_mode=mode, shadow_reason=reason, agree=mode == primary.reply_mode.value, status=status,
-            elapsed_ms=elapsed_ms,
-        )
-        self.shadow_log.append(record)
-        self.metrics[f"shadow.{'agree' if record.agree else 'disagree'}"] += 1
-        if status != "ok":
-            self.metrics[f"shadow.{status}"] += 1
-        if self._on_shadow is not None:
-            try:
-                self._on_shadow(record)
-            except Exception:
-                logger.exception("on_shadow 回呼失敗")
-        with self._lock:
-            self._shadow_pending.discard(future)
 
     def _skip(
         self, ctx: SessionContext, trace_id: str | None, cause_event_id: str | None, fact: UtteranceFact,

@@ -457,3 +457,53 @@ def test_orchestrator_attributes_share_state_with_engine():
     finally:
         orch.close()
     assert len(seen) == 1 and len(orch.shadow_log) == 1
+
+
+class _Full:
+    """實作所有選用 Port 的 proposer，記錄每個入口被呼叫的次數。"""
+
+    proposer_id = "full.p"
+
+    def __init__(self):
+        self.calls: Counter[str] = Counter()
+
+    def propose(self, candidate):
+        self.calls["propose"] += 1
+        return Proposal(reply_mode=ReplyMode.RESPOND, reason_code="full", proposer_id="full.p")
+
+    def tick(self):
+        self.calls["tick"] += 1
+        return []
+
+    def is_listener_continuation(self, text):
+        self.calls["listener"] += 1
+        return False
+
+    def on_audience_changed(self):
+        self.calls["audience"] += 1
+
+    def on_turn_started(self, turn_id, candidate_id, speakers):
+        self.calls["started"] += 1
+
+    def on_turn_outcome(self, facts):
+        self.calls["outcome"] += 1
+
+
+def test_replaced_proposer_is_the_single_target_of_decide_hooks_and_tick():
+    from uep.turn.models import UtteranceFact
+
+    old, new = _Full(), _Full()
+    orch = _orch(old)
+    try:
+        orch._proposer = new
+        orch._ctx = CTX  # 讓 tick 走到 proposer.tick（不需 DB，aggregator 預設逐句通過）
+        orch._propose(_cand())
+        assert orch.tick() == []
+        orch._listener_yield(UtteranceFact(speaker_ref="discord:1", text="hi", seq=1))
+        orch._feedback("on_turn_started", "t1", "cand1", ("discord:1",))
+        orch.clear_aggregation()
+        assert orch.proposer is new and orch._reply_engine.proposer is new
+    finally:
+        orch.close()
+    assert dict(new.calls) == {"propose": 1, "tick": 1, "listener": 1, "started": 1, "audience": 1}
+    assert not old.calls

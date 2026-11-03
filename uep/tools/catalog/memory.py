@@ -20,6 +20,8 @@ from uep.stream.contracts import memory_tools as _contract
 from uep.tools.registry import ToolRegistry
 
 MEMORY_EXECUTOR = "core_memory"
+# member_recall 需要的投影脈絡：場域（guild）成員名單。host 的曝光判斷與條目宣告共用這個常數。
+GUILD_ROSTER_CONTEXT = "guild_roster"
 
 # 工具結果（execute_tool 的回傳）形狀：失敗時帶 code（denied／timeout／failed）。
 MEMORY_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -112,7 +114,7 @@ def memory_entries() -> list[ToolEntry]:
                 input_schema=_contract.MEMBER_RECALL_SCHEMA["parameters"],
             ),
             # 取代 host._refresh_tools 內「有 guild 才曝光」的硬編碼；投影在切片 B 啟用。
-            scope=ToolScope(requires_context=frozenset({"guild_roster"})),
+            scope=ToolScope(requires_context=frozenset({GUILD_ROSTER_CONTEXT})),
             output_schema=MEMORY_OUTPUT_SCHEMA,
         ),
     ]

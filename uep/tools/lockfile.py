@@ -6,6 +6,7 @@ lockfile 入版控，變更在 PR diff 上可見。CI 測試（test_tool_registr
 from __future__ import annotations
 
 import json
+import logging
 
 from uep.tools.catalog.memory import memory_entries
 from uep.tools.registry import LOCKFILE_PATH, ToolRegistry
@@ -20,6 +21,10 @@ def render_lockfile(registry: ToolRegistry) -> str:
     return json.dumps(registry.lock_snapshot(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
+logger = logging.getLogger("uep.tools.lockfile")
+
+
 if __name__ == "__main__":
     LOCKFILE_PATH.write_text(render_lockfile(current_registry()), encoding="utf-8", newline="\n")
-    print(f"已寫入 {LOCKFILE_PATH}")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logger.info("已寫入 %s", LOCKFILE_PATH)

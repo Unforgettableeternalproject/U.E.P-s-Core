@@ -9,7 +9,6 @@ TaskManager 只依賴 ``uep.adapters.tool`` 的協定，不 import 本模組。
 """
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import re
@@ -38,6 +37,7 @@ from uep.adapters.tool import (
     ToolSpec,
     ToolVariant,
 )
+from uep.events.envelope import scope_rank
 from uep.tasks.manager import PolicyViolation, params_hash
 
 logger = logging.getLogger("uep.tools.registry")
@@ -91,6 +91,40 @@ class ToolRegistryError(ValueError):
         self.rule = rule
 
 
+def _freeze(node: Any) -> Any:
+    """遞迴唯讀化：映射 -> MappingProxyType，序列 -> tuple（呼叫端改不到註冊表內部）。"""
+    if isinstance(node, Mapping):
+        return MappingProxyType({k: _freeze(v) for k, v in node.items()})
+    if isinstance(node, (list, tuple)):
+        return tuple(_freeze(v) for v in node)
+    return node
+
+
+def _thaw(node: Any) -> Any:
+    """``_freeze`` 的反向：還原成可 JSON 序列化的 dict／list（新物件）。"""
+    if isinstance(node, Mapping):
+        return {k: _thaw(v) for k, v in node.items()}
+    if isinstance(node, (list, tuple)):
+        return [_thaw(v) for v in node]
+    return node
+
+
+_SCOPE_LEVELS = frozenset({"private", "group", "public"})
+
+
+def _valid_scope_ref(value: Any) -> bool:
+    """ScopeRef：層級簡寫（private／group／public，提案與目錄用法）或 ``scope_<level>_<id>`` 序列化字串。"""
+    if not isinstance(value, str):
+        return False
+    if value in _SCOPE_LEVELS:
+        return True
+    try:
+        scope_rank(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _literal_values(literal: Any) -> frozenset[str]:
     return frozenset(get_args(literal))
 
@@ -132,7 +166,7 @@ def compute_schema_hash(entry: ToolEntry, input_schema: Mapping[str, Any] | None
     schema = entry.descriptor.input_schema if input_schema is None else input_schema
     payload = {
         "name": entry.name,
-        "input_schema": json.loads(json.dumps(schema)),
+        "input_schema": json.loads(json.dumps(_thaw(schema))),
         "side_effect_class": spec.side_effect_class,
         "idempotency": spec.idempotency,
         "approval_level": spec.approval_level,
@@ -162,13 +196,19 @@ class ToolRegistry:
         known_modules: Iterable[str] = (),
         lockfile: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> ToolRegistry:
-        """驗證 RA-1～16。``lockfile`` 給了就做 RA-8 單調檢查（沒給略過，CI 測試負責整份比對）。"""
+        """驗證 RA-1～16。``lockfile`` 給了就做 RA-8 單調檢查（沒給略過，CI 測試負責整份比對）。
+
+        production 路徑預設不比對 lockfile（記憶體內建表，無執行期 I/O）；熱載入時拒絕 hash 變而版本未升的
+        條目，留待後續切片（§5.5 執行期防線，隨 mcp_static／platform_approved 載入實作）。
+        基準比對（同一個 PR 內改 schema 又重產 lockfile）由 CI 測試以 base 分支的 lockfile 傳入本參數。"""
         items = list(entries)
         by_name: dict[str, ToolEntry] = {}
         for entry in items:
             if not isinstance(entry, ToolEntry):
                 raise ToolRegistryError("RA-9", "註冊項必須是 ToolEntry")
-            if not _NAME_RE.fullmatch(entry.name or ""):
+            if not isinstance(entry.name, str):
+                raise ToolRegistryError("RA-9", f"name 必須是字串，收到 {type(entry.name).__name__}")
+            if not _NAME_RE.fullmatch(entry.name):
                 raise ToolRegistryError("RA-9", f"{entry.name!r}: 名稱不符 [a-z][a-z0-9_.]{{2,63}}")
             if entry.name in by_name:
                 raise ToolRegistryError("RA-9", f"{entry.name}: 名稱重複")
@@ -178,15 +218,20 @@ class ToolRegistry:
         for entry in items:
             cls._check_entry(entry)
             cls._check_composite(entry, by_name)
-            digest = compute_schema_hash(entry)
+            try:
+                digest = compute_schema_hash(entry)
+                variant_hashes = {
+                    f"{entry.name}@{platform}": compute_schema_hash(entry, variant.input_schema)
+                    for platform, variant in entry.scope.variants.items() if variant.input_schema is not None
+                }
+            except PolicyViolation:
+                raise ToolRegistryError("RA-8", f"{entry.name}: schema 超出 canonical 限制，無法計算 schema_hash") from None
             if entry.schema_hash and entry.schema_hash != digest:
                 raise ToolRegistryError("RA-8", f"{entry.name}: 手填的 schema_hash 與重算結果不符")
             hashes[entry.name] = digest
-            for platform, variant in entry.scope.variants.items():
-                if variant.input_schema is not None:
-                    hashes[f"{entry.name}@{platform}"] = compute_schema_hash(entry, variant.input_schema)
-            descriptor = replace(entry.descriptor, input_schema=copy.deepcopy(dict(entry.descriptor.input_schema)))
-            output = copy.deepcopy(dict(entry.output_schema)) if entry.output_schema is not None else None
+            hashes.update(variant_hashes)
+            descriptor = replace(entry.descriptor, input_schema=_freeze(entry.descriptor.input_schema))
+            output = _freeze(entry.output_schema) if entry.output_schema is not None else None
             frozen[entry.name] = replace(entry, schema_hash=digest, descriptor=descriptor, output_schema=output)
         if lockfile is not None:
             cls._check_lockfile(frozen, hashes, lockfile)
@@ -221,6 +266,9 @@ class ToolRegistry:
         for field_name, (value, literal) in domains.items():
             if value not in _literal_values(literal):
                 raise ToolRegistryError("RA-1", f"{name}: {field_name}={value!r} 不在值域內")
+        for field_name, value in (("result_scope", entry.result_scope), ("scope.data_scope", entry.scope.data_scope)):
+            if not _valid_scope_ref(value):
+                raise ToolRegistryError("RA-1", f"{name}: {field_name}={value!r} 不是合法 ScopeRef")
         # RA-2
         if spec.side_effect_class in ("external_effect", "high_impact") and spec.approval_level == "none":
             raise ToolRegistryError("RA-2", f"{name}: {spec.side_effect_class} 需要 approval_level >= per_action")
@@ -403,7 +451,7 @@ class ToolRegistry:
             "function": {
                 "name": entry.name,
                 "description": entry.descriptor.description,
-                "parameters": copy.deepcopy(dict(entry.descriptor.input_schema)),
+                "parameters": _thaw(entry.descriptor.input_schema),
             },
         }
 

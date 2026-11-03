@@ -72,7 +72,7 @@ from uep.memory.protocol import MemoryPort
 from uep.output.delivery import DeliveryEvidence
 from uep.output.delivery import DeliveryStatus as DS
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
-from uep.tools.catalog.memory import memory_registry
+from uep.tools.catalog.memory import GUILD_ROSTER_CONTEXT, memory_registry
 from uep.turn.aggregator import (
     ModeAwareAggregator,
     PassThroughAggregator,
@@ -774,7 +774,7 @@ class EchoPipelineHost:
             logger.exception("讀取記憶工具定義失敗")
             tools = []
         # 場域條件取自註冊表的 scope.requires_context（member_recall 需要 guild 成員名單），不再硬編碼工具名
-        available = frozenset({"guild_roster"}) if self._session.guild_id is not None else frozenset()
+        available = frozenset({GUILD_ROSTER_CONTEXT}) if self._session.guild_id is not None else frozenset()
         registry = memory_registry()
         self.think.tools = [
             d for d in tools

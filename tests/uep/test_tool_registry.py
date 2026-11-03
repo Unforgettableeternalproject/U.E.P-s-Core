@@ -4,6 +4,8 @@ from __future__ import annotations
 import ast
 import dataclasses
 import json
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -31,6 +33,7 @@ from uep.tools.catalog.memory import (
     DEEP_RECALL_SCHEMA,
     FORCE_REMEMBER_DESCRIPTION,
     FORCE_REMEMBER_SCHEMA,
+    GUILD_ROSTER_CONTEXT,
     MEMORY_OUTPUT_SCHEMA,
     memory_entries,
     memory_registry,
@@ -100,7 +103,7 @@ def test_golden_access_layer_tool_definitions_with_real_backend():
     assert derived.encode("utf-8") == _golden_text().encode("utf-8")
 
 
-@pytest.mark.parametrize("guild_id", [None, "123"])
+@pytest.mark.parametrize("guild_id", [None, "", "123"])
 def test_golden_host_refresh_tools_guild_gate(guild_id):
     """member_recall 只在有 guild 的 session 曝光；其餘輸出與黃金檔一致。"""
     fake = SimpleNamespace(
@@ -109,7 +112,7 @@ def test_golden_host_refresh_tools_guild_gate(guild_id):
     )
     EchoPipelineHost._refresh_tools(fake)  # type: ignore[arg-type]
     expected = json.loads(_golden_text())
-    if guild_id is None:
+    if guild_id is None:  # 空字串與舊版一致：視為有 guild（只有 None 才是沒有）
         expected = [d for d in expected if d["function"]["name"] != "member_recall"]
     assert json.dumps(fake.think.tools, ensure_ascii=False) == json.dumps(expected, ensure_ascii=False)
 
@@ -144,7 +147,7 @@ def test_memory_entries_are_builtin_global():
     for entry in memory_registry().entries().values():
         assert entry.spec.origin == "builtin" and entry.spec.provider == "core" and entry.spec.targeting == "core_local"
         assert entry.scope.platforms == frozenset()  # global
-    assert memory_registry().entry("member_recall").scope.requires_context == frozenset({"guild_roster"})
+    assert memory_registry().entry("member_recall").scope.requires_context == frozenset({GUILD_ROSTER_CONTEXT})
 
 
 def test_catalog_schemas_match_subsystem_declarations():
@@ -440,3 +443,86 @@ def test_catalog_schema_change_without_version_bump_fails_lock():
 
 def test_memory_output_schema_shape():
     assert MEMORY_OUTPUT_SCHEMA["required"] == ["success", "result"]
+
+
+# ---- 審查修正：基準 lockfile 比對、唯讀 schema、值域與錯誤轉換 ----
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LOCK_REL = "uep/tools/tools.lock.json"
+
+
+def _base_lockfile() -> dict[str, Any]:
+    """基準分支的 lockfile：依序嘗試 env ``UEP_TOOL_LOCK_BASE``、``origin/develop``；取不到就 skip 並寫明原因。
+    基準 ref 存在但還沒有 lockfile（本檔案由該 PR 新增）時，基準是空 lockfile。"""
+    refs = [r for r in (os.environ.get("UEP_TOOL_LOCK_BASE"), "origin/develop") if r]
+    reasons: list[str] = []
+    for ref in refs:
+        try:
+            probe = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            pytest.skip(f"無法執行 git（{type(exc).__name__}），略過基準 lockfile 比對")
+        if probe.returncode != 0:
+            reasons.append(f"{ref} 不存在（可能是 shallow clone 或未 fetch）")
+            continue
+        shown = subprocess.run(
+            ["git", "show", f"{ref}:{LOCK_REL}"], cwd=REPO_ROOT, capture_output=True, text=True,
+            encoding="utf-8", timeout=30, check=False,
+        )
+        if shown.returncode != 0:
+            return {}  # 基準尚無 lockfile：沒有可比對的舊條目
+        return json.loads(shown.stdout)
+    pytest.skip("取不到基準 lockfile：" + "；".join(reasons or ["沒有可用的基準 ref"]))
+
+
+def test_catalog_does_not_change_schema_without_version_bump_vs_base():
+    """RA-8 的 PR 層防線：同一個 PR 改 schema 又重新產生 lockfile，單看 lockfile 同步測試擋不住；
+    這裡改用基準分支的 lockfile 驗證 hash 變而 tool_version 未升。"""
+    ToolRegistry.build(memory_entries(), lockfile=_base_lockfile())
+
+
+def test_base_lockfile_comparison_catches_regenerated_lockfile():
+    """上面那個測試的機制本身：基準 lockfile 與現況 hash 不同且版本相同 ⇒ 失敗。"""
+    stale = {name: dict(info) for name, info in load_lockfile().items()}
+    stale["deep_recall"]["schema_hash"] = "0" * 64
+    with pytest.raises(ToolRegistryError) as exc:
+        ToolRegistry.build(memory_entries(), lockfile=stale)
+    assert exc.value.rule == "RA-8"
+    stale["deep_recall"]["tool_version"] = 0  # 基準版本較低 = 本 PR 有升版：通過
+    ToolRegistry.build(memory_entries(), lockfile=stale)
+
+
+def test_entries_are_read_only_to_callers():
+    registry = memory_registry()
+    for entry in (registry.entry("deep_recall"), *registry.entries().values()):
+        schema = entry.descriptor.input_schema
+        with pytest.raises(TypeError):
+            schema["properties"] = {}  # type: ignore[index]
+        with pytest.raises(TypeError):
+            next(iter(schema["properties"].values()))["type"] = "integer"  # type: ignore[index]
+        assert isinstance(schema["required"], tuple)  # list 已轉 tuple，無法 append
+        assert entry.output_schema is not None
+        with pytest.raises(TypeError):
+            entry.output_schema["properties"]["success"] = {}  # type: ignore[index]
+    derived = registry.llm_definitions()
+    derived[0]["function"]["parameters"]["properties"].clear()  # 衍生是新物件，改了也不影響註冊表
+    assert registry.llm_definitions()[0]["function"]["parameters"]["properties"]
+
+
+def test_oversized_schema_becomes_ra8_error():
+    huge = {"type": "object", "properties": {f"p{i}": {"type": "string", "description": "x" * 2000} for i in range(200)}}
+    assert rule_of(make_entry(descriptor=ToolDescriptor("d", huge))) == "RA-8"
+
+
+def test_ra9_non_string_name():
+    for bad in (None, 123, b"abc"):
+        assert rule_of(make_entry(name=bad)) == "RA-9"  # type: ignore[arg-type]
+
+
+def test_ra1_scope_domains():
+    assert rule_of(make_entry(result_scope="everyone")) == "RA-1"
+    assert rule_of(make_entry(result_scope=None)) == "RA-1"  # type: ignore[arg-type]
+    assert rule_of(make_entry(scope=ToolScope(data_scope="wide_open"))) == "RA-1"
+    ToolRegistry.build([make_entry(result_scope="group", scope=ToolScope(data_scope="scope_private_owner"))])

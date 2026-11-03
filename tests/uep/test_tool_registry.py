@@ -53,7 +53,7 @@ ACCESS_SRC = Path(access.__file__)
 
 _OBJ: dict[str, Any] = {
     "type": "object",
-    "properties": {"path": {"type": "string"}, "n": {"type": "integer"}, "tags": {"type": "array"}},
+    "properties": {"path": {"type": "string"}, "n": {"type": "integer"}, "tags": {"type": "array", "items": {"type": "string"}}},
     "required": ["path"],
 }
 _OUT: dict[str, Any] = {"type": "object", "properties": {"ok": {"type": "boolean"}}}

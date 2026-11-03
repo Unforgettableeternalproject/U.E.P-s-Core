@@ -9,10 +9,12 @@
 
 切片 B（§6.3）：建構時給了 ``registry`` 就在 capability 檢查之後做參數驗證（JSON Schema 子集、``injected_params``），
 失敗拋帶 ``fields``（違規欄位的 JSON Pointer，**不含值**）的 ``GatewayRejected``，由 ``rejection_view`` 組成回餵。
-沒給 ``registry`` 時維持切片 A 的行為（只做 capability 檢查），既有呼叫端不受影響。
+沒給 ``registry`` 時維持切片 A 的行為（只做 capability 檢查，``rejection_view`` 也回舊形狀：不帶 ``reason_code``／``fields``），
+既有呼叫端不受影響；帶 ``registry`` 時才會出現這兩個新欄位。
 """
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Literal
 
@@ -28,7 +30,6 @@ DEFAULT_SCOPE = "private"
 CAPABILITY_MISSING = "capability_missing"
 ARGS_NOT_MAPPING = "args_not_mapping"
 INVALID_TOOL_ARGS = "invalid_tool_args"
-PARAM_NOT_ALLOWED = "param_not_allowed"
 TOOL_UNKNOWN = "tool_unknown"
 INJECTED_PARAM_MISSING = "injected_param_missing"  # Core 組裝錯誤：宣告了 injected_params 卻沒提供值
 
@@ -63,10 +64,6 @@ def _variant_of(capability_set: Mapping[str, Any], tool: str) -> str | None:
     return None
 
 
-def _pointer_token(key: Any) -> str:
-    return str(key).replace("~", "~0").replace("/", "~1")[:80]
-
-
 def filter_tool_result(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """TG-9 過濾掛點（D56：首版全放行）。resume 路徑日後共用同一個函式；逐項 ``scope`` 缺則補預設。"""
     return [{"scope": DEFAULT_SCOPE, **item} for item in items]
@@ -81,28 +78,26 @@ class ToolGateway:
     ) -> dict[str, Any]:
         """通過回傳**驗證並注入後**的參數（新 dict）；不通過拋 ``GatewayRejected``（此時不得建 action）。
 
-        順序（SA-3）：capability -> 參數為物件 -> LLM 不得提供 ``injected_params``（``param_not_allowed``）
-        -> 以有效 schema 驗證（``invalid_tool_args``）-> 注入 Core 提供的值。注入發生在 ``params_hash`` 計算之前，
+        順序（SA-3）：capability -> 參數為物件 -> 以有效 schema 驗證（``invalid_tool_args``）-> 注入 Core 提供的值。
+        ``injected_params`` 不在 LLM 面 schema 內，LLM 若提供就是一般多餘欄位（同樣回 ``invalid_tool_args`` 與
+        ``/<unknown>``，不洩漏哪些欄位是注入的）。回傳值是深複本，呼叫端改它不會影響模型原始的 args。注入發生在 ``params_hash`` 計算之前，
         所以呼叫端必須用回傳值建 action（核准所見＝實際執行）。``injected`` 是 Core 持有的值（``venue`` 等）。"""
         if tool not in visible_tools(capability_set):
             raise GatewayRejected(CAPABILITY_MISSING, f"工具不在可見集合：{tool}")
         if not isinstance(args, Mapping):
             raise GatewayRejected(ARGS_NOT_MAPPING, "參數必須是物件")
         if self._registry is None:
-            return dict(args)
+            return copy.deepcopy(dict(args))
         try:
             entry = self._registry.entry(tool)
             schema = self._registry.effective_input_schema(tool, _variant_of(capability_set, tool))
         except PolicyViolation:
             raise GatewayRejected(TOOL_UNKNOWN, f"工具未註冊：{tool}") from None
         injected_names = entry.descriptor.injected_params
-        forbidden = [f"/{_pointer_token(k)}" for k in args if k in injected_names]
-        if forbidden:
-            raise GatewayRejected(PARAM_NOT_ALLOWED, "參數含 Core 注入欄位", fields=forbidden)
         violations = validate_args(schema, args)
         if violations:
             raise GatewayRejected(INVALID_TOOL_ARGS, "參數不符合 schema", fields=violations)
-        values = dict(args)
+        values = copy.deepcopy(dict(args))
         provided = injected or {}
         for name in injected_names:
             if name not in provided:
@@ -112,7 +107,9 @@ class ToolGateway:
 
     def rejection_view(self, exc: GatewayRejected) -> dict[str, Any]:
         """``check_intent`` 失敗的回餵（D61 只加不改）：``status=rejected`` 加選填 ``reason_code``／``fields``。
-        只有短碼與欄位路徑，沒有值、例外文字。"""
+        只有短碼與欄位路徑，沒有值、例外文字。沒給 registry 的 Gateway 回切片 A 的舊形狀（不帶新欄位）。"""
+        if self._registry is None:
+            return self.result_view("rejected")
         return self.result_view("rejected", reason_code=exc.code, fields=exc.fields)
 
     def result_view(

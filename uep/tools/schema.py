@@ -26,6 +26,11 @@ ALLOWED_KEYWORDS = frozenset({
 UNSUPPORTED_COMPOSITION = frozenset({"$ref", "$defs", "definitions", "oneOf", "anyOf", "allOf", "not"})
 MAX_SAFE_INTEGER = 2**53  # D53：超過的整數不可靠
 MAX_FIELDS = 16  # 回餵的違規欄位數上限
+UNKNOWN_FIELD = "<unknown>"  # 未知（模型自取的）鍵名一律以此占位，不回餵
+# validate_args 的硬上限（超過即違規，不展開檢查）：防止超大／超深參數拖慢驗證或 pattern 回溯
+MAX_NODES = 2048  # 一次驗證走訪的值節點總數（含物件鍵）
+MAX_STRING_LEN = 8192  # 單一字串長度；超過直接違規，所以 pattern 只會對 <= 此長度的字串執行
+MAX_ARRAY_LEN = 256  # 單一陣列長度
 MAX_POINTER_LEN = 120
 
 
@@ -77,6 +82,8 @@ def _lint_node(node: Any, where: str) -> str | None:
         return f"{where or '/'}: 非 object 節點不得有 properties／required／additionalProperties"
     if kind != "array" and "items" in node:
         return f"{where or '/'}: 非 array 節點不得有 items"
+    if kind == "array" and "items" not in node:
+        return f"{where or '/'}: array 必須宣告 items"
     if "enum" in node:
         values = node["enum"]
         if not isinstance(values, (list, tuple)) or not values or any(
@@ -139,12 +146,21 @@ def _escape(token: str) -> str:
     return token.replace("~", "~0").replace("/", "~1")
 
 
+class _LimitExceeded(Exception):
+    """走訪節點數超過 ``MAX_NODES``。"""
+
+
 def validate_args(schema: Mapping[str, Any], args: Any) -> list[str]:
     """依（已嚴格化的）schema 驗證 ``args``。回傳違規欄位的 JSON Pointer（根為 ``/``），無違規回 ``[]``。
 
-    輸出只由 schema 的欄位名與 args 的**鍵**組成，從不回傳值。缺必填、多餘欄位、型別／範圍／enum／pattern 不符都算。"""
+    輸出只由 schema 的欄位名組成，從不回傳值，也不回傳模型自取的鍵名（多餘欄位一律 ``/<unknown>``）。
+    缺必填、多餘欄位、型別／範圍／enum／pattern、超過硬上限（節點數、字串長度、陣列長度）都算違規。"""
     found: list[str] = []
-    _check(schema, args, "", found)
+    budget = [MAX_NODES]
+    try:
+        _check(schema, args, "", found, budget)
+    except _LimitExceeded:
+        found.append("")
     unique: list[str] = []
     for pointer in found:
         clipped = (pointer or "/")[:MAX_POINTER_LEN]
@@ -166,15 +182,19 @@ def _type_ok(kind: str, value: Any) -> bool:
         return isinstance(value, bool)
     if kind == "integer":  # 整數與浮點不混用（D53）：1.0 不是整數
         return isinstance(value, int) and not isinstance(value, bool) and abs(value) <= MAX_SAFE_INTEGER
-    if kind == "number":
-        return (
-            isinstance(value, (int, float)) and not isinstance(value, bool)
-            and (isinstance(value, int) or math.isfinite(value))
-        )
+    if kind == "number":  # 與 integer 一致（D53）：超過 2^53 的整數不可靠
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return abs(value) <= MAX_SAFE_INTEGER
+        return isinstance(value, float) and math.isfinite(value)
     return False
 
 
-def _check(node: Mapping[str, Any], value: Any, ptr: str, out: list[str]) -> None:
+def _check(node: Mapping[str, Any], value: Any, ptr: str, out: list[str], budget: list[int]) -> None:
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise _LimitExceeded
     kind = node.get("type")
     if not isinstance(kind, str) or not _type_ok(kind, value):
         out.append(ptr)
@@ -187,21 +207,32 @@ def _check(node: Mapping[str, Any], value: Any, ptr: str, out: list[str]) -> Non
         for name in node.get("required", ()):
             if name not in value:
                 out.append(f"{ptr}/{_escape(str(name))}")
+        if len(value) > MAX_NODES:
+            raise _LimitExceeded
         for key in value:
             child = props.get(key) if isinstance(key, str) else None
-            if child is None:  # 嚴格化後 additionalProperties 恆為 false：多餘欄位一律違規
-                out.append(f"{ptr}/{_escape(str(key))}")
+            if child is None:  # 嚴格化後 additionalProperties 恆為 false：多餘欄位一律違規，且不回餵鍵名
+                budget[0] -= 1
+                out.append(f"{ptr}/{UNKNOWN_FIELD}")
             else:
-                _check(child, value[key], f"{ptr}/{_escape(key)}", out)
+                _check(child, value[key], f"{ptr}/{_escape(key)}", out, budget)
     elif kind == "array":
+        if len(value) > MAX_ARRAY_LEN:
+            out.append(ptr)
+            return
         items = node.get("items")
         if isinstance(items, Mapping):
             for index, element in enumerate(value):
-                _check(items, element, f"{ptr}/{index}", out)
+                _check(items, element, f"{ptr}/{index}", out, budget)
     elif kind == "string":
-        too_short_or_long = len(value) < node.get("minLength", 0) or len(value) > node.get("maxLength", len(value))
-        if too_short_or_long or ("pattern" in node and re.search(node["pattern"], value) is None):
+        # 超長直接違規：pattern 只對有上限的字串執行
+        if (
+            len(value) > MAX_STRING_LEN
+            or len(value) < node.get("minLength", 0) or len(value) > node.get("maxLength", len(value))
+            or ("pattern" in node and re.search(node["pattern"], value) is None)
+        ):
             out.append(ptr)
-    elif kind in ("integer", "number"):
-        if value < node.get("minimum", value) or value > node.get("maximum", value):
-            out.append(ptr)
+    elif kind in ("integer", "number") and (
+        value < node.get("minimum", value) or value > node.get("maximum", value)
+    ):
+        out.append(ptr)

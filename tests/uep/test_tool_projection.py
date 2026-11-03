@@ -17,17 +17,17 @@ import pytest
 from tests.uep.test_tool_registry import GOLDEN, make_entry
 from uep.adapters.runtime import RuntimeRequest, check_tools_match_capability
 from uep.adapters.tool import CAPABILITY_CEILING, ToolDescriptor, ToolScope, ToolVariant
+from uep.tools import schema as schema_mod
 from uep.tools.catalog.memory import GUILD_ROSTER_CONTEXT, memory_registry
 from uep.tools.gateway import (
     CAPABILITY_MISSING,
     INVALID_TOOL_ARGS,
-    PARAM_NOT_ALLOWED,
     GatewayRejected,
     ToolGateway,
     visible_tools,
 )
 from uep.tools.projection import ProjectionContext
-from uep.tools.registry import ToolRegistry, ToolRegistryError
+from uep.tools.registry import ToolRegistry, ToolRegistryError, capability_names
 from uep.tools.render import render_tools
 from uep.tools.schema import lint_subset, strict_schema, validate_args
 
@@ -158,7 +158,7 @@ def test_audience_gate():
 
 def test_capability_set_shape_is_readonly_and_without_internals(registry):
     cs = registry.project(ALL_TAGS, ProjectionContext(platform="desktop"))
-    assert set(cs) == {"tools", "pending", "revision", "tags"}
+    assert set(cs) == {"tools", "pending", "revision", "tags", "narrowed_by_prior"}
     assert cs["tags"] == tuple(sorted(ALL_TAGS))
     for item in cs["tools"]:
         assert set(item) == {"tool", "version", "description", "input_schema", "variant"}
@@ -340,6 +340,11 @@ def _request(capability_set) -> RuntimeRequest:
     )
 
 
+def check(req, tools, **kw):
+    """D60 斷言：預期結果一律由 render_tools(capability_set) 產生，整份比對。"""
+    return check_tools_match_capability(req, tools, render_tools(req.capability_set), **kw)
+
+
 def test_render_tools_is_exactly_the_capability_set(registry):
     cs = registry.project(ALL_TAGS, ProjectionContext(platform="discord", presence_active_platforms=frozenset({"discord"})))
     tools = render_tools(cs)
@@ -348,7 +353,7 @@ def test_render_tools_is_exactly_the_capability_set(registry):
     assert all(set(t["function"]) == {"name", "description", "parameters"} for t in tools)
     tools[0]["function"]["parameters"]["properties"]["injected"] = {}  # 深複本：改不到投影結果
     assert "injected" not in cs["tools"][0]["input_schema"]["properties"]
-    assert check_tools_match_capability(_request(cs), render_tools(cs)) is None
+    assert check(_request(cs), render_tools(cs)) is None
 
 
 def test_render_rejects_malformed_capability_set_and_dialect(registry):
@@ -385,19 +390,19 @@ def test_d60_counterexamples_extra_and_missing_tools(registry):
     cs = registry.project(ALL_TAGS, ProjectionContext())
     good = render_tools(cs)
     req = _request(cs)
-    assert check_tools_match_capability(req, good) is None
+    assert check(req, good) is None
 
     extra = [*good, {"type": "function", "function": {"name": "sneaky.tool", "parameters": {}}}]
-    ev = check_tools_match_capability(req, extra, seq=3)
+    ev = check(req, extra, seq=3)
     assert ev is not None and ev.kind == "error" and ev.seq == 3 and ev.attempt_id == "att_1"
     assert ev.error["code"] == "CAPABILITY_MISSING" and ev.error["retryable"] is False
     assert "sneaky.tool" in ev.error["detail"]
 
-    ev = check_tools_match_capability(req, good[:-1])
+    ev = check(req, good[:-1])
     assert ev is not None and ev.error["code"] == "CAPABILITY_MISSING"
-    assert check_tools_match_capability(req, []) is not None  # 全部少給
-    assert check_tools_match_capability(_request({"tools": []}), good) is not None  # capability_set 空卻送出工具
-    assert check_tools_match_capability(_request({"tools": []}), []) is None  # 兩邊皆空：合法
+    assert check(req, []) is not None  # 全部少給
+    assert check(_request({"tools": []}), good) is not None  # capability_set 空卻送出工具
+    assert check(_request({"tools": []}), []) is None  # 兩邊皆空：合法
 
 
 def test_d60_rejects_hosted_builtin_duplicates_and_non_function(registry):
@@ -405,15 +410,36 @@ def test_d60_rejects_hosted_builtin_duplicates_and_non_function(registry):
     good = render_tools(cs)
     req = _request(cs)
     hosted = [*good, {"type": "web_search"}]
-    assert check_tools_match_capability(req, hosted).error["code"] == "CAPABILITY_MISSING"  # type: ignore[union-attr]
-    assert check_tools_match_capability(req, good, builtin_tools=["code_interpreter"]) is not None
-    assert check_tools_match_capability(req, [*good, good[0]]) is not None  # 重複名稱
-    assert check_tools_match_capability(req, [{"type": "function"}]) is not None  # 無名稱
-    assert check_tools_match_capability(req, ["deep_recall"]) is not None  # type: ignore[list-item]
-    assert check_tools_match_capability(req, [{**good[0], "type": "custom"}]) is not None
+    assert check(req, hosted).error["code"] == "CAPABILITY_MISSING"  # type: ignore[union-attr]
+    assert check(req, good, builtin_tools=["code_interpreter"]) is not None
+    assert check(req, [*good, good[0]]) is not None  # 重複名稱
+    assert check(req, [{"type": "function"}]) is not None  # 無名稱
+    assert check(req, ["deep_recall"]) is not None  # type: ignore[list-item]
+    assert check(req, [{**good[0], "type": "custom"}]) is not None
 
 
 # ---------------------------------------------------------------------------
+
+def test_d60_full_comparison_catches_tampered_content_and_bare_strings(registry):
+    cs = registry.project({"memory.read"}, ProjectionContext())
+    req = _request(cs)
+    good = render_tools(cs)
+    changed_desc = json.loads(json.dumps(good))
+    changed_desc[0]["function"]["description"] = "被改過的描述"
+    ev = check(req, changed_desc)
+    assert ev is not None and ev.error["code"] == "CAPABILITY_MISSING" and "deep_recall" in ev.error["detail"]
+    assert "被改過的描述" not in ev.error["detail"]  # detail 不含內容
+    changed_params = json.loads(json.dumps(good))
+    changed_params[0]["function"]["parameters"]["additionalProperties"] = True
+    assert check(req, changed_params) is not None
+    assert check(req, ["deep_recall"]) is not None  # 裸字串項目不接受
+    # expected 與 capability_set 名稱不一致（呼叫端傳錯預期）也擋
+    assert check_tools_match_capability(req, good, []) is not None
+    assert check_tools_match_capability(req, good, good) is None
+    # 唯讀視圖（frozen）與一般容器比較仍然相等
+    assert check_tools_match_capability(req, good, render_tools(cs)) is None
+
+
 # schema 子集：註冊時就失敗
 # ---------------------------------------------------------------------------
 
@@ -545,14 +571,14 @@ def test_gateway_extra_and_wrong_typed_fields_never_leak_values(gw_rig):
         assert SECRET not in str(exc.value) and str(exc.value) == "參數不符合 schema"  # 例外訊息也不含值
     with pytest.raises(GatewayRejected) as exc:
         gw.check_intent("deep_recall", {"query": "ok", "extra": SECRET}, cs)
-    assert exc.value.fields == ("/extra",)
+    assert exc.value.fields == ("/<unknown>",)  # 模型自取的鍵名不回餵
+    with pytest.raises(GatewayRejected) as exc:
+        gw.check_intent("deep_recall", {"query": "ok", SECRET: 1}, cs)
+    assert SECRET not in json.dumps(gw.rejection_view(exc.value), ensure_ascii=False)
 
 
 def test_gateway_nested_array_item_pointer(gw_rig):
     _, gw, cs = gw_rig
-    with pytest.raises(GatewayRejected) as exc:
-        gw.check_intent("notify.user", {"message": "hi", "tags": ["a", 5, SECRET], "venue": None}, cs, injected={"venue": "x"})
-    assert exc.value.code == PARAM_NOT_ALLOWED  # 模型提供了 injected 欄位 -> 先擋
     with pytest.raises(GatewayRejected) as exc:
         gw.check_intent("notify.user", {"message": "hi", "tags": ["a", 5, SECRET]}, cs, injected={"venue": "x"})
     assert exc.value.fields == ("/tags/1",)
@@ -563,8 +589,12 @@ def test_gateway_injected_params_not_allowed_from_llm_and_injected_by_core(gw_ri
     for supplied in ("model-venue", None, ""):
         with pytest.raises(GatewayRejected) as exc:
             gw.check_intent("notify.user", {"message": "hi", "venue": supplied}, cs, injected={"venue": "core"})
-        assert exc.value.code == PARAM_NOT_ALLOWED and exc.value.fields == ("/venue",)
-        assert "model-venue" not in json.dumps(gw.rejection_view(exc.value))
+        # 與一般多餘欄位無法區分：不洩漏哪些欄位是 injected
+        assert exc.value.code == "invalid_tool_args" and exc.value.fields == ("/<unknown>",)
+        assert "venue" not in json.dumps(gw.rejection_view(exc.value))
+    with pytest.raises(GatewayRejected) as plain:
+        gw.check_intent("notify.user", {"message": "hi", "other": 1}, cs, injected={"venue": "core"})
+    assert (plain.value.code, plain.value.fields) == ("invalid_tool_args", ("/<unknown>",))
     out = gw.check_intent("notify.user", {"message": "hi"}, cs, injected={"venue": "core-desktop"})
     assert out == {"message": "hi", "venue": "core-desktop"}
     # LLM 面（capability_set／render）看不到 injected 欄位
@@ -602,8 +632,22 @@ def test_gateway_capability_missing_still_first_and_without_registry_is_unchange
     assert exc.value.code == "args_not_mapping"
     legacy = ToolGateway()  # 沒給 registry：維持切片 A 行為（只做 capability 檢查）
     assert legacy.check_intent("deep_recall", {"anything": 1}, cs) == {"anything": 1}
-    with pytest.raises(GatewayRejected):
+    with pytest.raises(GatewayRejected) as legacy_exc:
         legacy.check_intent("force_remember", {}, cs)
+    # 舊形狀：與 decdca0 的 result_view("rejected") 完全相同，不帶 reason_code／fields
+    assert legacy.rejection_view(legacy_exc.value) == {"items": [], "status": "rejected", "degraded": False, "partial": False}
+    assert "reason_code" in gw.rejection_view(exc.value)  # 帶 registry 才有新欄位
+
+
+def test_check_intent_returns_deep_copy(gw_rig):
+    _, gw, cs = gw_rig
+    original = {"message": "hi", "tags": ["a", "b"]}
+    out = gw.check_intent("notify.user", original, cs, injected={"venue": "v"})
+    out["tags"].append("mutated")
+    assert original["tags"] == ["a", "b"]
+    legacy_out = ToolGateway().check_intent("notify.user", original, cs)
+    legacy_out["tags"].append("x")
+    assert original["tags"] == ["a", "b"]
 
 
 def test_result_view_shape_is_unchanged_unless_reason_given():
@@ -632,65 +676,96 @@ def test_validate_args_boundaries():
     assert validate_args(schema, {"s": "abc", "f": float("nan")}) == ["/f"]
     assert validate_args(schema, {"s": "abc", "f": 1.5}) == ["/f"]
     assert validate_args(schema, "nope") == ["/"]
-    assert validate_args(schema, {"s": "abc", "a/b": 1}) == ["/a~1b"]  # RFC 6901 跳脫
-    many = {f"k{i}": 1 for i in range(100)}
-    assert len(validate_args(schema, {"s": "abc", **many})) == 16  # 回餵欄位數有上限
+    assert validate_args(schema, {"s": "abc", "a/b": 1}) == ["/<unknown>"]  # 未知鍵名不回餵
+    assert validate_args(schema, {"s": "abc", **{f"k{i}": 1 for i in range(100)}}) == ["/<unknown>"]
+    wide = strict_schema({"type": "object", "properties": {f"p{i}": {"type": "string"} for i in range(40)}})
+    assert len(validate_args(wide, {f"p{i}": 1 for i in range(40)})) == 16  # 回餵欄位數有上限
+
+
+def test_validate_args_hard_limits():
+    schema = strict_schema({
+        "type": "object",
+        "properties": {
+            "s": {"type": "string", "pattern": "^(a+)+$"}, "arr": {"type": "array", "items": {"type": "string"}},
+            "n": {"type": "number"}, "i": {"type": "integer"},
+            "nest": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+        },
+    })
+    assert validate_args(schema, {"s": "a" * 40}) == []
+    assert validate_args(schema, {"s": "a" * (schema_mod.MAX_STRING_LEN + 1)}) == ["/s"]  # 超長直接違規，不跑 pattern
+    assert validate_args(schema, {"arr": ["x"] * schema_mod.MAX_ARRAY_LEN}) == []
+    assert validate_args(schema, {"arr": ["x"] * (schema_mod.MAX_ARRAY_LEN + 1)}) == ["/arr"]
+    assert validate_args(schema, {"n": 2**53}) == []
+    assert validate_args(schema, {"n": 2**53 + 1}) == ["/n"]
+    assert validate_args(schema, {"i": 2**53 + 1}) == ["/i"]
+    wide_nest = {"nest": [["x"] * 100 for _ in range(schema_mod.MAX_ARRAY_LEN)]}  # 單層都在上限內，但總節點數超過
+    assert validate_args(schema, wide_nest) == ["/"]
+    assert validate_args(schema, {f"k{i}": 1 for i in range(schema_mod.MAX_NODES + 1)}) == ["/"]
 
 
 # ---------------------------------------------------------------------------
 # 靜態：uep/ 內沒有手寫的 tools 清單（D60 CI 斷言）
 # ---------------------------------------------------------------------------
 
-# 白名單（路徑相對 uep/，值＝理由）。新增項目必須有理由並經審查；目標是隨 Runtime 落地（切片 C）逐步清空。
-TOOLS_LIST_ALLOWLIST: dict[str, str] = {
-    "tools/render.py": "D60 唯一產生點",
-    "tools/registry.py": "S-A 保留的舊衍生路徑 llm_definition：由註冊表條目衍生，供 access.tool_definitions／host 的舊 think.tools 使用，"
-                         "黃金測試鎖位元組；think_llm.tools 刪除（切片 C）後移除",
-    "stream/adapters/memory_echo.py": "echo_memory 後端宣告的 OpenAI 包裝（function_tool_definition），只提供『哪些工具可用』的名稱給 "
-                                       "access.tool_definitions，schema 一律改由註冊表衍生；後端宣告降為實作細節後移除",
+# 白名單（路徑相對 uep/ -> (命中數, 理由)）。新增或增加命中數必須有理由並經審查；目標是隨 Runtime 落地（切片 C）逐步清空。
+TOOLS_LIST_ALLOWLIST: dict[str, tuple[int, str]] = {
+    "tools/render.py": (1, "D60 唯一產生點"),
+    "tools/registry.py": (
+        1, ("S-A 保留的舊衍生路徑 llm_definition：由註冊表條目衍生，供 access.tool_definitions／host 的舊 think.tools 使用，"
+            "黃金測試鎖位元組；think_llm.tools 刪除（切片 C）後移除")),
+    "stream/adapters/memory_echo.py": (
+        1, ("echo_memory 後端宣告的 OpenAI 包裝（function_tool_definition），只提供『哪些工具可用』的名稱給 "
+            "access.tool_definitions，schema 一律改由註冊表衍生；後端宣告降為實作細節後移除")),
 }
+
+
+def _is_tool_call_history(pairs: dict[str, ast.expr]) -> bool:
+    """assistant 訊息歷史的 ``tool_calls`` 項目：帶 ``id``，且 ``function`` 是帶 ``arguments`` 的 dict。
+    只有這個形狀豁免，單純加一個 ``id`` 不能躲過掃描。"""
+    function = pairs.get("function")
+    if "id" not in pairs or not isinstance(function, ast.Dict):
+        return False
+    keys = {k.value for k in function.keys if isinstance(k, ast.Constant)}
+    return "arguments" in keys
 
 
 def _hand_written_tool_dicts(source: str) -> list[int]:
     """找出形如 ``{"type": "function", "function": ...}`` 的 dict 字面值或 ``dict(type="function", ...)``；
-    帶 ``id`` 的是 assistant 訊息歷史的 ``tool_calls`` 項目（不是 tools 清單），不算。"""
+    tool_calls 歷史項目（見 ``_is_tool_call_history``）不算。"""
     hits: list[int] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Dict):
             pairs = {k.value: v for k, v in zip(node.keys, node.values, strict=True)
                      if isinstance(k, ast.Constant) and isinstance(k.value, str)}
             kind = pairs.get("type")
-            if isinstance(kind, ast.Constant) and kind.value == "function" and "id" not in pairs:
+            if isinstance(kind, ast.Constant) and kind.value == "function" and not _is_tool_call_history(pairs):
                 hits.append(node.lineno)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "dict":
             kw = {k.arg: k.value for k in node.keywords if k.arg}
             kind = kw.get("type")
-            if isinstance(kind, ast.Constant) and kind.value == "function" and "id" not in kw:
+            if isinstance(kind, ast.Constant) and kind.value == "function" and not _is_tool_call_history(kw):
                 hits.append(node.lineno)
     return hits
 
 
-def test_scanner_detects_hand_written_tools_and_skips_tool_call_history():
+def test_scanner_detects_hand_written_tools_and_skips_only_tool_call_history():
     assert _hand_written_tool_dicts('x = {"type": "function", "function": {"name": "a"}}')
     assert _hand_written_tool_dicts('x = [dict(type="function", function={})]')
-    assert not _hand_written_tool_dicts('x = {"type": "function", "id": "c1", "function": {}}')
+    # 只加 id 躲不掉：必須同時是帶 function.arguments 的 tool_calls 歷史形狀
+    assert _hand_written_tool_dicts('x = {"type": "function", "id": "c1", "function": {"name": "a", "parameters": {}}}')
+    assert _hand_written_tool_dicts('x = {"type": "function", "id": "c1", "function": {}}')
+    assert not _hand_written_tool_dicts('x = {"type": "function", "id": "c1", "function": {"name": "a", "arguments": "{}"}}')
     assert not _hand_written_tool_dicts('x = {"type": "text"}')
 
 
 def test_no_hand_written_tools_list_in_uep_outside_allowlist():
-    offenders: dict[str, list[int]] = {}
-    seen_allowed: set[str] = set()
+    found: dict[str, int] = {}
     for path in sorted(UEP_ROOT.rglob("*.py")):
-        rel = path.relative_to(UEP_ROOT).as_posix()
         hits = _hand_written_tool_dicts(path.read_text(encoding="utf-8"))
-        if not hits:
-            continue
-        if rel in TOOLS_LIST_ALLOWLIST:
-            seen_allowed.add(rel)
-        else:
-            offenders[rel] = hits
-    assert not offenders, f"uep/ 內出現未列入白名單的手寫 tools 清單：{offenders}"
-    assert seen_allowed == set(TOOLS_LIST_ALLOWLIST), "白名單有已失效的項目：請移除"
+        if hits:
+            found[path.relative_to(UEP_ROOT).as_posix()] = len(hits)
+    expected = {rel: count for rel, (count, _reason) in TOOLS_LIST_ALLOWLIST.items()}
+    assert found == expected, f"uep/ 內手寫 tools 清單的（檔案：命中數）與白名單不符：{found}"
 
 
 def test_render_py_is_the_only_new_path_that_builds_function_tools():
@@ -732,7 +807,7 @@ class _StubTasks:
         return ActionOutcome(action_id, ActionStatus.SUCCEEDED, True, None)
 
 
-def _agent_rig(args: dict[str, Any], *, with_registry: bool = True):
+def _agent_rig(args: dict[str, Any], *, with_registry: bool = True, tool: str = "notify.user"):
     from uep.agent.core import AgentCore
     from uep.fakes import runtime as rt
     from uep.fakes.runtime import FakeRuntime
@@ -744,7 +819,7 @@ def _agent_rig(args: dict[str, Any], *, with_registry: bool = True):
     cs = reg.project({"chatroom.read"}, ProjectionContext())
     runtime, tasks = FakeRuntime(), _StubTasks()
     request = _request(cs)
-    runtime.script_for(request.attempt_id, [rt.tool_intent("notify.user", args), rt.result()])
+    runtime.script_for(request.attempt_id, [rt.tool_intent(tool, args), rt.result()])
     gateway = ToolGateway(reg if with_registry else None)
     core = AgentCore(runtime, tasks, gateway, worker_epoch=1, injected={"venue": "core-desktop"})  # type: ignore[arg-type]
     outcome = core.run_step(run_id="run_1", step_id="step_1", request=request)
@@ -758,10 +833,10 @@ def test_agent_core_injected_value_reaches_action_and_llm_value_does_not():
     assert tasks.executed == [{"message": "hi", "venue": "core-desktop"}]
 
     outcome, tasks, runtime, req = _agent_rig({"message": "hi", "venue": "model-venue"})
-    assert outcome.intents[0].status == "rejected" and outcome.intents[0].reason == "param_not_allowed"
+    assert outcome.intents[0].status == "rejected" and outcome.intents[0].reason == "invalid_tool_args"
     assert tasks.created == [] and tasks.executed == []  # 不建 action
     view = runtime.tool_results[req.attempt_id][0][1]
-    assert view["reason_code"] == "param_not_allowed" and view["fields"] == ["/venue"]
+    assert view["reason_code"] == "invalid_tool_args" and view["fields"] == ["/<unknown>"]
     assert "model-venue" not in json.dumps(view)
 
 
@@ -770,10 +845,140 @@ def test_agent_core_rejected_view_carries_reason_and_no_user_values():
     assert tasks.created == []
     view = runtime.tool_results[req.attempt_id][0][1]
     assert view["status"] == "rejected" and view["reason_code"] == "invalid_tool_args"
-    assert sorted(view["fields"]) == ["/extra", "/urgency"]
+    assert sorted(view["fields"]) == ["/<unknown>", "/urgency"]
     assert SECRET not in json.dumps(view, ensure_ascii=False)
 
 
 def test_agent_core_without_registry_keeps_legacy_behavior():
     _outcome, tasks, _runtime, _req = _agent_rig({"anything": 1}, with_registry=False)
     assert tasks.created[0]["params"] == {"anything": 1}  # 沒有 registry：原樣建 action
+    outcome, _tasks, runtime, req = _agent_rig({"x": 1}, with_registry=False, tool="not.visible")
+    assert outcome.intents[0].status == "rejected"
+    assert runtime.tool_results[req.attempt_id][0][1] == {  # decdca0 的舊形狀
+        "items": [], "status": "rejected", "degraded": False, "partial": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 審查修正：AL-3 prior、epoch、快照、array items、strict 黃金
+# ---------------------------------------------------------------------------
+
+def test_al3_prior_context_widening_never_widens_projection(registry):
+    """ctx 變寬（Presence 轉綁定、audience 變寬、context 增加）時，帶 prior 的投影不會比前一步更寬。"""
+    wide_audience = make_entry("wide.tool", scope=ToolScope(audience_min="group"))
+    reg = ToolRegistry.build([*_caps(), wide_audience])
+    tags = ALL_TAGS
+    narrow_ctx = ProjectionContext(platform="discord")
+    step1 = reg.project(tags, narrow_ctx)
+    prior = capability_names(step1)
+    assert "presentation.propose" not in prior and "member_recall" not in prior and "wide.tool" not in prior
+    widened = ProjectionContext(
+        platform="discord", presence_active_platforms=frozenset({"discord"}), audience="group",
+        available_context=frozenset({GUILD_ROSTER_CONTEXT}),
+    )
+    unconstrained = reg.project(tags, widened)
+    assert {"presentation.propose", "member_recall", "wide.tool"} <= set(names(unconstrained))  # 沒有 prior 會變寬
+    step2 = reg.project(tags, widened, prior=prior)
+    assert set(names(step2)) <= set(names(step1))
+    assert set(step2["narrowed_by_prior"]) == {"presentation.propose", "member_recall", "wide.tool"}
+    assert set(names(step1)) == set(names(step2))
+    assert reg.project(tags, narrow_ctx, prior=prior)["narrowed_by_prior"] == ()  # 沒變寬就沒有剔除
+    with pytest.raises(TypeError):
+        reg.project(tags, narrow_ctx, prior="deep_recall")  # type: ignore[arg-type]
+
+
+def test_al3_prior_allows_pending_tool_turning_ready_but_not_unavailable_ones():
+    warm = make_entry("warm.tool", requires=("m",), warm_required=True, spec={"capability": "memory.read"})
+    cold = make_entry("cold.tool", requires=("n",), spec={"capability": "memory.read"})
+    reg = ToolRegistry.build([make_entry("deep_recall"), warm, cold], known_modules=["m", "n"])
+    mc = FakeModuleCoordinator(reg)
+    mc.emit("warming", "m")
+    mc.emit("unavailable", "n")
+    step1 = reg.project({"memory.read"}, ProjectionContext())
+    assert names(step1) == ["deep_recall"] and [p["tool"] for p in step1["pending"]] == ["warm.tool"]
+    prior = capability_names(step1)
+    assert prior == {"deep_recall", "warm.tool"}
+    mc.emit("ready", "m")
+    mc.emit("ready", "n")  # 前一步是 unavailable（不在 prior）：不得借 ready 溜進來
+    step2 = reg.project({"memory.read"}, ProjectionContext(), prior=prior)
+    assert names(step2) == ["deep_recall", "warm.tool"]
+    assert step2["narrowed_by_prior"] == ("cold.tool",)
+
+
+def test_al3_prior_random_property(registry):
+    ctxs = [
+        ProjectionContext(platform=p, presence_active_platforms=frozenset(a), available_context=frozenset(c), audience=aud)
+        for p in (None, "desktop", "discord") for a in ((), ("desktop", "discord")) for c in ((), (GUILD_ROSTER_CONTEXT,))
+        for aud in ("private", "group")
+    ]
+    rng = random.Random(7)
+    for _ in range(200):
+        first, second = rng.choice(ctxs), rng.choice(ctxs)
+        prior = capability_names(registry.project(ALL_TAGS, first))
+        again = registry.project(ALL_TAGS, second, prior=prior)
+        assert capability_names(again) <= prior
+
+
+def test_readiness_epoch_orders_before_revision(warm_registry):
+    reg = warm_registry
+    ev = reg.apply_module_event
+    assert ev("module.ready", {"module_id": "gpu:indextts", "revision": 50})  # epoch 缺省＝0
+    assert reg.readiness("speak.tool") == "ready"
+    assert not ev("module.unavailable", {"module_id": "gpu:indextts", "revision": 10})  # 同 epoch 舊 revision
+    assert ev("module.unavailable", {"module_id": "gpu:indextts", "revision": 1, "epoch": 1})  # epoch 變大：revision 重算
+    assert reg.readiness("speak.tool") == "unavailable"
+    assert not ev("module.ready", {"module_id": "gpu:indextts", "revision": 999, "epoch": 0})  # 舊 epoch 的遲到事件
+    assert not ev("module.ready", {"module_id": "gpu:indextts", "revision": 1, "epoch": 1})  # 同鍵重送
+    assert ev("module.ready", {"module_id": "gpu:indextts", "revision": 2, "epoch": 1})
+    assert not ev("module.ready", {"module_id": "gpu:indextts", "revision": 3, "epoch": "1"})  # 型別不合：忽略
+    assert not ev("module.ready", {"module_id": "gpu:indextts", "revision": 3, "epoch": True})
+    assert reg.readiness("speak.tool") == "ready"
+
+
+def test_project_uses_one_readiness_snapshot_and_its_revision(warm_registry, monkeypatch):
+    """投影進入時取一次快照；投影途中即使有事件進來，結果與 revision 仍來自同一份快照。"""
+    reg = warm_registry
+    FakeModuleCoordinator(reg).emit("ready")
+    before = reg._module_view
+    original = reg._readiness_in
+    calls = {"n": 0}
+
+    def racing(entry, states):
+        calls["n"] += 1
+        if calls["n"] == 1:  # 投影途中來了一個 unavailable 事件
+            reg.apply_module_event("module.unavailable", {"module_id": "gpu:indextts", "revision": 99})
+        return original(entry, states)
+
+    monkeypatch.setattr(reg, "_readiness_in", racing)
+    cs = reg.project({"memory.read"}, ProjectionContext())
+    assert cs["revision"] == before[0]  # revision 取自快照，不是事件之後的值
+    assert names(cs) == ["deep_recall", "speak.tool"]  # 同一份快照：speak.tool 仍是 ready
+    monkeypatch.undo()
+    assert reg.project({"memory.read"}, ProjectionContext())["revision"] == before[0] + 1
+
+
+def test_array_must_declare_items_at_lint_stage():
+    assert lint_subset({"type": "object", "properties": {"a": {"type": "array"}}}) is not None
+    assert lint_subset({"type": "object", "properties": {"a": {"type": "array", "items": {"type": "string"}}}}) is None
+    nested = {"type": "object", "properties": {"o": {"type": "object", "properties": {"a": {"type": "array"}}}}}
+    assert lint_subset(nested) is not None
+    with pytest.raises(ToolRegistryError) as exc:
+        ToolRegistry.build([make_entry(descriptor=ToolDescriptor("d", {
+            "type": "object", "properties": {"a": {"type": "array"}},
+        }))])
+    assert exc.value.rule == "RA-7"
+
+
+EFFECTIVE_GOLDEN = GOLDEN.with_name("memory_effective_schema_golden.json")
+
+
+def test_strict_schema_golden_for_memory_tools():
+    """記憶工具的有效（嚴格）schema 固定成 fixture：strict_schema／effective_input_schema 邏輯一改就紅。"""
+    reg = memory_registry()
+    expected = json.loads(EFFECTIVE_GOLDEN.read_text(encoding="utf-8"))
+    actual = {name: reg.effective_input_schema(name) for name in reg.entries()}
+    assert actual == expected
+    assert json.dumps(actual, ensure_ascii=False, indent=2, sort_keys=True) == json.dumps(
+        expected, ensure_ascii=False, indent=2, sort_keys=True,
+    )
+    assert all(schema["additionalProperties"] is False for schema in expected.values())

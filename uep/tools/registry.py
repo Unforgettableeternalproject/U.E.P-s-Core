@@ -169,10 +169,10 @@ class ToolRegistry:
         self._specs: Mapping[str, ToolSpec] = MappingProxyType({})
         self._hashes: Mapping[str, str] = MappingProxyType({})
         self._known_modules: frozenset[str] = frozenset()
-        # module coordinator 事件維護的就緒狀態（§5.8）：module_id -> (revision, state)。整份替換（copy-on-write），
-        # 讀取端不需要鎖；寫入端以鎖序列化。revision 是投影版本（capability_set.revision），每次有效事件加一。
-        self._module_state: Mapping[str, tuple[int, Readiness]] = MappingProxyType({})
-        self._projection_revision = 0
+        # module coordinator 事件維護的就緒狀態（§5.8）：(投影版本, {module_id: (epoch, revision, state)})。
+        # 整份原子替換（copy-on-write），讀取端取一次快照就能得到一致的狀態與版本，不需要鎖；寫入端以鎖序列化。
+        # 投影版本（capability_set.revision）每次有效事件加一。
+        self._module_view: tuple[int, Mapping[str, tuple[int, int, Readiness]]] = (0, MappingProxyType({}))
         self._event_lock = threading.Lock()
 
     @classmethod
@@ -466,14 +466,15 @@ class ToolRegistry:
         ``unavailable``（fail-closed，RA-15）；否則有 ``warming`` ⇒ ``warming``；否則 ``ready``。
         已知模組在收到第一個事件前：``warm_required`` 工具視為 ``warming``（fail-closed，要等到第一個 ready 事件才可用）；
         其餘工具維持預設 ``ready``。純記憶體查詢，不做 I/O。"""
-        entry = self.entry(tool)
-        states = self._module_state
+        return self._readiness_in(self.entry(tool), self._module_view[1])
+
+    def _readiness_in(self, entry: ToolEntry, states: Mapping[str, tuple[int, int, Readiness]]) -> Readiness:
         result: Readiness = "ready"
         for module in entry.requires:
             if module not in self._known_modules:
                 return "unavailable"
             recorded = states.get(module)
-            state: Readiness = recorded[1] if recorded else ("warming" if entry.warm_required else "ready")
+            state: Readiness = recorded[2] if recorded else ("warming" if entry.warm_required else "ready")
             if state == "unavailable":
                 return "unavailable"
             if state == "warming":
@@ -482,24 +483,29 @@ class ToolRegistry:
 
     def apply_module_event(self, event_type: str, payload: Mapping[str, Any]) -> bool:
         """接 module coordinator 事件（``module.ready``／``module.warming``／``module.unavailable``，
-        payload ``{module_id, revision, reason_code?}``，§5.8）。以**最新 revision** 為準：revision 不大於已記錄者
+        payload ``{module_id, revision, epoch?, reason_code?}``，§5.8）。以 ``(epoch, revision)`` 的字典序取**最新**：
+        epoch 變大（module coordinator 重啟）時 revision 重新計；沒有 epoch 視為 0。排序鍵不大於已記錄者
         （重送、亂序）一律忽略；未知事件、未知模組、格式不符也忽略（維持原狀態，fail-closed）並記警告。
         回傳是否採用。"""
         state = MODULE_EVENT_STATES.get(event_type)
-        module = payload.get("module_id") if isinstance(payload, Mapping) else None
-        revision = payload.get("revision") if isinstance(payload, Mapping) else None
-        if state is None or not isinstance(module, str) or isinstance(revision, bool) or not isinstance(revision, int):
+        body = payload if isinstance(payload, Mapping) else {}
+        module, revision, epoch = body.get("module_id"), body.get("revision"), body.get("epoch", 0)
+        if (
+            state is None or not isinstance(module, str)
+            or isinstance(revision, bool) or not isinstance(revision, int)
+            or isinstance(epoch, bool) or not isinstance(epoch, int)
+        ):
             logger.warning("忽略格式不符的模組事件：%s", event_type if state is None else "payload")
             return False
         if module not in self._known_modules:
             logger.debug("忽略未知模組的事件：%s", module)
             return False
         with self._event_lock:
-            recorded = self._module_state.get(module)
-            if recorded is not None and revision <= recorded[0]:
+            version, states = self._module_view
+            recorded = states.get(module)
+            if recorded is not None and (epoch, revision) <= (recorded[0], recorded[1]):
                 return False
-            self._module_state = MappingProxyType({**self._module_state, module: (revision, state)})
-            self._projection_revision += 1
+            self._module_view = (version + 1, MappingProxyType({**states, module: (epoch, revision, state)}))
         return True
 
     # --- 投影（§6.1） ---
@@ -523,6 +529,7 @@ class ToolRegistry:
         ctx: ProjectionContext,
         *,
         ceiling: Iterable[str] | None = None,
+        prior: Iterable[str] | None = None,
     ) -> Mapping[str, Any]:
         """依已收窄的能力標籤與場域脈絡產生 ``capability_set``（§6.1，TG-12 形狀）。
 
@@ -532,13 +539,24 @@ class ToolRegistry:
 
         AL-3 能力單調：``ceiling``（Run 開始時凍結的標籤集合）給了就以 ``tags ∩ ceiling`` 為準，所以後續投影永遠不會
         比凍結範圍更寬；標籤是閉集的精確比對（無萬用字元），閉集外的標籤直接丟棄。
-        回傳唯讀結構：``{tools, pending, revision, tags}``，``revision`` 是 readiness 事件版本（審計與 resume 比對用）。"""
+        AL-3 對脈絡也單調：``prior`` 給了（前一步 capability_set 的工具名稱，**含 pending**，見 ``capability_names``）
+        就只保留 ``prior`` 內的工具與 pending；脈絡變寬（Presence 轉為綁定、audience 變寬、requires_context 增加…）
+        而新冒出的工具一律剔除並列在 ``narrowed_by_prior``。前一步 pending、這一步轉 ready 的工具在 ``prior`` 內，
+        所以可以出現（不擴大範圍）。
+        整個投影只讀一次 readiness 快照，``revision`` 也取自同一份快照。
+        回傳唯讀結構：``{tools, pending, revision, tags, narrowed_by_prior}``，``revision`` 是 readiness 事件版本
+        （審計與 resume 比對用）。"""
         if isinstance(capability_tags, str) or (ceiling is not None and isinstance(ceiling, str)):
             raise TypeError("capability_tags／ceiling 必須是標籤集合，不是單一字串")
         tags = frozenset(capability_tags) & CAPABILITY_CEILING.keys()
         if ceiling is not None:
             tags &= frozenset(ceiling)
+        if isinstance(prior, str):
+            raise TypeError("prior 必須是工具名稱集合，不是單一字串")
+        prior_names = frozenset(prior) if prior is not None else None
+        revision, states = self._module_view  # 一次快照：readiness 與 revision 來自同一份
         audience = audience_rank(ctx.audience)
+        narrowed: list[str] = []
         tools: list[dict[str, Any]] = []
         pending: list[dict[str, Any]] = []
         for entry in self.visible_entries():
@@ -553,11 +571,14 @@ class ToolRegistry:
                 continue
             if audience < audience_rank(scope.audience_min):
                 continue
-            state = self.readiness(entry.name)
+            state = self._readiness_in(entry, states)
+            if state == "unavailable":
+                continue
+            if prior_names is not None and entry.name not in prior_names:
+                narrowed.append(entry.name)  # 本來會投出（或進 pending）但不在前一步範圍內
+                continue
             if state == "warming":
                 pending.append({"tool": entry.name, "reason": "warming"})
-                continue
-            if state != "ready":
                 continue
             variant = ctx.platform if ctx.platform in scope.variants else None
             override = scope.variants[variant] if variant is not None else None
@@ -570,5 +591,13 @@ class ToolRegistry:
                 "variant": variant,
             })
         return _freeze({
-            "tools": tools, "pending": pending, "revision": self._projection_revision, "tags": sorted(tags),
+            "tools": tools, "pending": pending, "revision": revision, "tags": sorted(tags),
+            "narrowed_by_prior": narrowed,
         })
+
+
+def capability_names(capability_set: Mapping[str, Any]) -> frozenset[str]:
+    """前一步 ``capability_set`` 的工具名稱，含 pending（供下一次 ``project(prior=...)`` 使用）。"""
+    names = {item["tool"] for item in capability_set.get("tools", ())}
+    names |= {item["tool"] for item in capability_set.get("pending", ())}
+    return frozenset(names)

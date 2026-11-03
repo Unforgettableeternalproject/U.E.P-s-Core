@@ -414,3 +414,46 @@ def test_wait_shadow_times_out_then_completes():
     finally:
         release.set()
         orch.close()
+
+
+# ---- 重設語意：Orchestrator 屬性與 engine 只有單一份狀態 ----
+
+def test_reassigning_proposer_after_construction_takes_effect():
+    orch = _orch(_P(_ok))
+    try:
+        assert orch._propose(_cand()).reason_code == "main"
+        orch._proposer = _P(_good)  # 與 test_p3_s5_slot 相同的做法
+        assert orch.proposer.proposer_id == "t.p"
+        after = orch._propose(_cand())
+        assert (after.reason_code, after.reply_mode) == ("ctx", ReplyMode.PASS)
+    finally:
+        orch.close()
+
+
+def test_reassigning_budget_after_construction_takes_effect():
+    orch = _orch(_P(_slow), budget_ms=0)
+    try:
+        orch._budget_s = 0.03
+        assert orch._propose(_cand()).reason_code == "proposer_timeout"
+        assert orch.metrics["proposer.timeout"] == 1
+    finally:
+        orch.close()
+
+
+def test_orchestrator_attributes_share_state_with_engine():
+    seen: list[ShadowRecord] = []
+    orch = _orch(_P(_ok), shadows=(_P(_ok, "sh.one"),))
+    engine = orch._reply_engine
+    try:
+        assert orch._guard is engine.guard and orch._shadows is engine.shadows
+        assert orch.shadow_log is engine.shadow_log and orch._proposer is engine.proposer
+        orch._on_shadow = seen.append
+        assert engine.on_shadow == seen.append
+        orch._propose(_cand())
+        assert orch.wait_shadow(3)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not seen:
+            time.sleep(0.01)
+    finally:
+        orch.close()
+    assert len(seen) == 1 and len(orch.shadow_log) == 1

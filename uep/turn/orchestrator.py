@@ -32,7 +32,7 @@ import logging
 import re
 import threading
 import time
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -84,6 +84,7 @@ from uep.turn.proposer import (
     Interjection,
     ListenerAware,
     ParticipantAware,
+    ProposerGuard,
     RespondProposer,
     TickingProposer,
     TurnProposer,
@@ -178,24 +179,20 @@ class TurnOrchestrator:
         self.generations = generations
         self._auth_provider = auth_provider
         self._persona = persona_id
-        self._proposer = proposer or RespondProposer()
         self._aggregator: TurnAggregator = aggregator or PassThroughAggregator()
         self._wake = wake or WakeDetector()
         self._participants = participants
         self._veto = veto
         self._decision = decision or DecisionConfig()
         budget = self._decision.proposer_budget_ms
-        self._budget_s: float | None = budget / 1000.0 if budget > 0 else None
-        # DL-1 P0：primary／shadow proposer 與 guard 搬進中樞的 turn.reply engine；這裡保留別名供 tick、回饋與關閉使用
+        # DL-1 P0：primary／shadow proposer、guard、預算只存在於中樞的 turn.reply engine（單一份狀態）；
+        # Orchestrator 的 _proposer／_budget_s／_guard／_shadows／shadow_log／_on_shadow 都是委派到 engine 的 property
         self._reply_engine = TurnReplyEngine(
-            self._proposer, budget_s=self._budget_s, metrics=self.metrics,
+            proposer or RespondProposer(), budget_s=budget / 1000.0 if budget > 0 else None, metrics=self.metrics,
             shadow_proposers=shadow_proposers, on_shadow=on_shadow,
         )
         self.hub = DecisionHub()
         self.hub.register(turn_reply_spec(self._decision.proposer_budget_ms), self._reply_engine)
-        self._guard = self._reply_engine.guard
-        self._shadows = self._reply_engine.shadows
-        self.shadow_log = self._reply_engine.shadow_log
         self._identity = identity
         self._snapshot_version = snapshot_version
         self._ttl = ticket_ttl
@@ -207,6 +204,56 @@ class TurnOrchestrator:
         self._finished: OrderedDict[str, None] = OrderedDict()
         self._ctx: SessionContext | None = None  # tick 完成的 turn 用最近一次看到的 session
         self._tick_seq = 0
+
+    # ---- turn.reply engine 的委派屬性（重設 _proposer 等仍立即生效，如包裝前）----
+
+    @property
+    def _proposer(self) -> TurnProposer:
+        return self._reply_engine.proposer
+
+    @_proposer.setter
+    def _proposer(self, value: TurnProposer) -> None:
+        self._reply_engine.proposer = value
+
+    @property
+    def _budget_s(self) -> float | None:
+        return self._reply_engine.budget_s
+
+    @_budget_s.setter
+    def _budget_s(self, value: float | None) -> None:
+        self._reply_engine.budget_s = value
+
+    @property
+    def _guard(self) -> ProposerGuard:
+        return self._reply_engine.guard
+
+    @_guard.setter
+    def _guard(self, value: ProposerGuard) -> None:
+        self._reply_engine.guard = value
+
+    @property
+    def _shadows(self) -> list[tuple[TurnProposer, ProposerGuard]]:
+        return self._reply_engine.shadows
+
+    @_shadows.setter
+    def _shadows(self, value: list[tuple[TurnProposer, ProposerGuard]]) -> None:
+        self._reply_engine.shadows = value
+
+    @property
+    def shadow_log(self) -> deque[ShadowRecord]:
+        return self._reply_engine.shadow_log
+
+    @shadow_log.setter
+    def shadow_log(self, value: deque[ShadowRecord]) -> None:
+        self._reply_engine.shadow_log = value
+
+    @property
+    def _on_shadow(self) -> Callable[[ShadowRecord], None] | None:
+        return self._reply_engine.on_shadow
+
+    @_on_shadow.setter
+    def _on_shadow(self, value: Callable[[ShadowRecord], None] | None) -> None:
+        self._reply_engine.on_shadow = value
 
     def bind_state(self, state: StateCoordinator) -> None:
         self.state = state

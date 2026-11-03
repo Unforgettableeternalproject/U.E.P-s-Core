@@ -113,7 +113,7 @@ class TurnReplyEngine:
         self.metrics = metrics
         self.guard = ProposerGuard("primary")
         self.shadows = [(sp, ProposerGuard(f"shadow{i}")) for i, sp in enumerate(shadow_proposers)]
-        self._on_shadow = on_shadow
+        self.on_shadow = on_shadow
         self.shadow_log: deque[ShadowRecord] = deque(maxlen=256)
         self._shadow_pending: set[Future[object]] = set()
         self._lock = threading.Lock()
@@ -210,9 +210,9 @@ class TurnReplyEngine:
         self.metrics[f"shadow.{'agree' if record.agree else 'disagree'}"] += 1
         if status != "ok":
             self.metrics[f"shadow.{status}"] += 1
-        if self._on_shadow is not None:
+        if self.on_shadow is not None:
             try:
-                self._on_shadow(record)
+                self.on_shadow(record)
             except Exception:
                 logger.exception("on_shadow 回呼失敗")
         with self._lock:

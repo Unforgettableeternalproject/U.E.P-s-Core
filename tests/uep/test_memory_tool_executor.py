@@ -86,68 +86,96 @@ def _ctx(mod):
     return ctx
 
 
+def _params(args, ctx):
+    """Gateway 注入後的 params：LLM 引數 + Core 的身分／場域（PD-12）；args 不是映射時原樣（無從注入）。"""
+    if not isinstance(args, dict):
+        return args
+    injected = {k: ctx[k] for k in ("actor_id", "audience", "segment_id", "guild_id") if ctx and k in ctx}
+    return {**args, **injected}
+
+
 @pytest.mark.parametrize("case", CASES, ids=[c[0] for c in CASES])
 def test_memory_tool_executor_matches_core_tool_executor(case):
     _id, tool, args, mod, outcomes, raises, audience_ok, max_chars = case
     kw = {} if max_chars is None else {"max_chars": max_chars}
     legacy_calls: list[tuple] = []
-    new_calls: list[tuple] = []
 
     legacy_port, new_port = RecordingPort(outcomes, raises), RecordingPort(outcomes, raises)
     legacy_ctx, new_ctx = _ctx(mod), _ctx(mod)
     legacy = CoreToolExecutor(legacy_port, make_roster(), on_action=lambda *a: legacy_calls.append(a),
                               audience_ok=audience_ok, **kw)
-    new = MemoryToolExecutor(new_port, make_roster(), lambda call: new_ctx,
-                             audience_ok=audience_ok, on_action=lambda *a: new_calls.append(a), **kw)
+    new = MemoryToolExecutor(new_port, make_roster(), audience_ok=audience_ok, **kw)
     assert isinstance(new, ToolExecutor)
 
     expected = asyncio.run(legacy(tool, args, context=legacy_ctx))
-    call = ToolCall(action_id="act_1", tool=tool, params=args, params_hash="h", side_effect_class="internal_read",
-                    idempotency="native")
+    call = ToolCall(action_id="act_1", tool=tool, params=_params(args, new_ctx), params_hash="h",
+                    side_effect_class="internal_read", idempotency="native")
     lost = False
     try:
         receipt = new.execute(call)
     except ToolResponseLost:
         lost, receipt = True, None
 
-    assert new.outcome("act_1") == expected  # 結果逐欄一致（已去掉 code、shared_ids）
-    assert new_port.calls == legacy_port.calls  # 傳給 Access Layer 的身分、audience、context 完全一致
-    assert new_ctx == legacy_ctx  # 含 member_recall_ids 的寫回
-    assert new_calls == legacy_calls  # 補記的 action 事件（含不補記的案例）
-    legacy_status = new_calls[0][3] if new_calls else None
+    got = new.outcome("act_1")
+    shared = got.pop("shared_ids", None)
+    assert got == expected  # 結果逐欄一致（shared_ids 另比）
+    assert new_port.calls == legacy_port.calls  # 傳給 Access Layer 的身分、audience、context、引數完全一致
+    assert (shared or None) == ((legacy_ctx or {}).get("member_recall_ids") or None)  # 投影 id 改由結果回傳
+    assert new_ctx == _ctx(mod)  # executor 不改任何共用狀態
+    legacy_status = legacy_calls[0][3] if legacy_calls else None
     if lost:
         assert legacy_status == "unknown" and receipt is None
         assert new.lookup_receipt("act_1").outcome == "undetermined"
     else:
         assert receipt.result_ref == "blob_act_1" and receipt.source_verified
         assert receipt.succeeded == bool(expected.get("success")) and legacy_status != "unknown"
+        assert receipt.meta["status"] == (legacy_status or ("denied" if not expected.get("success") else "not_found"))
         assert new.lookup_receipt("act_1").receipt is receipt
 
 
-def test_denied_cases_never_reach_access_layer_or_record_action():
+def test_llm_cannot_override_injected_scope_fields_at_executor():
+    """injected 欄位只能來自 Gateway；executor 不把它們當業務引數傳給 Access Layer。"""
+    port = RecordingPort()
+    ex = MemoryToolExecutor(port, make_roster())
+    params = {"query": "q", **_params({}, CTX)}
+    ex.execute(ToolCall("act_s", "deep_recall", params, "h", "internal_read", "native"))
+    assert port.calls[0]["args"] == {"query": "q"} and port.calls[0]["actor_id"] == "actor_a"
+
+
+def test_denied_cases_never_reach_access_layer():
     for tool, mod, ok in (("trigger_dream", {}, None), ("deep_recall", "NONE", None),
                           ("deep_recall", {"audience": None}, None), ("deep_recall", {}, lambda a: False)):
-        port, seen = RecordingPort(), []
+        port = RecordingPort()
         ctx = _ctx(mod)
-        ex = MemoryToolExecutor(port, make_roster(), lambda call, c=ctx: c, audience_ok=ok,
-                                on_action=lambda *a, s=seen: s.append(a))
-        receipt = ex.execute(ToolCall("act_d", tool, {}, "h", "internal_read", "native"))
+        ex = MemoryToolExecutor(port, make_roster(), audience_ok=ok)
+        receipt = ex.execute(ToolCall("act_d", tool, _params({}, ctx), "h", "internal_read", "native"))
         assert receipt.succeeded is False and receipt.error_code == "denied" and receipt.meta == {"status": "denied"}
-        assert port.calls == [] and seen == []
+        assert port.calls == []
 
 
 def test_lookup_is_not_authoritative_and_idempotent_replay_returns_same_receipt():
     port = RecordingPort()
-    ex = MemoryToolExecutor(port, make_roster(), lambda call: copy.deepcopy(CTX))
+    ex = MemoryToolExecutor(port, make_roster())
     assert ex.lookup_authoritative is False
     assert ex.lookup_receipt("act_none").outcome == "undetermined"
-    call = ToolCall("act_i", "deep_recall", {"query": "q"}, "h", "internal_read", "native")
+    call = ToolCall("act_i", "deep_recall", _params({"query": "q"}, CTX), "h", "internal_read", "native")
     first = ex.execute(call)
     assert ex.execute(call) is first and len(port.calls) == 1
-    redo = ToolCall("act_n", "force_remember", {"content": "c", "reason": "r"}, "h", "reversible_local", "none")
+    redo = ToolCall("act_n", "force_remember", _params({"content": "c", "reason": "r"}, CTX), "h",
+                    "reversible_local", "none")
     ex.execute(redo)
     ex.execute(redo)  # idempotency=none：不沿用舊 receipt（與 FakeToolExecutor 同）
     assert len(port.calls) == 3
+
+
+def test_outcome_cache_is_turn_scoped_and_not_in_receipt():
+    port = RecordingPort({"deep_recall": {"success": True, "result": "私人結果原文"}})
+    ex = MemoryToolExecutor(port, make_roster())
+    receipt = ex.execute(ToolCall("act_c", "deep_recall", _params({}, CTX), "h", "internal_read", "native"))
+    assert "私人結果原文" not in repr(receipt)  # D33：原文不進 receipt
+    assert ex.cache.text("act_c") == "私人結果原文"
+    ex.cache.discard(["act_c"])
+    assert ex.cache.text("act_c") is None and ex.outcome("act_c") is None
 
 
 # ---- host：agent 路徑投影／legacy 黃金 ----
@@ -208,3 +236,23 @@ def test_agent_path_fails_closed_on_projection_error(monkeypatch):
 
 def test_registry_member_recall_needs_guild_context():
     assert memory_registry().entry("member_recall").scope.requires_context
+
+
+def test_gateway_outcome_view_takes_content_from_cache_or_returns_unknown():
+    from datetime import UTC, datetime
+
+    from uep.adapters.tool import ToolReceipt
+    from uep.tasks.manager import ActionOutcome
+    from uep.tasks.states import ActionStatus
+    from uep.tools.gateway import ToolGateway
+    from uep.tools.outcomes import TurnOutcomeCache
+
+    cache = TurnOutcomeCache()
+    receipt = ToolReceipt("rcpt_1", "act_1", True, "blob_act_1", datetime.now(UTC), True)
+    outcome = ActionOutcome("act_1", ActionStatus.SUCCEEDED, True, receipt)
+    gateway = ToolGateway()
+    assert gateway.outcome_view(outcome, content_lookup=cache.text)["status"] == "unknown"  # 找不到：不編造
+    cache.put("act_1", {"success": True, "result": "內容"})
+    view = gateway.outcome_view(outcome, content_lookup=cache.text)
+    assert view["status"] == "ok" and view["items"][0]["content"] == "內容"
+    assert "content" not in gateway.outcome_view(outcome)["items"][0]  # 沒給 lookup：形狀不變

@@ -434,6 +434,7 @@ class TaskManager:
         activity = session.get(ActivityRow, task.activity_id)
         draft = EventDraft(
             event_type=event_type,
+            **self._turn_link(task),
             activity_id=task.activity_id,
             task_id=task.task_id,
             run_id=run_id,
@@ -451,6 +452,18 @@ class TaskManager:
         pending.append(
             self._publisher.record(session, draft, trusted, outbox_targets=self._targets_for(event_type))
         )
+
+    @staticmethod
+    def _turn_link(task: TaskRow) -> dict[str, str]:
+        """回合 Task 的事件關聯 id（turn／conversation／segment）；不是回合 Task 或 id 不合法時為空。"""
+        origin = task.origin_ref
+        if task.goal != TURN_TASK_GOAL or not isinstance(origin, dict):
+            return {}
+        link = {
+            key: origin[key] for key in ("turn_id", "conversation_id", "segment_id")
+            if isinstance(origin.get(key), str) and is_valid_id(origin[key])
+        }
+        return link
 
     def _targets_for(self, event_type: str) -> list[str]:
         targets: list[str] = list(self._outbox_targets.get(event_type, ()))
@@ -732,12 +745,15 @@ class TaskManager:
 
     def get_or_create_turn_task(
         self, turn_id: str, *, persona_id: str, owner_actor_id: str, scope_ref: str, policy_ref: str,
-        persona_version: int, policy_version: int,
+        persona_version: int, policy_version: int, conversation_id: str | None = None,
+        segment_id: str | None = None,
     ) -> tuple[TaskRow, RunRow]:
         """依 turn 取得或懶建立回合 Task 與其唯一 Run（D62、TC-5）。
 
         - Task：presence_bound=false、interruptible、goal=``turn_tools``；presence／可中斷改由 action 層判定。
         - turn_id 與 task_id、run_id 一對一且確定性（``derived_id``），``stable_action_id`` 因此可重放。
+        - ``conversation_id``／``segment_id`` 記在 origin_ref，回合 Task 的事件（含 ``action.*``）據此帶上與 turn
+          同一組關聯 id，舊版以 turn_id 查事件的做法照舊可用。
         - 冪等：已存在就原樣回傳（含已終態者，由呼叫端判斷）。並發建立時 task_id 主鍵衝突的一方回讀，
           不會建出兩個；Task 與 Run 同一交易建立，回讀時兩者必然都在。
         """
@@ -756,7 +772,12 @@ class TaskManager:
                 task = self._insert_task(
                     s, pending, persona_id=persona_id, goal=TURN_TASK_GOAL, owner_actor_id=owner_actor_id,
                     scope_ref=scope_ref, policy=policy, interrupt=InterruptPolicy.INTERRUPTIBLE,
-                    deadline=None, origin_ref={"kind": TURN_TASK_GOAL, "turn_id": turn_id},
+                    deadline=None,
+                    origin_ref={
+                        "kind": TURN_TASK_GOAL, "turn_id": turn_id,
+                        **({"conversation_id": conversation_id} if conversation_id else {}),
+                        **({"segment_id": segment_id} if segment_id else {}),
+                    },
                     parent_task_id=None, task_id=task_id,
                 )
                 run = self._start_run_locked(
@@ -1143,9 +1164,17 @@ class TaskManager:
         action.status = to.value
         self._bump(action)
         if event_type:
+            payload: dict[str, Any] = {"action_id": action.action_id, "status": to.value}
+            if task.goal == TURN_TASK_GOAL:
+                # 回合 Task 的 action.* 取代舊的 Host 補記（D79）：沿用舊 payload（kind／status／ref_id），再加 action_id
+                legacy_status = _LEGACY_ACTION_STATUS.get(to, to.value)
+                payload = {
+                    "action_id": action.action_id, "kind": action.side_effect_class, "status": legacy_status,
+                    "ref_id": f"tool:{action.tool}",
+                }
             self._emit(
                 s, pending, event_type, task, aggregate=("action", action.action_id, action.version),
-                run_id=action.run_id, payload={"action_id": action.action_id, "status": to.value},
+                run_id=action.run_id, payload=payload,
             )
 
     def _hasher(self) -> PayloadHasher:
@@ -1600,6 +1629,11 @@ class TaskManager:
 
 
 # (來源狀態或 None=任意, 目標狀態) -> 事件類型；只列契約 §1.3 已註冊者
+# 舊版 Host 補記的 status 詞彙（executed／failed／unknown）；只套用於回合 Task 的終結事件
+_LEGACY_ACTION_STATUS: dict[ActionStatus, str] = {
+    ActionStatus.SUCCEEDED: "executed", ActionStatus.FAILED: "failed", ActionStatus.UNKNOWN: "unknown",
+}
+
 _TASK_EVENT: dict[tuple[RunStatus | None, RunStatus], str] = {
     (None, RunStatus.SUCCEEDED): "task.completed",
     (None, RunStatus.FAILED): "task.failed",

@@ -22,6 +22,9 @@ from uep.tools.registry import ToolRegistry
 MEMORY_EXECUTOR = "core_memory"
 # member_recall 需要的投影脈絡：場域（guild）成員名單。host 的曝光判斷與條目宣告共用這個常數。
 GUILD_ROSTER_CONTEXT = "guild_roster"
+# PD-12：身分與場域由 Core 每輪在 Gateway 注入（LLM 面 schema 看不到，也不能提供）；執行時 executor 只讀這些欄位
+INJECTED_IDENTITY = ("actor_id", "audience", "segment_id")
+INJECTED_GUILD = ("guild_id",)
 
 # 工具結果（execute_tool 的回傳）形狀：失敗時帶 code（denied／timeout／failed）。
 MEMORY_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -89,7 +92,10 @@ def memory_entries() -> list[ToolEntry]:
                 executor=MEMORY_EXECUTOR, side_effect_class="reversible_local", idempotency="none",
                 presence_bound=False, tool_version=1, capability="memory.write",
             ),
-            descriptor=ToolDescriptor(description=FORCE_REMEMBER_DESCRIPTION, input_schema=FORCE_REMEMBER_SCHEMA),
+            descriptor=ToolDescriptor(
+                description=FORCE_REMEMBER_DESCRIPTION, input_schema=FORCE_REMEMBER_SCHEMA,
+                injected_params=INJECTED_IDENTITY,
+            ),
             scope=ToolScope(),
             output_schema=MEMORY_OUTPUT_SCHEMA,
         ),
@@ -99,7 +105,10 @@ def memory_entries() -> list[ToolEntry]:
                 executor=MEMORY_EXECUTOR, side_effect_class="internal_read", idempotency="native",
                 presence_bound=False, tool_version=1, capability="memory.read",
             ),
-            descriptor=ToolDescriptor(description=DEEP_RECALL_DESCRIPTION, input_schema=DEEP_RECALL_SCHEMA),
+            descriptor=ToolDescriptor(
+                description=DEEP_RECALL_DESCRIPTION, input_schema=DEEP_RECALL_SCHEMA,
+                injected_params=INJECTED_IDENTITY,
+            ),
             scope=ToolScope(),
             output_schema=MEMORY_OUTPUT_SCHEMA,
         ),
@@ -112,6 +121,7 @@ def memory_entries() -> list[ToolEntry]:
             descriptor=ToolDescriptor(
                 description=_contract.MEMBER_RECALL_DESCRIPTION,
                 input_schema=_contract.MEMBER_RECALL_SCHEMA["parameters"],
+                injected_params=INJECTED_IDENTITY + INJECTED_GUILD,
             ),
             # 取代 host._refresh_tools 內「有 guild 才曝光」的硬編碼；投影在切片 B 啟用。
             scope=ToolScope(requires_context=frozenset({GUILD_ROSTER_CONTEXT})),

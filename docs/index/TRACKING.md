@@ -126,7 +126,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | T-22 | 推理 Host 遷移 Python 3.12 | C／2 | `inference-host-py312-migration` | — | D18、A14 | `pyproject.toml` inference 組、`uv.lock` |
 | T-23 | P3 前置修整（Bus §8.4、D41、D42、維護迴圈、DENIED 原因碼） | C／2 | `p3-prereq-bus-journal-hardening` | — | D41、D42、A16 | `uep/events/tailer.py`、`uep/events/payload_hash.py`、`0006_journal_txid` |
 | T-24 | 週期 2 Core 追加驗證（P1、P2、T-23 對抗式稽核） | C／2 | `core-cycle2-audit` | — | D43、A20 | `tests/uep/test_cycle2_audit_a.py`、`tests/uep/test_cycle2_audit_b.py`、`tests/uep/test_cycle2_audit_c_tasks.py`、`tests/uep/test_cycle2_audit_c_context.py`、`tests/uep/test_cycle2_audit_fix2.py`；契約同步於 [Core契約草案](../架構重構/Core契約草案.md) E-17～E-22、X-7～X-9、R-7、P-16～P-25、O-13～O-15、§6.7 的 T 系列條號 16～20；`0007_journal_truncate_guard`、`0008_receipt_worker_epoch` |
-| Part S | SYS Agent 基底（S0～S3 契約草案；S4、S5 僅邊界） | C／2 | 尚未轉任務層 | V29–V31、V36（延伸 V21、V22、V28） | D49–D69、A21、A22 | [SYS契約草案](../架構重構/SYS契約草案.md) |
+| Part S | SYS Agent 基底（S0～S3 契約草案；S4、S5 僅邊界） | C／2 | 部分完成（尚未轉任務層）：TG-1／TG-5 已有實作與測試，下一週期由 [Agent架構與工具契約提案](../架構重構/Agent架構與工具契約提案.md) 取代或重構 | V29–V31、V36（延伸 V21、V22、V28） | D49–D69、A21、A22 | [SYS契約草案](../架構重構/SYS契約草案.md) |
 
 T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細節待敏卡展開後補。
 
@@ -164,9 +164,9 @@ T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細
 | V26 | 靜音／冷卻／過期不造成連續打擾 | 週期 4 P7（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V27 | 高 salience 但不適合打擾仍可延後 | 週期 4 P7（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V28 | 私聊→公開 Discord 不洩漏私人內容 | 週期 3 P5（待立卡） | — | — | — | 未開始 | 是：VC-2-1 |
-| V29 | 惡意內容要求擴權被 Policy 拒絕 | 週期 2 Part S（待立卡） | — | — | [SYS契約草案](../架構重構/SYS契約草案.md) | 未開始 | 是：SYS契約草案 VC-S2-3 |
-| V30 | LLM 自述核准不能消耗 approval | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 是：VC-6-4；SYS契約草案 TG-7 反例、VC-S2-4 |
-| V31 | 參數變更後舊 approval 失效；global stop 不依賴 LLM | 週期 2 Part S（待立卡） | — | — | — | 未開始 | 是：VC-6-3；SYS契約草案 VC-S2-4、TG-11 |
+| V29 | 惡意內容要求擴權被 Policy 拒絕 | 週期 2 Part S（待立卡） | `uep/tools/registry.py`、`uep/tools/gateway.py`、`uep/agent/core.py` | `tests/uep/test_tool_spec.py`、`tests/uep/test_p3_s1_registry.py`、`tests/uep/test_agent_core.py` | [SYS契約草案](../架構重構/SYS契約草案.md) | 部分完成（TG-1／TG-5 已實作；其餘待下一週期由 [Agent架構與工具契約提案](../架構重構/Agent架構與工具契約提案.md) 取代或重構） | 是：SYS契約草案 VC-S2-3 |
+| V30 | LLM 自述核准不能消耗 approval | 週期 2 Part S（待立卡） | `uep/tools/registry.py`、`uep/tools/gateway.py`、`uep/agent/core.py` | `tests/uep/test_tool_spec.py`、`tests/uep/test_p3_s1_registry.py`、`tests/uep/test_agent_core.py` | — | 部分完成（TG-1／TG-5 已實作；其餘待下一週期由 [Agent架構與工具契約提案](../架構重構/Agent架構與工具契約提案.md) 取代或重構） | 是：VC-6-4；SYS契約草案 TG-7 反例、VC-S2-4 |
+| V31 | 參數變更後舊 approval 失效；global stop 不依賴 LLM | 週期 2 Part S（待立卡） | `uep/tools/registry.py`、`uep/tools/gateway.py`、`uep/agent/core.py` | `tests/uep/test_tool_spec.py`、`tests/uep/test_p3_s1_registry.py`、`tests/uep/test_agent_core.py` | — | 部分完成（TG-1／TG-5 已實作；其餘待下一週期由 [Agent架構與工具契約提案](../架構重構/Agent架構與工具契約提案.md) 取代或重構） | 是：VC-6-3；SYS契約草案 VC-S2-4、TG-11 |
 | V32 | 使用者電腦關機 Mac Core 仍運作 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 契約外 |
 | V33 | 重開機後只有重新授權的 Presence 到場 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V34 | 長時間運行資源有界 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 契約外 |

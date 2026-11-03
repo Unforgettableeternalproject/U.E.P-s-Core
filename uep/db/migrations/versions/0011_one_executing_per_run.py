@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0011_one_executing_per_run"
-down_revision = "0010_decision_log"  # 決策層 DL-3；0010 尚未合入 develop 時本檔無法單獨升級，見 PR 說明
+down_revision = "0010_decision_log"  # 接在決策日誌（DL-3）的 0010 之後
 branch_labels = None
 depends_on = None
 

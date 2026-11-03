@@ -180,7 +180,7 @@ def test_outcome_cache_is_turn_scoped_and_not_in_receipt():
 
 # ---- host：agent 路徑投影／legacy 黃金 ----
 
-def _host_stub(guild_id, audience="scope_private_owner"):
+def _host_stub(guild_id, audience="scope_private_owner", path="legacy"):
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
 
     class Memory:
@@ -189,8 +189,9 @@ def _host_stub(guild_id, audience="scope_private_owner"):
 
     stub = types.SimpleNamespace(
         _memory=Memory(), tool_executor=object(), think=types.SimpleNamespace(tools=None),
-        _session=types.SimpleNamespace(guild_id=guild_id, audience_scope=audience),
+        _session=types.SimpleNamespace(guild_id=guild_id, audience_scope=audience), _tool_path=path,
     )
+    stub._agent_tool_path = types.MethodType(EchoPipelineHost._agent_tool_path, stub)  # 路徑由建構參數注入
     stub._refresh_tools_agent = types.MethodType(EchoPipelineHost._refresh_tools_agent, stub)
     stub._DIRECT_CHAT_CAPABILITY_TAGS = EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS
     return stub
@@ -216,9 +217,8 @@ def test_legacy_path_bytes_unchanged(guild_id):
 
 
 @pytest.mark.parametrize("guild_id", [None, "123"])
-def test_agent_path_direct_chat_projection_is_read_only(monkeypatch, guild_id):
-    monkeypatch.setattr(get_settings(), "tool_path", "agent")
-    stub = _host_stub(guild_id, audience="scope_group_g123" if guild_id else "scope_private_owner")
+def test_agent_path_direct_chat_projection_is_read_only(guild_id):
+    stub = _host_stub(guild_id, audience="scope_group_g123" if guild_id else "scope_private_owner", path="agent")
     EchoPipelineHost._refresh_tools(stub)
     names = _names(stub.think.tools)
     assert "force_remember" not in names  # Q-E：direct_chat 僅唯讀工具
@@ -227,9 +227,8 @@ def test_agent_path_direct_chat_projection_is_read_only(monkeypatch, guild_id):
     assert all(t["type"] == "function" and "parameters" in t["function"] for t in stub.think.tools)
 
 
-def test_agent_path_fails_closed_on_projection_error(monkeypatch):
-    monkeypatch.setattr(get_settings(), "tool_path", "agent")
-    stub = _host_stub(None, audience="not-an-audience")
+def test_agent_path_fails_closed_on_projection_error():
+    stub = _host_stub(None, audience="not-an-audience", path="agent")
     EchoPipelineHost._refresh_tools(stub)
     assert stub.think.tools == []
 

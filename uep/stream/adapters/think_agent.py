@@ -13,6 +13,7 @@ Port 收尾回合 Task。
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Mapping
 from concurrent.futures import Executor
@@ -23,7 +24,10 @@ from ..contracts.types import Sentence, Utterance
 
 logger = logging.getLogger(__name__)
 
-_OWN = frozenset({"inner", "port", "_inner", "_port", "_executor", "_host_executor"})
+_OWN = frozenset({
+    "inner", "port", "_inner", "_port", "_executor", "_host_executor", "_tool_timeout_s", "_expected_turns",
+})
+DEFAULT_TOOL_TIMEOUT_S = 2.0  # 取消時最多等在途工具這麼久；逾時由 Port 的回合收尾把該 action 標為 UNKNOWN
 
 
 class ToolTurnPort(Protocol):
@@ -41,7 +45,12 @@ class ToolTurnPort(Protocol):
 class AgentThinkStage:
     name = "llm"
 
-    def __init__(self, inner: Any, port: ToolTurnPort | None = None, *, executor: Executor | None = None) -> None:
+    def __init__(
+        self, inner: Any, port: ToolTurnPort | None = None, *, executor: Executor | None = None,
+        tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
+    ) -> None:
+        object.__setattr__(self, "_tool_timeout_s", tool_timeout_s)
+        object.__setattr__(self, "_expected_turns", {})  # id(tool_context) -> 該 context 所屬 utterance 的 turn_id
         object.__setattr__(self, "_inner", inner)
         object.__setattr__(self, "_port", port)
         object.__setattr__(self, "_executor", executor)
@@ -86,10 +95,15 @@ class AgentThinkStage:
     # ---- ThinkStage：stream 外包回合收尾，其餘走 __getattr__ ----
     async def stream(self, utterance: Utterance, token: CancellationToken) -> AsyncIterator[Sentence]:
         turn_id = utterance.turn_id or ""
+        context = utterance.metadata.get("tool_context") if isinstance(utterance.metadata, dict) else None
+        if isinstance(context, dict):
+            self._expected_turns[id(context)] = turn_id
         try:
             async for sentence in self._inner.stream(utterance, token):
                 yield sentence
         finally:
+            if isinstance(context, dict):
+                self._expected_turns.pop(id(context), None)
             await self._finish(turn_id)
 
     async def _finish(self, turn_id: str) -> None:
@@ -114,10 +128,20 @@ class AgentThinkStage:
         port = self._port
         if port is None or not isinstance(context, dict) or not isinstance(args, Mapping):
             return {"success": False, "result": f"Tool {name!r} is not available."}
+        expected = self._expected_turns.get(id(context))
+        if expected is not None and context.get("ticket_ref") != expected:
+            # turn_id 有兩個來源（Utterance.turn_id 與 tool_context["ticket_ref"]）且不一致：fail-closed
+            logger.error("turn_id 不一致，拒絕工具呼叫：%s", name)
+            return {"success": False, "result": "tool rejected: turn mismatch"}
         loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(self._executor, port.run_tool, name, dict(args), context)
         try:
-            outcome = await loop.run_in_executor(self._executor, port.run_tool, name, dict(args), context)
+            outcome = await asyncio.shield(future)
         except asyncio.CancelledError:
+            # 取消：有上限地等在途的工具結束再往外拋，避免 worker 在回合收尾之後才寫狀態；
+            # 逾時不再等（回合收尾會把該 action 標為 UNKNOWN）
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait({future}, timeout=self._tool_timeout_s)
             raise
         except Exception as exc:  # noqa: BLE001 - Port 不該拋；保險起見不拖垮整輪
             logger.warning("工具 Port 失敗：%s %s", name, type(exc).__name__)

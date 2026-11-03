@@ -58,7 +58,6 @@ class MemoryToolExecutor:
         self.cache = cache if cache is not None else TurnOutcomeCache()
         self._audience_ok = audience_ok
         self._max_chars = max_chars
-        self._receipts: dict[str, ToolReceipt] = {}
 
     @property
     def lookup_authoritative(self) -> bool:
@@ -69,13 +68,13 @@ class MemoryToolExecutor:
         return self.cache.get(action_id)
 
     def lookup_receipt(self, action_id: str) -> ReceiptLookup:
-        receipt = self._receipts.get(action_id)
+        receipt = self.cache.get_receipt(action_id)  # receipt 查核表隨回合清除（與結果暫存同生命週期）
         if receipt is not None:
             return ReceiptLookup("found", receipt)
         return ReceiptLookup("undetermined")
 
     def execute(self, call: ToolCall) -> ToolReceipt:
-        existing = self._receipts.get(call.action_id)
+        existing = self.cache.get_receipt(call.action_id)
         if existing is not None and call.idempotency in ("native", "via_action_id"):
             return existing
         params = call.params if isinstance(call.params, Mapping) else None
@@ -92,7 +91,7 @@ class MemoryToolExecutor:
             error_code=None if status in ("executed", "not_found") else status,
             meta={"status": status},
         )
-        self._receipts[call.action_id] = receipt
+        self.cache.put_receipt(call.action_id, receipt)
         return receipt
 
     @staticmethod

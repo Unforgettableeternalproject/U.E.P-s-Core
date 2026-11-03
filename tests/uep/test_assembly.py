@@ -414,7 +414,7 @@ def test_engage_between_guard_read_and_stage1_commit_waits_and_no_new_tool_start
 
 # ---- UEP_TOOL_PATH 分流（切片 C3） ----
 
-def _agent_echo(session_factory, publisher, *, backend="port"):
+def _agent_echo(session_factory, publisher, *, backend="port", host_tool_path="agent"):
     """帶 AgentThinkStage（ModelPortBackend）與最小 MemoryPort 的宿主。"""
     from tests.uep.echo_support import make_session
     from tests.uep.test_agent_tool_path import FakePort, _Port
@@ -446,7 +446,7 @@ def _agent_echo(session_factory, publisher, *, backend="port"):
     inner = LLMThinkStage(ModelPortBackend(FakePort([])) if backend == "port" else Backend())
     return EchoPipelineHost(
         publisher=publisher, think=AgentThinkStage(inner), speak=None, sink_factory=lambda v, t: "x",
-        session=make_session(), memory=Memory(),
+        session=make_session(), memory=Memory(), tool_path=host_tool_path,
     )
 
 
@@ -525,4 +525,30 @@ def test_agent_tool_path_tg5_rejects_resolver_without_memory_specs(session_facto
         assemble_core(session_factory, **_agent_kwargs(
             session_factory, tmp_path, echo, publisher, bus, model_port=FakePort([]),
             tool_resolver=FakeToolSpecResolver(**{"files.read": {}}),
+        ))
+
+
+def test_tool_path_must_match_between_assembly_and_host(session_factory, tmp_path):
+    """旗標單一來源：組裝層決定一次，Host 注入值與 think stage 種類都得一致，不一致不靜默退回另一條路徑。"""
+    from tests.uep.test_agent_tool_path import FakePort
+
+    bus = EventBus()
+    publisher = EventPublisher(session_factory, bus)
+    # 情境 A：組裝層 agent，Host 用預設 legacy 建構
+    host_legacy = _agent_echo(session_factory, publisher, host_tool_path="legacy")
+    with pytest.raises(AssemblyError, match="不一致"):
+        assemble_core(session_factory, **_agent_kwargs(
+            session_factory, tmp_path, host_legacy, publisher, bus, model_port=FakePort([]),
+        ))
+    # 情境 B：組裝層 legacy（預設），Host 與 stage 卻是 agent
+    host_agent = _agent_echo(session_factory, publisher, host_tool_path="agent")
+    with pytest.raises(AssemblyError, match="不一致"):
+        assemble_core(session_factory, **_agent_kwargs(
+            session_factory, tmp_path, host_agent, publisher, bus, tool_path="legacy",
+        ))
+    # 情境 C：Host 說 legacy，但 stage 是 AgentThinkStage（組裝層也是 legacy）
+    with pytest.raises(AssemblyError, match="AgentThinkStage"):
+        assemble_core(session_factory, **_agent_kwargs(
+            session_factory, tmp_path, _agent_echo(session_factory, publisher, host_tool_path="legacy"),
+            publisher, bus, tool_path="legacy",
         ))

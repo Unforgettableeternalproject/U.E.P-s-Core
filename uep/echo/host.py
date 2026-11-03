@@ -180,10 +180,14 @@ class EchoPipelineHost:
         stop_timeout_s: float = _STOP_TIMEOUT_S,
         start_timeout_s: float = _START_TIMEOUT_S,
         endpoint_kwargs: dict[str, Any] | None = None,
+        tool_path: str = "legacy",
     ) -> None:
         self.publisher = publisher
         self.think = think
         self.speak = speak
+        if tool_path not in ("legacy", "agent"):
+            raise ValueError(f"tool_path 只能是 legacy 或 agent：{tool_path!r}")
+        self._tool_path = tool_path  # 組裝層決定一次後注入（單一來源）；host 不自己讀設定
         for attr in ("memory_resolver", "memory", "tool_executor"):
             if getattr(think, attr, None) is not None:
                 # 自帶記憶來源或工具執行器會繞過 Access Layer（audience／ACL 過濾）：一律拒絕組裝
@@ -785,9 +789,7 @@ class EchoPipelineHost:
         memory = self._memory
         if memory is None or self.tool_executor is None:
             return
-        from uep.config import get_settings  # 延後 import：只有分流判斷需要
-
-        if get_settings().tool_path == "agent":
+        if getattr(self, "_tool_path", "legacy") == "agent":  # 注入值；未注入（舊式替身）視為 legacy
             self._refresh_tools_agent()
             return
         definitions = getattr(memory, "tool_definitions", None)
@@ -1203,12 +1205,9 @@ class EchoPipelineHost:
 
     # ---- D79：工具呼叫事後補記 ----
 
-    @staticmethod
-    def _agent_tool_path() -> bool:
-        """``UEP_TOOL_PATH=agent``：工具呼叫走 ActionIntent，``action.*`` 由 TaskManager 發出（與舊補記互斥）。"""
-        from uep.config import get_settings  # 延後 import：只有路徑分流需要
-
-        return get_settings().tool_path == "agent"
+    def _agent_tool_path(self) -> bool:
+        """agent 路徑：工具呼叫走 ActionIntent，``action.*`` 由 TaskManager 發出（與舊補記互斥）。值由建構參數注入。"""
+        return self._tool_path == "agent"
 
     def _record_tool_action(self, turn_id: str, name: str, tool_class: str, status: str) -> None:
         """``CoreToolExecutor`` 的回呼（ES loop 上，只入佇列）：事後補記 ``action.executed``／``action.unknown``。

@@ -90,6 +90,10 @@ CHECKPOINT_KEYS = frozenset({
 
 TURN_TASK_GOAL = "turn_tools"  # 回合 Task 的 goal（D62）；孤兒掃描以此辨識
 UNRESOLVED_ACTIONS = "unresolved_actions"
+TURN_NOT_RUNNING = "turn_not_running"  # 回合結束時 Task 不是 RUNNING（PAUSED／WAITING_* 等）：不能宣稱成功
+# 一個回合的合理上限：模型 attempt 的 deadline（5 分鐘，ModelPortBackend）的兩倍。孤兒掃描的 older_than 必須大於它，
+# 否則會把仍在進行的回合誤收；回合結束由 Agent Core 主動收尾，掃描只是崩潰後的保底
+TURN_MAX_DURATION = timedelta(minutes=10)
 ORPHAN_TURN_TASK = "orphan_turn_task"
 
 
@@ -801,17 +805,30 @@ class TaskManager:
                 raise NotFound(f"回合 Task {task_id} 缺少對應的 Run：{run_id}")
             return task, run
 
-    def finish_turn_task(self, task_id: str) -> TaskRow:
+    def finish_turn_task(self, task_id: str, *, abandon_executing: bool = False) -> TaskRow:
         """回合結束時由 Agent Core 收尾（D62）。
 
-        沒有 EXECUTING／UNKNOWN 的 action -> SUCCEEDED；否則 FAILED 並帶 ``reason_code=unresolved_actions``
-        （Run 的 ``run.ended`` 同帶此原因碼與 action 線索）。已是終態則原樣回傳（冪等）。
+        沒有 EXECUTING／UNKNOWN 的 action 且 Task 為 RUNNING -> SUCCEEDED；有未決 action -> FAILED 並帶
+        ``reason_code=unresolved_actions``（Run 的 ``run.ended`` 同帶此原因碼與 action 線索）；Task 不是 RUNNING
+        （PAUSED／WAITING_*／UNKNOWN）-> FAILED 並帶 ``reason_code=turn_not_running``，不拋 IllegalTransition。
+        已是終態則原樣回傳（冪等）。
+
+        ``abandon_executing``：呼叫端等不到在途工具（逾時／取消）時，先把仍 EXECUTING 的 action 走正規轉移標成
+        UNKNOWN（``action.unknown``，之後仍可由 ``resolve_unknown`` 查核），再收尾。
         """
         with self._tx() as (s, pending):
             task = self._lock_task(s, task_id, None)
             if RunStatus(task.status) in TERMINAL_STATUSES:
                 return task
             run_ids = list(s.scalars(select(RunRow.run_id).where(RunRow.task_id == task_id)))
+            if abandon_executing and run_ids:
+                stuck = list(s.scalars(
+                    select(ActionIntentRow).where(
+                        ActionIntentRow.run_id.in_(run_ids), ActionIntentRow.status == ActionStatus.EXECUTING.value,
+                    ).with_for_update().execution_options(populate_existing=True)
+                ))
+                for action in stuck:
+                    self._set_action_status(s, pending, task, action, ActionStatus.UNKNOWN, "action.unknown")
             unresolved = bool(run_ids) and s.scalar(
                 select(ActionIntentRow.action_id).where(
                     ActionIntentRow.run_id.in_(run_ids),
@@ -822,6 +839,8 @@ class TaskManager:
                 self._set_task_status(
                     s, pending, task, RunStatus.FAILED, None, reason_code=UNRESOLVED_ACTIONS
                 )
+            elif RunStatus(task.status) is not RunStatus.RUNNING:
+                self._set_task_status(s, pending, task, RunStatus.FAILED, None, reason_code=TURN_NOT_RUNNING)
             else:
                 self._set_task_status(s, pending, task, RunStatus.SUCCEEDED, None)
             return task
@@ -833,7 +852,12 @@ class TaskManager:
 
         「最後活動時間」取 Task、其 Run、其 action 的 ``updated_at`` 最大者，執行中的長回合不會被誤收。
         單一 Task 收尾失敗只記 log、不影響其餘。回傳實際收尾的 task_id。
+        ``older_than`` 必須大於 ``TURN_MAX_DURATION``，否則拋 ValueError（避免誤收仍在進行的回合）。
+
+        接線：目前沒有 Supervisor／維護迴圈可以定期呼叫，接線延到切片 F（Agent 架構提案 §9.1 C／F 列）。
         """
+        if older_than <= TURN_MAX_DURATION:
+            raise ValueError(f"older_than 必須大於 TURN_MAX_DURATION（{TURN_MAX_DURATION}）")
         cutoff = (now or self._clock()) - older_than
         done = [x.value for x in TERMINAL_STATUSES]
         run_last = (

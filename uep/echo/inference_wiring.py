@@ -396,12 +396,16 @@ class InferenceWiring:
     config: InferenceConfig
     metrics: Metrics = field(default_factory=Metrics)
     readiness: dict[str, StageReadiness] = field(default_factory=dict)
+    tool_path: str = "legacy"  # 組 stage 時採用的工具路徑；經 host_kwargs 注入 Host，組裝層再核對一致
 
     def host_kwargs(self) -> dict[str, Any]:
-        return {
+        kwargs = {
             "think": self.think, "speak": self.speak, "input_stage": self.input_stage,
             "start_timeout_s": self.config.host_start_timeout_s,
         }
+        if self.tool_path != "legacy":
+            kwargs["tool_path"] = self.tool_path  # legacy 時不帶（Host 預設即 legacy；legacy 的鍵集合不變）
+        return kwargs
 
     def attach_metrics(self, metrics: Metrics) -> None:
         """之後的指標寫進 Host 的 ``metrics``（prepare 在 Host 啟動時才發生，建構後 attach 即可）。"""
@@ -475,7 +479,8 @@ def build_inference_wiring(
         think_kwargs.setdefault("split_policy", recommended)
     from uep.config import get_settings
 
-    if (tool_path or get_settings().tool_path) == "agent":
+    wiring.tool_path = tool_path or get_settings().tool_path
+    if wiring.tool_path == "agent":
         from uep.agent.runtime import ModelPortBackend
         from uep.stream.adapters.think_agent import AgentThinkStage
 

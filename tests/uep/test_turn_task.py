@@ -233,6 +233,6 @@ def test_sweep_records_unresolved_actions_on_run(mgr, session_factory):
     step = mgr.begin_step(run.run_id, "work", worker_epoch=run.worker_epoch)
     action = add_action(mgr, run, step, {"a": 1})
     force_status(session_factory, action.action_id, "UNKNOWN")
-    assert mgr.sweep_orphan_turn_tasks(timedelta(minutes=1), now=datetime.now(UTC) + timedelta(hours=1)) == [task.task_id]
+    assert mgr.sweep_orphan_turn_tasks(timedelta(minutes=11), now=datetime.now(UTC) + timedelta(hours=1)) == [task.task_id]
     assert events_of(session_factory, "run.ended")[-1].payload["reason_code"] == "unresolved_actions"
 

@@ -291,19 +291,21 @@ def test_agent_stage_forwards_attributes_to_inner():
 
 # ---- 互斥：host 旗標與 wiring ----
 
-def _host_stub():
+def _host_stub(path="legacy"):
     queued = []
-    return types.SimpleNamespace(
-        _enqueue=lambda fn, label: queued.append(label), queued=queued, _agent_tool_path=EchoPipelineHost._agent_tool_path, _publish_tool_action=lambda *a: None,
+    stub = types.SimpleNamespace(
+        _enqueue=lambda fn, label: queued.append(label), queued=queued, _publish_tool_action=lambda *a: None,
+        _tool_path=path,
     )
+    stub._agent_tool_path = types.MethodType(EchoPipelineHost._agent_tool_path, stub)
+    return stub
 
 
-def test_host_does_not_record_legacy_tool_action_in_agent_path(monkeypatch):
+def test_host_does_not_record_legacy_tool_action_in_agent_path():
     stub = _host_stub()
     EchoPipelineHost._record_tool_action(stub, "turn_x", "deep_recall", "internal_read", "executed")
     assert stub.queued == ["tool_action"]  # legacy：照舊補記
-    monkeypatch.setattr(get_settings(), "tool_path", "agent")
-    stub2 = _host_stub()
+    stub2 = _host_stub("agent")
     EchoPipelineHost._record_tool_action(stub2, "turn_x", "deep_recall", "internal_read", "executed")
     assert stub2.queued == []  # agent：由 TaskManager 發 action.*，不重複
 
@@ -339,9 +341,53 @@ def test_think_agent_module_has_no_core_imports():
     assert "uep" not in tops
 
 
-def test_agent_tool_path_flag_default_is_legacy_and_tool_context_unchanged():
+def _tool_context_keys(path, guild):
+    from uep.echo.config import EchoOutputConfig
+    from uep.echo.memory import GuildRoster
+
+    stub = types.SimpleNamespace(
+        _session=types.SimpleNamespace(guild_id=guild), roster=GuildRoster(), output=EchoOutputConfig(),
+        _make_sink=lambda *a: None, _on_think_start=lambda *a: None, _on_generation_done=lambda *a: None,
+        _tool_path=path,
+    )
+    stub._agent_tool_path = types.MethodType(EchoPipelineHost._agent_tool_path, stub)
+    ticket = types.SimpleNamespace(
+        actor_id="a", audience_scope="scope_private_owner", segment_id="seg_x", turn_id="turn_x", user_text="hi",
+        speaker_ref="u", event_scope="scope_private_owner", conversation_id="conv_x", reply_mode="text",
+        snapshot_version=1, turn_generation=1,
+    )
+    fact = types.SimpleNamespace(language="zh", confidence=1.0, legacy_ref=None)
+    request = EchoPipelineHost._build_request(stub, ticket, fact)
+    return sorted(request.utterance.metadata["tool_context"])
+
+
+def test_tool_path_default_is_legacy_and_legacy_tool_context_keys_unchanged():
     assert get_settings().tool_path == "legacy"
-    assert EchoPipelineHost._agent_tool_path() is False
+    legacy = ["actor_id", "audience", "segment_id", "ticket_ref"]
+    assert _tool_context_keys("legacy", None) == legacy  # legacy：與改動前完全相同
+    assert _tool_context_keys("legacy", "123") == sorted([*legacy, "guild_id", "present_uids"])
+    assert _tool_context_keys("agent", None) == sorted([*legacy, "conversation_id", "event_scope"])  # 只有 agent 多兩個鍵
+
+
+def test_host_rejects_unknown_tool_path():
+    with pytest.raises(ValueError, match="tool_path"):
+        EchoPipelineHost(publisher=None, think=object(), speak=None, sink_factory=lambda v, t: "x",
+                         session=None, tool_path="both")
+
+
+def test_inference_wiring_injects_tool_path_into_host_kwargs():
+    from uep.echo.inference_wiring import build_inference_wiring
+
+    class Backend:
+        async def stream_query(self, *a, **k):
+            yield "x"
+
+    for path in ("legacy", "agent"):
+        wiring = build_inference_wiring(
+            think_backend=Backend(), tts_backend=object(), stt_backend=object(), tool_path=path,
+        )
+        assert wiring.host_kwargs().get("tool_path", "legacy") == path  # Host 吃的值與 stage 選擇同源
+        assert ("tool_path" in wiring.host_kwargs()) == (path == "agent")  # legacy 的鍵集合不變
 
 
 def test_registry_injected_params_are_hidden_from_llm_schema():

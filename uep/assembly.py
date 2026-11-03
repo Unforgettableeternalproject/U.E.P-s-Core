@@ -286,6 +286,22 @@ def build_request_verifier(
     )
 
 
+def _check_tool_path_consistency(tool_path: str, echo: EchoPipelineHost | None) -> None:
+    """Host 注入的路徑與 think stage 種類都必須等於組裝層決定的路徑；不一致一律拒絕（不靜默退回另一條路徑）。"""
+    if tool_path not in ("legacy", "agent"):
+        raise AssemblyError(f"tool_path 只能是 legacy 或 agent：{tool_path!r}")
+    if echo is None:
+        return
+    host_path = getattr(echo, "_tool_path", "legacy")
+    if host_path != tool_path:
+        raise AssemblyError(f"工具路徑不一致：組裝層為 {tool_path}，EchoPipelineHost 為 {host_path}（建構 Host 時須傳同一個 tool_path）")
+    is_agent_stage = callable(getattr(echo.think, "bind_port", None))
+    if is_agent_stage != (tool_path == "agent"):
+        raise AssemblyError(
+            f"工具路徑不一致：組裝層為 {tool_path}，但 think stage {'是' if is_agent_stage else '不是'} AgentThinkStage"
+        )
+
+
 def _prepare_agent_tools(echo: EchoPipelineHost | None, model_port: Any | None) -> tuple[Any, Any]:
     """``UEP_TOOL_PATH=agent`` 的前提檢查與記憶工具 executor；任何一項不成立都拒絕組裝，不退回 legacy。"""
     from uep.agent.runtime import ModelPortBackend
@@ -397,7 +413,9 @@ def assemble_core(
             )
     assert adapter is not None and executors is not None and tool_resolver is not None
     agent_cache = None
-    if (tool_path or get_settings().tool_path) == "agent":
+    tool_path = tool_path or get_settings().tool_path  # 工具路徑只在這裡決定一次；Host 與 think stage 必須與之一致
+    _check_tool_path_consistency(tool_path, echo)
+    if tool_path == "agent":
         memory_executor, agent_cache = _prepare_agent_tools(echo, model_port)
         executors = {**executors, MEMORY_EXECUTOR: memory_executor}
     _check_registry_executors(tool_resolver, executors, internal_executors)

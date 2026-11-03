@@ -1,27 +1,53 @@
 """回合範圍的工具結果暫存（D33：internal_read 的結果原文不進 receipt／DB）。
 
-以 ``action_id`` 為鍵；回合結束（``discard``）就清掉，只在記憶體。receipt 只記 ``result_ref`` 與狀態短碼，
-結果文字由 Gateway 的 ``outcome_view`` 從這裡取；取不到時視為 ``unknown``，不編造。
+以 turn 為索引、``action_id`` 為鍵；回合結束（``discard_turn``）整批清掉，只在記憶體。receipt 只記 ``result_ref`` 與
+狀態短碼，結果文字由 Gateway 的 ``outcome_view`` 從這裡取；取不到時視為 ``unknown``，不編造。
+
+executor 在呼叫它的執行緒內同步執行（``TaskManager.execute_action`` 的階段 2），所以 turn 以執行緒區域的
+``turn_scope`` 帶入，executor 不需要知道 turn_id。executor 的 receipt 查核表（``lookup_receipt``）也放在這裡，
+一起隨回合清掉：它的生命週期就是「回合內可能需要查核 UNKNOWN」的期間。沒有 ``turn_scope`` 時歸在 ``""`` 這個
+未分組的索引，由 ``discard_turn("")`` 或 ``discard`` 清除（測試或直接呼叫 executor 的情況）。
 """
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from typing import Any
+
+UNSCOPED = ""
 
 
 class TurnOutcomeCache:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._outcomes: dict[str, dict[str, Any]] = {}
+        self._scope = threading.local()
+        self._outcomes: dict[str, dict[str, dict[str, Any]]] = {}
+        self._receipts: dict[str, dict[str, Any]] = {}  # turn -> {action_id: receipt}
+        self._turn_of: dict[str, str] = {}
+
+    @contextmanager
+    def turn_scope(self, turn_id: str) -> Iterator[None]:
+        previous = getattr(self._scope, "turn", UNSCOPED)
+        self._scope.turn = turn_id
+        try:
+            yield
+        finally:
+            self._scope.turn = previous
+
+    def _current(self) -> str:
+        return getattr(self._scope, "turn", UNSCOPED)
 
     def put(self, action_id: str, outcome: dict[str, Any]) -> None:
+        turn = self._current()
         with self._lock:
-            self._outcomes[action_id] = dict(outcome)
+            self._outcomes.setdefault(turn, {})[action_id] = dict(outcome)
+            self._turn_of[action_id] = turn
 
     def get(self, action_id: str) -> dict[str, Any] | None:
         with self._lock:
-            found = self._outcomes.get(action_id)
+            turn = self._turn_of.get(action_id)
+            found = self._outcomes.get(turn, {}).get(action_id) if turn is not None else None
             return dict(found) if found is not None else None
 
     def text(self, action_id: str) -> str | None:
@@ -29,11 +55,32 @@ class TurnOutcomeCache:
         found = self.get(action_id)
         return None if found is None else str(found.get("result", ""))
 
+    def put_receipt(self, action_id: str, receipt: Any) -> None:
+        turn = self._current()
+        with self._lock:
+            self._receipts.setdefault(turn, {})[action_id] = receipt
+            self._turn_of.setdefault(action_id, turn)
+
+    def get_receipt(self, action_id: str) -> Any | None:
+        with self._lock:
+            turn = self._turn_of.get(action_id)
+            return self._receipts.get(turn, {}).get(action_id) if turn is not None else None
+
+    def discard_turn(self, turn_id: str) -> None:
+        """回合結束：整批清除該回合的結果與 receipt 查核表。"""
+        with self._lock:
+            ids = set(self._outcomes.pop(turn_id, {})) | set(self._receipts.pop(turn_id, {}))
+            for action_id in ids:
+                self._turn_of.pop(action_id, None)
+
     def discard(self, action_ids: Iterable[str]) -> None:
         with self._lock:
             for action_id in action_ids:
-                self._outcomes.pop(action_id, None)
+                turn = self._turn_of.pop(action_id, None)
+                if turn is not None:
+                    self._outcomes.get(turn, {}).pop(action_id, None)
+                    self._receipts.get(turn, {}).pop(action_id, None)
 
     def __len__(self) -> int:
         with self._lock:
-            return len(self._outcomes)
+            return sum(len(v) for v in self._outcomes.values()) + sum(len(v) for v in self._receipts.values())

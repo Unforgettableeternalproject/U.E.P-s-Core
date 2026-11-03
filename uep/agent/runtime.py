@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -36,6 +37,7 @@ from uep.models.port import (
 
 logger = logging.getLogger(__name__)
 
+BACKEND_CLOSE_WAIT_S = 5.0  # 消費者取消後，等在途的 next() 收尾的上限
 MessagesFor = Callable[[RuntimeRequest], Sequence[ChatMessage]]
 
 
@@ -309,9 +311,12 @@ class ModelPortBackend:
         iterator = iter(self.runtime.stream(attempt_id))
         end = object()
         loop = asyncio.get_running_loop()
+        pending: asyncio.Future[Any] | None = None  # 目前在 worker 執行緒上進行中的 next()
         try:
             while True:
-                event = await loop.run_in_executor(None, next, iterator, end)
+                pending = loop.run_in_executor(None, next, iterator, end)
+                event = await asyncio.shield(pending)
+                pending = None
                 if event is end:
                     return
                 if event.kind == "text_delta":
@@ -331,4 +336,10 @@ class ModelPortBackend:
             if self.runtime.status(attempt_id).state == "running":
                 self.runtime.cancel(attempt_id, "backend_closed")
             self.runtime.end(attempt_id)
-            await asyncio.shield(loop.run_in_executor(None, _close_iterator, iterator))
+            if pending is not None and not pending.done():
+                # next() 還在 worker 執行緒上跑（消費者在等待中被取消）：cancel 已讓模型串流收尾，等它回來再 close，
+                # 不與仍在執行的 generator 撞在一起；等不到就不 close（交給 GC，stream 內的 loop 清理有防護）
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await asyncio.wait({pending}, timeout=BACKEND_CLOSE_WAIT_S)
+            if pending is None or pending.done():
+                await asyncio.shield(loop.run_in_executor(None, _close_iterator, iterator))

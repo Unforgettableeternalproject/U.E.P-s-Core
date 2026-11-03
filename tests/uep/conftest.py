@@ -22,6 +22,7 @@ CC6_TABLES = "receipts, action_intents, approvals, steps, runs, tasks, activitie
 CC1_TABLES = "inbox, outbox, events, payload_blobs, context_snapshots, output_intents, deliveries"
 CC4_TABLES = "presence_leases, presence_transfers, presence_current"
 CC7_TABLES = "state_requests, state_projection, global_stop_flags"
+DECISION_TABLES = "decision_log"  # DL-3：console rig 會寫入決策日誌
 
 
 def alembic_config(url: str) -> Config:
@@ -72,6 +73,6 @@ def session_factory(engine):
     with engine.begin() as conn:
         # 0007 的 events TRUNCATE guard：清庫時於同一交易內暫停用，結束即恢復
         conn.execute(text("ALTER TABLE events DISABLE TRIGGER events_no_truncate"))
-        conn.execute(text(f"TRUNCATE {CC1_TABLES}, {CC6_TABLES}, {CC4_TABLES}, {CC7_TABLES} RESTART IDENTITY CASCADE"))
+        conn.execute(text(f"TRUNCATE {CC1_TABLES}, {CC6_TABLES}, {CC4_TABLES}, {CC7_TABLES}, {DECISION_TABLES} RESTART IDENTITY CASCADE"))
         conn.execute(text("ALTER TABLE events ENABLE TRIGGER events_no_truncate"))
     return make_session_factory(engine)

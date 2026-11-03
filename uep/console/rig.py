@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,6 +16,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from uep.assembly import CoreAssembly, assemble_core
 from uep.control.channel import InProcessControlChannel
 from uep.db.engine import make_engine, make_session_factory
+from uep.decision.db import DbSink
+from uep.decision.log import DecisionLogWriter
 from uep.echo.host import EchoPipelineHost
 from uep.events.bus import EventBus
 from uep.events.publisher import EventPublisher
@@ -120,14 +123,31 @@ class ConsoleRuntime:
     warmups: dict[str, float] = field(default_factory=dict)
     submissions: list[tuple[Any, Any]] = field(default_factory=list)
     player: Any = None
+    decision_log: DecisionLogWriter | None = None  # DL-3：決策日誌寫入器（停用時為 None）
 
     def close(self) -> None:
         try:
             self.core.shutdown()
         finally:
-            engine = self.session_factory.kw.get("bind")
-            if engine is not None:
-                engine.dispose()
+            try:
+                if self.decision_log is not None:
+                    self.decision_log.close()  # 排空佇列後才釋放連線
+            finally:
+                engine = self.session_factory.kw.get("bind")
+                if engine is not None:
+                    engine.dispose()
+
+
+def _attach_decision_log(host: EchoPipelineHost, session_factory: sessionmaker[Session]) -> DecisionLogWriter | None:
+    """DL-3：用 rig 自己的 session_factory 建決策日誌寫入器並掛到 Host 的決策中樞（測試寫測試庫、正式寫正式庫）。
+
+    ``UEP_DECISION_LOG`` 為 0／off／false／no 時停用。
+    """
+    if os.environ.get("UEP_DECISION_LOG", "").strip().lower() in {"0", "off", "false", "no"}:
+        return None
+    writer = DecisionLogWriter(DbSink(session_factory))
+    writer.attach(host.decision_hub)
+    return writer
 
 
 def build_fake_runtime(
@@ -187,6 +207,7 @@ def build_fake_runtime(
         identity=identity, tracer=tracer, endpoint_kwargs={"tick_interval": 0.05}, **host_extra,
         input_stage=input_stage, memory=memory_host.access if memory_host is not None else None,
     )
+    decision_log = _attach_decision_log(host, session_factory)
     core = assemble_core(
         session_factory, bus=bus, publisher=publisher, control=InProcessControlChannel(), adapter=host.adapter,
         executors={"fake": FakeToolExecutor()}, tool_resolver=FakeToolSpecResolver(**{"files.read": {}}),
@@ -197,6 +218,7 @@ def build_fake_runtime(
     runtime = ConsoleRuntime(
         "fake" if think_factory is None else "real", core, host, session_factory, think, speak, tracer, session_dir,
         input_stage=input_stage, memory_host=memory_host, memory_root=memory_root, warmups=warmups, player=player,
+        decision_log=decision_log,
     )
     if input_stage is not None:
         runtime.seq = TEXT_SEQ_BASE  # 與 Host 內部 STT utterance 的 seq 錯開，文字與語音混用時不碰撞
@@ -205,7 +227,11 @@ def build_fake_runtime(
         try:
             core.start()
         except BaseException:
-            core.shutdown()
+            try:
+                core.shutdown()
+            finally:
+                if decision_log is not None:
+                    decision_log.close()
             raise
     return runtime
 

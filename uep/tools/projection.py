@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# 投影條件 audience ≥ audience_min 與 SYS 增補 PD-13／VC-PD-7（audience 收窄 ⇒ denied）一致。
 # audience 的寬度排序（與 uep.events.envelope 的 scope 層級同序：private < group < public）
 AUDIENCE_RANK: dict[str, int] = {"private": 0, "group": 1, "public": 2}
 

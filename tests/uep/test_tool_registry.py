@@ -396,7 +396,14 @@ def test_ra15_requires_and_readiness():
     assert rule_of(make_entry(warm_required=True)) == "RA-15"
     entry = make_entry(requires=("gpu:indextts",), load_cost="heavy", warm_required=True)
     assert ToolRegistry.build([entry]).readiness("demo.tool") == "unavailable"  # 未知模組：fail-closed
-    assert ToolRegistry.build([entry], known_modules=["gpu:indextts"]).readiness("demo.tool") == "ready"
+    # warm_required fail-closed（切片 B 裁決）：已知模組在第一個 ready 事件前算 warming，不是 ready
+    # （舊斷言 "ready" 會讓需預熱的工具在預熱完成前被投出給模型）
+    built = ToolRegistry.build([entry], known_modules=["gpu:indextts"])
+    assert built.readiness("demo.tool") == "warming"
+    built.apply_module_event("module.ready", {"module_id": "gpu:indextts", "revision": 1})
+    assert built.readiness("demo.tool") == "ready"
+    cold = make_entry(requires=("gpu:indextts",))  # 沒有 warm_required：已知模組維持預設 ready
+    assert ToolRegistry.build([cold], known_modules=["gpu:indextts"]).readiness("demo.tool") == "ready"
     assert ToolRegistry.build([make_entry()]).readiness("demo.tool") == "ready"
 
 

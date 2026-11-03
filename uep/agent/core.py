@@ -75,11 +75,13 @@ class StepOutcome:
 class AgentCore:
     def __init__(
         self, runtime: Runtime, tasks: TaskManager, gateway: ToolGateway, *, worker_epoch: int,
+        injected: Mapping[str, Any] | None = None,
     ) -> None:
         self._runtime = runtime
         self._tasks = tasks
         self._gateway = gateway
         self._worker_epoch = worker_epoch
+        self._injected = injected  # Core 持有的注入值（venue 等），只經 Gateway 進 params，LLM 看不到
 
     def run_step(self, *, run_id: str, step_id: str, request: RuntimeRequest) -> StepOutcome:
         """驅動 Runtime 跑完一個 Step。``request.capability_set`` 即當輪可見集合。"""
@@ -121,9 +123,11 @@ class AgentCore:
 
         action_id = stable_action_id(run_id, step_id, ordinal)
         try:
-            self._gateway.check_intent(tool, args, request.capability_set)
+            # 用 Gateway 回傳的（驗證並注入後的）參數建 action 與執行：注入發生在 params_hash 之前
+            args = self._gateway.check_intent(tool, args, request.capability_set, injected=self._injected)
         except GatewayRejected as exc:
-            return self._deliver(attempt_id, action_id, ordinal, tool, "rejected", exc.code, created=False)
+            self._runtime.submit_tool_result(attempt_id, action_id, self._gateway.rejection_view(exc))
+            return IntentRecord(ordinal, tool, None, "rejected", exc.code)
 
         try:
             self._tasks.create_action(

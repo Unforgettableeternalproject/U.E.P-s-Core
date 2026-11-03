@@ -699,3 +699,81 @@ def test_render_py_is_the_only_new_path_that_builds_function_tools():
     project_src = source[source.index("    def project("):]
     assert '"type": "function"' not in project_src
     assert visible_tools({"tools": [{"tool": "a"}]}) == {"a"}
+
+
+def test_warm_required_is_warming_before_first_ready_event(warm_registry):
+    """fail-closed：warm_required 工具在第一個 ready 事件前不投出、進 pending；其餘已知模組預設 ready。"""
+    cs = warm_registry.project({"memory.read"}, ProjectionContext())
+    assert names(cs) == ["deep_recall"]
+    assert [dict(p) for p in cs["pending"]] == [{"tool": "speak.tool", "reason": "warming"}]
+    FakeModuleCoordinator(warm_registry).emit("ready")
+    assert names(warm_registry.project({"memory.read"}, ProjectionContext())) == ["deep_recall", "speak.tool"]
+    plain = ToolRegistry.build([make_entry("plain.tool", requires=("m",))], known_modules=["m"])
+    assert names(plain.project({"memory.read"}, ProjectionContext())) == ["plain.tool"]
+
+
+# ---------------------------------------------------------------------------
+# AgentCore 搭配 ToolGateway(registry)（無 DB：TaskManager 以記錄用替身取代）
+# ---------------------------------------------------------------------------
+
+class _StubTasks:
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+        self.executed: list[dict[str, Any]] = []
+
+    def create_action(self, **kw: Any) -> None:
+        self.created.append(kw)
+
+    def execute_action(self, action_id: str, params: Any, *, worker_epoch: int):
+        from uep.tasks.manager import ActionOutcome
+        from uep.tasks.states import ActionStatus
+
+        self.executed.append(dict(params))
+        return ActionOutcome(action_id, ActionStatus.SUCCEEDED, True, None)
+
+
+def _agent_rig(args: dict[str, Any], *, with_registry: bool = True):
+    from uep.agent.core import AgentCore
+    from uep.fakes import runtime as rt
+    from uep.fakes.runtime import FakeRuntime
+
+    reg = ToolRegistry.build([make_entry(
+        "notify.user", spec={"capability": "chatroom.read"},
+        descriptor=ToolDescriptor("n", _NOTIFY_SCHEMA, injected_params=("venue",)),
+    )])
+    cs = reg.project({"chatroom.read"}, ProjectionContext())
+    runtime, tasks = FakeRuntime(), _StubTasks()
+    request = _request(cs)
+    runtime.script_for(request.attempt_id, [rt.tool_intent("notify.user", args), rt.result()])
+    gateway = ToolGateway(reg if with_registry else None)
+    core = AgentCore(runtime, tasks, gateway, worker_epoch=1, injected={"venue": "core-desktop"})  # type: ignore[arg-type]
+    outcome = core.run_step(run_id="run_1", step_id="step_1", request=request)
+    return outcome, tasks, runtime, request
+
+
+def test_agent_core_injected_value_reaches_action_and_llm_value_does_not():
+    outcome, tasks, _, _ = _agent_rig({"message": "hi"})
+    assert outcome.intents[0].status == "unknown"  # 替身 outcome 無 receipt；重點在 params
+    assert tasks.created[0]["params"] == {"message": "hi", "venue": "core-desktop"}
+    assert tasks.executed == [{"message": "hi", "venue": "core-desktop"}]
+
+    outcome, tasks, runtime, req = _agent_rig({"message": "hi", "venue": "model-venue"})
+    assert outcome.intents[0].status == "rejected" and outcome.intents[0].reason == "param_not_allowed"
+    assert tasks.created == [] and tasks.executed == []  # 不建 action
+    view = runtime.tool_results[req.attempt_id][0][1]
+    assert view["reason_code"] == "param_not_allowed" and view["fields"] == ["/venue"]
+    assert "model-venue" not in json.dumps(view)
+
+
+def test_agent_core_rejected_view_carries_reason_and_no_user_values():
+    _outcome, tasks, runtime, req = _agent_rig({"message": SECRET, "urgency": SECRET, "extra": SECRET})
+    assert tasks.created == []
+    view = runtime.tool_results[req.attempt_id][0][1]
+    assert view["status"] == "rejected" and view["reason_code"] == "invalid_tool_args"
+    assert sorted(view["fields"]) == ["/extra", "/urgency"]
+    assert SECRET not in json.dumps(view, ensure_ascii=False)
+
+
+def test_agent_core_without_registry_keeps_legacy_behavior():
+    _outcome, tasks, _runtime, _req = _agent_rig({"anything": 1}, with_registry=False)
+    assert tasks.created[0]["params"] == {"anything": 1}  # 沒有 registry：原樣建 action

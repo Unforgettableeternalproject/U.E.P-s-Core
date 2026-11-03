@@ -464,8 +464,8 @@ class ToolRegistry:
     def readiness(self, tool: str) -> Readiness:
         """§5.8：``AND over requires``。任一 requires 未知（module coordinator 不認得）或 ``unavailable`` ⇒
         ``unavailable``（fail-closed，RA-15）；否則有 ``warming`` ⇒ ``warming``；否則 ``ready``。
-        已知模組在收到第一個事件前視為 ready（維持切片 A 行為，S-A 測試鎖定）；因此啟動時 module coordinator 必須先發
-        各模組的當前狀態事件，``warm_required`` 工具才不會在預熱前被投出。純記憶體查詢，不做 I/O。"""
+        已知模組在收到第一個事件前：``warm_required`` 工具視為 ``warming``（fail-closed，要等到第一個 ready 事件才可用）；
+        其餘工具維持預設 ``ready``。純記憶體查詢，不做 I/O。"""
         entry = self.entry(tool)
         states = self._module_state
         result: Readiness = "ready"
@@ -473,7 +473,7 @@ class ToolRegistry:
             if module not in self._known_modules:
                 return "unavailable"
             recorded = states.get(module)
-            state: Readiness = recorded[1] if recorded else "ready"
+            state: Readiness = recorded[1] if recorded else ("warming" if entry.warm_required else "ready")
             if state == "unavailable":
                 return "unavailable"
             if state == "warming":

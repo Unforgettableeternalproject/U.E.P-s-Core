@@ -2,7 +2,9 @@
 
 會呼叫真實 API（OpenAI chat／Responses、本機 Ollama），所以只在明確指示下手動執行：
 
-    $PY scripts/spike1_model_layer.py --only s5,s1,s2,s4,s3 --n 10 --out <結果.json>
+    $PY scripts/spike1_model_layer.py --only s1,s2,s4,s3 --n 30 --out <結果.json>
+
+離線項目（s3a SDK 開銷、s5 D60）不讀 .env、不打 API：``--only s3a,s5 --n-overhead 100``。
 
 - 憑證讀 repo 根目錄的 ``.env``（``UEP_LLM_*``）；不印出任何金鑰。量測完請刪除 ``.env``。
 - Ollama 位址／模型取自 ``OllamaBackend`` 預設值（``http://localhost:11434``、``gemma4:e4b-it-q4_K_M``），可用
@@ -59,9 +61,24 @@ def p90(values: list[float]) -> float:
     return s[max(0, math.ceil(0.9 * len(s)) - 1)]
 
 
-def stats(values: list[float]) -> dict[str, float]:
-    return {"n": len(values), "median_ms": round(statistics.median(values), 1), "p90_ms": round(p90(values), 1),
-            "min_ms": round(min(values), 1), "max_ms": round(max(values), 1)}
+def pct(values: list[float], q: float) -> float:
+    """nearest-rank 百分位。"""
+    s = sorted(values)
+    return s[max(0, math.ceil(q * len(s)) - 1)]
+
+
+def histogram(values: list[float], width: float = 100.0) -> dict[str, int]:
+    """固定寬度直方圖（預設 100 ms 一格）。"""
+    bins: dict[int, int] = {}
+    for v in values:
+        bins[int(v // width)] = bins.get(int(v // width), 0) + 1
+    return {f"{int(k * width)}-{int((k + 1) * width)}ms": bins[k] for k in sorted(bins)}
+
+
+def stats(values: list[float], precision: int = 1) -> dict[str, Any]:
+    return {"n": len(values), "median_ms": round(statistics.median(values), precision),
+            "p90_ms": round(p90(values), precision), "p99_ms": round(pct(values, 0.99), precision),
+            "min_ms": round(min(values), precision), "max_ms": round(max(values), precision)}
 
 
 class Cfg:
@@ -165,6 +182,7 @@ async def s1(cfg: Cfg) -> dict[str, Any]:
 
 
 def longest_common_substring_len(a: str, b: str, cap: int = 40) -> int:
+    """僅供參考輸出：模型打草稿時 thought 可與 text 內容相同，不能拿來判通過／失敗。"""
     best = 0
     for i in range(len(a)):
         for k in range(best + 1, min(cap, len(a) - i) + 1):
@@ -175,7 +193,12 @@ def longest_common_substring_len(a: str, b: str, cap: int = 40) -> int:
     return best
 
 
+_ALLOWED_ROUTES = {("thinking", "thought_delta"), ("text", "text_delta"), ("tool_call", "tool_call_delta")}
+
+
 async def s2(cfg: Cfg) -> dict[str, Any]:
+    """結構判定：每個 delta 的 SDK part 歸屬（port.audit）必須對到固定的事件種類，且沒有被丟棄的 delta。
+    字串比對只留作參考輸出。"""
     prompt = "123 乘以 47 等於多少？先想清楚再回答，答案一句話。"
     out: dict[str, Any] = {}
     runs = [
@@ -184,25 +207,34 @@ async def s2(cfg: Cfg) -> dict[str, Any]:
         ("ollama", "ollama", cfg.port("ollama", thinking=True), None),
     ]
     for dialect, provider, port, effort in runs:
+        port.audit.clear()
+        port.dropped_deltas.clear()
         events, _ = await run_port(port, user_req(f"s2-{dialect}", prompt, max_tokens=1500, effort=effort, tools=False), provider)
         thought = "".join(e.text for e in events if e.kind == "thought_delta")
         text = "".join(e.text for e in events if e.kind == "text_delta")
         kinds = [e.kind for e in events]
-        first_text = kinds.index("text_delta") if "text_delta" in kinds else None
-        last_thought = max((i for i, k in enumerate(kinds) if k == "thought_delta"), default=None)
-        overlap = longest_common_substring_len(thought, text) if thought and text else 0
+        bad_routes = [pair for pair in port.audit if pair not in _ALLOWED_ROUTES]
+        n_thinking_src = sum(1 for src, _ in port.audit if src == "thinking")
+        n_thought_out = sum(1 for _, kind in port.audit if kind == "thought_delta")
+        text_from_thinking = sum(1 for src, kind in port.audit if src == "thinking" and kind == "text_delta")
         out[dialect] = {
-            "thought_chars": len(thought), "text_chars": len(text), "thought_events": kinds.count("thought_delta"),
-            "text_events": kinds.count("text_delta"), "finish": events[-1].finish_reason,
-            "thought_before_text": (last_thought is None or first_text is None or last_thought < first_text),
-            "max_common_substring": overlap, "thought_head": thought[:80], "text_head": text[:80],
-            "emits_thinking": bool(thought),
-            # 混入判定：thought 的開頭不得出現在 text 串流；part 型別決定分流，事件序上 thought 全部先於 text。
-            # max_common_substring 僅供參考：模型在思考中草擬/引用最終答案屬內容重複，不是串流混入。
-            "thought_leaked_into_text": bool(thought) and thought[:24] in text,
-            "pass": not (bool(thought) and thought[:24] in text)
-            and (last_thought is None or first_text is None or last_thought < first_text),
+            "structural": {
+                "delta_routes": {f"{src}->{kind}": sum(1 for pair in port.audit if pair == (src, kind))
+                                 for src, kind in sorted(set(port.audit))},
+                "thinking_deltas_mapped_to_text": text_from_thinking, "bad_routes": len(bad_routes),
+                "dropped_deltas": list(port.dropped_deltas),
+                "thinking_src_equals_thought_out": n_thinking_src == n_thought_out,
+            },
+            "finish": events[-1].finish_reason, "emits_thinking": bool(thought),
+            "pass": text_from_thinking == 0 and not bad_routes and not port.dropped_deltas
+            and n_thinking_src == n_thought_out,
             "note": "" if thought else "此 provider／設定下不產生 thinking（thought_delta 為空）",
+            "reference_only": {  # 字串比對：僅參考
+                "thought_chars": len(thought), "text_chars": len(text), "thought_events": kinds.count("thought_delta"),
+                "text_events": kinds.count("text_delta"),
+                "max_common_substring": longest_common_substring_len(thought, text),
+                "thought_head": thought[:80], "text_head": text[:80],
+            },
         }
     return out
 
@@ -256,8 +288,14 @@ async def s4(cfg: Cfg, n: int) -> dict[str, Any]:
 # ── S1-5：D60 啟動斷言（離線）─────────────────────────────────────────────
 
 
-async def s5(cfg: Cfg) -> dict[str, Any]:
-    port = cfg.port("openai_chat")
+async def s5() -> dict[str, Any]:
+    from pydantic_ai.models.function import FunctionModel
+
+    async def _never(messages, info):
+        raise AssertionError("D60 未擋下就送出請求")
+        yield ""  # pragma: no cover
+
+    port = PydanticAIModelPort("openai_chat", model=FunctionModel(stream_function=_never))
     cases = {}
     for name, req in {
         "builtin_tools": ModelRequest("s5a", [ChatMessage("user", "x")], CAPABILITY_SET, builtin_tools=("web_search",)),
@@ -347,6 +385,7 @@ async def s3(cfg: Cfg, n: int) -> dict[str, Any]:
             "median_diff_ms": round(statistics.median(new) - statistics.median(base), 1),
             "paired_diff": {"median_ms": round(statistics.median(diffs), 1), "p90_ms": round(p90(diffs), 1)},
             "raw": {"base": [round(x, 1) for x in base], "new": [round(x, 1) for x in new]},
+            "distribution": {"base": histogram(base), "new": histogram(new), "paired_diff": histogram(diffs, 50.0)},
             "pass_median_le_50ms": (statistics.median(new) - statistics.median(base)) <= 50.0,
         }
     # Ollama：對照組是直打 OpenAI 相容端點（同一個 /v1 路徑，無 SDK），量 SDK 層本身的額外延遲
@@ -387,23 +426,50 @@ async def s3(cfg: Cfg, n: int) -> dict[str, Any]:
         "median_diff_ms": round(statistics.median(new) - statistics.median(base), 1),
         "paired_diff": {"median_ms": round(statistics.median(diffs), 1), "p90_ms": round(p90(diffs), 1)},
         "raw": {"base": [round(x, 1) for x in base], "new": [round(x, 1) for x in new]},
+        "distribution": {"base": histogram(base), "new": histogram(new), "paired_diff": histogram(diffs, 50.0)},
         "pass_median_le_50ms": (statistics.median(new) - statistics.median(base)) <= 50.0,
         "note": "Ollama 無現行 OpenAI 相容 backend 可比；對照組為直打 /v1 chat（無 SDK）",
     }
     return out
 
 
+async def s3a(n: int) -> dict[str, Any]:
+    """離線 SDK 開銷：FunctionModel（無網路）從 stream() 呼叫到第一個 text_delta 的時間，與整段 stream 結束的時間。"""
+    from pydantic_ai.models.function import FunctionModel
+
+    async def fn(messages, info):
+        yield "你"
+        yield "好"
+
+    port = PydanticAIModelPort("openai_chat", model=FunctionModel(stream_function=fn))
+    req = user_req("s3a", "x", max_tokens=16, effort=None)
+    first, total = [], []
+    for i in range(n + 10):  # 前 10 次暖機不計
+        t0 = time.perf_counter()
+        t_first = None
+        async for e in port.stream(req):
+            if t_first is None and e.kind == "text_delta":
+                t_first = (time.perf_counter() - t0) * 1000
+        t_all = (time.perf_counter() - t0) * 1000
+        if i >= 10:
+            first.append(t_first or -1.0)
+            total.append(t_all)
+    return {"first_text_delta": stats(first, 2), "full_stream": stats(total, 2), "api_calls": 0,
+            "note": "FunctionModel 無網路；是 SDK 層（含 Agent 啟動與事件佇列）的絕對開銷"}
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="s5,s1,s2,s4,s3")
-    ap.add_argument("--n", type=int, default=10)
+    ap.add_argument("--n", type=int, default=30, help="s3 線上 A/B 次數")
     ap.add_argument("--n-cancel", type=int, default=3)
+    ap.add_argument("--n-overhead", type=int, default=100, help="s3a 離線開銷次數（>=100）")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
-    cfg = Cfg()
-    result: dict[str, Any] = {"model": cfg.model, "ollama_model": OLLAMA_MODEL}
-    for name in a.only.split(","):
-        name = name.strip()
+    names = [x.strip() for x in a.only.split(",") if x.strip()]
+    cfg = Cfg() if set(names) - {"s3a", "s5"} else None  # 只跑離線項目時不讀 .env
+    result: dict[str, Any] = {"model": cfg.model if cfg else None, "ollama_model": OLLAMA_MODEL}
+    for name in names:
         t = time.perf_counter()
         if name == "s1":
             result[name] = await s1(cfg)
@@ -413,8 +479,10 @@ async def main() -> None:
             result[name] = await s3(cfg, a.n)
         elif name == "s4":
             result[name] = await s4(cfg, a.n_cancel)
+        elif name == "s3a":
+            result[name] = await s3a(a.n_overhead)
         elif name == "s5":
-            result[name] = await s5(cfg)
+            result[name] = await s5()
         print(f"[{name}] done in {time.perf_counter() - t:.1f}s; api calls so far {CALLS}", flush=True)
     result["api_calls"] = dict(CALLS)
     text = json.dumps(result, ensure_ascii=False, indent=2)

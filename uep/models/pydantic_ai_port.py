@@ -107,6 +107,8 @@ class PydanticAIModelPort:
         self._tokens: dict[str, CancellationToken] = {}
         self._cancelled: set[str] = set()
         self.sdk_tool_executions: list[int] = [0]  # S1-1：SDK 自行執行工具的次數（必須恆為 0）
+        self.dropped_deltas: list[str] = []  # fail-closed 丟棄的 delta 原因（S1-2；正常情況應為空）
+        self.audit: list[tuple[str, str]] = []  # (SDK part 歸屬, 對映出的事件 kind)；S1-2 結構判定用
 
     @staticmethod
     def _build_model(
@@ -205,6 +207,7 @@ class PydanticAIModelPort:
         self._tokens[req.attempt_id] = token
         self._cancelled.discard(req.attempt_id)
         assembler = ToolCallAssembler()
+        router = _PartRouter(self)
         toolset = _GuardedExternalToolset(defs, self.sdk_tool_executions)
         history = self._history(list(req.messages))
         finish: str = "stop"
@@ -217,7 +220,7 @@ class PydanticAIModelPort:
                     if req.attempt_id in self._cancelled:
                         finish = "cancelled"
                         break
-                    for out in self._map(ev):
+                    for out in router.route(ev):
                         if out.kind == "tool_call_delta":
                             assembler.feed(out)
                         if req.attempt_id in self._cancelled:
@@ -250,44 +253,84 @@ class PydanticAIModelPort:
                 yield intent
         yield ModelEvent(kind="finish", finish_reason=finish)  # type: ignore[arg-type]
 
-    def _map(self, ev: Any) -> list[ModelEvent]:
-        """SDK 事件 -> ModelEvent（thought／text 分流在這裡決定：依 part 型別，不看內容）。"""
-        if isinstance(ev, FunctionToolResultEvent):
-            self.sdk_tool_executions[0] += 1  # 保險：SDK 若產生工具結果事件也算一次執行
-            return []
-        if isinstance(ev, PartStartEvent):
-            part = ev.part
-            if isinstance(part, ThinkingPart):
-                return [ModelEvent(kind="thought_delta", text=part.content)] if part.content else []
-            if isinstance(part, TextPart):
-                return [ModelEvent(kind="text_delta", text=part.content)] if part.content else []
-            if isinstance(part, ToolCallPart):
-                return [ModelEvent(
-                    kind="tool_call_delta", index=ev.index, call_id=part.tool_call_id, tool=part.tool_name,
-                    args_fragment=_frag(part.args),
-                )]
-            return []
-        if isinstance(ev, PartDeltaEvent):
-            d = ev.delta
-            if isinstance(d, ThinkingPartDelta):
-                return [ModelEvent(kind="thought_delta", text=d.content_delta)] if d.content_delta else []
-            if isinstance(d, TextPartDelta):
-                return [ModelEvent(kind="text_delta", text=d.content_delta)] if d.content_delta else []
-            if isinstance(d, ToolCallPartDelta):
-                return [ModelEvent(
-                    kind="tool_call_delta", index=ev.index, call_id=d.tool_call_id or "",
-                    tool=d.tool_name_delta or "", args_fragment=_frag(d.args_delta),
-                )]
-            return []
-        if isinstance(ev, PartEndEvent) and isinstance(ev.part, ToolCallPart):
-            return [ModelEvent(kind="tool_call_done", index=ev.index, call_id=ev.part.tool_call_id)]
-        return []
-
     def cancel(self, attempt_id: str) -> None:
         self._cancelled.add(attempt_id)
         token = self._tokens.get(attempt_id)
         if token is not None:
             token.cancel()
+
+
+class _PartRouter:
+    """SDK part 事件 -> ModelEvent。想／說分流**只看 SDK 的 part 歸屬**，不看內容。
+
+    - PartStartEvent 登記 index -> part 種類；PartDeltaEvent 必須命中已登記的 index，且 delta 型別與 part 種類相符。
+    - 無法確定歸屬（缺 part_start、index 跳號、型別與歸屬不符、未知 delta）一律 fail-closed：丟棄並記錄，
+      絕不當成 text_delta（也不當成 thought_delta）。
+    """
+
+    def __init__(self, port: PydanticAIModelPort) -> None:
+        self._port = port
+        self._kinds: dict[int, str] = {}
+
+    def _drop(self, reason: str) -> list[ModelEvent]:
+        logger.warning("丟棄無法確定歸屬的 delta：%s", reason)
+        self._port.dropped_deltas.append(reason)
+        return []
+
+    def _emit(self, source: str, event: ModelEvent) -> list[ModelEvent]:
+        self._port.audit.append((source, event.kind))
+        return [event]
+
+    def route(self, ev: Any) -> list[ModelEvent]:
+        if isinstance(ev, FunctionToolResultEvent):
+            self._port.sdk_tool_executions[0] += 1  # 保險：SDK 若產生工具結果事件也算一次執行
+            return []
+        if isinstance(ev, PartStartEvent):
+            return self._start(ev)
+        if isinstance(ev, PartDeltaEvent):
+            return self._delta(ev)
+        if isinstance(ev, PartEndEvent) and isinstance(ev.part, ToolCallPart):
+            return [ModelEvent(kind="tool_call_done", index=ev.index, call_id=ev.part.tool_call_id)]
+        return []
+
+    def _start(self, ev: PartStartEvent) -> list[ModelEvent]:
+        part = ev.part
+        if isinstance(part, ThinkingPart):
+            self._kinds[ev.index] = "thinking"
+            return self._emit("thinking", ModelEvent(kind="thought_delta", text=part.content)) if part.content else []
+        if isinstance(part, TextPart):
+            self._kinds[ev.index] = "text"
+            return self._emit("text", ModelEvent(kind="text_delta", text=part.content)) if part.content else []
+        if isinstance(part, ToolCallPart):
+            self._kinds[ev.index] = "tool_call"
+            return self._emit("tool_call", ModelEvent(
+                kind="tool_call_delta", index=ev.index, call_id=part.tool_call_id, tool=part.tool_name,
+                args_fragment=_frag(part.args),
+            ))
+        self._kinds[ev.index] = "other"  # 其他 part（如 builtin 結果）不對外；其 delta 一律不產生 text／thought
+        return []
+
+    def _delta(self, ev: PartDeltaEvent) -> list[ModelEvent]:
+        d = ev.delta
+        owner = self._kinds.get(ev.index)
+        if owner is None:
+            return self._drop(f"index={ev.index} 缺 part_start（{type(d).__name__}）")
+        if isinstance(d, ThinkingPartDelta):
+            if owner != "thinking":
+                return self._drop(f"index={ev.index} 歸屬 {owner}，卻收到 ThinkingPartDelta")
+            return self._emit("thinking", ModelEvent(kind="thought_delta", text=d.content_delta)) if d.content_delta else []
+        if isinstance(d, TextPartDelta):
+            if owner != "text":
+                return self._drop(f"index={ev.index} 歸屬 {owner}，卻收到 TextPartDelta")
+            return self._emit("text", ModelEvent(kind="text_delta", text=d.content_delta)) if d.content_delta else []
+        if isinstance(d, ToolCallPartDelta):
+            if owner != "tool_call":
+                return self._drop(f"index={ev.index} 歸屬 {owner}，卻收到 ToolCallPartDelta")
+            return self._emit("tool_call", ModelEvent(
+                kind="tool_call_delta", index=ev.index, call_id=d.tool_call_id or "",
+                tool=d.tool_name_delta or "", args_fragment=_frag(d.args_delta),
+            ))
+        return self._drop(f"index={ev.index} 未知的 delta 型別 {type(d).__name__}")
 
 
 def _frag(args: Any) -> str:

@@ -97,4 +97,5 @@ def test_migration_chain_head_is_decision_log():
     assert script.get_revision("0008_receipt_worker_epoch").down_revision == "0007_journal_truncate_guard"
     assert script.get_revision("0009_action_tool_version").down_revision == "0008_receipt_worker_epoch"
     assert script.get_revision("0010_decision_log").down_revision == "0009_action_tool_version"
-    assert script.get_current_head() == "0010_decision_log"
+    assert script.get_revision("0011_one_executing_per_run").down_revision == "0010_decision_log"
+    assert script.get_current_head() == "0011_one_executing_per_run"

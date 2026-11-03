@@ -16,6 +16,10 @@ class DecisionPointSpec:
     outcomes: tuple[str, ...] = ()
     budget_ms: int | None = None  # sync 預算；async 為 None；<= 0 代表不設預算
     on_timeout_reason: str = ""  # 逾時預設的 reason_code（D80）
+    on_busy_reason: str = ""  # engine 忙碌（上一個呼叫未回）時的預設 reason_code
+    on_error_reason: str = ""  # engine 例外時的預設 reason_code
+    on_invalid_reason: str = ""  # 輸出驗證失敗時的預設 reason_code
+    allow_native: bool = False  # 是否接受 DecisionRequest.native（同行程原生物件；P0 只有 turn.reply）
     shadow: bool = False  # 是否支援 shadow 並行
 
 

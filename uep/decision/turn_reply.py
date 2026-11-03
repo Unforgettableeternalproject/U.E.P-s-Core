@@ -14,7 +14,9 @@ from collections import Counter, deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 from concurrent.futures import wait as futures_wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from ulid import ULID
 
 from uep.decision.contracts import (
     DecisionEngineInfo,
@@ -23,7 +25,7 @@ from uep.decision.contracts import (
     DecisionRequest,
     DecisionResult,
 )
-from uep.decision.registry import DecisionPointSpec
+from uep.decision.registry import DecisionPointRegistry, DecisionPointSpec
 from uep.turn.models import Proposal, ReplyMode, TurnCandidate
 from uep.turn.proposer import (
     ProposerGuard,
@@ -36,6 +38,9 @@ logger = logging.getLogger("uep.decision.turn_reply")
 
 KIND_TURN_REPLY = "turn.reply"
 ON_TIMEOUT_REASON = "proposer_timeout"
+ON_BUSY_REASON = "proposer_busy"
+ON_ERROR_REASON = "proposer_error"
+ON_INVALID_REASON = "proposal_invalid"
 
 
 @dataclass(frozen=True)
@@ -57,14 +62,19 @@ def turn_reply_spec(budget_ms: int) -> DecisionPointSpec:
     return DecisionPointSpec(
         kind=KIND_TURN_REPLY, mode="sync", owner="turn",
         outcomes=tuple(m.value for m in ReplyMode),
-        budget_ms=budget_ms, on_timeout_reason=ON_TIMEOUT_REASON, shadow=True,
+        budget_ms=budget_ms, on_timeout_reason=ON_TIMEOUT_REASON, on_busy_reason=ON_BUSY_REASON,
+        on_error_reason=ON_ERROR_REASON, on_invalid_reason=ON_INVALID_REASON, shadow=True, allow_native=True,
     )
 
 
 def proposal_to_result(proposal: Proposal, request: DecisionRequest, *, fallback: bool = False) -> DecisionResult:
-    """Proposal -> DecisionResult。呼叫前須已通過 ``validate_proposal``（fallback 本身永遠合法）。"""
+    """Proposal -> DecisionResult。呼叫前須已通過 ``validate_proposal``（fallback 本身永遠合法）。
+
+    每次呼叫產生唯一 ``decision_id``（``dec_<ULID>``），重新評估同一 ``request_id`` 也不會撞號；
+    ``request_id`` 保持原樣作為關聯鍵。
+    """
     return DecisionResult(
-        decision_id=f"dec:{request.request_id}", request_id=request.request_id, kind=request.kind,
+        decision_id=f"dec_{ULID()}", request_id=request.request_id, kind=request.kind,
         outcome=proposal.reply_mode.value,
         plan=DecisionPlan(
             route=proposal.route,
@@ -103,13 +113,13 @@ class TurnReplyEngine:
         self,
         proposer: TurnProposer,
         *,
-        budget_s: float | None,
+        registry: DecisionPointRegistry,
         metrics: Counter[str],
         shadow_proposers: Sequence[TurnProposer] = (),
         on_shadow: Callable[[ShadowRecord], None] | None = None,
     ) -> None:
         self.proposer = proposer
-        self.budget_s = budget_s
+        self._registry = registry
         self.metrics = metrics
         self.guard = ProposerGuard("primary")
         self.shadows = [(sp, ProposerGuard(f"shadow{i}")) for i, sp in enumerate(shadow_proposers)]
@@ -117,6 +127,21 @@ class TurnReplyEngine:
         self.shadow_log: deque[ShadowRecord] = deque(maxlen=256)
         self._shadow_pending: set[Future[object]] = set()
         self._lock = threading.Lock()
+
+    @property
+    def spec(self) -> DecisionPointSpec:
+        """``turn.reply`` 的規格：預算與各 fallback reason 的唯一來源（讀 registry，不另存一份）。"""
+        return self._registry.get(KIND_TURN_REPLY)
+
+    @property
+    def budget_s(self) -> float | None:
+        budget_ms = self.spec.budget_ms
+        return budget_ms / 1000.0 if budget_ms is not None and budget_ms > 0 else None
+
+    @budget_s.setter
+    def budget_s(self, value: float | None) -> None:
+        budget_ms = 0 if value is None else round(value * 1000)
+        self._registry.register(replace(self.spec, budget_ms=budget_ms), replace=True)
 
     def close(self) -> None:
         self.guard.close()
@@ -140,18 +165,19 @@ class TurnReplyEngine:
         candidate = request.native
         if not isinstance(candidate, TurnCandidate):
             raise TypeError("turn.reply 的 request.native 必須是 TurnCandidate")
+        spec = self.spec
         proposal, status = self.guard.call(self.proposer.propose, candidate, self.budget_s)
         fallback = True
         if status == "busy":
             # 上一個呼叫還沒回來（卡住）：立即回預設，不排隊也不等預算
             self.metrics["proposer.busy"] += 1
-            result = fallback_proposal(candidate, "proposer_busy")
+            result = fallback_proposal(candidate, spec.on_busy_reason)
         elif status == "timeout":
             self.metrics["proposer.timeout"] += 1
-            result = fallback_proposal(candidate, "proposer_timeout")
+            result = fallback_proposal(candidate, spec.on_timeout_reason)
         elif status != "ok":
             self.metrics["proposer.error"] += 1
-            result = fallback_proposal(candidate, "proposer_error")
+            result = fallback_proposal(candidate, spec.on_error_reason)
         else:
             bad = validate_proposal(proposal)
             if bad is None:
@@ -159,7 +185,7 @@ class TurnReplyEngine:
             else:
                 logger.warning("Proposal 驗證失敗（%s），回預設", bad)
                 self.metrics["proposer.invalid"] += 1
-                result = fallback_proposal(candidate, "proposal_invalid")
+                result = fallback_proposal(candidate, spec.on_invalid_reason)
         self._run_shadows(candidate, result)
         return proposal_to_result(result, request, fallback=fallback)
 

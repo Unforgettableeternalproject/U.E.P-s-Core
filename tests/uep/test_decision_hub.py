@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
+import re
 import threading
 import time
 from collections import Counter
@@ -238,7 +240,7 @@ def test_hub_rejects_unknown_kind_mismatch_and_duplicates():
     hub = DecisionHub()
     with pytest.raises(KeyError):
         hub.decide("nope", DecisionRequest(request_id="r", kind="nope"))
-    engine = TurnReplyEngine(RespondProposer(), budget_s=0.3, metrics=Counter())
+    engine = TurnReplyEngine(RespondProposer(), registry=hub.registry, metrics=Counter())
     try:
         hub.register(turn_reply_spec(300), engine)
         with pytest.raises(ValueError):
@@ -507,3 +509,85 @@ def test_replaced_proposer_is_the_single_target_of_decide_hooks_and_tick():
         orch.close()
     assert dict(new.calls) == {"propose": 1, "tick": 1, "listener": 1, "started": 1, "audience": 1}
     assert not old.calls
+
+
+# ---- P1 前置：decision_id 唯一、預算單一來源、hub 注入、native 限制 ----
+
+
+def test_decision_id_is_unique_per_decide_and_request_id_kept():
+    orch = _orch()
+    try:
+        req = DecisionRequest(request_id="same", kind=KIND_TURN_REPLY, native=_cand())
+        first = orch.hub.decide(KIND_TURN_REPLY, req)
+        second = orch.hub.decide(KIND_TURN_REPLY, req)
+    finally:
+        orch.close()
+    assert first.request_id == second.request_id == "same"
+    assert first.decision_id != second.decision_id
+    assert re.fullmatch(r"dec_[0-9A-HJKMNP-TV-Z]{26}", first.decision_id)  # 與 ID 格式（前綴_ULID）一致
+
+
+def test_budget_and_reasons_have_single_source_in_spec():
+    orch = _orch(_P(_ok), budget_ms=300)
+    try:
+        spec = orch.hub.registry.get(KIND_TURN_REPLY)
+        assert (spec.budget_ms, spec.on_timeout_reason, spec.on_busy_reason) == (300, "proposer_timeout", "proposer_busy")
+        assert (spec.on_error_reason, spec.on_invalid_reason) == ("proposer_error", "proposal_invalid")
+        assert orch._budget_s == pytest.approx(0.3)
+        orch._budget_s = 0.05  # 寫入轉到 spec
+        assert orch.hub.registry.get(KIND_TURN_REPLY).budget_ms == 50
+        orch._budget_s = None
+        assert orch.hub.registry.get(KIND_TURN_REPLY).budget_ms == 0 and orch._budget_s is None
+        assert "budget_s" not in vars(orch._reply_engine)  # engine 不另存預算
+    finally:
+        orch.close()
+
+
+def test_engine_fallback_reasons_come_from_spec():
+    orch = _orch(_P(_boom))
+    try:
+        hub = orch.hub
+        hub.registry.register(
+            dataclasses.replace(hub.registry.get(KIND_TURN_REPLY), on_error_reason="custom_error"), replace=True
+        )
+        result = orch._propose(_cand(count=3))
+    finally:
+        orch.close()
+    assert result.reason_code == "custom_error"
+    assert orch.metrics["proposer.error"] == 1  # 計數鍵不隨 reason 改變
+
+
+def test_injected_hub_gets_turn_reply_registered():
+    hub = DecisionHub()
+    orch = TurnOrchestrator(None, None, auth_provider=lambda: None, decision_hub=hub)  # type: ignore[arg-type]
+    try:
+        assert orch.hub is hub and KIND_TURN_REPLY in hub.registry.kinds()
+        assert orch._propose(_cand()).reply_mode == ReplyMode.RESPOND
+    finally:
+        orch.close()
+
+
+def test_injected_hub_rejects_duplicate_turn_reply_registration():
+    hub = DecisionHub()
+    first = TurnOrchestrator(None, None, auth_provider=lambda: None, decision_hub=hub)  # type: ignore[arg-type]
+    try:
+        with pytest.raises(ValueError):
+            TurnOrchestrator(None, None, auth_provider=lambda: None, decision_hub=hub)  # type: ignore[arg-type]
+        assert first._propose(_cand()).reply_mode == ReplyMode.RESPOND  # 原註冊未被破壞
+    finally:
+        first.close()
+
+
+def test_native_only_accepted_by_allow_native_spec():
+    orch = _orch()
+    try:
+        hub = orch.hub
+        assert hub.registry.get(KIND_TURN_REPLY).allow_native
+        hub.register(DecisionPointSpec(kind="x.plain", mode="sync"), orch._reply_engine)
+        with pytest.raises(ValueError, match="native"):
+            hub.decide("x.plain", DecisionRequest(request_id="r", kind="x.plain", native=_cand()))
+        # 無 native 的請求不受此限制（交給 engine 自己處理）
+        with pytest.raises(TypeError):
+            hub.decide("x.plain", DecisionRequest(request_id="r", kind="x.plain"))
+    finally:
+        orch.close()

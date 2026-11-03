@@ -30,4 +30,6 @@ class DecisionHub:
             raise ValueError(f"decide 只支援 sync 決策點：{kind}（{spec.mode}）")
         if request.kind != kind:
             raise ValueError(f"request.kind（{request.kind}）與 kind（{kind}）不符")
+        if request.native is not None and not spec.allow_native:
+            raise ValueError(f"決策點 {kind} 不接受 native（只有標記 allow_native 的決策點可帶）")
         return self._engines[kind].decide(request)

@@ -19,6 +19,7 @@ class DecisionRequest:
 
     ``native`` 是 P0 偏離提案之處：``turn.reply`` 的 engine 吃 ``TurnCandidate``（含原文，行程內直接帶，
     ``repr=False`` 不進日誌）。契約改成跨行程前須以 ``text_refs``＋``facts`` 取代。
+    只有 spec 標記 ``allow_native`` 的決策點接受 native，其他 kind 帶 native 由 ``DecisionHub.decide`` 拒絕。
     """
 
     request_id: str

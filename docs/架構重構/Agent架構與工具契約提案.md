@@ -179,10 +179,10 @@ loop:
 
 | 維度 | 強制點 | 耗盡處置 |
 |---|---|---|
-| 步數 `max_steps`、工具次數 `max_tool_calls` | AgentLoop，Step 邊界 | 進入 `finalize`：以 `tools=[]` 要求模型收束；仍未收束 → Run `FAILED(budget_exhausted)` |
+| 步數 `max_steps`、工具次數 `max_tool_calls`、諮詢次數 `max_consults`（`decision.consult` 的子限，**屬於** `max_tool_calls` 的一部分，不另外加總） | AgentLoop，Step 邊界 | 進入 `finalize`：以 `tools=[]` 要求模型收束；仍未收束 → Run `FAILED(budget_exhausted)` |
 | 牆鐘 `run_deadline`／`step_timeout` | Supervisor 設旗標＋AgentLoop 於 heartbeat 讀取（SV-2，沿用拆分：step_timeout 只取消卡住的 Step） | 沿用 SV-2 |
 | token／成本 `max_tokens`、`max_cost` | Model Gateway 回報 usage → AgentLoop 累計 | 同步數 |
-| 無進展 | 同一 `(tool, params_hash)` 連續失敗或重複 N 次、連續 `rejected` N 次 | `FAILED(no_progress)`，不再喚醒模型 |
+| 無進展 | 同一 `(tool, params_hash)` 連續失敗或重複 N 次、連續 `rejected` N 次；**另：`decision.consult` 同 `kind` 且結果相同（`advice`／`reason_code`／`escalate` 相同）連續 N 次**（`params_hash` 判不出這種情況，需以 kind＋結果摘要比對） | `FAILED(no_progress)`，不再喚醒模型 |
 | 並行 Run 數 | AgentLoop 啟動閘門（全域上限） | 排隊或拒絕，由決策層回報原因 |
 
 【奈留】「無進展」必須列為強制項：LLM 自迴圈最常見的失效是重複同一個被拒絕的呼叫燒預算。
@@ -213,11 +213,11 @@ loop:
 |---|---|
 | AL-1 | 迴圈只由 `LoopTrigger` 啟動；Runtime、模型輸出、工具結果都不能啟動新 Run 或新 Task |
 | AL-2 | 預算由 AgentLoop 強制，不信任模型自述；計數器進 checkpoint |
-| AL-3 | **迴圈執行中不得自行擴大 `capability_set`**。每個 Step 的投影必須是前一 Step 的子集；需要更大能力時，必須產生新的觸發事件並重新經過決策層（範圍只能收窄，由決策層重新裁定）。Run 恢復（resume）沿用 checkpoint 內的凍結集合再與當下快照取交集 |
+| AL-3 | **迴圈執行中不得自行擴大 `capability_set`**。每個 Step 的投影必須是前一 Step 的子集；需要更大能力時，必須產生新的**候選事件**（缺口類別＋`decision_id`，由決策中樞的 `loop.reeval` 處理）並重新經過決策層（範圍只能收窄，由決策層重新裁定）。Run 恢復（resume）沿用 checkpoint 內的凍結集合再與當下快照取交集 |
 | AL-4 | 想（`thought_delta`）永不進 Output Gate；說只來自 `result`（或明確的通知 intent） |
 | AL-5 | 迴圈不自行建立或消耗 approval（沿用 SA-5、TG-7） |
 | AL-6 | 核准等待與長時間等待不佔用 worker（§8） |
-| AL-7 | `decision.consult` 的 `advice` 不得超出凍結範圍；超出時只回 `escalate`，迴圈結束本 Run，由決策層決定是否發出新的 `LoopTrigger`（§4.9 CN-1～3） |
+| AL-7 | `decision.consult` 的 `advice` 不得超出凍結範圍；超出時只回 `escalate`（`escalate.needed=true`），迴圈結束本 Run，並送出候選事件，由決策中樞 `loop.reeval` 決定是否發出新的 `LoopTrigger`（§4.9 CN-1～3） |
 | AL-8 | 迴圈內容只寫入迴圈 context；結果只以 `summary`／`result`／`trail_ref` 一次、冪等地回饋原 context，思考文字與原始工具結果不回饋（§4.10） |
 
 ### 4.9 `decision.consult`：迴圈把決定委派給決策中樞（Q-A）
@@ -232,25 +232,25 @@ loop:
 | `side_effect_class` / `approval_level` | `internal_read` / `none` | 純諮詢，不改任何外部狀態；**走 ActionIntent**（有 `act_`、receipt、稽核） |
 | `idempotency` | `native`（同 `(run, step, ordinal)` 重放得同一 `decision_id`） | 崩潰重送不產生第二個決定 |
 | `concurrency` | `serial` | 避免多個諮詢同批互相矛盾 |
-| `timeout_s` | 0.3（快速欄位，300 ms） | 與 D80 的 proposer 預算同量級；逾時處置見下 |
+| `timeout_s` | **0.5**（executor 總時限） | **300 ms 只計中樞 `decide()`**；executor 總時限含派送、序列化與 Gateway 開銷，必須大於 decide 預算（0.5 > 0.3）；逾時處置見 CN-6 |
 | `origin` / `executor` | `builtin` / 決策中樞的內部 executor（`internal_executors` 明示，TG-5 豁免對映） | 工具層不內含決策邏輯 |
 | `injected_params` | `run_id`、`frozen_capability_tags`、`scope_ref`、`plan_ref` | 由 Gateway 注入，**模型不可提供**；中樞據此知道「凍結範圍」 |
 
 **kind（首版 6 個，歸決策層）**：`speak`、`output_modality`、`placement`、`ask_user`、`loop_end`、`followup`。
-**回傳（歸決策層）**：`advice`（DecisionPlan 片段）、`reason_code`、`confidence`、`escalate`（bool＋原因）、`decision_id`。回傳以 D61 `result_view` 的 `items` 承載，`status` 照常。
+**回傳（歸決策層）**：`advice`（DecisionPlan 片段）、`reason_code`、`confidence`、`escalate`（形狀 `{needed: bool, reason_code}`）、`decision_id`。回傳以 D61 `result_view` 的 `items` 承載，`status` 照常。
 
 **強制規則**：
 
 | 編號 | 規則 |
 |---|---|
-| CN-1 | `advice` **只能落在凍結範圍內**（凍結的能力標籤、scope、audience）。超出時中樞**只回 `escalate`**，不回超範圍的 advice |
-| CN-2 | AgentLoop 在收到結果後**再驗一次**（縱深防禦）：`advice` 若引用凍結集合外的標籤／工具／scope，一律當作 `escalate` 處理並寫稽核 |
-| CN-3 | `escalate=true` ⇒ AgentLoop **結束本 Run**（以 `finalize` 收束，不再續跑工具），並向決策層**送出升級請求**（`decision_id`＋原因）；由決策層決定是否**發出新的 `LoopTrigger`**（新範圍，只經決策層的收窄／裁定；迴圈自己絕不擴大，AL-3） |
-| CN-4 | consult **計入步數**（`max_steps`）與工具次數（`max_tool_calls`） |
-| CN-5 | consult 走**快速欄位**（300 ms），**不觸發 `plan.refine`**（不重新精煉 DecisionPlan） |
-| CN-6 | consult 逾時或失敗 ⇒ 回 `failed`／`unknown` 視圖（`reason_code=consult_timeout` 等），迴圈採**該 kind 的預設行為**（預設表歸決策層，類比 D80）；**不得因 consult 失敗而放寬任何範圍** |
+| CN-1 | `advice` **只能落在「凍結範圍 ∩ 當下快照」內**（凍結的能力標籤、scope、audience，再與當下政策快照取交集；凍結範圍內但快照已不允許者也算超出）。超出時中樞**只回 `escalate`**（`escalate.needed=true`），不回超範圍的 advice |
+| CN-2 | AgentLoop 在收到結果後**再驗一次**（縱深防禦），範圍同 CN-1（**凍結範圍 ∩ 當下快照**）：`advice` 若引用該交集外的標籤／工具／scope，一律當作 `escalate.needed` 處理並寫稽核。`placement` 類 advice 另須檢查 **`target_platform`**（必須屬交集內允許的平台，且為當下 Presence 可達）與 **`executor_ref`**（必須是註冊表中該平台變體的合法 executor 且 readiness 為 `ready`），任一不符即視為超出 |
+| CN-3 | `escalate.needed` ⇒ AgentLoop **結束本 Run**（以 `finalize` 收束，不再續跑工具），並**送出候選事件**（缺口類別＋`decision_id`）；該事件由決策中樞的 **`loop.reeval`** 處理，由它決定是否**發出新的 `LoopTrigger`**（新範圍，只經決策層的收窄／裁定；迴圈自己絕不擴大，AL-3） |
+| CN-4 | consult **計入步數**（`max_steps`）與工具次數（`max_tool_calls`），並受 **`max_consults`** 限制（`max_tool_calls` 的子限，見 §4.4） |
+| CN-5 | consult 走**快速欄位**：中樞 `decide()` 預算 300 ms（只計 decide，不含 executor 開銷）；條目 `timeout_s=0.5` 為 executor 總時限，必須大於 decide 預算。**不觸發 `plan.refine`**（不重新精煉 DecisionPlan） |
+| CN-6 | consult 逾時 ⇒ 回 **`status=ok`＋`advice=∅`**（不是 failed），迴圈改用**決策中樞提案裡的 per-kind 預設表**（預設表歸決策層，類比 D80）。若 **Gateway 層真的失敗**（`failed`／`unknown` 視圖，例如 executor 例外、`tool_not_ready`、總時限 0.5 s 仍逾時），迴圈同樣**把它對映為 `advice=∅`** 並採同一張預設表；失敗仍計入步數與 `max_consults`。**不得因 consult 失敗而放寬任何範圍** |
 | CN-7 | `advice` 是**資料，不是授權**：不產生 approval、不繞過 Output Gate／Presence／核准；`speak` 類 advice 只是對 `OutputIntent` 的建議 |
-| CN-8 | 呼叫來源有兩種，皆走同一註冊表條目與 ActionIntent：模型自行呼叫（工具被投出時）；或 AgentLoop 在 Policy 規定的點主動呼叫（例如預算將盡、`loop_end` 前、發話前）。「特殊情況」的觸發條件歸 Policy／決策層維護，不寫死在迴圈 |
+| CN-8 | 呼叫來源有兩種，皆走同一註冊表條目與 ActionIntent：模型自行呼叫（工具被投出時）；或 AgentLoop 在 Policy 規定的點主動呼叫（例如預算將盡、`loop_end` 前、發話前）。「特殊情況」的觸發條件歸 Policy／決策層維護，不寫死在迴圈。**若 `capability_set` 不含 `decision.consult` 標籤，迴圈（含 Policy 主動呼叫路徑）不得呼叫它**（符合 AL-3，不可繞過凍結集合）；決策層會把該標籤放進 `agent_loop` 的預設標籤 |
 | CN-9 | `decision_id` 寫入 checkpoint 與 receipt meta，供稽核與重放去重 |
 
 consult 不經 TurnProposer（TurnProposer 只處理對話回合的啟動判斷）；它是迴圈內的第二個決策入口，兩者共用同一個決策中樞與同一組收窄語意。
@@ -835,7 +835,7 @@ execute_action → ApprovalRequired
 |---|---|---|---|---|
 | I-1 | **DecisionPlan → 能力收窄 → `render_tools`** | 決策層 → 工具層 | 決策層輸出已收窄的 `capability_tags: frozenset[str]`（= route 預設表 ∩ `capability_hint` ∩ 政策快照 `capabilities`，只能收窄）。工具層 `registry.project(capability_tags, ctx)` → `capability_set` → `render_tools`（D60 唯一產生點，§6.2） | 標籤集合歸決策層；投影／渲染歸工具層 |
 | I-2 | **`LoopTrigger`（迴圈上游）** | 決策層 → Agent 層 | 對話走 TurnProposer（TurnCandidate→Proposal），事件走 `ProactiveCandidate`（評估→仲裁）；兩者共用 I-1 後產生 `LoopTrigger`（下方形狀）。迴圈不得自行啟動 Run（AL-1） | 觸發判斷歸決策層；`LoopTrigger` 的消費歸 Agent 層 |
-| I-3 | **`decision.consult`** | Agent 層 → 決策層（經工具層） | 註冊表中的 `internal_read` 工具，走 ActionIntent（§4.9）。kind 首版 6 個：`speak`、`output_modality`、`placement`、`ask_user`、`loop_end`、`followup`。回傳 `advice`（DecisionPlan 片段）、`reason_code`、`confidence`、`escalate`（bool＋原因）、`decision_id` | **kind 與回傳 schema 歸決策層維護**；工具條目、計步、凍結範圍檢查歸本文 |
+| I-3 | **`decision.consult`** | Agent 層 → 決策層（經工具層） | 註冊表中的 `internal_read` 工具，走 ActionIntent（§4.9）。kind 首版 6 個：`speak`、`output_modality`、`placement`、`ask_user`、`loop_end`、`followup`。回傳 `advice`（DecisionPlan 片段）、`reason_code`、`confidence`、`escalate`（`{needed, reason_code}`）、`decision_id` | **kind 與回傳 schema 歸決策層維護**；工具條目、計步、凍結範圍檢查歸本文 |
 | I-4 | **模組預載提議與就緒狀態** | 決策層 → module coordinator；module coordinator → 註冊表 | DecisionPlan 含模組／工具預載的**提議**（中樞只提議，不執行）。實際載入（與日後可能的 patch 機制）由獨立的 **module coordinator＋其 registry** 負責（決策層 Q5＝A，艾斯維爾裁決）。工具註冊表**不執行** load／warm／unload，只在 `ToolEntry.requires` 宣告依賴，並訂閱 module coordinator 發布的就緒狀態事件以維護每個工具的 readiness（§5.8） | 提議歸決策層；載入與狀態歸 module coordinator（**待 module coordinator 設計**）；readiness 與投影歸工具層 |
 
 ### 10.2 `LoopTrigger` 形狀（摘要；欄位對映細節見決策層文件）
@@ -853,6 +853,8 @@ class LoopTrigger:
     snapshot_ref: str
     plan_ref: str | None = None     # 對應的 DecisionPlan 引用(審計用)；resume 沿用原值
 ```
+
+**降級規則**：決策中樞在 `capability_hint` 被整個丟棄（`hint_dropped`）或收窄後能力集合為空（`capability_empty`）時，**將 route 降為 `direct_chat`**。**降級後不產生 `LoopTrigger`**——Agent 層不被啟動，回合照 `direct_chat` 路徑處理（Q-E：僅唯讀工具）。Agent 層因此永遠不會收到 `capability_tags` 為空的 `LoopTrigger`（收到即為違反介面，拒絕啟動並記稽核）。
 
 ### 10.3 決策層若變更下列契約，需同步修訂本文
 
@@ -968,7 +970,7 @@ class LoopTrigger:
 | 遺留：TG-9 全放行 | 自迴圈讓工具結果（lore、Chatroom）進入更長鏈路，公開 audience 洩漏風險放大；清償順序建議在 G 之前 |
 | 並行與 DB 強制 | 移除 EXECUTING 部分唯一索引後，跨 Run 的資源衝突需要資源鎖表；schema、鎖釋放（含崩潰後孤兒鎖）與 migration 未設計（§6.5） |
 | 平行 context 持久化 | 子 session 的耐久性取決於 echo_thought_core `session_store` 後端，是否滿足 D10 未核實；`context_lost` 為 fail-closed，Run 會失敗而非降級 |
-| `decision.consult` 延遲與依賴 | 300 ms 快速欄位計入每次迴圈委派；中樞不可用時各 kind 的預設行為歸決策層，若預設過寬會被視為擴權，需決策層審 |
+| `decision.consult` 延遲與依賴 | `decide()` 300 ms（executor 總時限 0.5 s）計入每次迴圈委派；中樞不可用時各 kind 的預設行為歸決策層，若預設過寬會被視為擴權，需決策層審 |
 | module coordinator 未設計 | readiness 事件格式、亂序語意與 patch 機制皆為擬定；在其設計前，切片 B／F 以 fake module coordinator 驗收 |
 | SDK 採用風險 | PydanticAI 的版本（pydantic-ai-slim 2.65.0）與 openai-agents 0.24.0 為暫定值；API 名稱未獨立核對（§15）；Spike 失敗則退回自寫 `ModelPort` 實作，成本約為一組 per-provider adapter |
 | 與決策層的耦合 | `result_view` 增補欄位、`capability_hint` 驗證規則、D80 延遲預算是否適用 agent_loop，皆需決策層同意（§10） |

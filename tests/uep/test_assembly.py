@@ -482,11 +482,13 @@ def test_agent_tool_path_fails_closed_without_prerequisites(session_factory, tmp
         assemble_core(session_factory, **_agent_kwargs(session_factory, tmp_path, echo, publisher, bus))
     from tests.uep.test_agent_tool_path import FakePort
 
+    no_echo = _agent_kwargs(
+        session_factory, tmp_path, echo, publisher, bus, model_port=FakePort([]),
+        adapter=FakeOutputAdapter(), turn_generation_source=ALLOW_ALL,
+    )
+    no_echo["echo"] = None  # 位置參數的 echo 只用來取 adapter；這個案例組裝時不給宿主
     with pytest.raises(AssemblyError, match="echo"):
-        assemble_core(session_factory, **_agent_kwargs(
-            session_factory, tmp_path, echo, publisher, bus, echo=None, model_port=FakePort([]),
-            adapter=FakeOutputAdapter(), turn_generation_source=ALLOW_ALL,
-        ))
+        assemble_core(session_factory, **no_echo)
     legacy_stage = _agent_echo(session_factory, publisher, backend="legacy")
     with pytest.raises(AssemblyError, match="ModelPortBackend"):
         assemble_core(session_factory, **_agent_kwargs(

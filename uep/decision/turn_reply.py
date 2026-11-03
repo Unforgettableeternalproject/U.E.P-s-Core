@@ -55,6 +55,11 @@ class ShadowRecord:
     agree: bool
     status: str  # ok／error／late
     elapsed_ms: int
+    # DL-3 決策日誌用（皆有預設值，既有建構方式不受影響）
+    decision_id: str | None = None  # 這筆 shadow 判斷自己的 dec_ ID
+    primary_decision_id: str | None = None  # 對照的 primary 決策 ID
+    request_id: str | None = None
+    kind: str = "turn.reply"
 
 
 def turn_reply_spec(budget_ms: int) -> DecisionPointSpec:
@@ -185,12 +190,15 @@ class TurnReplyEngine:
                 logger.warning("Proposal 驗證失敗（%s），回預設", bad)
                 self.metrics["proposer.invalid"] += 1
                 result = fallback_proposal(candidate, spec.on_invalid_reason)
-        self._run_shadows(candidate, result)
-        return proposal_to_result(result, request, fallback=fallback)
+        decision = proposal_to_result(result, request, fallback=fallback)
+        self._run_shadows(candidate, result, request, decision.decision_id)
+        return decision
 
     # ---- shadow mode ----
 
-    def _run_shadows(self, candidate: TurnCandidate, primary: Proposal) -> None:
+    def _run_shadows(
+        self, candidate: TurnCandidate, primary: Proposal, request: DecisionRequest, primary_decision_id: str
+    ) -> None:
         """shadow proposer 與主決策同候選並行執行，只記錄差異：不寫 journal、不提 CC-7、不影響 ticket。"""
         for shadow, guard in self.shadows:
             started = time.monotonic()
@@ -201,11 +209,13 @@ class TurnReplyEngine:
             with self._lock:
                 self._shadow_pending.add(future)
             future.add_done_callback(
-                lambda f, g=shadow, c=candidate, p=primary, t=started: self._record_shadow(f, g, c, p, t)
+                lambda f, g=shadow, c=candidate, p=primary, t=started, r=request, d=primary_decision_id:
+                self._record_shadow(f, g, c, p, t, r, d)
             )
 
     def _record_shadow(
-        self, future: Future[object], shadow: TurnProposer, candidate: TurnCandidate, primary: Proposal, started: float
+        self, future: Future[object], shadow: TurnProposer, candidate: TurnCandidate, primary: Proposal, started: float,
+        request: DecisionRequest | None = None, primary_decision_id: str | None = None,
     ) -> None:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         shadow_id = getattr(shadow, "proposer_id", type(shadow).__name__)
@@ -229,7 +239,9 @@ class TurnReplyEngine:
             candidate_id=candidate.candidate_id, shadow_id=str(shadow_id)[:64],
             primary_mode=primary.reply_mode.value, primary_reason=primary.reason_code,
             shadow_mode=mode, shadow_reason=reason, agree=mode == primary.reply_mode.value, status=status,
-            elapsed_ms=elapsed_ms,
+            elapsed_ms=elapsed_ms, decision_id=new_id("dec"), primary_decision_id=primary_decision_id,
+            request_id=request.request_id if request is not None else None,
+            kind=request.kind if request is not None else KIND_TURN_REPLY,
         )
         self.shadow_log.append(record)
         self.metrics[f"shadow.{'agree' if record.agree else 'disagree'}"] += 1

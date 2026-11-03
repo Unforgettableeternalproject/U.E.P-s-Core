@@ -88,7 +88,7 @@ def test_contracts_package_has_no_uep_dependencies():
                 raise AssertionError(f"{path.name} 依賴 {module}；共用契約須保持零依賴")
 
 
-def test_migration_chain_head_is_action_tool_version():
+def test_migration_chain_head_is_decision_log():
     script = ScriptDirectory.from_config(alembic_config("postgresql://unused/unused_test"))
     assert script.get_revision("0004_presence").down_revision == "0003_context_output"
     assert script.get_revision("0005_state_stop").down_revision == "0004_presence"
@@ -96,4 +96,5 @@ def test_migration_chain_head_is_action_tool_version():
     assert script.get_revision("0007_journal_truncate_guard").down_revision == "0006_journal_txid"
     assert script.get_revision("0008_receipt_worker_epoch").down_revision == "0007_journal_truncate_guard"
     assert script.get_revision("0009_action_tool_version").down_revision == "0008_receipt_worker_epoch"
-    assert script.get_current_head() == "0009_action_tool_version"
+    assert script.get_revision("0010_decision_log").down_revision == "0009_action_tool_version"
+    assert script.get_current_head() == "0010_decision_log"

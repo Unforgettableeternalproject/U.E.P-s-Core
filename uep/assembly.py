@@ -31,7 +31,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from secrets import token_bytes
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import SecretStr
 from sqlalchemy.orm import Session, sessionmaker
@@ -47,6 +47,7 @@ from uep.control.channel import (
     ControlSubscription,
 )
 from uep.control.socket_transport import SocketControlServer
+from uep.echo.agent_wiring import attach_agent_tools
 from uep.echo.services import EchoServices
 from uep.endpoint.auth import (
     DEFAULT_SKEW_SECONDS,
@@ -79,6 +80,7 @@ from uep.tasks.presence_bridge import (
     PresenceTaskBridge,
 )
 from uep.tasks.states import RunStatus
+from uep.tools.catalog.memory import MEMORY_EXECUTOR
 
 if TYPE_CHECKING:  # 組裝層不得硬依賴 uep.stream：只有 uep/echo/host 會 import 它
     from uep.echo.host import EchoPipelineHost
@@ -284,6 +286,46 @@ def build_request_verifier(
     )
 
 
+def _check_tool_path_consistency(tool_path: str, echo: EchoPipelineHost | None) -> None:
+    """Host 注入的路徑與 think stage 種類都必須等於組裝層決定的路徑；不一致一律拒絕（不靜默退回另一條路徑）。"""
+    if tool_path not in ("legacy", "agent"):
+        raise AssemblyError(f"tool_path 只能是 legacy 或 agent：{tool_path!r}")
+    if echo is None:
+        return
+    host_path = getattr(echo, "_tool_path", "legacy")
+    if host_path != tool_path:
+        raise AssemblyError(f"工具路徑不一致：組裝層為 {tool_path}，EchoPipelineHost 為 {host_path}（建構 Host 時須傳同一個 tool_path）")
+    is_agent_stage = callable(getattr(echo.think, "bind_port", None))
+    if is_agent_stage != (tool_path == "agent"):
+        raise AssemblyError(
+            f"工具路徑不一致：組裝層為 {tool_path}，但 think stage {'是' if is_agent_stage else '不是'} AgentThinkStage"
+        )
+
+
+def _prepare_agent_tools(echo: EchoPipelineHost | None, model_port: Any | None) -> tuple[Any, Any]:
+    """``UEP_TOOL_PATH=agent`` 的前提檢查與記憶工具 executor；任何一項不成立都拒絕組裝，不退回 legacy。"""
+    from uep.agent.runtime import ModelPortBackend
+    from uep.echo.agent_wiring import make_memory_executor
+
+    if model_port is None:
+        raise AssemblyError("UEP_TOOL_PATH=agent 需要 model_port（PydanticAI 埠）；不會退回 legacy 路徑")
+    if echo is None:
+        raise AssemblyError("UEP_TOOL_PATH=agent 需要 echo（EchoPipelineHost）")
+    think = echo.think
+    if not callable(getattr(think, "bind_port", None)):
+        raise AssemblyError("UEP_TOOL_PATH=agent 需要 AgentThinkStage（以 tool_path=agent 組出 think stage）")
+    try:
+        backend = think.inner.backend
+    except Exception:  # noqa: BLE001 - backend 缺失也是同一個結論
+        backend = None
+    if not isinstance(backend, ModelPortBackend):
+        raise AssemblyError("UEP_TOOL_PATH=agent 的 think stage 必須使用 ModelPortBackend（組 stage 時傳 model_port）")
+    memory = getattr(echo, "_memory", None)  # 宿主未公開 MemoryPort；組裝層與宿主同屬 Core，直接取用
+    if memory is None:
+        raise AssemblyError("UEP_TOOL_PATH=agent 需要 echo 具備 MemoryPort（memory=）")
+    return make_memory_executor(memory, echo.roster, echo._audience_allowed)
+
+
 def _probe_payload_hash_key(strict: bool = False) -> None:
     """啟動探測 payload_hash 密鑰：缺失或過短預設只告警（寫入私人 payload 時另有 fail-closed）；
     ``strict`` 時直接拒絕組裝，避免正式環境帶著壞掉的私人 payload 寫入能力啟動。"""
@@ -324,11 +366,17 @@ def assemble_core(
     memory: MemoryHost | None = None,
     echo: EchoPipelineHost | None = None,
     internal_executors: Collection[str] = (),
+    tool_path: str | None = None,
+    model_port: Any | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
     ``stop_api_port`` 為 None 時不建立本機 HTTP API；給 0 由系統配置埠。
     ``internal_executors`` 為明示不由任何註冊表項目引用的內部 executor（TG-5 豁免）。
+    ``tool_path``（預設取設定 ``UEP_TOOL_PATH``）為 ``agent`` 時：需要 ``model_port``、``echo``（其 think 為 ``AgentThinkStage``
+    且使用 ``ModelPortBackend``）與 MemoryPort；``MemoryToolExecutor`` 以 ``MEMORY_EXECUTOR`` 為鍵併入 ``executors``
+    （TG-5 對併入後的映射做雙向檢查），並把回合工具 Port 綁到 think stage。任何前提不成立即 ``AssemblyError``，
+    不會退回 legacy。``legacy`` 時組裝結果與先前完全相同。
     ``strict`` 為 True 時，缺少（或過短的）``UEP_PAYLOAD_HASH_KEY`` 直接拒絕組裝；預設只告警。
     ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
@@ -364,6 +412,12 @@ def assemble_core(
                 "否則舊 generation 的輸出不會被 Gate 拒絕（V12）"
             )
     assert adapter is not None and executors is not None and tool_resolver is not None
+    agent_cache = None
+    tool_path = tool_path or get_settings().tool_path  # 工具路徑只在這裡決定一次；Host 與 think stage 必須與之一致
+    _check_tool_path_consistency(tool_path, echo)
+    if tool_path == "agent":
+        memory_executor, agent_cache = _prepare_agent_tools(echo, model_port)
+        executors = {**executors, MEMORY_EXECUTOR: memory_executor}
     _check_registry_executors(tool_resolver, executors, internal_executors)
     assert turn_generation_source is not None and presence_audience is not None
 
@@ -402,6 +456,9 @@ def assemble_core(
         presence_check=presence_check, action_guard=state.action_entry_blocked, **clock_kw,
     )
     _assert_wired(tasks, delivery)
+    if agent_cache is not None:
+        assert echo is not None
+        attach_agent_tools(echo.think, tasks, agent_cache)
     if echo is not None:
         # ES 端點以行程內專用的隨機 secret 經 EndpointService 走既有 acquire／renew 流程（沿用 P-21／P-22，
         # 不離開 loopback）；secret 不落地、不離開行程

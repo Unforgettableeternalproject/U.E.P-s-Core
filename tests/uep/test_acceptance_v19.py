@@ -41,7 +41,12 @@ from uep.fakes.output import FakeOutputAdapter
 from uep.fakes.tool import FakeToolExecutor
 from uep.output.manager import DeliveryManager
 from uep.output.models import DeliveryRow
-from uep.tasks.manager import ActiveWorker, IllegalTransition, StaleWorkerEpoch
+from uep.tasks.manager import (
+    ActionBlocked,
+    ActiveWorker,
+    IllegalTransition,
+    StaleWorkerEpoch,
+)
 from uep.tasks.states import PauseReason, RunStatus
 
 pytestmark = pytest.mark.usefixtures("session_factory")
@@ -128,7 +133,9 @@ CRASH_POINTS = [
 def test_v19_crash_at_every_point_never_redoes_succeeded_actions(session_factory, idem, which, point, nth, executed):
     """V19／VC-6-1、T-2、T-3：在每個崩潰點崩潰後重啟，已成功 action 的 execution_count 恆為 1；
     崩潰的 action 最多執行 1 次（idempotency=none 且未執行者不自動重跑，維持 UNKNOWN）；
-    Run 在有 UNKNOWN 時不得轉 SUCCEEDED（T-13）。"""
+    Run 在有 UNKNOWN 時不得轉 SUCCEEDED（T-13）。
+    idempotency=none 且未執行的 UNKNOWN 依 TC-3 擋下同 Run 後續有副作用的 action。
+    UNKNOWN 解決後的續行由非 stuck 分支涵蓋；idem=none 未執行者目前沒有解決入口。"""
     tm_crash, tool_crash = CrashInjector(), CrashInjector()
     ex = FakeToolExecutor(tool_crash)
     tm = make_tm(session_factory, ex, crash=tm_crash)
@@ -146,16 +153,19 @@ def test_v19_crash_at_every_point_never_redoes_succeeded_actions(session_factory
     plan = tm2.resume_run(run.run_id, stale_after=timedelta(0))
     epoch = plan.run.worker_epoch
     assert epoch == 2
-    drive(tm2, items, epoch)
+    stuck = idem == "none" and not executed
+    drive(tm2, [a1] if stuck else items, epoch)
 
     assert ex.execution_count(a1.action_id) == 1 and ex.call_count(a1.action_id) == 1
-    assert ex.execution_count(a3.action_id) == 1 and status_of(tm2, a3) == "SUCCEEDED"
-    stuck = idem == "none" and not executed
-    if stuck:  # 無法證明未執行、也無冪等保證：寧可卡住也不盲目重跑
+    if stuck:  # 無法證明未執行、也無冪等保證：寧可卡住也不盲目重跑，且 TC-3 擋下後續 action
+        with pytest.raises(ActionBlocked):
+            tm2.execute_action(a3.action_id, a3.params, worker_epoch=epoch)
+        assert ex.execution_count(a3.action_id) == 0 and status_of(tm2, a3) != "SUCCEEDED"
         assert status_of(tm2, a2) == "UNKNOWN" and ex.execution_count(a2.action_id) == 0
         with pytest.raises(IllegalTransition):
             tm2.transition_run(run.run_id, RunStatus.SUCCEEDED, worker_epoch=epoch)
     else:
+        assert ex.execution_count(a3.action_id) == 1 and status_of(tm2, a3) == "SUCCEEDED"
         assert status_of(tm2, a2) == "SUCCEEDED" and ex.execution_count(a2.action_id) == 1
         assert all(receipt_count(session_factory, i.action_id) == 1 for i in items)
         tm2.transition_run(run.run_id, RunStatus.SUCCEEDED, worker_epoch=epoch)
@@ -164,7 +174,7 @@ def test_v19_crash_at_every_point_never_redoes_succeeded_actions(session_factory
     # 舊 epoch 的 worker 復活也產生不了副作用
     with pytest.raises(StaleWorkerEpoch):
         make_tm(session_factory, ex).execute_action(a3.action_id, a3.params, worker_epoch=1)
-    assert ex.execution_count(a3.action_id) == 1
+    assert ex.execution_count(a3.action_id) == (0 if stuck else 1)
 
 
 def test_v19_crash_during_resume_itself_then_resume_again(session_factory):

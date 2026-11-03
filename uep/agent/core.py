@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from uep.adapters.runtime import Runtime, RuntimeEvent, RuntimeRequest
+from uep.adapters.runtime import Runtime, RuntimeRequest
 from uep.tasks.manager import (
     ActionBlocked,
     ApprovalInvalid,
@@ -74,10 +74,12 @@ class StepOutcome:
 
 class AgentCore:
     def __init__(
-        self, runtime: Runtime, tasks: TaskManager, gateway: ToolGateway, *, worker_epoch: int,
-        injected: Mapping[str, Any] | None = None,
+        self, runtime: Runtime | None, tasks: TaskManager, gateway: ToolGateway, *, worker_epoch: int,
+        injected: Mapping[str, Any] | None = None, content_lookup: Callable[[str], str | None] | None = None,
     ) -> None:
+        # ``runtime`` 只在 ``run_step`` 需要；只用 ``run_intent`` 的呼叫端（模型呼叫在別處）可以傳 None
         self._runtime = runtime
+        self._content_lookup = content_lookup  # internal_read 結果文字的回合範圍來源（D33：不進 receipt／DB）
         self._tasks = tasks
         self._gateway = gateway
         self._worker_epoch = worker_epoch
@@ -85,22 +87,30 @@ class AgentCore:
 
     def run_step(self, *, run_id: str, step_id: str, request: RuntimeRequest) -> StepOutcome:
         """驅動 Runtime 跑完一個 Step。``request.capability_set`` 即當輪可見集合。"""
-        attempt_id = self._runtime.start(request)
+        runtime = self._require_runtime()
+        attempt_id = runtime.start(request)
         intents: list[IntentRecord] = []
         ordinal = 0
         while True:
             delivered = False
-            for event in self._runtime.stream(attempt_id):
+            for event in runtime.stream(attempt_id):
                 if event.kind == "result":
                     return StepOutcome("completed", attempt_id, tuple(intents), result=event.result)
                 if event.kind == "error":
                     return StepOutcome("runtime_error", attempt_id, tuple(intents), error=event.error)
                 if event.kind != "tool_intent":
                     continue  # text_delta／checkpoint／approval_request 不在本切片範圍
+                intent = event.tool_intent or {}
+
+                def deliver(action_id: str, view: Mapping[str, Any], attempt_id: str = attempt_id) -> None:
+                    runtime.submit_tool_result(attempt_id, action_id, view)
+
                 try:
-                    record = self._handle_intent(run_id, step_id, ordinal, attempt_id, request, event)
+                    record = self._handle_intent(
+                        run_id, step_id, ordinal, request.capability_set, intent, deliver, self._injected,
+                    )
                 except StaleWorkerEpoch:
-                    self._runtime.cancel(attempt_id, "stale_worker_epoch")  # SA-2
+                    runtime.cancel(attempt_id, "stale_worker_epoch")  # SA-2
                     return StepOutcome("stale", attempt_id, tuple(intents))
                 ordinal += 1
                 intents.append(record)
@@ -109,11 +119,34 @@ class AgentCore:
             if not delivered:
                 return StepOutcome("incomplete", attempt_id, tuple(intents))
 
+    def _require_runtime(self) -> Runtime:
+        if self._runtime is None:
+            raise RuntimeError("AgentCore 沒有 Runtime：只能使用 run_intent")
+        return self._runtime
+
+    def run_intent(
+        self, *, run_id: str, step_id: str, ordinal: int, capability_set: Mapping[str, Any], tool: str,
+        args: Any, injected: Mapping[str, Any] | None = None,
+    ) -> tuple[IntentRecord, Mapping[str, Any] | None]:
+        """處理一個已完整的 ``tool_intent``（Gateway -> create_action -> execute_action），回傳紀錄與結果視圖。
+
+        與 ``run_step`` 同一條路徑，但視圖交給呼叫端而不是 ``submit_tool_result``：模型呼叫不在這個 Core 內時使用
+        （例如宿主的對話迴圈已持有模型串流，只把工具執行交給 ActionIntent）。``injected`` 為本輪 Core 持有的
+        注入值（PD-12），沒給則用建構子的值。視圖在沒有交付時（參數未完成）為 None。"""
+        delivered: list[Mapping[str, Any]] = []
+        record = self._handle_intent(
+            run_id, step_id, ordinal, capability_set,
+            {"tool": tool, "args": args, "args_complete": True},
+            lambda _action_id, view: delivered.append(view),
+            self._injected if injected is None else injected,
+        )
+        return record, (delivered[-1] if delivered else None)
+
     def _handle_intent(
-        self, run_id: str, step_id: str, ordinal: int, attempt_id: str, request: RuntimeRequest,
-        event: RuntimeEvent,
+        self, run_id: str, step_id: str, ordinal: int, capability_set: Mapping[str, Any],
+        intent: Mapping[str, Any], deliver: Callable[[str, Mapping[str, Any]], None],
+        injected: Mapping[str, Any] | None,
     ) -> IntentRecord:
-        intent = event.tool_intent or {}
         tool = intent["tool"]
         args = intent.get("args", {})
         logger.debug("tool_intent tool=%s side_effect_hint=%s", tool, intent.get("side_effect_hint"))  # TG-2
@@ -124,9 +157,9 @@ class AgentCore:
         action_id = stable_action_id(run_id, step_id, ordinal)
         try:
             # 用 Gateway 回傳的（驗證並注入後的）參數建 action 與執行：注入發生在 params_hash 之前
-            args = self._gateway.check_intent(tool, args, request.capability_set, injected=self._injected)
+            args = self._gateway.check_intent(tool, args, capability_set, injected=injected)
         except GatewayRejected as exc:
-            self._runtime.submit_tool_result(attempt_id, action_id, self._gateway.rejection_view(exc))
+            deliver(action_id, self._gateway.rejection_view(exc))
             return IntentRecord(ordinal, tool, None, "rejected", exc.code)
 
         try:
@@ -138,34 +171,34 @@ class AgentCore:
             raise
         except (PolicyViolation, ParamsHashMismatch) as exc:
             code = getattr(exc, "code", None) or type(exc).__name__
-            return self._deliver(attempt_id, action_id, ordinal, tool, "rejected", code, created=False)
+            return self._deliver(deliver, action_id, ordinal, tool, "rejected", code, created=False)
         except ActionBlocked:
-            return self._deliver(attempt_id, action_id, ordinal, tool, "blocked", "action_blocked", created=False)
+            return self._deliver(deliver, action_id, ordinal, tool, "blocked", "action_blocked", created=False)
         except Exception as exc:  # noqa: BLE001  基礎設施錯誤：沒有建出 action，回 failed，只記型別
             logger.error("create_action 失敗：tool=%s error=%s", tool, type(exc).__name__)
-            return self._deliver(attempt_id, action_id, ordinal, tool, "failed", type(exc).__name__, created=False)
+            return self._deliver(deliver, action_id, ordinal, tool, "failed", type(exc).__name__, created=False)
 
         try:
             outcome = self._tasks.execute_action(action_id, args, worker_epoch=self._worker_epoch)
         except StaleWorkerEpoch:
             raise
         except ParamsHashMismatch:
-            return self._deliver(attempt_id, action_id, ordinal, tool, "rejected", "params_hash_mismatch")
+            return self._deliver(deliver, action_id, ordinal, tool, "rejected", "params_hash_mismatch")
         except (ActionBlocked, PresenceRequired, ApprovalRequired, ApprovalInvalid) as exc:
             # 核准等待屬切片 1（SA-5）：這裡只回「被擋」，不自行建立或消耗 approval
-            return self._deliver(attempt_id, action_id, ordinal, tool, "blocked", type(exc).__name__)
+            return self._deliver(deliver, action_id, ordinal, tool, "blocked", type(exc).__name__)
         except Exception as exc:  # noqa: BLE001  executor 例外：Manager 已把 action 標 UNKNOWN，不得當成沒執行
             logger.error("execute_action 失敗：action=%s error=%s", action_id, type(exc).__name__)
-            return self._deliver(attempt_id, action_id, ordinal, tool, "unknown", type(exc).__name__)
+            return self._deliver(deliver, action_id, ordinal, tool, "unknown", type(exc).__name__)
 
-        view = self._gateway.outcome_view(outcome)
-        self._runtime.submit_tool_result(attempt_id, action_id, view)
+        view = self._gateway.outcome_view(outcome, content_lookup=self._content_lookup)
+        deliver(action_id, view)
         return IntentRecord(ordinal, tool, action_id, view["status"])
 
     def _deliver(
-        self, attempt_id: str, action_id: str, ordinal: int, tool: str, status: ResultStatus, reason: str,
-        *, created: bool = True,
+        self, deliver: Callable[[str, Mapping[str, Any]], None], action_id: str, ordinal: int, tool: str,
+        status: ResultStatus, reason: str, *, created: bool = True,
     ) -> IntentRecord:
         """交一個不含項目的狀態結果；``created=False`` 表示沒有 act_ 列（action_id 僅供 Runtime 對應）。"""
-        self._runtime.submit_tool_result(attempt_id, action_id, self._gateway.result_view(status))
+        deliver(action_id, self._gateway.result_view(status))
         return IntentRecord(ordinal, tool, action_id if created else None, status, reason)

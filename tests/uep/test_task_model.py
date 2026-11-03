@@ -402,19 +402,27 @@ def test_approval_must_match_action(mgr, executor, override, code):
 
 
 def test_approval_single_consumption_under_concurrency(session_factory, executor):
+    """同一筆核准被多個執行緒同時消費：恰好一個成功，其餘全因核准已被消耗（``ApprovalInvalid("consumed")``）而失敗。
+
+    各 action 放在獨立的 Run：TC-3 讓同一個 Run 內只有一個 action 能進 EXECUTING，放在同一個 Run 時落敗的
+    執行緒會在核准消費之前就被 ActionBlocked 擋下，測試就不再驗證「核准單次消費」。TC-3 另有獨立測試
+    （``test_tc3_blocks_before_approval_is_consumed``），兩種失敗原因分開驗證。
+    """
     mgr = make_manager(session_factory, executor)
-    _task, run, step = running(mgr)
     params = {"to": "boss"}
-    actions = [add_action(mgr, run, step, params, side_effect="external_effect") for _ in range(2)]
+    actions = []
+    for _ in range(4):
+        _task, run, step = running(mgr)
+        actions.append(add_action(mgr, run, step, params, side_effect="external_effect"))
     approval = approve(mgr, params)
     results: list[object] = []
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(len(actions))
 
     def attempt(action_id: str) -> None:
         barrier.wait()
         try:
             results.append(mgr.execute_action(action_id, params, worker_epoch=1, approval_id=approval.approval_id))
-        except ApprovalInvalid as exc:
+        except Exception as exc:  # noqa: BLE001  任何例外都收進 results，由下方斷言逐一檢查型別
             results.append(exc)
 
     threads = [threading.Thread(target=attempt, args=(a.action_id,)) for a in actions]
@@ -422,8 +430,32 @@ def test_approval_single_consumption_under_concurrency(session_factory, executor
         t.start()
     for t in threads:
         t.join()
-    assert sum(1 for r in results if not isinstance(r, ApprovalInvalid)) == 1
-    assert len(executor.calls) == 1
+    winners = [r for r in results if not isinstance(r, Exception)]
+    losers = [r for r in results if isinstance(r, Exception)]
+    assert len(winners) == 1 and len(losers) == len(actions) - 1
+    assert all(isinstance(r, ApprovalInvalid) and r.code == "consumed" for r in losers)  # 不是 ActionBlocked／TC-3
+    assert len(executor.calls) == 1 and executor.calls[0] == winners[0].action_id
+    with session_factory() as s:
+        row = s.get(ApprovalRow, approval.approval_id)
+        assert row.consumed_by_action_id == winners[0].action_id
+
+
+def test_tc3_blocks_before_approval_is_consumed(session_factory, executor):
+    """TC-3 獨立驗證：同一個 Run 已有 EXECUTING 時，另一個 action 以 ActionBlocked（不是 ApprovalInvalid）被擋，
+    且在核准消費之前就被擋——核准未消耗、action 維持 INTENDED、executor 沒被呼叫。"""
+    mgr = make_manager(session_factory, executor)
+    _task, run, step = running(mgr)
+    busy = add_action(mgr, run, step, {"to": "a"}, side_effect="external_effect")
+    params = {"to": "boss"}
+    waiting = add_action(mgr, run, step, params, side_effect="external_effect")
+    approval = approve(mgr, params)
+    with session_factory.begin() as s:
+        s.get(ActionIntentRow, busy.action_id).status = "EXECUTING"
+    with pytest.raises(ActionBlocked, match="TC-3"):
+        mgr.execute_action(waiting.action_id, params, worker_epoch=1, approval_id=approval.approval_id)
+    assert mgr.get_action(waiting.action_id).status == "INTENDED" and executor.calls == []
+    with session_factory() as s:
+        assert s.get(ApprovalRow, approval.approval_id).consumed_at is None
 
 
 # ---- 回覆遺失（T-3、VC-6-2） ----

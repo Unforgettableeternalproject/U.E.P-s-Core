@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Literal
 
 from uep.tasks.manager import ActionOutcome, PolicyViolation
@@ -127,14 +127,25 @@ class ToolGateway:
             view["fields"] = list(fields)
         return view
 
-    def outcome_view(self, outcome: ActionOutcome) -> dict[str, Any]:
+    def outcome_view(
+        self, outcome: ActionOutcome, *, content_lookup: Callable[[str], str | None] | None = None,
+    ) -> dict[str, Any]:
         """依 receipt／action 終態組結果：SUCCEEDED -> ok、FAILED -> failed、其餘（UNKNOWN 等）-> unknown。
 
         ``degraded`` 取 receipt 的來源未驗證（``source_verified=False``）。
+        ``content_lookup``：給了就從回合範圍的結果來源取文字放進 item 的 ``content``（internal_read 的原文不進 receipt／DB，
+        D33）；成功但取不到文字時回 ``unknown``，不編造內容。
         """
         receipt = outcome.receipt
         if outcome.status is ActionStatus.SUCCEEDED and receipt is not None:
             items = [{"ref": receipt.result_ref, "action_id": outcome.action_id}] if receipt.result_ref else []
+            if content_lookup is not None:
+                content = content_lookup(outcome.action_id)
+                if content is None:
+                    return self.result_view("unknown")
+                items = [{**item, "content": content} for item in items] or [
+                    {"ref": "", "action_id": outcome.action_id, "content": content}
+                ]
             return self.result_view("ok", items=items, degraded=not receipt.source_verified)
         if outcome.status is ActionStatus.FAILED:
             return self.result_view("failed")

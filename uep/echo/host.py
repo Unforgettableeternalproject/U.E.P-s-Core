@@ -74,6 +74,8 @@ from uep.output.delivery import DeliveryEvidence
 from uep.output.delivery import DeliveryStatus as DS
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
 from uep.tools.catalog.memory import GUILD_ROSTER_CONTEXT, memory_registry
+from uep.tools.projection import ProjectionContext
+from uep.tools.render import render_tools
 from uep.turn.aggregator import (
     ModeAwareAggregator,
     PassThroughAggregator,
@@ -178,10 +180,14 @@ class EchoPipelineHost:
         stop_timeout_s: float = _STOP_TIMEOUT_S,
         start_timeout_s: float = _START_TIMEOUT_S,
         endpoint_kwargs: dict[str, Any] | None = None,
+        tool_path: str = "legacy",
     ) -> None:
         self.publisher = publisher
         self.think = think
         self.speak = speak
+        if tool_path not in ("legacy", "agent"):
+            raise ValueError(f"tool_path 只能是 legacy 或 agent：{tool_path!r}")
+        self._tool_path = tool_path  # 組裝層決定一次後注入（單一來源）；host 不自己讀設定
         for attr in ("memory_resolver", "memory", "tool_executor"):
             if getattr(think, attr, None) is not None:
                 # 自帶記憶來源或工具執行器會繞過 Access Layer（audience／ACL 過濾）：一律拒絕組裝
@@ -627,6 +633,10 @@ class EchoPipelineHost:
             retrieve_kwargs["present_uids"] = self.roster.present_uids(guild)
             tool_context["guild_id"] = guild
             tool_context["present_uids"] = list(retrieve_kwargs["present_uids"])
+        if self._agent_tool_path():
+            # agent 路徑：回合 Task 的事件要與舊補記同一組關聯 id 與 scope（legacy 路徑的 tool_context 不變）
+            tool_context["event_scope"] = ticket.event_scope
+            tool_context["conversation_id"] = ticket.conversation_id
         if runtime is not None:
             runtime.tool_context = tool_context
         # Core 令 ticket.turn_id、source_turn_id 與 Utterance.turn_id 相等（ES 不一致時只記 warning），
@@ -779,6 +789,9 @@ class EchoPipelineHost:
         memory = self._memory
         if memory is None or self.tool_executor is None:
             return
+        if getattr(self, "_tool_path", "legacy") == "agent":  # 注入值；未注入（舊式替身）視為 legacy
+            self._refresh_tools_agent()
+            return
         definitions = getattr(memory, "tool_definitions", None)
         try:
             tools = list(definitions()) if callable(definitions) else []
@@ -792,6 +805,23 @@ class EchoPipelineHost:
             d for d in tools
             if _tool_name(d) in TOOL_CLASSES and registry.entry(_tool_name(d)).scope.requires_context <= available
         ]
+
+    # direct_chat 回合只曝光唯讀記憶工具（Q-E）：能力標籤固定為 memory.read，force_remember（memory.write）不在其內
+    _DIRECT_CHAT_CAPABILITY_TAGS = frozenset({"memory.read"})
+
+    def _refresh_tools_agent(self) -> None:
+        """``UEP_TOOL_PATH=agent``：曝光 = 註冊表對 direct_chat 標籤的 ``project``，經 ``render_tools`` 渲染（D60）。
+        投影失敗 fail-closed：不曝光任何工具。"""
+        available = frozenset({GUILD_ROSTER_CONTEXT}) if self._session.guild_id is not None else frozenset()
+        try:
+            capability_set = memory_registry().project(
+                self._DIRECT_CHAT_CAPABILITY_TAGS,
+                ProjectionContext(available_context=available, audience=self._session.audience_scope),
+            )
+            self.think.tools = render_tools(capability_set)
+        except Exception:
+            logger.exception("註冊表投影失敗，不曝光工具")
+            self.think.tools = []
 
     async def _switch_session(self, ctx: SessionContext) -> None:
         old = self._session
@@ -1175,8 +1205,16 @@ class EchoPipelineHost:
 
     # ---- D79：工具呼叫事後補記 ----
 
+    def _agent_tool_path(self) -> bool:
+        """agent 路徑：工具呼叫走 ActionIntent，``action.*`` 由 TaskManager 發出（與舊補記互斥）。值由建構參數注入。"""
+        return self._tool_path == "agent"
+
     def _record_tool_action(self, turn_id: str, name: str, tool_class: str, status: str) -> None:
-        """``CoreToolExecutor`` 的回呼（ES loop 上，只入佇列）：事後補記 ``action.executed``／``action.unknown``。"""
+        """``CoreToolExecutor`` 的回呼（ES loop 上，只入佇列）：事後補記 ``action.executed``／``action.unknown``。
+
+        agent 路徑下不補記（``action.*`` 已由 TaskManager 發出），避免重複發送。"""
+        if self._agent_tool_path():
+            return
         self._enqueue(functools.partial(self._publish_tool_action, turn_id, name, tool_class, status), "tool_action")
 
     def _publish_tool_action(self, turn_id: str, name: str, tool_class: str, status: str) -> None:

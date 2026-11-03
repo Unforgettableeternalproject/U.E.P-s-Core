@@ -191,6 +191,11 @@ class ActionIntentRow(Base):
         CheckConstraint(_IDEMPOTENCY, name="idempotency"),
         Index("ix_action_intents_run_id", "run_id"),
         Index("ix_action_intents_step_id", "step_id"),
+        # D62／TC-3：同一個 Run 至多一個 EXECUTING（DB 層保險；首版只有 serial，並行資格啟用前不放寬）
+        Index(
+            "uq_action_intents_one_executing_per_run", "run_id", unique=True,
+            postgresql_where=text("status = 'EXECUTING'"),
+        ),
     )
 
     action_id: Mapped[str] = mapped_column(String, primary_key=True)

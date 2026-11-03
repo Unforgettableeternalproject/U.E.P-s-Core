@@ -37,7 +37,7 @@ from uep.adapters.tool import (
 from uep.events.envelope import EventDraft, TrustedContext
 from uep.events.payload_hash import PayloadHasher, resolve_hasher
 from uep.events.publisher import EventPublisher, RecordedEvent
-from uep.ids import is_valid_id, new_id
+from uep.ids import derived_id, is_valid_id, new_id
 from uep.tasks.models import (
     ActionIntentRow,
     ActivityRow,
@@ -87,6 +87,15 @@ CHECKPOINT_KEYS = frozenset({
 
 
 # ---- 例外 ----
+
+TURN_TASK_GOAL = "turn_tools"  # 回合 Task 的 goal（D62）；孤兒掃描以此辨識
+UNRESOLVED_ACTIONS = "unresolved_actions"
+TURN_NOT_RUNNING = "turn_not_running"  # 回合結束時 Task 不是 RUNNING（PAUSED／WAITING_* 等）：不能宣稱成功
+# 一個回合的合理上限：模型 attempt 的 deadline（5 分鐘，ModelPortBackend）的兩倍。孤兒掃描的 older_than 必須大於它，
+# 否則會把仍在進行的回合誤收；回合結束由 Agent Core 主動收尾，掃描只是崩潰後的保底
+TURN_MAX_DURATION = timedelta(minutes=10)
+ORPHAN_TURN_TASK = "orphan_turn_task"
+
 
 class TaskError(Exception):
     """Task Manager 例外基底。"""
@@ -429,6 +438,7 @@ class TaskManager:
         activity = session.get(ActivityRow, task.activity_id)
         draft = EventDraft(
             event_type=event_type,
+            **self._turn_link(task),
             activity_id=task.activity_id,
             task_id=task.task_id,
             run_id=run_id,
@@ -446,6 +456,18 @@ class TaskManager:
         pending.append(
             self._publisher.record(session, draft, trusted, outbox_targets=self._targets_for(event_type))
         )
+
+    @staticmethod
+    def _turn_link(task: TaskRow) -> dict[str, str]:
+        """回合 Task 的事件關聯 id（turn／conversation／segment）；不是回合 Task 或 id 不合法時為空。"""
+        origin = task.origin_ref
+        if task.goal != TURN_TASK_GOAL or not isinstance(origin, dict):
+            return {}
+        link = {
+            key: origin[key] for key in ("turn_id", "conversation_id", "segment_id")
+            if isinstance(origin.get(key), str) and is_valid_id(origin[key])
+        }
+        return link
 
     def _targets_for(self, event_type: str) -> list[str]:
         targets: list[str] = list(self._outbox_targets.get(event_type, ()))
@@ -510,27 +532,38 @@ class TaskManager:
         with self._tx() as (s, pending):
             if parent_task_id is not None:
                 self._need(s.get(TaskRow, parent_task_id), "task", parent_task_id)
-            activity = ActivityRow(
-                activity_id=new_id("actv"), persona_id=persona_id, kind=ActivityKind.TASK.value,
-                presence_bound=policy.presence_bound, status=ActivityStatus.ACTIVE.value,
-                origin_ref=origin_ref, version=1,
+            return self._insert_task(
+                s, pending, persona_id=persona_id, goal=goal, owner_actor_id=owner_actor_id,
+                scope_ref=scope_ref, policy=policy, interrupt=effective, deadline=deadline,
+                origin_ref=origin_ref, parent_task_id=parent_task_id,
             )
-            s.add(activity)
-            s.flush()
-            task = TaskRow(
-                task_id=new_id("task"), activity_id=activity.activity_id, parent_task_id=parent_task_id,
-                goal=goal, owner_actor_id=owner_actor_id, scope_ref=scope_ref,
-                presence_bound=policy.presence_bound, status=RunStatus.PENDING.value,
-                deadline=deadline, interrupt_policy=effective.value, origin_ref=origin_ref,
-                version=1, policy_ref=policy.policy_ref,
-            )
-            s.add(task)
-            s.flush()
-            self._emit(
-                s, pending, "task.created", task, aggregate=("task", task.task_id, task.version),
-                payload={"status": task.status},
-            )
-            return task
+
+    def _insert_task(
+        self, s: Session, pending: list[RecordedEvent], *, persona_id: str, goal: str, owner_actor_id: str,
+        scope_ref: str, policy: TaskPolicy, interrupt: InterruptPolicy, deadline: datetime | None,
+        origin_ref: dict[str, Any] | None, parent_task_id: str | None, task_id: str | None = None,
+    ) -> TaskRow:
+        activity = ActivityRow(
+            activity_id=new_id("actv"), persona_id=persona_id, kind=ActivityKind.TASK.value,
+            presence_bound=policy.presence_bound, status=ActivityStatus.ACTIVE.value,
+            origin_ref=origin_ref, version=1,
+        )
+        s.add(activity)
+        s.flush()
+        task = TaskRow(
+            task_id=task_id or new_id("task"), activity_id=activity.activity_id, parent_task_id=parent_task_id,
+            goal=goal, owner_actor_id=owner_actor_id, scope_ref=scope_ref,
+            presence_bound=policy.presence_bound, status=RunStatus.PENDING.value,
+            deadline=deadline, interrupt_policy=interrupt.value, origin_ref=origin_ref,
+            version=1, policy_ref=policy.policy_ref,
+        )
+        s.add(task)
+        s.flush()
+        self._emit(
+            s, pending, "task.created", task, aggregate=("task", task.task_id, task.version),
+            payload={"status": task.status},
+        )
+        return task
 
     def _check_transition(
         self, kind: str, row: TaskRow | RunRow, to: RunStatus, pause_reason: PauseReason | None
@@ -570,7 +603,7 @@ class TaskManager:
 
     def _set_task_status(
         self, s: Session, pending: list[RecordedEvent], task: TaskRow, to: RunStatus,
-        pause_reason: PauseReason | None,
+        pause_reason: PauseReason | None, *, reason_code: str | None = None,
     ) -> None:
         current = self._check_transition("task", task, to, pause_reason)
         if to is RunStatus.SUCCEEDED:
@@ -588,7 +621,7 @@ class TaskManager:
         if event_type:
             self._emit(
                 s, pending, event_type, task, aggregate=("task", task.task_id, task.version),
-                payload={"status": to.value},
+                payload={"status": to.value, **({"reason_code": reason_code} if reason_code else {})},
             )
         if to in TERMINAL_STATUSES:
             # kind=task 的 Activity 在 Task 到達終態後才結束（§6.1a）
@@ -670,36 +703,196 @@ class TaskManager:
         """建立新 attempt 的 Run 並使 Task 進入 RUNNING。同一 Task 同時至多一個未終態 Run。"""
         with self._tx() as (s, pending):
             task = self._lock_task(s, task_id, None)
-            current = RunStatus(task.status)
-            if current in TERMINAL_STATUSES:
-                raise IllegalTransition(f"task 已是終態 {current.value}，不可再啟動 Run")
-            if current is RunStatus.PAUSED:
-                raise IllegalTransition("task 為 PAUSED，須先 resume 才可啟動 Run")
-            if self._guard is not None:  # 新 Run 直接以 RUNNING 建立，同樣要過 CC-7 裁決（全域停止期間不可啟動）
-                self._guard(TransitionRequest("run", f"new:{task_id}", RunStatus.PENDING, RunStatus.RUNNING))
-            active = s.scalar(
-                select(RunRow.run_id).where(
-                    RunRow.task_id == task_id, RunRow.status.notin_([x.value for x in TERMINAL_STATUSES])
+            return self._start_run_locked(
+                s, pending, task, persona_version=persona_version, policy_version=policy_version,
+                run_deadline=run_deadline, step_timeout=step_timeout, approval_expiry=approval_expiry,
+            )
+
+    def _start_run_locked(
+        self, s: Session, pending: list[RecordedEvent], task: TaskRow, *, persona_version: int,
+        policy_version: int, run_deadline: datetime | None = None, step_timeout: timedelta | None = None,
+        approval_expiry: datetime | None = None, run_id: str | None = None,
+    ) -> RunRow:
+        task_id = task.task_id
+        current = RunStatus(task.status)
+        if current in TERMINAL_STATUSES:
+            raise IllegalTransition(f"task 已是終態 {current.value}，不可再啟動 Run")
+        if current is RunStatus.PAUSED:
+            raise IllegalTransition("task 為 PAUSED，須先 resume 才可啟動 Run")
+        if self._guard is not None:  # 新 Run 直接以 RUNNING 建立，同樣要過 CC-7 裁決（全域停止期間不可啟動）
+            self._guard(TransitionRequest("run", f"new:{task_id}", RunStatus.PENDING, RunStatus.RUNNING))
+        active = s.scalar(
+            select(RunRow.run_id).where(
+                RunRow.task_id == task_id, RunRow.status.notin_([x.value for x in TERMINAL_STATUSES])
+            )
+        )
+        if active is not None:
+            raise IllegalTransition(f"task 已有未結束的 Run：{active}")
+        attempt = (s.scalar(select(func.max(RunRow.attempt)).where(RunRow.task_id == task_id)) or 0) + 1
+        run = RunRow(
+            run_id=run_id or new_id("run"), task_id=task_id, attempt=attempt, worker_epoch=1,
+            status=RunStatus.RUNNING.value, run_deadline=run_deadline, step_timeout=step_timeout,
+            approval_expiry=approval_expiry, worker_heartbeat_at=self._clock(),
+            persona_version=persona_version, policy_version=policy_version, version=1,
+        )
+        s.add(run)
+        s.flush()
+        if current is not RunStatus.RUNNING:
+            self._set_task_status(s, pending, task, RunStatus.RUNNING, None)
+        self._emit(
+            s, pending, "run.started", task, aggregate=("run", run.run_id, run.version),
+            run_id=run.run_id, payload={"status": run.status, "run_id": run.run_id, "count": attempt},
+        )
+        return run
+
+    # ---- 回合 Task（D62）----
+
+    def get_or_create_turn_task(
+        self, turn_id: str, *, persona_id: str, owner_actor_id: str, scope_ref: str, policy_ref: str,
+        persona_version: int, policy_version: int, conversation_id: str | None = None,
+        segment_id: str | None = None,
+    ) -> tuple[TaskRow, RunRow]:
+        """依 turn 取得或懶建立回合 Task 與其唯一 Run（D62、TC-5）。
+
+        - Task：presence_bound=false、interruptible、goal=``turn_tools``；presence／可中斷改由 action 層判定。
+        - turn_id 與 task_id、run_id 一對一且確定性（``derived_id``），``stable_action_id`` 因此可重放。
+        - ``conversation_id``／``segment_id`` 記在 origin_ref，回合 Task 的事件（含 ``action.*``）據此帶上與 turn
+          同一組關聯 id，舊版以 turn_id 查事件的做法照舊可用。
+        - 冪等：已存在就原樣回傳（含已終態者，由呼叫端判斷）。並發建立時 task_id 主鍵衝突的一方回讀，
+          不會建出兩個；Task 與 Run 同一交易建立，回讀時兩者必然都在。
+        """
+        if not turn_id:
+            raise PolicyViolation("turn_id 不可為空")
+        task_id = derived_id("task", turn_id)
+        run_id = derived_id("run", turn_id)
+        found = self._read_turn_pair(task_id, run_id)
+        if found is not None:
+            return found
+        policy = TaskPolicy(
+            presence_bound=False, interrupt_policy=InterruptPolicy.INTERRUPTIBLE, policy_ref=policy_ref
+        )
+        try:
+            with self._tx() as (s, pending):
+                task = self._insert_task(
+                    s, pending, persona_id=persona_id, goal=TURN_TASK_GOAL, owner_actor_id=owner_actor_id,
+                    scope_ref=scope_ref, policy=policy, interrupt=InterruptPolicy.INTERRUPTIBLE,
+                    deadline=None,
+                    origin_ref={
+                        "kind": TURN_TASK_GOAL, "turn_id": turn_id,
+                        **({"conversation_id": conversation_id} if conversation_id else {}),
+                        **({"segment_id": segment_id} if segment_id else {}),
+                    },
+                    parent_task_id=None, task_id=task_id,
                 )
-            )
-            if active is not None:
-                raise IllegalTransition(f"task 已有未結束的 Run：{active}")
-            attempt = (s.scalar(select(func.max(RunRow.attempt)).where(RunRow.task_id == task_id)) or 0) + 1
-            run = RunRow(
-                run_id=new_id("run"), task_id=task_id, attempt=attempt, worker_epoch=1,
-                status=RunStatus.RUNNING.value, run_deadline=run_deadline, step_timeout=step_timeout,
-                approval_expiry=approval_expiry, worker_heartbeat_at=self._clock(),
-                persona_version=persona_version, policy_version=policy_version, version=1,
-            )
-            s.add(run)
-            s.flush()
-            if current is not RunStatus.RUNNING:
-                self._set_task_status(s, pending, task, RunStatus.RUNNING, None)
-            self._emit(
-                s, pending, "run.started", task, aggregate=("run", run.run_id, run.version),
-                run_id=run.run_id, payload={"status": run.status, "run_id": run.run_id, "count": attempt},
-            )
-            return run
+                run = self._start_run_locked(
+                    s, pending, task, persona_version=persona_version, policy_version=policy_version,
+                    run_id=run_id,
+                )
+                return task, run
+        except IntegrityError:
+            found = self._read_turn_pair(task_id, run_id)  # 並發的另一方已建立
+            if found is None:
+                raise
+            return found
+
+    def _read_turn_pair(self, task_id: str, run_id: str) -> tuple[TaskRow, RunRow] | None:
+        with self._sf() as s:
+            task = s.get(TaskRow, task_id)
+            if task is None:
+                return None
+            run = s.get(RunRow, run_id)
+            if run is None:  # 不應發生（同一交易建立）；視為資料不一致
+                raise NotFound(f"回合 Task {task_id} 缺少對應的 Run：{run_id}")
+            return task, run
+
+    def finish_turn_task(self, task_id: str, *, abandon_executing: bool = False) -> TaskRow:
+        """回合結束時由 Agent Core 收尾（D62）。
+
+        沒有 EXECUTING／UNKNOWN 的 action 且 Task 為 RUNNING -> SUCCEEDED；有未決 action -> FAILED 並帶
+        ``reason_code=unresolved_actions``（Run 的 ``run.ended`` 同帶此原因碼與 action 線索）；Task 不是 RUNNING
+        （PAUSED／WAITING_*／UNKNOWN）-> FAILED 並帶 ``reason_code=turn_not_running``，不拋 IllegalTransition。
+        已是終態則原樣回傳（冪等）。
+
+        ``abandon_executing``：呼叫端等不到在途工具（逾時／取消）時，先把仍 EXECUTING 的 action 走正規轉移標成
+        UNKNOWN（``action.unknown``，之後仍可由 ``resolve_unknown`` 查核），再收尾。
+        """
+        with self._tx() as (s, pending):
+            task = self._lock_task(s, task_id, None)
+            if RunStatus(task.status) in TERMINAL_STATUSES:
+                return task
+            run_ids = list(s.scalars(select(RunRow.run_id).where(RunRow.task_id == task_id)))
+            if abandon_executing and run_ids:
+                stuck = list(s.scalars(
+                    select(ActionIntentRow).where(
+                        ActionIntentRow.run_id.in_(run_ids), ActionIntentRow.status == ActionStatus.EXECUTING.value,
+                    ).with_for_update().execution_options(populate_existing=True)
+                ))
+                for action in stuck:
+                    self._set_action_status(s, pending, task, action, ActionStatus.UNKNOWN, "action.unknown")
+            unresolved = bool(run_ids) and s.scalar(
+                select(ActionIntentRow.action_id).where(
+                    ActionIntentRow.run_id.in_(run_ids),
+                    ActionIntentRow.status.in_([ActionStatus.EXECUTING.value, ActionStatus.UNKNOWN.value]),
+                ).limit(1)
+            ) is not None
+            if unresolved:
+                self._set_task_status(
+                    s, pending, task, RunStatus.FAILED, None, reason_code=UNRESOLVED_ACTIONS
+                )
+            elif RunStatus(task.status) is not RunStatus.RUNNING:
+                self._set_task_status(s, pending, task, RunStatus.FAILED, None, reason_code=TURN_NOT_RUNNING)
+            else:
+                self._set_task_status(s, pending, task, RunStatus.SUCCEEDED, None)
+            return task
+
+    def sweep_orphan_turn_tasks(
+        self, older_than: timedelta, *, now: datetime | None = None, limit: int = 100
+    ) -> list[str]:
+        """孤兒掃描（D62）：回合 Task 超過 ``older_than`` 仍未終態者，以 FAILED 收尾。
+
+        「最後活動時間」取 Task、其 Run、其 action 的 ``updated_at`` 最大者，執行中的長回合不會被誤收。
+        單一 Task 收尾失敗只記 log、不影響其餘。回傳實際收尾的 task_id。
+        ``older_than`` 必須大於 ``TURN_MAX_DURATION``，否則拋 ValueError（避免誤收仍在進行的回合）。
+
+        接線：目前沒有 Supervisor／維護迴圈可以定期呼叫，接線延到切片 F（Agent 架構提案 §9.1 C／F 列）。
+        """
+        if older_than <= TURN_MAX_DURATION:
+            raise ValueError(f"older_than 必須大於 TURN_MAX_DURATION（{TURN_MAX_DURATION}）")
+        cutoff = (now or self._clock()) - older_than
+        done = [x.value for x in TERMINAL_STATUSES]
+        run_last = (
+            select(func.max(RunRow.updated_at)).where(RunRow.task_id == TaskRow.task_id).scalar_subquery()
+        )
+        act_last = (
+            select(func.max(ActionIntentRow.updated_at))
+            .join(RunRow, RunRow.run_id == ActionIntentRow.run_id)
+            .where(RunRow.task_id == TaskRow.task_id).scalar_subquery()
+        )
+        last = func.greatest(
+            TaskRow.updated_at, func.coalesce(run_last, TaskRow.updated_at),
+            func.coalesce(act_last, TaskRow.updated_at),
+        )
+        with self._sf() as s:
+            stale = list(s.scalars(
+                select(TaskRow.task_id)
+                .where(TaskRow.goal == TURN_TASK_GOAL, TaskRow.status.notin_(done), last < cutoff)
+                .order_by(TaskRow.created_at).limit(limit)
+            ))
+        closed: list[str] = []
+        for task_id in stale:
+            try:
+                self._fail_orphan(task_id)
+                closed.append(task_id)
+            except Exception:
+                logger.exception("孤兒回合 Task 收尾失敗：%s", task_id)
+        return closed
+
+    def _fail_orphan(self, task_id: str) -> None:
+        with self._tx() as (s, pending):
+            task = self._lock_task(s, task_id, None)
+            if RunStatus(task.status) in TERMINAL_STATUSES:
+                return
+            self._set_task_status(s, pending, task, RunStatus.FAILED, None, reason_code=ORPHAN_TURN_TASK)
 
     def transition_run(
         self, run_id: str, to: RunStatus, *, worker_epoch: int, expected_version: int | None = None,
@@ -995,9 +1188,17 @@ class TaskManager:
         action.status = to.value
         self._bump(action)
         if event_type:
+            payload: dict[str, Any] = {"action_id": action.action_id, "status": to.value}
+            if task.goal == TURN_TASK_GOAL:
+                # 回合 Task 的 action.* 取代舊的 Host 補記（D79）：沿用舊 payload（kind／status／ref_id），再加 action_id
+                legacy_status = _LEGACY_ACTION_STATUS.get(to, to.value)
+                payload = {
+                    "action_id": action.action_id, "kind": action.side_effect_class, "status": legacy_status,
+                    "ref_id": f"tool:{action.tool}",
+                }
             self._emit(
                 s, pending, event_type, task, aggregate=("action", action.action_id, action.version),
-                run_id=action.run_id, payload={"action_id": action.action_id, "status": to.value},
+                run_id=action.run_id, payload=payload,
             )
 
     def _hasher(self) -> PayloadHasher:
@@ -1146,6 +1347,8 @@ class TaskManager:
                     raise PresenceRequired(
                         "前景 action 需要有效 Presence；請待 Presence 恢復後再執行", retryable=True
                     )
+            if status in (ActionStatus.INTENDED, ActionStatus.APPROVED):
+                self._check_single_executing(s, action)
             if self._action_guard is not None:
                 blocked = self._action_guard(s)
                 if blocked:  # 拋出使交易回滾：核准不被消耗、不轉 EXECUTING
@@ -1218,6 +1421,28 @@ class TaskManager:
         if failure is not None:
             raise failure
         return outcome
+
+    @staticmethod
+    def _check_single_executing(s: Session, action: ActionIntentRow) -> None:
+        """TC-3（首版只有 serial）：同一 Run 另有 EXECUTING，或另有非 internal_read 的 UNKNOWN，一律擋。
+
+        呼叫端已鎖定 Run 列，同 Run 內不會競態；EXECUTING 另有 DB 部分唯一索引兜底，UNKNOWN 只在這裡擋。
+        """
+        other = s.execute(
+            select(ActionIntentRow.action_id, ActionIntentRow.status).where(
+                ActionIntentRow.run_id == action.run_id,
+                ActionIntentRow.action_id != action.action_id,
+                (ActionIntentRow.status == ActionStatus.EXECUTING.value)
+                | (
+                    (ActionIntentRow.status == ActionStatus.UNKNOWN.value)
+                    & (ActionIntentRow.side_effect_class != "internal_read")
+                ),
+            ).order_by(ActionIntentRow.created_at).limit(1)
+        ).first()
+        if other is not None:
+            raise ActionBlocked(
+                f"同一 Run 已有 {other.status} 的 action（{other.action_id}），不可再進入執行（TC-3）"
+            )
 
     def _recheck_before_call(self, action_id: str, worker_epoch: int) -> TaskError | None:
         """階段 1 提交後、executor 呼叫前的重檢（新短交易）：再呼叫一次 presence_check 與 action_guard。
@@ -1428,6 +1653,11 @@ class TaskManager:
 
 
 # (來源狀態或 None=任意, 目標狀態) -> 事件類型；只列契約 §1.3 已註冊者
+# 舊版 Host 補記的 status 詞彙（executed／failed／unknown）；只套用於回合 Task 的終結事件
+_LEGACY_ACTION_STATUS: dict[ActionStatus, str] = {
+    ActionStatus.SUCCEEDED: "executed", ActionStatus.FAILED: "failed", ActionStatus.UNKNOWN: "unknown",
+}
+
 _TASK_EVENT: dict[tuple[RunStatus | None, RunStatus], str] = {
     (None, RunStatus.SUCCEEDED): "task.completed",
     (None, RunStatus.FAILED): "task.failed",

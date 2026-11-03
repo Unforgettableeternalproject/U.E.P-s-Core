@@ -6,12 +6,18 @@ from __future__ import annotations
 
 import ast
 import threading
+import time
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
-from uep.decision import DecisionHub, DecisionPointRegistry, DecisionPointSpec, DecisionRequest
+from uep.decision import (
+    DecisionHub,
+    DecisionPointRegistry,
+    DecisionPointSpec,
+    DecisionRequest,
+)
 from uep.decision.turn_reply import (
     KIND_TURN_REPLY,
     TurnReplyEngine,
@@ -22,7 +28,12 @@ from uep.decision.turn_reply import (
 from uep.turn.decision_config import DecisionConfig
 from uep.turn.models import Proposal, ReplyMode, SessionContext, TurnCandidate
 from uep.turn.orchestrator import ShadowRecord, TurnOrchestrator
-from uep.turn.proposer import ProposerGuard, RespondProposer, fallback_proposal, validate_proposal
+from uep.turn.proposer import (
+    ProposerGuard,
+    RespondProposer,
+    fallback_proposal,
+    validate_proposal,
+)
 
 CTX = SessionContext(conversation_id="c1", segment_id="s1", audience_scope="aud", session_ref="sess")
 
@@ -287,3 +298,119 @@ def test_turn_package_only_uses_hub_public_modules():
     for path in sorted((UEP_ROOT / "turn").glob("*.py")):
         bad = {i for i in _uep_imports(path) if i.startswith("uep.decision")} - allowed
         assert not bad, f"{path.name}: {sorted(bad)}"
+
+
+# ---- 搬移後仍須保持的既有行為（缺口測試）----
+
+def _ok(_c):
+    return Proposal(reply_mode=ReplyMode.RESPOND, reason_code="main", proposer_id="m")
+
+
+def test_propose_after_close_falls_back_with_proposer_error():
+    orch = _orch(_P(_ok))
+    orch.close()
+    result = orch._propose(_cand(addressed=True, count=3))
+    assert (result.reason_code, result.reply_mode) == ("proposer_error", ReplyMode.RESPOND)
+    assert orch.metrics["proposer.error"] == 1 and sum(orch.metrics.values()) == 1
+
+
+@pytest.mark.parametrize("budget_ms", [0, -1])
+def test_no_budget_waits_for_slow_proposer(budget_ms):
+    orch = _orch(_P(_slow), budget_ms=budget_ms)
+    try:
+        assert orch._budget_s is None
+        result = orch._propose(_cand())
+    finally:
+        orch.close()
+    assert result.reason_code == "ctx" and result.proposer_id == "t.p"  # _slow 等 0.5s 仍採用結果
+    assert not orch.metrics
+
+
+def test_no_budget_shadow_is_never_late():
+    orch = _orch(_P(_ok), budget_ms=0, shadows=(_P(_slow, "sh.slow"),))
+    try:
+        orch._propose(_cand())
+        assert orch.wait_shadow(3)
+    finally:
+        orch.close()
+    [rec] = list(orch.shadow_log)
+    assert rec.status == "ok" and orch.metrics["shadow.late"] == 0
+
+
+def test_shadow_still_running_skips_next_call():
+    release = threading.Event()
+
+    def _stuck(c):
+        release.wait(3)
+        return _ok(c)
+
+    orch = _orch(_P(_ok), shadows=(_P(_stuck, "sh.stuck"),))
+    try:
+        orch._propose(_cand("a"))
+        orch._propose(_cand("b"))
+        assert orch.metrics["shadow.skipped_busy"] == 1
+        assert not orch.wait_shadow(0.05)
+    finally:
+        release.set()
+        assert orch.wait_shadow(3)
+        orch.close()
+    assert [r.candidate_id for r in orch.shadow_log] == ["a"]
+
+
+def test_shadow_late_status():
+    def _a_bit_slow(c):
+        threading.Event().wait(0.15)
+        return _ok(c)
+
+    orch = _orch(_P(_ok), budget_ms=30, shadows=(_P(_a_bit_slow, "sh.late"),))
+    try:
+        orch._propose(_cand())
+        assert orch.wait_shadow(3)
+    finally:
+        orch.close()
+    [rec] = list(orch.shadow_log)
+    assert (rec.status, rec.shadow_mode, rec.agree) == ("late", "respond", True)
+    assert rec.elapsed_ms >= 30 and orch.metrics["shadow.late"] == 1 and orch.metrics["shadow.agree"] == 1
+
+
+def test_on_shadow_exception_does_not_affect_other_shadows(caplog):
+    calls: list[str] = []
+
+    def _bad_callback(record):
+        calls.append(record.shadow_id)
+        raise RuntimeError("callback boom")
+
+    shadows = (_P(_ok, "sh.one"), _P(_ok, "sh.two"))
+    orch = _orch(_P(_ok), shadows=shadows, on_shadow=_bad_callback)
+    try:
+        with caplog.at_level("ERROR", logger="uep.decision.turn_reply"):
+            primary = orch._propose(_cand())
+            assert orch.wait_shadow(3)
+            # wait_shadow 以 future 完成為準，done callback（含 log）可能稍晚才跑完：輪詢等候
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and sum("on_shadow" in r.getMessage() for r in caplog.records) < 2:
+                time.sleep(0.01)
+    finally:
+        orch.close()
+    assert primary.reason_code == "main"
+    assert len(calls) == 2  # 第一個回呼丟例外後，第二個 shadow 的回呼仍被呼叫
+    assert len(orch.shadow_log) == 2 and orch.metrics["shadow.agree"] == 2
+    assert any("on_shadow" in r.getMessage() for r in caplog.records)
+
+
+def test_wait_shadow_times_out_then_completes():
+    release = threading.Event()
+
+    def _stuck(c):
+        release.wait(3)
+        return _ok(c)
+
+    orch = _orch(_P(_ok), shadows=(_P(_stuck, "sh.stuck"),))
+    try:
+        orch._propose(_cand())
+        assert orch.wait_shadow(0.05) is False
+        release.set()
+        assert orch.wait_shadow(3) is True
+    finally:
+        release.set()
+        orch.close()

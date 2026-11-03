@@ -16,6 +16,7 @@ import re
 import threading
 from collections import Counter
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any, Protocol
 
 from uep.context.snapshot import MemoryStatus, scope_admits
@@ -37,6 +38,7 @@ from uep.memory.protocol import (
 )
 from uep.memory.sink import MEMORY_ACTOR, MEMORY_SOURCE
 from uep.stream.contracts import memory_tools as _contract
+from uep.tools.catalog.memory import memory_registry
 
 logger = logging.getLogger("uep.memory.access")
 
@@ -48,9 +50,9 @@ _PRIVATE_SCOPE = re.compile(r"scope_private_([A-Za-z0-9]+)")
 
 # D79（艾斯維爾 2026-10-30 裁決）：ES 內建記憶工具由 Host 白名單放行。recall 類為 internal_read、remember 為
 # reversible_local；執行後由轉接層事後補記 action.* 事件（payload 不放原文）。Part S S3 之後改走 ActionIntent。
-TOOL_CLASSES: Mapping[str, str] = {
-    "deep_recall": "internal_read", "force_remember": "reversible_local", "member_recall": "internal_read",
-}
+# 白名單與 schema 的單一來源是工具註冊表（uep.tools.catalog.memory，Agent 架構提案切片 A），這裡只衍生。
+_MEMORY_TOOLS = memory_registry()
+TOOL_CLASSES: Mapping[str, str] = MappingProxyType(_MEMORY_TOOLS.tool_classes())
 # member_recall 的 schema 與成員標籤常數取自共用契約（uep.stream.contracts.memory_tools，N5 去重）；Access Layer 為權威並再匯出。
 # 真 echo_memory 的工具宣告沒有 member_recall，所以由 Access Layer 自己提供 schema 並直接實作（不走通用 tool backend）。
 MEMBER_RECALL = _contract.MEMBER_RECALL
@@ -453,16 +455,16 @@ class MemoryAccessLayer:
 
     def tool_definitions(self) -> list[dict[str, Any]]:
         """白名單內的工具宣告：後端提供的 deep_recall／force_remember，加上 Access Layer 自己的 member_recall
-        （需要成員資格 Port 才曝光；執行時仍逐次 fail-closed）。"""
-        defs: list[dict[str, Any]] = []
+        （需要成員資格 Port 才曝光；執行時仍逐次 fail-closed）。後端只決定「哪些工具可用」，schema 一律由註冊表衍生。"""
+        names: list[str] = []
         if self._tool_backend is not None:
-            defs = [
-                d for d in self._tool_backend.definitions()
-                if _tool_name(d) in TOOL_CLASSES and _tool_name(d) != MEMBER_RECALL
+            names = [
+                n for n in (_tool_name(d) for d in self._tool_backend.definitions())
+                if n in TOOL_CLASSES and n != MEMBER_RECALL
             ]
         if self._membership is not None:
-            defs.append({"type": "function", "function": dict(MEMBER_RECALL_SCHEMA)})
-        return defs
+            names.append(MEMBER_RECALL)
+        return _MEMORY_TOOLS.llm_definitions(names)
 
     def execute_tool(
         self, name: str, args: Mapping[str, Any], *, actor_id: str | None, audience: str,

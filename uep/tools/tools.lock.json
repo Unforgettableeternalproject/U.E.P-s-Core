@@ -1,0 +1,14 @@
+{
+  "deep_recall": {
+    "schema_hash": "6d53da405e34d3fba27b7e38e0ebec9b4e988374d9d7961e7d40dcd9bad489da",
+    "tool_version": 1
+  },
+  "force_remember": {
+    "schema_hash": "17bb5e0c3e39180560f459a53fc62e0ce1da649c6759c7cbd7e511dd1016ba49",
+    "tool_version": 1
+  },
+  "member_recall": {
+    "schema_hash": "6b65a7b86e688f0834c856bcdd725998e38dd1578d880c4002b6040396da6359",
+    "tool_version": 1
+  }
+}

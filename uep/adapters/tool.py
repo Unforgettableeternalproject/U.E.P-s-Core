@@ -14,6 +14,35 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 SideEffectClass = Literal["internal_read", "reversible_local", "external_effect", "high_impact"]
 Idempotency = Literal["native", "via_action_id", "none"]
+Origin = Literal["builtin", "mcp_static", "platform_approved", "discovered", "platform_declared"]
+Targeting = Literal["core_local", "platform_remote"]
+ApprovalLevel = Literal["none", "per_action", "standing"]  # standing 首版不實作（D65）
+InterruptKind = Literal["interruptible", "checkpoint_only", "non_interruptible"]
+Concurrency = Literal["parallel_safe", "parallel_one_shot", "serial"]
+LoadCost = Literal["none", "light", "heavy"]
+PresenceMode = Literal["any", "bound"]
+
+# 可進 LLM 可見集合的來源；discovered／platform_declared 是候選，永不可見（RA-3）。
+VISIBLE_ORIGINS: frozenset[str] = frozenset({"builtin", "mcp_static", "platform_approved"})
+
+# 副作用嚴重度排序（RA-2、RA-6、RA-14 比較用）。
+SIDE_EFFECT_ORDER: tuple[str, ...] = ("internal_read", "reversible_local", "external_effect", "high_impact")
+APPROVAL_ORDER: tuple[str, ...] = ("none", "per_action", "standing")
+
+# 能力標籤閉集（§5.4）：標籤 -> 該標籤允許的副作用上限。新增標籤＝改程式碼＋測試＋審核；無萬用字元。
+CAPABILITY_CEILING: Mapping[str, SideEffectClass] = {
+    "memory.read": "internal_read",
+    "memory.write": "reversible_local",
+    "lore.read": "internal_read",
+    "lore.write": "reversible_local",
+    "chatroom.read": "internal_read",
+    "chatroom.post": "external_effect",
+    "desktop.file_read": "internal_read",
+    "desktop.file_write": "reversible_local",
+    "web.fetch": "internal_read",
+    "presentation.propose": "reversible_local",
+    "decision.consult": "internal_read",
+}
 
 
 @dataclass(frozen=True)
@@ -29,9 +58,86 @@ class ToolSpec:
     idempotency: Idempotency
     presence_bound: bool
     tool_version: int
-    origin: str = "builtin"
+    origin: Origin = "builtin"
     provider: str = "core"
-    targeting: str = "core_local"
+    targeting: Targeting = "core_local"
+    approval_level: ApprovalLevel = "none"
+    interruptible: InterruptKind = "non_interruptible"  # fail-closed：預設最嚴
+    capability: str = ""  # 能力標籤（§5.4）；由 ToolRegistry 載入時要求必填且屬閉集
+
+
+@dataclass(frozen=True)
+class ToolDescriptor:
+    """LLM 面：不進 resolver、不進 TaskManager。改 ``description``／``usage_hint`` 不需升 ``tool_version``。"""
+
+    description: str
+    input_schema: Mapping[str, Any]  # JSON Schema 子集；即送給 LLM 的 ``parameters``
+    usage_hint: str = ""
+    injected_params: tuple[str, ...] = ()  # Gateway 注入、LLM 看不到的欄位（PD-12）
+
+
+@dataclass(frozen=True)
+class ToolVariant:
+    """平台變體（§5.6）：只能覆寫 description／收窄後的 input_schema／executor 路由／transport_timeout。
+    分類欄不在這裡；宣告任何其他欄位的變體不可能被表達（RA-13 由型別結構保證，另驗 schema 只能收窄）。"""
+
+    description: str | None = None
+    input_schema: Mapping[str, Any] | None = None
+    provider_ref: str | None = None
+    transport_timeout: float | None = None
+
+
+@dataclass(frozen=True)
+class ToolScope:
+    """可見性維度（§5.6）：空 ``platforms`` 即 global。本片只宣告並驗證，投影在切片 B。"""
+
+    platforms: frozenset[str] = frozenset()
+    presence: PresenceMode = "any"
+    requires_context: frozenset[str] = frozenset()
+    data_scope: str = "private"
+    audience_min: str = "private"
+    variants: Mapping[str, ToolVariant] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CompositeStep:
+    """composite 的一步：引用既有工具（§5.7.4）。"""
+
+    tool: str
+    params: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CompositeSpec:
+    """線性多步驟宣告；不是引擎。"""
+
+    steps: tuple[CompositeStep, ...]
+
+
+@dataclass(frozen=True)
+class ToolEntry:
+    """註冊表唯一單位（§5.1）。所有並行／依賴欄位預設 fail-closed。"""
+
+    name: str
+    spec: ToolSpec
+    descriptor: ToolDescriptor
+    scope: ToolScope = field(default_factory=ToolScope)
+    result_scope: str = "private"
+    concurrency: Concurrency = "serial"
+    conflict_keys: tuple[str, ...] = ()
+    timeout_s: float | None = None
+    cancellable: bool = False
+    output_schema: Mapping[str, Any] | None = None
+    composite: CompositeSpec | None = None
+    requires: tuple[str, ...] = ()
+    load_cost: LoadCost = "none"
+    warm_required: bool = False
+    degradable: bool = False
+    schema_hash: str = ""  # 由 ToolRegistry 重算並與 lockfile 比對，不信任手填
+    provider_ref: str | None = None
+    transport_timeout: float | None = None
+    disabled: bool = False
+    venue_policy: Mapping[str, Any] = field(default_factory=lambda: {"mode": "origin_venue"})
 
 
 @runtime_checkable

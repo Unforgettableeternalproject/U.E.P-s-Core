@@ -6,7 +6,7 @@ Runtime 是可替換的推理／工具迴圈，只能提出 RuntimeEvent；run�
 """
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
@@ -109,3 +109,47 @@ class Runtime(Protocol):
         ``status``、``degraded``、``partial``；不含 excluded_summary。
         """
         ...
+
+
+def check_tools_match_capability(
+    request: RuntimeRequest, tools: Sequence[Mapping[str, Any]], *, seq: int = 0, builtin_tools: Sequence[Any] = (),
+) -> RuntimeEvent | None:
+    """D60 啟動斷言（Agent 架構提案 §6.2、TC-1）：attempt 開始前，Runtime 把**將送給 provider 的 tools**
+    交進來比對。與 ``request.capability_set`` 的工具名稱集合完全相等、全為 ``type=function`` 且不重複，並且
+    沒有任何 hosted／built-in 工具（``builtin_tools`` 必須為空），才回傳 None（可以啟動）。
+    否則回傳 ``error`` 事件 ``CAPABILITY_MISSING``（``retryable=False``），Runtime 須 yield 它並拒絕啟動，
+    不得送出請求。多給（模型能呼叫沒被投影的工具）和少給（投影了卻沒讓模型看見）都算。
+
+    ``detail`` 只含工具名稱差集（名稱不是使用者內容）。這是可重用的檢查函式；tools 本身應由
+    ``uep.tools.render.render_tools(request.capability_set)`` 產生，這裡不依賴 uep.tools，避免協定層反向依賴。"""
+    expected = _capability_names(request.capability_set)
+    sent: list[str] = []
+    problems: list[str] = []
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, Mapping) else None
+        name = function.get("name") if isinstance(function, Mapping) else None
+        if not isinstance(tool, Mapping) or tool.get("type") != "function" or not isinstance(name, str) or not name:
+            problems.append("非 function 型別的工具")
+            continue
+        sent.append(name)
+    if builtin_tools:
+        problems.append("hosted／built-in 工具必須為空")
+    if len(sent) != len(set(sent)):
+        problems.append("tools 含重複名稱")
+    missing, extra = sorted(expected - set(sent)), sorted(set(sent) - expected)
+    if missing:
+        problems.append(f"少給：{missing}")
+    if extra:
+        problems.append(f"多給：{extra}")
+    if not problems:
+        return None
+    return RuntimeEvent(
+        attempt_id=request.attempt_id, seq=seq, kind="error",
+        error={"code": "CAPABILITY_MISSING", "retryable": False, "detail": "；".join(problems)},
+    )
+
+
+def _capability_names(capability_set: Mapping[str, Any]) -> frozenset[str]:
+    tools = capability_set.get("tools", ()) if isinstance(capability_set, Mapping) else ()
+    names = (item.get("tool") if isinstance(item, Mapping) else item for item in tools)
+    return frozenset(n for n in names if isinstance(n, str) and n)

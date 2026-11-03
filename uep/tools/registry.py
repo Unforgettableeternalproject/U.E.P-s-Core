@@ -4,7 +4,7 @@
 - ``ToolRegistry``：``ToolEntry`` 單一來源（Agent 架構提案 §5，切片 A）。建構即驗證 RA-1～16 並凍結，同樣滿足
   ``EnumerableToolSpecResolver``，LLM 面宣告（tools JSON）與白名單分類都由它衍生。
 
-切片 A 只「宣告並驗證」：排程（concurrency）、readiness 訂閱、投影（scope 篩選）都還不啟用，分別留給切片 B／D／F。
+切片 A 只「宣告並驗證」；切片 B 啟用投影（``project``，§6.1）與 readiness 事件（§5.8）。排程（concurrency）留給切片 D。
 TaskManager 只依賴 ``uep.adapters.tool`` 的協定，不 import 本模組。
 """
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -39,6 +40,10 @@ from uep.adapters.tool import (
 )
 from uep.events.envelope import scope_rank
 from uep.tasks.manager import PolicyViolation, params_hash
+from uep.tools.projection import ProjectionContext, audience_rank
+from uep.tools.schema import freeze as _freeze
+from uep.tools.schema import lint_subset, strict_schema
+from uep.tools.schema import thaw as _thaw
 
 logger = logging.getLogger("uep.tools.registry")
 
@@ -80,7 +85,10 @@ _NAME_RE = re.compile(r"[a-z][a-z0-9_.]{2,63}")
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _SCALAR_TYPES = frozenset({"string", "integer", "number", "boolean"})
 
-Readiness = Literal["ready", "unavailable"]
+Readiness = Literal["ready", "warming", "unavailable"]
+MODULE_EVENT_STATES: Mapping[str, Readiness] = MappingProxyType({
+    "module.ready": "ready", "module.warming": "warming", "module.unavailable": "unavailable",
+})
 
 
 class ToolRegistryError(ValueError):
@@ -89,24 +97,6 @@ class ToolRegistryError(ValueError):
     def __init__(self, rule: str, message: str) -> None:
         super().__init__(f"[{rule}] {message}")
         self.rule = rule
-
-
-def _freeze(node: Any) -> Any:
-    """遞迴唯讀化：映射 -> MappingProxyType，序列 -> tuple（呼叫端改不到註冊表內部）。"""
-    if isinstance(node, Mapping):
-        return MappingProxyType({k: _freeze(v) for k, v in node.items()})
-    if isinstance(node, (list, tuple)):
-        return tuple(_freeze(v) for v in node)
-    return node
-
-
-def _thaw(node: Any) -> Any:
-    """``_freeze`` 的反向：還原成可 JSON 序列化的 dict／list（新物件）。"""
-    if isinstance(node, Mapping):
-        return {k: _thaw(v) for k, v in node.items()}
-    if isinstance(node, (list, tuple)):
-        return [_thaw(v) for v in node]
-    return node
 
 
 _SCOPE_LEVELS = frozenset({"private", "group", "public"})
@@ -130,26 +120,18 @@ def _literal_values(literal: Any) -> frozenset[str]:
 
 
 def _lint_schema(schema: Any, where: str, rule: str) -> None:
-    """schema linter（切片 A 的最小集）：物件型、每個屬性有明確 type、不含 ``$ref``／``$defs``、
-    ``required`` 皆為已宣告屬性。``additionalProperties:false`` 嚴格化隨 Gateway 驗證在切片 B 啟用
-    （現行記憶工具 schema 尚未宣告，且 LLM 面位元組須維持不變）。"""
+    """schema linter（RA-7、RA-16）：物件型、每個屬性有明確 type、只用 JSON Schema 子集（``$ref``／``oneOf``／
+    ``anyOf``／``allOf`` 等註冊時就失敗，見 ``uep.tools.schema``）、``required`` 皆為已宣告屬性。
+    ``additionalProperties`` 只能寫 false；沒寫的由 ``strict_schema`` 在有效 schema 補上（舊路徑位元組不變）。"""
     if not isinstance(schema, Mapping) or schema.get("type") != "object":
         raise ToolRegistryError(rule, f"{where}: schema 必須是 type=object 的映射")
     props = schema.get("properties", {})
     if not isinstance(props, Mapping):
         raise ToolRegistryError(rule, f"{where}: properties 必須是映射")
 
-    def walk(node: Any) -> None:
-        if isinstance(node, Mapping):
-            if "$ref" in node or "$defs" in node:
-                raise ToolRegistryError(rule, f"{where}: 不允許 $ref／$defs")
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, (list, tuple)):
-            for value in node:
-                walk(value)
-
-    walk(schema)
+    problem = lint_subset(schema)
+    if problem:
+        raise ToolRegistryError(rule, f"{where}: {problem}")
     for prop, definition in props.items():
         if not isinstance(definition, Mapping) or not isinstance(definition.get("type"), str):
             raise ToolRegistryError(rule, f"{where}: 屬性 {prop!r} 缺少明確 type")
@@ -187,6 +169,11 @@ class ToolRegistry:
         self._specs: Mapping[str, ToolSpec] = MappingProxyType({})
         self._hashes: Mapping[str, str] = MappingProxyType({})
         self._known_modules: frozenset[str] = frozenset()
+        # module coordinator 事件維護的就緒狀態（§5.8）：module_id -> (revision, state)。整份替換（copy-on-write），
+        # 讀取端不需要鎖；寫入端以鎖序列化。revision 是投影版本（capability_set.revision），每次有效事件加一。
+        self._module_state: Mapping[str, tuple[int, Readiness]] = MappingProxyType({})
+        self._projection_revision = 0
+        self._event_lock = threading.Lock()
 
     @classmethod
     def build(
@@ -266,7 +253,10 @@ class ToolRegistry:
         for field_name, (value, literal) in domains.items():
             if value not in _literal_values(literal):
                 raise ToolRegistryError("RA-1", f"{name}: {field_name}={value!r} 不在值域內")
-        for field_name, value in (("result_scope", entry.result_scope), ("scope.data_scope", entry.scope.data_scope)):
+        for field_name, value in (
+            ("result_scope", entry.result_scope), ("scope.data_scope", entry.scope.data_scope),
+            ("scope.audience_min", entry.scope.audience_min),
+        ):
             if not _valid_scope_ref(value):
                 raise ToolRegistryError("RA-1", f"{name}: {field_name}={value!r} 不是合法 ScopeRef")
         # RA-2
@@ -472,7 +462,113 @@ class ToolRegistry:
         }
 
     def readiness(self, tool: str) -> Readiness:
-        """本片的靜態推導：requires 皆屬已知模組才 ready，否則 unavailable（fail-closed，RA-15）。
-        事件訂閱與 warming 狀態在切片 F。"""
+        """§5.8：``AND over requires``。任一 requires 未知（module coordinator 不認得）或 ``unavailable`` ⇒
+        ``unavailable``（fail-closed，RA-15）；否則有 ``warming`` ⇒ ``warming``；否則 ``ready``。
+        已知模組在收到第一個事件前視為 ready（維持切片 A 行為，S-A 測試鎖定）；因此啟動時 module coordinator 必須先發
+        各模組的當前狀態事件，``warm_required`` 工具才不會在預熱前被投出。純記憶體查詢，不做 I/O。"""
         entry = self.entry(tool)
-        return "ready" if set(entry.requires) <= self._known_modules else "unavailable"
+        states = self._module_state
+        result: Readiness = "ready"
+        for module in entry.requires:
+            if module not in self._known_modules:
+                return "unavailable"
+            recorded = states.get(module)
+            state: Readiness = recorded[1] if recorded else "ready"
+            if state == "unavailable":
+                return "unavailable"
+            if state == "warming":
+                result = "warming"
+        return result
+
+    def apply_module_event(self, event_type: str, payload: Mapping[str, Any]) -> bool:
+        """接 module coordinator 事件（``module.ready``／``module.warming``／``module.unavailable``，
+        payload ``{module_id, revision, reason_code?}``，§5.8）。以**最新 revision** 為準：revision 不大於已記錄者
+        （重送、亂序）一律忽略；未知事件、未知模組、格式不符也忽略（維持原狀態，fail-closed）並記警告。
+        回傳是否採用。"""
+        state = MODULE_EVENT_STATES.get(event_type)
+        module = payload.get("module_id") if isinstance(payload, Mapping) else None
+        revision = payload.get("revision") if isinstance(payload, Mapping) else None
+        if state is None or not isinstance(module, str) or isinstance(revision, bool) or not isinstance(revision, int):
+            logger.warning("忽略格式不符的模組事件：%s", event_type if state is None else "payload")
+            return False
+        if module not in self._known_modules:
+            logger.debug("忽略未知模組的事件：%s", module)
+            return False
+        with self._event_lock:
+            recorded = self._module_state.get(module)
+            if recorded is not None and revision <= recorded[0]:
+                return False
+            self._module_state = MappingProxyType({**self._module_state, module: (revision, state)})
+            self._projection_revision += 1
+        return True
+
+    # --- 投影（§6.1） ---
+
+    def effective_input_schema(self, tool: str, variant: str | None = None) -> dict[str, Any]:
+        """LLM 面與 Gateway 驗證共用的有效 schema（深複本）：變體 schema（若有）或基底，且每個物件節點都補上
+        ``additionalProperties:false``（RA-7）。與 ``llm_definition`` 的舊路徑不同——那條路徑位元組不變。"""
+        entry = self.entry(tool)
+        schema = entry.descriptor.input_schema
+        if variant is not None:
+            override = entry.scope.variants.get(variant)
+            if override is None:
+                raise unknown_tool(f"{tool}@{variant}")
+            if override.input_schema is not None:
+                schema = override.input_schema
+        return strict_schema(schema)
+
+    def project(
+        self,
+        capability_tags: Iterable[str],
+        ctx: ProjectionContext,
+        *,
+        ceiling: Iterable[str] | None = None,
+    ) -> Mapping[str, Any]:
+        """依已收窄的能力標籤與場域脈絡產生 ``capability_set``（§6.1，TG-12 形狀）。
+
+        篩選（全部成立才投出）：``entry.capability ∈ tags``、可見 origin 且未停用、scope（平台／``requires_context``／
+        Presence／audience，§5.6）、readiness 為 ``ready``。``warming`` 且通過其餘篩選者進 ``pending``（只給 AgentLoop，
+        不渲染給模型）；``unavailable`` 不投出也不報。同平台有變體時帶 ``variant``，描述與 schema 取變體。
+
+        AL-3 能力單調：``ceiling``（Run 開始時凍結的標籤集合）給了就以 ``tags ∩ ceiling`` 為準，所以後續投影永遠不會
+        比凍結範圍更寬；標籤是閉集的精確比對（無萬用字元），閉集外的標籤直接丟棄。
+        回傳唯讀結構：``{tools, pending, revision, tags}``，``revision`` 是 readiness 事件版本（審計與 resume 比對用）。"""
+        if isinstance(capability_tags, str) or (ceiling is not None and isinstance(ceiling, str)):
+            raise TypeError("capability_tags／ceiling 必須是標籤集合，不是單一字串")
+        tags = frozenset(capability_tags) & CAPABILITY_CEILING.keys()
+        if ceiling is not None:
+            tags &= frozenset(ceiling)
+        audience = audience_rank(ctx.audience)
+        tools: list[dict[str, Any]] = []
+        pending: list[dict[str, Any]] = []
+        for entry in self.visible_entries():
+            if entry.spec.capability not in tags:
+                continue
+            scope = entry.scope
+            if scope.platforms and ctx.platform not in scope.platforms:
+                continue
+            if not scope.requires_context <= ctx.available_context:
+                continue
+            if scope.presence == "bound" and not ctx.presence_active():
+                continue
+            if audience < audience_rank(scope.audience_min):
+                continue
+            state = self.readiness(entry.name)
+            if state == "warming":
+                pending.append({"tool": entry.name, "reason": "warming"})
+                continue
+            if state != "ready":
+                continue
+            variant = ctx.platform if ctx.platform in scope.variants else None
+            override = scope.variants[variant] if variant is not None else None
+            tools.append({
+                "tool": entry.name,
+                "version": entry.spec.tool_version,
+                "description": override.description if override and override.description is not None
+                else entry.descriptor.description,
+                "input_schema": self.effective_input_schema(entry.name, variant),
+                "variant": variant,
+            })
+        return _freeze({
+            "tools": tools, "pending": pending, "revision": self._projection_revision, "tags": sorted(tags),
+        })

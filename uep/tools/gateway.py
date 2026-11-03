@@ -5,31 +5,42 @@
 2. ``filter_tool_result``：TG-9 過濾掛點，首版全放行（逐項補預設 ``scope``）。
 3. ``result_view``／``outcome_view``：把 ``ActionOutcome``／拒絕原因組成 D61 的 ``submit_tool_result`` 內容。
 
-結果內容只含項目引用與狀態短碼，**不放例外文字或參數內容**。參數 schema 驗證屬切片 1（S2）：目前
-``ToolSpec`` 沒有 schema 欄位，這裡只做 capability 檢查。
+結果內容只含項目引用與狀態短碼，**不放例外文字或參數內容**。
+
+切片 B（§6.3）：建構時給了 ``registry`` 就在 capability 檢查之後做參數驗證（JSON Schema 子集、``injected_params``），
+失敗拋帶 ``fields``（違規欄位的 JSON Pointer，**不含值**）的 ``GatewayRejected``，由 ``rejection_view`` 組成回餵。
+沒給 ``registry`` 時維持切片 A 的行為（只做 capability 檢查），既有呼叫端不受影響。
 """
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Literal
 
-from uep.tasks.manager import ActionOutcome
+from uep.tasks.manager import ActionOutcome, PolicyViolation
 from uep.tasks.states import ActionStatus
+from uep.tools.registry import ToolRegistry
+from uep.tools.schema import validate_args
 
 ResultStatus = Literal["ok", "failed", "rejected", "blocked", "unknown"]
 DEFAULT_SCOPE = "private"
 
-# 拒絕原因碼（只進 log／稽核，不交給 Runtime）
+# 拒絕原因碼（§6.3-5 的固定短碼詞彙；rejection_view 會把它交給 Runtime）
 CAPABILITY_MISSING = "capability_missing"
 ARGS_NOT_MAPPING = "args_not_mapping"
+INVALID_TOOL_ARGS = "invalid_tool_args"
+PARAM_NOT_ALLOWED = "param_not_allowed"
+TOOL_UNKNOWN = "tool_unknown"
+INJECTED_PARAM_MISSING = "injected_param_missing"  # Core 組裝錯誤：宣告了 injected_params 卻沒提供值
 
 
 class GatewayRejected(Exception):
-    """Gateway 驗證不通過；``code`` 是機器可判讀的短碼，訊息不含參數內容。"""
+    """Gateway 驗證不通過；``code`` 是機器可判讀的短碼（即 ``reason_code``），訊息不含參數內容。
+    ``fields`` 是違規欄位的 JSON Pointer 清單，只含路徑、不含值。"""
 
-    def __init__(self, code: str, message: str = "") -> None:
+    def __init__(self, code: str, message: str = "", *, fields: Sequence[str] = ()) -> None:
         super().__init__(message or code)
         self.code = code
+        self.fields: tuple[str, ...] = tuple(fields)
 
 
 def visible_tools(capability_set: Mapping[str, Any]) -> frozenset[str]:
@@ -43,26 +54,81 @@ def visible_tools(capability_set: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(names)
 
 
+def _variant_of(capability_set: Mapping[str, Any], tool: str) -> str | None:
+    """以 ``capability_set`` 查回變體（§5.6-3）：不信任模型自帶。"""
+    for item in capability_set.get("tools", ()):
+        if isinstance(item, Mapping) and item.get("tool") == tool:
+            variant = item.get("variant")
+            return variant if isinstance(variant, str) else None
+    return None
+
+
+def _pointer_token(key: Any) -> str:
+    return str(key).replace("~", "~0").replace("/", "~1")[:80]
+
+
 def filter_tool_result(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """TG-9 過濾掛點（D56：首版全放行）。resume 路徑日後共用同一個函式；逐項 ``scope`` 缺則補預設。"""
     return [{"scope": DEFAULT_SCOPE, **item} for item in items]
 
 
 class ToolGateway:
-    def check_intent(self, tool: str, args: Any, capability_set: Mapping[str, Any]) -> None:
-        """通過回傳 None；不通過拋 ``GatewayRejected``（此時不得建 action）。"""
+    def __init__(self, registry: ToolRegistry | None = None) -> None:
+        self._registry = registry
+
+    def check_intent(
+        self, tool: str, args: Any, capability_set: Mapping[str, Any], *, injected: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """通過回傳**驗證並注入後**的參數（新 dict）；不通過拋 ``GatewayRejected``（此時不得建 action）。
+
+        順序（SA-3）：capability -> 參數為物件 -> LLM 不得提供 ``injected_params``（``param_not_allowed``）
+        -> 以有效 schema 驗證（``invalid_tool_args``）-> 注入 Core 提供的值。注入發生在 ``params_hash`` 計算之前，
+        所以呼叫端必須用回傳值建 action（核准所見＝實際執行）。``injected`` 是 Core 持有的值（``venue`` 等）。"""
         if tool not in visible_tools(capability_set):
             raise GatewayRejected(CAPABILITY_MISSING, f"工具不在可見集合：{tool}")
         if not isinstance(args, Mapping):
             raise GatewayRejected(ARGS_NOT_MAPPING, "參數必須是物件")
+        if self._registry is None:
+            return dict(args)
+        try:
+            entry = self._registry.entry(tool)
+            schema = self._registry.effective_input_schema(tool, _variant_of(capability_set, tool))
+        except PolicyViolation:
+            raise GatewayRejected(TOOL_UNKNOWN, f"工具未註冊：{tool}") from None
+        injected_names = entry.descriptor.injected_params
+        forbidden = [f"/{_pointer_token(k)}" for k in args if k in injected_names]
+        if forbidden:
+            raise GatewayRejected(PARAM_NOT_ALLOWED, "參數含 Core 注入欄位", fields=forbidden)
+        violations = validate_args(schema, args)
+        if violations:
+            raise GatewayRejected(INVALID_TOOL_ARGS, "參數不符合 schema", fields=violations)
+        values = dict(args)
+        provided = injected or {}
+        for name in injected_names:
+            if name not in provided:
+                raise GatewayRejected(INJECTED_PARAM_MISSING, f"缺少注入值：{name}")
+            values[name] = provided[name]
+        return values
+
+    def rejection_view(self, exc: GatewayRejected) -> dict[str, Any]:
+        """``check_intent`` 失敗的回餵（D61 只加不改）：``status=rejected`` 加選填 ``reason_code``／``fields``。
+        只有短碼與欄位路徑，沒有值、例外文字。"""
+        return self.result_view("rejected", reason_code=exc.code, fields=exc.fields)
 
     def result_view(
         self, status: ResultStatus, *, items: Sequence[Mapping[str, Any]] = (), degraded: bool = False,
+        reason_code: str | None = None, fields: Sequence[str] = (),
     ) -> dict[str, Any]:
-        """D61 內容：items／status／degraded／partial（首版 partial 恆 false，不含 excluded_summary）。"""
-        return {
+        """D61 內容：items／status／degraded／partial（首版 partial 恆 false，不含 excluded_summary）。
+        選填 ``reason_code``／``fields``（§6.3-5）只在提供時才出現，既有消費方看到的形狀不變。"""
+        view: dict[str, Any] = {
             "items": filter_tool_result(items), "status": status, "degraded": degraded, "partial": False,
         }
+        if reason_code is not None:
+            view["reason_code"] = reason_code
+        if fields:
+            view["fields"] = list(fields)
+        return view
 
     def outcome_view(self, outcome: ActionOutcome) -> dict[str, Any]:
         """依 receipt／action 終態組結果：SUCCEEDED -> ok、FAILED -> failed、其餘（UNKNOWN 等）-> unknown。

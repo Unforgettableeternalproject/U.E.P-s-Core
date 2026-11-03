@@ -16,8 +16,6 @@ from concurrent.futures import Future
 from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass, replace
 
-from ulid import ULID
-
 from uep.decision.contracts import (
     DecisionEngineInfo,
     DecisionPlan,
@@ -26,6 +24,7 @@ from uep.decision.contracts import (
     DecisionResult,
 )
 from uep.decision.registry import DecisionPointRegistry, DecisionPointSpec
+from uep.ids import new_id
 from uep.turn.models import Proposal, ReplyMode, TurnCandidate
 from uep.turn.proposer import (
     ProposerGuard,
@@ -74,7 +73,7 @@ def proposal_to_result(proposal: Proposal, request: DecisionRequest, *, fallback
     ``request_id`` 保持原樣作為關聯鍵。
     """
     return DecisionResult(
-        decision_id=f"dec_{ULID()}", request_id=request.request_id, kind=request.kind,
+        decision_id=new_id("dec"), request_id=request.request_id, kind=request.kind,
         outcome=proposal.reply_mode.value,
         plan=DecisionPlan(
             route=proposal.route,

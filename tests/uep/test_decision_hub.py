@@ -280,7 +280,7 @@ def _uep_imports(path: Path) -> set[str]:
 
 
 def test_decision_package_boundary():
-    """contracts／registry／hub／__init__ 是葉節點（只可 import uep.decision）；只有 turn_reply 可以 import uep.turn。"""
+    """contracts／registry／hub／__init__ 是葉節點（只可 import uep.decision）；只有 turn_reply 可以 import uep.turn 與 uep.ids。"""
     files = sorted(DECISION_DIR.glob("*.py"))
     assert {p.name for p in files} >= {"contracts.py", "registry.py", "hub.py", "turn_reply.py"}
     for path in files:
@@ -288,7 +288,7 @@ def test_decision_package_boundary():
         assert not any(i.startswith("<relative") for i in imports), f"{path.name}: 不用相對 import"
         outside = {i for i in imports if not (i == "uep.decision" or i.startswith("uep.decision."))}
         if path.name == "turn_reply.py":
-            allowed = {"uep.turn.models", "uep.turn.proposer"}
+            allowed = {"uep.turn.models", "uep.turn.proposer", "uep.ids"}
             assert outside <= allowed, f"{path.name}: {sorted(outside - allowed)}"
         else:
             assert not outside, f"{path.name}: 葉節點不得 import {sorted(outside)}"

@@ -1,0 +1,93 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "force_remember",
+      "description": "只有在使用者明確要求記住時才呼叫（例如「記住」「幫我記」「別忘了」這類明確指示）。一般對話內容系統每輪都會自動寫入記憶，不需要也不要為此呼叫。content 寫成一句完整的第三人稱事實。Only call when the user explicitly asks you to remember something; ordinary conversation is already stored automatically every turn.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "The information to store in long-term memory."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why this information is important enough to remember."
+          },
+          "salience": {
+            "type": "number",
+            "description": "Importance score between 0.0 and 1.0 (default 0.85). Higher means more important."
+          },
+          "content_origin": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent",
+              "tool",
+              "unknown"
+            ],
+            "description": "Optional. Where the stored content actually came from: 'user' (the user said it), 'agent' (your own statement or inference), 'tool' (a tool result), or 'unknown'. Omit if you are not sure; omitted is recorded as 'unknown', never assumed to be the user."
+          },
+          "origin_evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional. Evidence ids (ev_...) of the earlier statements this content comes from, if you know them."
+          }
+        },
+        "required": [
+          "content",
+          "reason"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "deep_recall",
+      "description": "Perform a deeper memory search beyond the auto-injected context. Use when standard context is insufficient or you need more specific memories.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The search query to find relevant memories."
+          },
+          "top_k": {
+            "type": "integer",
+            "description": "Number of memories to retrieve (default 10, maximum 20)."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "member_recall",
+      "description": "查詢同一個伺服器裡某位成員在共享記憶中可被看到的內容（例如使用者問「你認識某某嗎？他最近在玩什麼？」）。member 填成員的名稱；query 可選，填想了解的主題，留空則取最近的內容。只在使用者明確問到特定成員時呼叫；查不到只代表目前沒有可用的共享內容。Look up what is shared about one named member of this server; call only when the user asks about that member.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "member": {
+            "type": "string",
+            "description": "成員名稱（顯示名稱或暱稱）。"
+          },
+          "query": {
+            "type": "string",
+            "description": "想了解的主題，可留空。"
+          }
+        },
+        "required": [
+          "member"
+        ]
+      }
+    }
+  }
+]

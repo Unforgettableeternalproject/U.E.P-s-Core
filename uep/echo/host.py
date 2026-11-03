@@ -66,12 +66,13 @@ from uep.echo.worker import CoreWorker
 from uep.events.envelope import EventDraft, TrustedContext, scope_rank
 from uep.events.publisher import EventPublisher
 from uep.ids import new_id
-from uep.memory.access import MEMBER_RECALL, TOOL_CLASSES
+from uep.memory.access import TOOL_CLASSES
 from uep.memory.identity import IdentityDirectory
 from uep.memory.protocol import MemoryPort
 from uep.output.delivery import DeliveryEvidence
 from uep.output.delivery import DeliveryStatus as DS
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
+from uep.tools.catalog.memory import GUILD_ROSTER_CONTEXT, memory_registry
 from uep.turn.aggregator import (
     ModeAwareAggregator,
     PassThroughAggregator,
@@ -772,9 +773,12 @@ class EchoPipelineHost:
         except Exception:
             logger.exception("讀取記憶工具定義失敗")
             tools = []
+        # 場域條件取自註冊表的 scope.requires_context（member_recall 需要 guild 成員名單），不再硬編碼工具名
+        available = frozenset({GUILD_ROSTER_CONTEXT}) if self._session.guild_id is not None else frozenset()
+        registry = memory_registry()
         self.think.tools = [
             d for d in tools
-            if _tool_name(d) in TOOL_CLASSES and (_tool_name(d) != MEMBER_RECALL or self._session.guild_id is not None)
+            if _tool_name(d) in TOOL_CLASSES and registry.entry(_tool_name(d)).scope.requires_context <= available
         ]
 
     async def _switch_session(self, ctx: SessionContext) -> None:

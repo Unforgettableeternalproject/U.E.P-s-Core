@@ -368,7 +368,7 @@ class ToolEntry:           # 註冊表的唯一單位
 
 | origin | 例 | 撰寫與審核 | 載入 | executor | 備註 |
 |---|---|---|---|---|---|
-| `builtin` | 記憶工具（`deep_recall`…，TL0 九個）、`lore.*`、`chatroom.*`、未來 `presentation.*` | 程式碼內宣告（`uep/tools/catalog/*.py`），PR 審核 | 組裝時 `registry.register(entry)` | Core 內 executor（記憶走 `memory_wiring`／Access Layer；Lore／Chatroom 為原生 adapter，憑證只在 executor 側） | **子系統提供的工具＝builtin＋`provider=core`**；子系統（echo_memory）內的 `TOOL_DECLARATIONS` 降為實作細節，不是註冊來源 |
+| `builtin` | 記憶工具（`deep_recall`…，現行白名單 3 個）、`lore.*`、`chatroom.*`、未來 `presentation.*` | 程式碼內宣告（`uep/tools/catalog/*.py`），PR 審核 | 組裝時 `registry.register(entry)` | Core 內 executor（記憶走 `memory_wiring`／Access Layer；Lore／Chatroom 為原生 adapter，憑證只在 executor 側） | **子系統提供的工具＝builtin＋`provider=core`**；子系統（echo_memory）內的 `TOOL_DECLARATIONS` 降為實作細節，不是註冊來源 |
 | `mcp_static` | 經 MCP 傳輸的外部 server 的**已審核子集** | 設定檔列名單；Core 保存審核副本（description／input_schema 由人撰寫或審核後釘住） | 啟動時連線 `tools/list`，重算 canonical hash 與 `pinned_schema_hash` 比對 | MCP executor（憑證在 executor 側） | 動態發現的其餘工具進 `discovered`（不可見，D59）。T5（`echo-mcp`）永不註冊（C6） |
 | `platform_approved` | Desktop／Discord 平台宣告工具 | 平台只提供候選；Core 核准清單項即 `ToolEntry`（SYS 增補 §2.4，PD-3） | 核准清單（可熱載入，改 schema／分類須升版，PD-8） | 遠端 executor（兩鍵：權威／非權威，D91） | `provider != "core"` ⇒ `targeting=platform_remote` |
 | `discovered`／`platform_declared` | 候選目錄 | 待人工審核 | — | — | 永不進 `capability_set` |
@@ -395,10 +395,10 @@ registry = ToolRegistry.build(
 | RA-1 | `origin`、`side_effect_class`、`idempotency`、`approval_level`、`interruptible`、`targeting` 皆屬 Literal 值域（執行期用 `typing.get_args` 檢查，不信任型別標註） | 現況 D91 三欄為裸 `str` |
 | RA-2 | `external_effect`／`high_impact` ⇒ `approval_level≥per_action` | SYS 草案 §3.1 |
 | RA-3 | LLM 可見 ⇒ `origin ∈ VISIBLE_ORIGINS`；`discovered`／`platform_declared` 永不投影 | 遷入計畫 §3.5 風險(3) |
-| RA-4 | `executor` 名單雙向一致（TG-5）；`provider!="core"` ⇔ `targeting=platform_remote` | 沿用 |
+| RA-4 | `executor` 名單雙向一致（TG-5）；`provider!="core"` ⇔ `targeting=platform_remote` | 沿用；切片 A 刻意分工：註冊表只檢查 provider／targeting 一致，executor 名單雙向一致由組裝層 TG-5 負責 |
 | RA-5 | `interruptible!="non_interruptible"` ⇒ `cancellable=True`（executor 實作 `cancel`，D69） | 沿用 TC-4 |
 | RA-6 | `capability` 屬閉集詞彙，且其**副作用上限**不低於該工具的 `side_effect_class`（§5.4） | 新增 |
-| RA-7 | `input_schema` 通過 schema linter（§6.3）；`injected_params` 皆不在 LLM 面 schema 內 | 新增 |
+| RA-7 | `input_schema` 通過 schema linter（§6.3）；`injected_params` 皆不在 LLM 面 schema 內 | 新增；切片 A 刻意延後：linter 暫不強制 `additionalProperties:false`（延到切片 B；A 要求衍生的 tools JSON 與舊 schema 位元組相等，現行記憶工具 schema 未宣告） |
 | RA-8 | `tool_version` 與 `schema_hash` 對 lockfile 單調：hash 變而 version 不升 ⇒ 建構失敗 | §5.5 |
 | RA-9 | 名稱不重複；所有 `name` 與 provider 的名稱限制相容（長度、字元集） | 新增 |
 | RA-10 | `mcp_static` 的 executor 不得指向 `echo-mcp`（T5）命名空間 | C6 |
@@ -791,7 +791,7 @@ execute_action → ApprovalRequired
 
 | 切片 | 內容 | 對映 | 前置 | 驗收條件 |
 |---|---|---|---|---|
-| **A 註冊表單一來源** | `ToolSpec` 擴欄＋Literal 列舉；`ToolDescriptor`／`ToolEntry`（含 §5.1 全欄：`scope`、`concurrency`、`conflict_keys`、`timeout_s`、`cancellable`、`input_schema`／`output_schema`、`requires`／`load_cost`／`warm_required`）；`ToolRegistry`（RA-1～14，欄位先「宣告並驗證」，排程與 readiness 訂閱尚不啟用）；lockfile 與 CI 測試；9 個記憶工具以 `builtin`、`scope=global` 進表（分類取自 `TOOL_CLASSES`，schema 取自 `tool_definitions()` 現值），`tool_definitions()`／`TOOL_CLASSES`／`host._refresh_tools` 改由註冊表**衍生**（行為不變） | TL0＋TL1 | N5 | 衍生的 tools JSON 與舊 `think.tools` **位元組級相等**（黃金測試）；`access.py` 無獨立 schema 字面；RA 斷言測試全綠；未宣告 `concurrency` 的條目預設 `serial`（fail-closed 測試）；`tests/uep` 與 import-boundary 不退步 |
+| **A 註冊表單一來源** | `ToolSpec` 擴欄＋Literal 列舉；`ToolDescriptor`／`ToolEntry`（含 §5.1 全欄：`scope`、`concurrency`、`conflict_keys`、`timeout_s`、`cancellable`、`input_schema`／`output_schema`、`requires`／`load_cost`／`warm_required`）；`ToolRegistry`（RA-1～14，欄位先「宣告並驗證」，排程與 readiness 訂閱尚不啟用）；lockfile 與 CI 測試；3 個記憶工具（現行 `TOOL_CLASSES` 白名單：`deep_recall`／`force_remember`／`member_recall`）以 `builtin`、`scope=global` 進表（分類取自 `TOOL_CLASSES`，schema 取自 `tool_definitions()` 現值；about-me 三工具、`adjust_importance`、`trigger_dream` 等不在白名單內，進表留待後續切片），`tool_definitions()`／`TOOL_CLASSES`／`host._refresh_tools` 改由註冊表**衍生**（行為不變） | TL0＋TL1 | N5 | 衍生的 tools JSON 與舊 `think.tools` **位元組級相等**（黃金測試）；`access.py` 無獨立 schema 字面；RA 斷言測試全綠；未宣告 `concurrency` 的條目預設 `serial`（fail-closed 測試）；`tests/uep` 與 import-boundary 不退步 |
 | **B 投影與 D60 斷言** | `registry.project`（含 scope／平台／Presence／ready 篩選，§6.1）、`render_tools`、Runtime 啟動斷言；Gateway schema 驗證＋`injected_params`＋`reason_code` | （新）TG-12 | A | 反例：多給／少給 tool 名稱 ⇒ `CAPABILITY_MISSING`；`$ref` schema 註冊失敗；缺必填／多餘欄位 ⇒ `rejected`＋`fields` 不含值；同一工具在不同 `(platform, presence)` 下投影結果符合 §5.6 表；readiness 非 `ready` 的工具不被投出、`warming` 依 §5.8 處置（以 fake module coordinator 事件驅動）；靜態測試證明無手寫 tools 清單 |
 | **Spike 1 模型層** | PydanticAI 的 Model／provider＋串流 part 事件，包在 `uep/models/` 內（邊界已裁決：SDK 只能出現在 `uep/models/`）。三種 provider：OpenAI chat、OpenAI Responses、Ollama | Q-F | B | 見 §7.4：SDK 執行工具次數＝0；想／說零混入；首 token 額外延遲 ≤ 50 ms（已裁決）；取消後 500 ms 內停止；內建工具被斷言擋下。**任一項失敗 ⇒ 退回自寫 `ProviderAdapter`** |
 | **C internal_read 走 ActionIntent** | 第一個 `Runtime` 實作（依 Spike 1 結果：PydanticAI 模型層，或自寫薄層）；`direct_chat` 回合的記憶工具改經 `AgentCore.run_step` → create/execute_action；回合 Task 懶建立（D62） | TL2 | Spike 1、D62 實作 | `deep_recall`／`member_recall` 每次呼叫有 `act_`＋receipt；`action.*` 事件與舊版 payload 相容；p50/p95 延遲不劣化超過基準；`CoreToolExecutor` 白名單路徑關閉；`direct_chat` 的投影僅含唯讀工具（Q-E） |

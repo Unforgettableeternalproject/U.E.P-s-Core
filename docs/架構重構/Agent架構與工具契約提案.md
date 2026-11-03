@@ -732,6 +732,18 @@ class ModelPort(Protocol):
 | S1-4 | 取消後 **500 ms 內**停止產生事件 |
 | S1-5 | 內建工具被斷言擋下（`builtin_tools` 非空、非 function 工具、工具名稱集合 ≠ `capability_set` 皆拒絕啟動） |
 
+**Spike 1 結果（2026-11-03，pydantic-ai-slim 2.65.0；`feature/spike1-pydantic-ai`；量測腳本 `scripts/spike1_model_layer.py`，離線測試 `tests/uep/test_models_port.py`／`test_models_boundary.py`）**
+
+| # | 結果 | 數據 |
+|---|---|---|
+| S1-1 | 通過（三種 provider） | SDK 執行工具 0 次；Core mock executor 各 1 次；第二輪帶工具結果回餵（新 run）三者皆正常收尾 |
+| S1-2 | 通過 | Responses（`reasoning_summary=auto`）與 Ollama gemma4（`thinking=True`）都有 thought_delta，事件序上 thought 全在 text 前，thought 開頭未出現在 text；OpenAI chat 不產生 thinking（照實記錄）。Ollama 的 thought 內會草擬最終答案（內容重複，非串流混入） |
+| S1-3 | 通過但餘裕小 | 中位數差（新－現行 openai.py，N=10 交錯）：chat +4.3 ms（828.2 vs 823.9，p90 1236.7 vs 1341.6）、Responses +40.3 ms（906.2 vs 865.9，p90 998.6 vs 950.2）。逐對差的中位數 chat +58.5／Responses +30.4 ms；網路抖動（約 ±300 ms）遠大於 SDK 層。無網路時 SDK 層到首個 text_delta 約 2.6 ms（median，FunctionModel） |
+| S1-4 | 通過 | cancel() 到串流結束：chat median 3.9／max 5.0 ms、Responses 1.8／8.7 ms、Ollama 0.8／1.0 ms（各 N=3）；取消後內容事件 0 |
+| S1-5 | 通過 | 內建工具、少給、多給、畸形 capability_set 皆在送出前被擋（`CAPABILITY_MISSING`／`ValueError`），不送請求 |
+
+判定：**採用 PydanticAI 作模型層**（`uep/models/`）。限制見 §15。
+
 **Spike 2（切片 D 之前；park／resume）**：
 
 | # | 驗收 |
@@ -793,7 +805,7 @@ execute_action → ApprovalRequired
 |---|---|---|---|---|
 | **A 註冊表單一來源** | `ToolSpec` 擴欄＋Literal 列舉；`ToolDescriptor`／`ToolEntry`（含 §5.1 全欄：`scope`、`concurrency`、`conflict_keys`、`timeout_s`、`cancellable`、`input_schema`／`output_schema`、`requires`／`load_cost`／`warm_required`）；`ToolRegistry`（RA-1～14，欄位先「宣告並驗證」，排程與 readiness 訂閱尚不啟用）；lockfile 與 CI 測試；3 個記憶工具（現行 `TOOL_CLASSES` 白名單：`deep_recall`／`force_remember`／`member_recall`）以 `builtin`、`scope=global` 進表（分類取自 `TOOL_CLASSES`，schema 取自 `tool_definitions()` 現值；about-me 三工具、`adjust_importance`、`trigger_dream` 等不在白名單內，進表留待後續切片），`tool_definitions()`／`TOOL_CLASSES`／`host._refresh_tools` 改由註冊表**衍生**（行為不變） | TL0＋TL1 | N5 | 衍生的 tools JSON 與舊 `think.tools` **位元組級相等**（黃金測試）；`access.py` 無獨立 schema 字面；RA 斷言測試全綠；未宣告 `concurrency` 的條目預設 `serial`（fail-closed 測試）；`tests/uep` 與 import-boundary 不退步 |
 | **B 投影與 D60 斷言** | `registry.project`（含 scope／平台／Presence／ready 篩選，§6.1）、`render_tools`、Runtime 啟動斷言；Gateway schema 驗證＋`injected_params`＋`reason_code` | （新）TG-12 | A | 反例：多給／少給 tool 名稱 ⇒ `CAPABILITY_MISSING`；`$ref` schema 註冊失敗；缺必填／多餘欄位 ⇒ `rejected`＋`fields` 不含值；同一工具在不同 `(platform, presence)` 下投影結果符合 §5.6 表；readiness 非 `ready` 的工具不被投出、`warming` 依 §5.8 處置（以 fake module coordinator 事件驅動）；靜態測試證明無手寫 tools 清單。**延後（已落地範圍之外）**：`render_tools` 的 Responses／Ollama 方言 → Spike 1／C；`ToolVariant.injected_params` → G；`x-uep-type` 的 path 正規化與 url SSRF 檢查 → G；Gateway 執行前再查 readiness（`tool_not_ready`）→ F；`host._refresh_tools` 改用 `project` 與刪除 `think_llm.tools` → C；Runtime／host 尚未接線（`check_tools_match_capability`、`render_tools`、`project` 目前無 production 呼叫端）→ C |
-| **Spike 1 模型層** | PydanticAI 的 Model／provider＋串流 part 事件，包在 `uep/models/` 內（邊界已裁決：SDK 只能出現在 `uep/models/`）。三種 provider：OpenAI chat、OpenAI Responses、Ollama | Q-F | B | 見 §7.4：SDK 執行工具次數＝0；想／說零混入；首 token 額外延遲 ≤ 50 ms（已裁決）；取消後 500 ms 內停止；內建工具被斷言擋下。**任一項失敗 ⇒ 退回自寫 `ProviderAdapter`** |
+| **Spike 1 模型層** | PydanticAI 的 Model／provider＋串流 part 事件，包在 `uep/models/` 內（邊界已裁決：SDK 只能出現在 `uep/models/`）。三種 provider：OpenAI chat、OpenAI Responses、Ollama | Q-F | B | 見 §7.4：SDK 執行工具次數＝0；想／說零混入；首 token 額外延遲 ≤ 50 ms（已裁決）；取消後 500 ms 內停止；內建工具被斷言擋下。**任一項失敗 ⇒ 退回自寫 `ProviderAdapter`** **Spike 1 已通過（2026-11-03，見 §7.4 結果），採 PydanticAI** |
 | **C internal_read 走 ActionIntent** | 第一個 `Runtime` 實作（依 Spike 1 結果：PydanticAI 模型層，或自寫薄層）；`direct_chat` 回合的記憶工具改經 `AgentCore.run_step` → create/execute_action；回合 Task 懶建立（D62） | TL2 | Spike 1、D62 實作 | `deep_recall`／`member_recall` 每次呼叫有 `act_`＋receipt；`action.*` 事件與舊版 payload 相容；p50/p95 延遲不劣化超過基準；`CoreToolExecutor` 白名單路徑關閉；`direct_chat` 的投影僅含唯讀工具（Q-E） |
 | **Spike 2 park／resume** | 以 fake executor 驗證 DeferredToolRequests 式「遇工具呼叫即結束 run」→ checkpoint → 崩潰重建 → resume | Q-F、D61 B | C | 見 §7.4：崩潰重建後 history 的 hash 一致；重複核准只產生一次副作用；resume 後工具集合 ⊆ 凍結集合 |
 | **D 自迴圈** | `AgentLoop`：外層 Run 迴圈、預算、heartbeat、checkpoint；`route=agent_loop` 接 `LoopTrigger`；`thought_delta`（只輸出到 log／終端）；D61 A 路徑續跑；**平行 context**（§4.10）；**`decision.consult`**（§4.9，依決策層 schema）；**平行排程器**（§6.4，首批只有 `parallel_safe` 工具可並行） | （新） | Spike 2、決策層 route 表與 consult schema | fake Runtime 腳本：多 Step 工具鏈完成；預算耗盡 ⇒ finalize 或 `budget_exhausted`；無進展偵測；AL-3 反例（模型／工具結果／consult 要求更大能力 ⇒ 不擴大，consult 只回 escalate）；consult 計入步數且不觸發 plan.refine；平行批次衝突 ⇒ 序列化、單一失敗回填符合 §6.4；平行 context 的建立／回饋／park 持久化案例（§4.10） |
@@ -986,6 +998,7 @@ class LoopTrigger:
 - 「gpt-5.6-luna chat 不接受 tools+reasoning_effort」依 `openai.py` 註解，未實測。
 - 延遲、事件量的影響（切片 C）未量測。
 - **PydanticAI 的具體 API**（`ExternalToolset`、`DeferredToolRequests`、`ThinkingPartDelta`／`TextPartDelta`、`builtin_tools`）與其版本號、openai-agents 0.24.0，皆取自艾斯維爾裁決與房內研究結論，**本文作者未獨立核對官方文件**；Spike 1／2 負責驗證。OpenAI Agents SDK／LangGraph／Claude Agent SDK 的「第二份權威狀態」「只支援 Anthropic 且綁 CLI」等判斷同為轉述。
+- **Spike 1 的已驗證與未驗證（pydantic-ai-slim 2.65.0）**：API 已對照安裝版原始碼與實測（`run_stream_events` 在 2.x 是 async context manager；取消用 `CancellationToken`；內建工具即 `native_tools`）。D60 斷言比對的是「交給 SDK 的 ToolDefinition 經 `render_tools` 還原的 chat 形狀」，不是最終 HTTP body（Responses／Ollama 的線上形狀由 SDK 產生，未攔截比對）。S1-3 的 N=10 抖動大於 SDK 層本身，結論僅為「未超過 50 ms」，非精確差值；Ollama 無現行 backend 可比，對照為直打 `/v1` chat。gpt-5.6／gpt-6-luna「chat 帶 tools 不接受 reasoning_effort」仍沿用現行降為 none 的做法，未單獨實測被拒。未涵蓋：平行 tool call 的實測、`finish_reason=length` 截斷在 args 中途、Ollama 無 call id 的合成路徑（實測 Ollama 有回 id）、並發多 attempt、SDK 內建重試對延遲的影響。
 - legacy 組裝器（`legacy-final-v0.9.4` 的 `sys_module/workflows.py`、`step_templates.py`）的評估結論（狀態在記憶體、字串 key、核准繞過、無並行／冪等／衝突欄位）取自艾斯維爾裁決敘述，本文作者**未重新讀 tag 內程式**。
 - `echo_thought_core` 的 ContextManager 是否支援「子 session／fork」「獨立壓縮」「以鍵持久化並取回」，以及其 `session_store` 後端與耐久性，僅讀過 `engine_base.py` 的介面說明，**未驗證**；§4.10 是對它的需求，不是對現況的描述。
 - 決策中樞文件（`決策中樞架構提案.md`，`feature/decision-hub`）撰寫時尚未合入，§10 與 §4.9 對 `consult`／DecisionPlan／lifecycle 提議的描述僅依房內協議；其最終形狀以該文件為準。

@@ -74,6 +74,8 @@ from uep.output.delivery import DeliveryEvidence
 from uep.output.delivery import DeliveryStatus as DS
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
 from uep.tools.catalog.memory import GUILD_ROSTER_CONTEXT, memory_registry
+from uep.tools.projection import ProjectionContext
+from uep.tools.render import render_tools
 from uep.turn.aggregator import (
     ModeAwareAggregator,
     PassThroughAggregator,
@@ -779,6 +781,11 @@ class EchoPipelineHost:
         memory = self._memory
         if memory is None or self.tool_executor is None:
             return
+        from uep.config import get_settings  # 延後 import：只有分流判斷需要
+
+        if get_settings().tool_path == "agent":
+            self._refresh_tools_agent()
+            return
         definitions = getattr(memory, "tool_definitions", None)
         try:
             tools = list(definitions()) if callable(definitions) else []
@@ -792,6 +799,23 @@ class EchoPipelineHost:
             d for d in tools
             if _tool_name(d) in TOOL_CLASSES and registry.entry(_tool_name(d)).scope.requires_context <= available
         ]
+
+    # direct_chat 回合只曝光唯讀記憶工具（Q-E）：能力標籤固定為 memory.read，force_remember（memory.write）不在其內
+    _DIRECT_CHAT_CAPABILITY_TAGS = frozenset({"memory.read"})
+
+    def _refresh_tools_agent(self) -> None:
+        """``UEP_TOOL_PATH=agent``：曝光 = 註冊表對 direct_chat 標籤的 ``project``，經 ``render_tools`` 渲染（D60）。
+        投影失敗 fail-closed：不曝光任何工具。"""
+        available = frozenset({GUILD_ROSTER_CONTEXT}) if self._session.guild_id is not None else frozenset()
+        try:
+            capability_set = memory_registry().project(
+                self._DIRECT_CHAT_CAPABILITY_TAGS,
+                ProjectionContext(available_context=available, audience=self._session.audience_scope),
+            )
+            self.think.tools = render_tools(capability_set)
+        except Exception:
+            logger.exception("註冊表投影失敗，不曝光工具")
+            self.think.tools = []
 
     async def _switch_session(self, ctx: SessionContext) -> None:
         old = self._session

@@ -629,6 +629,10 @@ class EchoPipelineHost:
             retrieve_kwargs["present_uids"] = self.roster.present_uids(guild)
             tool_context["guild_id"] = guild
             tool_context["present_uids"] = list(retrieve_kwargs["present_uids"])
+        if self._agent_tool_path():
+            # agent 路徑：回合 Task 的事件要與舊補記同一組關聯 id 與 scope（legacy 路徑的 tool_context 不變）
+            tool_context["event_scope"] = ticket.event_scope
+            tool_context["conversation_id"] = ticket.conversation_id
         if runtime is not None:
             runtime.tool_context = tool_context
         # Core 令 ticket.turn_id、source_turn_id 與 Utterance.turn_id 相等（ES 不一致時只記 warning），
@@ -1199,8 +1203,19 @@ class EchoPipelineHost:
 
     # ---- D79：工具呼叫事後補記 ----
 
+    @staticmethod
+    def _agent_tool_path() -> bool:
+        """``UEP_TOOL_PATH=agent``：工具呼叫走 ActionIntent，``action.*`` 由 TaskManager 發出（與舊補記互斥）。"""
+        from uep.config import get_settings  # 延後 import：只有路徑分流需要
+
+        return get_settings().tool_path == "agent"
+
     def _record_tool_action(self, turn_id: str, name: str, tool_class: str, status: str) -> None:
-        """``CoreToolExecutor`` 的回呼（ES loop 上，只入佇列）：事後補記 ``action.executed``／``action.unknown``。"""
+        """``CoreToolExecutor`` 的回呼（ES loop 上，只入佇列）：事後補記 ``action.executed``／``action.unknown``。
+
+        agent 路徑下不補記（``action.*`` 已由 TaskManager 發出），避免重複發送。"""
+        if self._agent_tool_path():
+            return
         self._enqueue(functools.partial(self._publish_tool_action, turn_id, name, tool_class, status), "tool_action")
 
     def _publish_tool_action(self, turn_id: str, name: str, tool_class: str, status: str) -> None:

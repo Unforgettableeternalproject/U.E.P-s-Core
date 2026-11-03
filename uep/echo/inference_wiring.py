@@ -425,11 +425,17 @@ def build_inference_wiring(
     think_backend_factory: Callable[[InferenceConfig], Any] | None = None,
     stt_backend: Any | None = None,
     stage_kwargs: Mapping[str, Mapping[str, Any]] | None = None,
+    tool_path: str | None = None,
+    model_port: Any | None = None,
 ) -> InferenceWiring:
     """建三個 stage（不載模型）。``*_backend``／``*_factory`` 供測試與替換注入；沒給時用真實預設。
 
     ``stage_kwargs`` 以 ``speak``／``think``／``input`` 為鍵，補傳 ES stage 建構子的額外參數
     （如 ``emotion_vector``、``split_policy``、``history_limit``），不覆蓋本模組已設定的參數名。
+
+    ``tool_path``（預設取設定 ``UEP_TOOL_PATH``）二選一：``legacy`` 維持原本的 ``LLMThinkStage``；``agent`` 把它包進
+    ``AgentThinkStage``（工具改走 ActionIntent；Port 由 ``uep.echo.agent_wiring`` 綁定）。``agent`` 且給了 ``model_port``
+    時，模型呼叫改由 ``ModelPortBackend``（``ModelPort``）執行；沒給就沿用原 backend。
     """
     cfg = config or InferenceConfig.from_settings()
     extra = {k: dict(v) for k, v in (stage_kwargs or {}).items()}
@@ -467,7 +473,17 @@ def build_inference_wiring(
     recommended = _vox_recommended_split_policy(cfg, speak)
     if recommended is not None:
         think_kwargs.setdefault("split_policy", recommended)
-    think = LLMThinkStage(llm, **think_kwargs)
+    from uep.config import get_settings
+
+    if (tool_path or get_settings().tool_path) == "agent":
+        from uep.agent.runtime import ModelPortBackend
+        from uep.stream.adapters.think_agent import AgentThinkStage
+
+        if model_port is not None:
+            llm = ModelPortBackend(model_port)
+        think = AgentThinkStage(LLMThinkStage(llm, **think_kwargs))
+    else:
+        think = LLMThinkStage(llm, **think_kwargs)
 
     wiring.speak, wiring.think, wiring.input_stage = speak, think, input_stage
     for name, stage, guard_cls, timeout in (

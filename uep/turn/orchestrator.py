@@ -164,6 +164,7 @@ class TurnOrchestrator:
         participants: Callable[[SessionContext], int | None] | None = None,
         veto: Callable[[SessionContext], str | None] | None = None,
         decision: DecisionConfig | None = None,
+        decision_hub: DecisionHub | None = None,
         identity: IdentityDirectory | None = None,
         snapshot_version: Callable[[], int] = lambda: 0,
         ticket_ttl: timedelta = timedelta(minutes=10),
@@ -184,15 +185,20 @@ class TurnOrchestrator:
         self._participants = participants
         self._veto = veto
         self._decision = decision or DecisionConfig()
-        budget = self._decision.proposer_budget_ms
         # DL-1 P0：primary／shadow proposer、guard、預算只存在於中樞的 turn.reply engine（單一份狀態）；
         # Orchestrator 的 _proposer／_budget_s／_guard／_shadows／shadow_log／_on_shadow 都是委派到 engine 的 property
+        # 預算與各 fallback reason 只在 DecisionPointSpec（registry）一份；engine 與 _budget_s 都讀寫它。
+        # decision_hub 可注入（共用中樞）；已註冊 turn.reply 時 register 報 ValueError（不冪等，避免兩個 engine 搶同一決策點）
+        self.hub = decision_hub if decision_hub is not None else DecisionHub()
         self._reply_engine = TurnReplyEngine(
-            proposer or RespondProposer(), budget_s=budget / 1000.0 if budget > 0 else None, metrics=self.metrics,
+            proposer or RespondProposer(), registry=self.hub.registry, metrics=self.metrics,
             shadow_proposers=shadow_proposers, on_shadow=on_shadow,
         )
-        self.hub = DecisionHub()
-        self.hub.register(turn_reply_spec(self._decision.proposer_budget_ms), self._reply_engine)
+        try:
+            self.hub.register(turn_reply_spec(self._decision.proposer_budget_ms), self._reply_engine)
+        except BaseException:
+            self._reply_engine.close()
+            raise
         self._identity = identity
         self._snapshot_version = snapshot_version
         self._ttl = ticket_ttl

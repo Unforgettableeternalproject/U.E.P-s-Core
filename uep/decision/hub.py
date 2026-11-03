@@ -13,7 +13,6 @@ from typing import Protocol
 from uep.decision.contracts import DecisionRequest, DecisionResult
 from uep.decision.registry import DecisionPointRegistry, DecisionPointSpec
 
-
 logger = logging.getLogger("uep.decision.hub")
 
 # 觀察者：decide 成功後以（request, result, spec, elapsed_ms）呼叫；必須非阻塞（如只丟進佇列），例外一律吞掉
@@ -56,6 +55,6 @@ class DecisionHub:
             for observer in tuple(self._observers):
                 try:
                     observer(request, result, spec, elapsed_ms)
-                except Exception:  # noqa: BLE001 - 觀察者不得影響主決策
+                except Exception:
                     logger.exception("決策觀察者失敗")
         return result

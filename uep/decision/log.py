@@ -147,7 +147,7 @@ class DecisionLogWriter:
             return
         try:
             self._enqueue(primary_row(request, result, spec, elapsed_ms))
-        except Exception:  # noqa: BLE001 - 日誌永遠不得影響決策
+        except Exception:
             self.metrics["decision_log.dropped"] += 1
             logger.exception("組決策日誌列失敗")
 
@@ -156,7 +156,7 @@ class DecisionLogWriter:
             return
         try:
             self._enqueue(shadow_row(record))
-        except Exception:  # noqa: BLE001
+        except Exception:
             self.metrics["decision_log.dropped"] += 1
             logger.exception("組 shadow 日誌列失敗")
 

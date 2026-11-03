@@ -124,7 +124,7 @@ def analyze(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 def format_report(report: dict[str, Any]) -> str:
     def lat(d: dict[str, Any]) -> str:
-        fmt = lambda v: "-" if v is None else f"{v:g}"  # noqa: E731
+        fmt = lambda v: "-" if v is None else f"{v:g}"
         return f"n={d['n']} p50={fmt(d['p50'])}ms p95={fmt(d['p95'])}ms"
 
     def table(title: str, mapping: dict[str, Any], limit: int | None = None) -> list[str]:

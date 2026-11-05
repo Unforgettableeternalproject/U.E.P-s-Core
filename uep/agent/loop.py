@@ -255,6 +255,9 @@ class AgentLoop:
     def resume(self, run_id: str, checkpoint: Mapping[str, Any], *, trigger: LoopTrigger, parent_id: str) -> LoopOutcome:
         """核准後的續行（呼叫端已 ``resume_run`` 取得新 epoch 並建構本物件）。重建 child 並驗 hash（失敗 ⇒ FAILED(context_lost)），
         能力＝凍結集合 ∩ 當下投影（只收窄，AL-3），補齊缺少的工具結果後以新 attempt 續跑。"""
+        semantic = checkpoint.get("next_step_semantic")
+        if isinstance(semantic, str) and semantic.startswith("end:"):
+            return self._resume_terminal(run_id, semantic, checkpoint, trigger, parent_id)
         missing = [k for k in RESUME_REQUIRED_KEYS if checkpoint.get(k) is None]
         if missing:
             # 舊版或殘缺的 checkpoint：不以預設值補，fail-closed
@@ -283,6 +286,29 @@ class AgentLoop:
         st.cap = self._offer(st, st.cap)
         st.consumed = list(checkpoint.get("consumed_action_ids") or ())
         return self._drive(st, resume_fill=frozenset(checkpoint.get("pending_approvals") or ()))
+
+    def _resume_terminal(
+        self, run_id: str, semantic: str, checkpoint: Mapping[str, Any], trigger: LoopTrigger, parent_id: str,
+    ) -> LoopOutcome:
+        """終態 checkpoint（``end:<reason>[:<維度>]``）已寫入、轉移可能還沒提交就崩潰：只補完缺少的轉移，不喚醒模型（0 次呼叫）。
+
+        - 失敗類原因（含 ``escalated``）⇒ 轉 ``FAILED`` 並帶原因碼回傳；``on_escalate`` 不在這裡重送（屬切片 F 的恢復掃描器）。
+        - 完成類（``completed``／``budget_finalized``／``consult_finalized``）：成功轉移是在寫 checkpoint 之前提交的，Run 已是終態，不再動作。
+        - 解析不出合法的 ``LoopReason`` ⇒ ``FAILED(checkpoint_incomplete)``。"""
+        st = self._new_state(run_id, trigger, parent_id, {"tools": []}, {}, frozenset(), [], "",
+                             BudgetCounters.from_checkpoint(checkpoint.get("budget_counters")))
+        raw = semantic.split(":")[1] if semantic.count(":") >= 1 else ""
+        if raw == "completed":
+            return LoopOutcome("completed", run_id, steps=st.counters.steps, tool_calls=st.counters.tool_calls)
+        try:
+            reason = LoopReason(raw)
+        except ValueError:
+            logger.error("終態 checkpoint 的原因碼不合法，不續跑：run=%s", run_id)
+            return self._guarded(st, lambda: self._finish(st, "failed", LoopReason.CHECKPOINT_INCOMPLETE))
+        if reason in (LoopReason.BUDGET_FINALIZED, LoopReason.CONSULT_FINALIZED):
+            return LoopOutcome("completed", run_id, reason, steps=st.counters.steps, tool_calls=st.counters.tool_calls)
+        logger.warning("Run 已有終態 checkpoint（%s），只補完 FAILED 轉移：run=%s", reason.value, run_id)
+        return self._guarded(st, lambda: self._finish(st, "failed", reason))
 
     # ───────────────────────── 內部：狀態與收尾 ─────────────────────────
 

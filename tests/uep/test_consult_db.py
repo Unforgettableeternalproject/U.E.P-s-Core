@@ -112,3 +112,29 @@ def test_db_escalate_fails_the_run_with_escalated_and_emits_candidate_once(sessi
     cp = tm.get_run(run.run_id).checkpoint  # 終態 checkpoint 帶 decision_id 與缺口碼（耐久紀錄）
     assert cp["next_step_semantic"] == "end:escalated" and cp["escalate_gap"] == "scope_exceeded"
     assert cp["last_decision_id"] == escalations[0].decision_id
+
+
+def test_db_resume_after_terminal_checkpoint_only_completes_the_failed_transition(session_factory):
+    """真實 Manager 的對照：終態 checkpoint（end:escalated）已寫、FAILED 轉移還沒提交 ⇒ resume 只補轉移，模型 0 次呼叫，
+    不重送 on_escalate（屬切片 F 的恢復掃描器）。"""
+    from tests.uep.loop_support import ScriptedRuntime
+
+    tm, run, loop, _, escalations = _rig(
+        session_factory, [Round("", (consult("output_modality", proposed_modalities=["audio_stream"]),)), Round("不該到這裡")],
+    )
+    loop.run(trigger(tags=CTAGS), run.run_id, parent=PARENT, system_text="s")
+    terminal = dict(tm.get_run(run.run_id).checkpoint)
+    assert terminal["next_step_semantic"] == "end:escalated" and len(escalations) == 1
+
+    # 第二個 Run：只寫終態 checkpoint、不轉移，模擬崩潰在兩者之間
+    tm2, run2, loop2, _, escalations2 = _rig(session_factory, [])
+    tm2.save_checkpoint(run2.run_id, terminal, worker_epoch=run2.worker_epoch)
+    assert tm2.get_run(run2.run_id).status == RunStatus.RUNNING.value
+    runtime = ScriptedRuntime([Round("不該到這裡")])
+    resumed = AgentLoop(
+        runtime=runtime, tasks=tm2, gateway=ToolGateway(loop2._registry), registry=loop2._registry, store=InMemoryLoopContextStore(),
+        projector=projector_for(loop2._registry), budget=LoopBudget(max_consults=MAX_CONSULTS), worker_epoch=run2.worker_epoch,
+    )
+    out = resumed.resume(run2.run_id, tm2.get_run(run2.run_id).checkpoint or {}, trigger=trigger(tags=CTAGS), parent_id="ctx_parent")
+    assert (out.state, out.reason_code) == ("failed", "escalated")
+    assert runtime.requests == [] and tm2.get_run(run2.run_id).status == RunStatus.FAILED.value and escalations2 == []

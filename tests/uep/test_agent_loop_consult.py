@@ -464,3 +464,66 @@ def test_agent_loop_without_consult_wiring_behaves_like_d1():
     out = rig.run(trigger=trigger(tags=CTAGS))
     assert out.state == "completed" and all(CONSULT_TOOL not in names for names in rig.runtime.round_caps)
     assert isinstance(rig.loop, AgentLoop)
+
+
+# ───────────────────────── resume 遇終態 checkpoint 不續跑 ─────────────────────────
+
+def _crash_before_transition(rig: CRig) -> dict:
+    """模擬「終態 checkpoint 已寫、FAILED 轉移尚未提交」就崩潰：保留 checkpoint，抹掉轉移紀錄，換新 epoch。"""
+    checkpoint = dict(rig.tasks.checkpoints[-1])
+    assert checkpoint["next_step_semantic"].startswith("end:")
+    rig.tasks.run_status.clear()
+    rig.tasks.log[:] = [e for e in rig.tasks.log if not e.startswith("transition:")]
+    rig.tasks.epoch = 2
+    return checkpoint
+
+
+def test_resume_after_terminal_checkpoint_escalated_completes_failed_transition_without_waking_model():
+    rig = CRig([Round("", (consult("output_modality", proposed_modalities=["audio_stream"]),)), Round("不該到這裡")])
+    assert rig.run().reason_code == "escalated" and len(rig.escalations) == 1
+    checkpoint = _crash_before_transition(rig)
+    runtime = type(rig.runtime)([Round("不該到這裡")])
+    executions = list(rig.tasks.executions)
+    out = rig.new_loop(runtime=runtime, worker_epoch=2).resume(RUN, checkpoint, trigger=trigger(tags=CTAGS), parent_id="ctx_parent")
+    assert (out.state, out.reason_code) == ("failed", "escalated")
+    assert runtime.requests == [] and len(runtime.rounds) == 1  # 模型 0 次呼叫
+    assert rig.tasks.run_status == [RunStatus.FAILED] and rig.tasks.executions == executions
+    assert len(rig.escalations) == 1  # on_escalate 不在 resume 重送（屬切片 F 的恢復掃描器）
+
+
+def test_resume_after_terminal_checkpoint_other_failure_reason_keeps_the_reason():
+    rig = CRig(
+        [Round("", (call("read.lone", "1"),)), Round("不該")], budget=LoopBudget(max_steps=1, finalize_on_exhausted=False),
+    )
+    assert rig.run().reason_code == "budget_exhausted"
+    checkpoint = _crash_before_transition(rig)
+    assert checkpoint["next_step_semantic"] == "end:budget_exhausted:steps"
+    runtime = type(rig.runtime)([Round("不該到這裡")])
+    out = rig.new_loop(runtime=runtime, worker_epoch=2).resume(RUN, checkpoint, trigger=trigger(tags=CTAGS), parent_id="ctx_parent")
+    assert (out.state, out.reason_code) == ("failed", "budget_exhausted")
+    assert runtime.requests == [] and rig.tasks.run_status == [RunStatus.FAILED]
+
+
+def test_resume_after_terminal_checkpoint_with_unknown_reason_fails_checkpoint_incomplete():
+    rig = CRig([Round("", (call("read.lone", "1"),)), Round("完成")])
+    rig.run()
+    checkpoint = dict(rig.tasks.checkpoints[-1])
+    checkpoint["next_step_semantic"] = "end:made_up_reason"
+    rig.tasks.run_status.clear()
+    rig.tasks.epoch = 2
+    runtime = type(rig.runtime)([Round("不該到這裡")])
+    out = rig.new_loop(runtime=runtime, worker_epoch=2).resume(RUN, checkpoint, trigger=trigger(tags=CTAGS), parent_id="ctx_parent")
+    assert (out.state, out.reason_code) == ("failed", "checkpoint_incomplete")
+    assert runtime.requests == [] and rig.tasks.run_status == [RunStatus.FAILED]
+
+
+def test_resume_after_completed_terminal_checkpoint_does_nothing():
+    rig = CRig([Round("", (call("read.lone", "1"),)), Round("完成")])
+    assert rig.run().state == "completed"
+    checkpoint = dict(rig.tasks.checkpoints[-1])
+    assert checkpoint["next_step_semantic"] == "end:completed"
+    transitions = list(rig.tasks.run_status)
+    rig.tasks.epoch = 2
+    runtime = type(rig.runtime)([Round("不該到這裡")])
+    out = rig.new_loop(runtime=runtime, worker_epoch=2).resume(RUN, checkpoint, trigger=trigger(tags=CTAGS), parent_id="ctx_parent")
+    assert out.state == "completed" and runtime.requests == [] and rig.tasks.run_status == transitions

@@ -280,10 +280,22 @@ def test_engine_standalone_registration_matches_orchestrator_wiring():
     hub.register(turn_reply_spec(300), reply)
     engine = TurnInterjectEngine(reply, registry=registry, metrics=metrics, submit=hub.submit, run_id="r")
     hub.register(turn_interject_spec(250), engine)
-    assert engine.budget_s == 0.25
-    engine.budget_s = None
-    assert registry.get(KIND_TURN_INTERJECT).budget_ms == 0 and engine.budget_s is None
+    assert engine.budget_s == 0.3  # 跟著 turn.reply 的預算
+    reply.budget_s = None
+    assert engine.budget_s is None
     reply.close()
+
+
+def test_interject_late_threshold_follows_turn_reply_budget():
+    orch = _orch(_Ticker("t.tick"), budget_ms=300)
+    try:
+        assert orch._interject_engine.budget_s == 0.3
+        orch._budget_s = 0.05  # 執行期改 turn.reply 預算
+        assert orch._interject_engine.budget_s == 0.05
+        orch._budget_s = None
+        assert orch._interject_engine.budget_s is None
+    finally:
+        orch.close()
 
 
 def test_stuck_shadow_does_not_slow_primary_tick():

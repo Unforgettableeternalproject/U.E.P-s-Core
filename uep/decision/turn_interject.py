@@ -18,7 +18,6 @@ from collections import Counter, deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 from concurrent.futures import wait as futures_wait
-from dataclasses import replace
 from typing import Any
 
 from uep.decision.contracts import (
@@ -135,13 +134,8 @@ class TurnInterjectEngine:
 
     @property
     def budget_s(self) -> float | None:
-        budget_ms = self.spec.budget_ms
-        return budget_ms / 1000.0 if budget_ms is not None and budget_ms > 0 else None
-
-    @budget_s.setter
-    def budget_s(self, value: float | None) -> None:
-        budget_ms = 0 if value is None else round(value * 1000)
-        self._registry.register(replace(self.spec, budget_ms=budget_ms), replace=True)
+        """shadow tick 的 late 門檻：每次都讀 turn.reply 的預算（primary tick 實際用的那一份），單一來源。"""
+        return self._reply.budget_s
 
     def wait_shadow(self, timeout: float | None = None) -> bool:
         """等所有進行中的 shadow tick 比對完成（測試與診斷用）。"""

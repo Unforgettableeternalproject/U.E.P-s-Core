@@ -48,6 +48,23 @@ class DecisionHub:
             raise ValueError(f"request.kind（{request.kind}）與 kind（{kind}）不符")
         if request.native is not None and not spec.allow_native:
             raise ValueError(f"決策點 {kind} 不接受 native（只有標記 allow_native 的決策點可帶）")
+        return self._dispatch(kind, spec, request)
+
+    def submit(self, kind: str, request: DecisionRequest) -> DecisionResult:
+        """async 決策點的登記入口（提案 §3.4）：由 engine 以 request.facts 產出結果並通知觀察者，不帶 native。
+
+        engine 不阻塞呼叫端；何時呼叫 ``submit``（例如只在非靜默的 tick 才提交）由 engine 的擁有者決定。
+        """
+        spec = self.registry.get(kind)
+        if spec.mode != "async":
+            raise ValueError(f"submit 只支援 async 決策點：{kind}（{spec.mode}）")
+        if request.kind != kind:
+            raise ValueError(f"request.kind（{request.kind}）與 kind（{kind}）不符")
+        if request.native is not None:
+            raise ValueError(f"決策點 {kind} 不接受 native")
+        return self._dispatch(kind, spec, request)
+
+    def _dispatch(self, kind: str, spec: DecisionPointSpec, request: DecisionRequest) -> DecisionResult:
         started = time.perf_counter()
         result = self._engines[kind].decide(request)
         if self._observers:

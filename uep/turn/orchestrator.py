@@ -41,6 +41,7 @@ from secrets import token_hex
 from uep.contracts.presence import AuthorizationTuple
 from uep.decision.contracts import DecisionRequest
 from uep.decision.hub import DecisionHub
+from uep.decision.turn_interject import TurnInterjectEngine, turn_interject_spec
 from uep.decision.turn_reply import (
     KIND_TURN_REPLY,
     ShadowRecord,
@@ -199,6 +200,17 @@ class TurnOrchestrator:
         except BaseException:
             self._reply_engine.close()
             raise
+        # DL-P1：turn.interject（被動模式插話）。primary 的 tick 仍由下方 tick() 直接呼叫（零變化），
+        # engine 只負責把結果轉成 DecisionResult 記錄，並對 shadow proposer 並行 tick 比對
+        self._interject_engine = TurnInterjectEngine(
+            self._reply_engine, registry=self.hub.registry, metrics=self.metrics, submit=self.hub.submit,
+            run_id=self.run_id,
+        )
+        try:
+            self.hub.register(turn_interject_spec(self._decision.proposer_budget_ms), self._interject_engine)
+        except BaseException:
+            self._reply_engine.close()
+            raise
         self._identity = identity
         self._snapshot_version = snapshot_version
         self._ttl = ticket_ttl
@@ -296,7 +308,7 @@ class TurnOrchestrator:
 
     def wait_shadow(self, timeout: float | None = None) -> bool:
         """等所有進行中的 shadow 比對完成（測試與診斷用）；回傳是否全部完成。"""
-        return self._reply_engine.wait_shadow(timeout)
+        return self._reply_engine.wait_shadow(timeout) and self._interject_engine.wait_shadow(timeout)
 
     def clear_aggregation(self) -> None:
         """audience 切換：丟棄 aggregator 內尚未成 turn 的緩衝，並讓 proposer 清掉它的狀態
@@ -390,13 +402,31 @@ class TurnOrchestrator:
             turns = []
         results.extend(self._decide_turn(ctx, turn) for turn in turns)
         proposer = self._proposer
+        interjections: list[Interjection] | None = None
+        status = "ok"
+        started = time.perf_counter()
         if isinstance(proposer, TickingProposer):
             interjections, status = self._guard.call(lambda _: proposer.tick(), None, self._budget_s)
             if status != "ok":
                 self.metrics[f"proposer.tick_{status}"] += 1
-            for ij in interjections or ():
-                results.append(self._decide_interjection(ctx, ij))
+        self._observe_interject(proposer, interjections, status, started)
+        for ij in interjections or ():
+            results.append(self._decide_interjection(ctx, ij))
         return results
+
+    def _observe_interject(
+        self, proposer: TurnProposer, interjections: list[Interjection] | None, status: str, started: float
+    ) -> None:
+        """DL-P1：把這一輪 primary tick 交給 turn.interject engine 記錄並啟動 shadow tick；任何失敗都不影響插話。"""
+        try:
+            self._interject_engine.on_tick(
+                interjections, status, int((time.perf_counter() - started) * 1000),
+                primary_id=str(getattr(proposer, "proposer_id", type(proposer).__name__))[:64],
+                primary_version=str(getattr(proposer, "version", "unknown"))[:64],
+            )
+        except Exception:
+            self.metrics["interject.engine_error"] += 1
+            logger.exception("turn.interject 記錄失敗，不影響插話")
 
     def _listener_yield(self, fact: UtteranceFact) -> str | None:
         """主動模式下同一人又講了有意義的新內容：該說話者尚未開播的輪讓位（bot 的 ``listener_new_segment``）。"""

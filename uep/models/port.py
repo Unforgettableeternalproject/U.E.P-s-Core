@@ -47,7 +47,10 @@ class ChatMessage:
 
 
 def messages_to_json(messages: Sequence[ChatMessage]) -> str:
-    """Core history -> 正規化 JSON（鍵排序、不跳脫中文）。park 時持久化與 ``history_hash`` 共用同一份表示。"""
+    """Core history -> 正規化 JSON（鍵排序、不跳脫中文、拒絕 NaN／Infinity）。park 時持久化與 ``history_hash`` 共用同一份表示。
+
+    注意：欄位或格式一變，既存 checkpoint 的 ``history_hash`` 就會失效（resume 會 fail-closed 為 context_lost）；
+    變更前須先處理已 park 的 Run。"""
     return json.dumps(
         [
             {
@@ -56,11 +59,12 @@ def messages_to_json(messages: Sequence[ChatMessage]) -> str:
             }
             for m in messages
         ],
-        sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
     )
 
 
 def messages_from_json(text: str) -> list[ChatMessage]:
+    """``messages_to_json`` 的反向；格式變更會讓既存 checkpoint 的 hash 失效（同 ``messages_to_json``）。"""
     return [
         ChatMessage(
             d["role"], d["content"], tool_calls=tuple(d["tool_calls"]), tool_call_id=d["tool_call_id"],

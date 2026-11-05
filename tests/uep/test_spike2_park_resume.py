@@ -316,6 +316,47 @@ def test_s2_1_hash_is_canonical_and_sensitive():
     assert history_hash(messages_from_json(messages_to_json(a))) == history_hash(a)
 
 
+def test_s2_1_hash_changes_for_every_field_mutation():
+    """逐欄位 mutate：role、content、tool_call_id、tool_calls 的 id／name／args、順序、數量、None 與 "" 的差別。"""
+    call = {"id": "c1", "name": "t", "args": {"a": 1}}
+    base = [
+        ChatMessage("user", "hi"),
+        ChatMessage("assistant", "x", tool_calls=(call,)),
+        ChatMessage("tool", "r", tool_call_id="c1"),
+    ]
+    h0 = history_hash(base)
+
+    def mutated(i: int, msg: ChatMessage) -> list[ChatMessage]:
+        return [*base[:i], msg, *base[i + 1:]]
+
+    variants = {
+        "role": mutated(0, ChatMessage("system", "hi")),
+        "content": mutated(0, ChatMessage("user", "hi!")),
+        "tool_call_id": mutated(2, ChatMessage("tool", "r", tool_call_id="c2")),
+        "tool_call_id None vs ''": mutated(2, ChatMessage("tool", "r", tool_call_id="")),
+        "tool_call_id 有 vs None": mutated(2, ChatMessage("tool", "r", tool_call_id=None)),
+        "call id": mutated(1, ChatMessage("assistant", "x", tool_calls=({**call, "id": "c9"},))),
+        "call name": mutated(1, ChatMessage("assistant", "x", tool_calls=({**call, "name": "u"},))),
+        "call args 值": mutated(1, ChatMessage("assistant", "x", tool_calls=({**call, "args": {"a": 2}},))),
+        "call args 鍵": mutated(1, ChatMessage("assistant", "x", tool_calls=({**call, "args": {"b": 1}},))),
+        "call 數量": mutated(1, ChatMessage("assistant", "x", tool_calls=(call, call))),
+        "call 移除": mutated(1, ChatMessage("assistant", "x")),
+        "順序": [base[1], base[0], base[2]],
+        "少一則": base[:2],
+        "多一則": [*base, ChatMessage("assistant", "")],
+        "content None-like 空字串": mutated(0, ChatMessage("user", "")),
+    }
+    for name, msgs in variants.items():
+        assert history_hash(msgs) != h0, name
+    assert len({history_hash(m) for m in variants.values()} | {h0}) == len(variants) + 1  # 彼此也不相撞
+    # 往返保留 tool_call_id（含 None 與 ""）與 tool_calls
+    back = messages_from_json(messages_to_json([*base, ChatMessage("tool", "z", tool_call_id="")]))
+    assert [m.tool_call_id for m in back] == [None, None, "c1", ""]
+    assert back[1].tool_calls[0]["id"] == "c1" and back[1].tool_calls[0]["args"] == {"a": 1}
+    with pytest.raises(ValueError):
+        messages_to_json([ChatMessage("assistant", "x", tool_calls=({"id": "c", "name": "t", "args": {"a": float("nan")}},))])
+
+
 async def test_s2_1_tampered_or_lost_child_fails_closed_without_model_call_or_effect():
     store, _, _ = await _park()
     _approved_store(store)

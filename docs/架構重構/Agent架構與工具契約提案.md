@@ -760,11 +760,13 @@ class ModelPort(Protocol):
 
 | # | 結果 | 證據 |
 |---|---|---|
-| S2-1 | 通過（離線） | 崩潰重建後 history 與崩潰前逐則相等、`history_hash` 一致（`test_s2_1_rebuild_after_crash_history_equal_and_hash_equal`）；轉成 SDK 訊息後與「不崩潰、記憶體直接續跑」的對照組逐則相等，`ToolCallPart`／`ToolReturnPart` 的 `tool_call_id` 與工具名稱對應保持，回餵依 index（`..._sdk_messages_after_resume_are_message_by_message_equal`）；雜湊對鍵順序不敏感、對任何內容差異敏感（`..._hash_is_canonical_and_sensitive`）；child 被改或遺失 ⇒ `ContextLost` fail-closed，模型 0 次呼叫、無新增副作用（`..._tampered_or_lost_child_fails_closed...`） |
-| S2-2 | 通過（離線，fake executor 與 in-memory receipt） | 重送核准 2 次＋重放 resume 3 次：副作用 `[READ, WRITE]` 各 1 次，唯讀者也未在 resume 重做；4 執行緒同時 resume：WRITE 1 次；副作用後、receipt 前崩潰：視為 UNKNOWN 不重做，模型只看到 `unknown` 短碼；無核准則不執行（`approval_missing`）；舊 epoch 寫 checkpoint 被拒（`StaleEpoch`） |
-| S2-3 | 通過（離線） | 註冊表新增工具：SDK 工具清單仍 ＝ 凍結集合；註冊表移除或升版 `desktop_write`：清單收窄、該 action 不執行（`tool_not_in_snapshot`）；resume 帶超出凍結的集合 ⇒ 拒絕且模型 0 次呼叫；模型續跑時叫凍結集合外的工具 ⇒ 不可執行（見限制 1） |
+| S2-1 | 通過（離線；production 的 history 序列化與雜湊） | 崩潰重建後 history 與崩潰前逐則相等、`history_hash` 一致（`test_s2_1_rebuild_after_crash_history_equal_and_hash_equal`）；轉成 SDK 訊息後與「不崩潰、記憶體直接續跑」的對照組逐則相等，`ToolCallPart`／`ToolReturnPart` 的 `tool_call_id` 與工具名稱對應保持，回餵依 index（`..._sdk_messages_after_resume_are_message_by_message_equal`）；雜湊對 tool_calls 內的鍵順序不敏感；對下列欄位的改動皆敏感，已逐項測試（`..._hash_changes_for_every_field_mutation`）：role、content、tool_call_id（含 None 與 "" 的差別）、tool_calls 的 id／name／args（值與鍵）、tool_calls 數量、訊息順序、訊息數量；tool_call_id 與 tool_calls 往返後保留，NaN 被拒（`allow_nan=False`）。範圍僅限 `ChatMessage` 的這幾個欄位（見限制 5）；child 被改或遺失 ⇒ `ContextLost` fail-closed，模型 0 次呼叫、無新增副作用（`..._tampered_or_lost_child_fails_closed...`） |
+| S2-2 | 設計自洽（harness 模擬；核心邏輯在測試的 `FakeExecutor`／`Driver`，不是 production code） | 重送核准 2 次＋重放 resume 3 次：副作用 `[READ, WRITE]` 各 1 次，唯讀者也未在 resume 重做；4 執行緒同時 resume：WRITE 1 次；副作用後、receipt 前崩潰：視為 UNKNOWN 不重做，模型只看到 `unknown` 短碼；無核准則不執行（`approval_missing`）；舊 epoch 寫 checkpoint 被拒（`StaleEpoch`） |
+| S2-3 | 設計自洽（harness 模擬）；其中「SDK 只收到 capability_set 內的工具」為 production 實測 | 註冊表新增工具：SDK 工具清單仍 ＝ 凍結集合；註冊表移除或升版 `desktop_write`：清單收窄、該 action 不執行（`tool_not_in_snapshot`）；resume 帶超出凍結的集合 ⇒ 拒絕且模型 0 次呼叫；模型續跑時叫凍結集合外的工具 ⇒ 不可執行（見限制 1） |
 
 **判定（建議，待艾斯維爾裁決）**：**PydanticAI 撐得住這條路，不必退回自寫 adapter。** 理由：SDK 在每個工具呼叫處結束 run、不保存跨 run history、不執行工具（S1-1 已證，本輪再次 `sdk_tool_executions=0`）；park 與 resume 的權威狀態（history、checkpoint、receipt、approval、epoch）全在 Core，resume 只是「Core 組好 history 開新 run」，SDK 對此沒有額外要求。S2 的三項驗收有賴的是 Core 側的設計（child session＋hash、receipt 冪等、凍結集合交集），不是 SDK 能力，所以換 adapter 也一樣要做。
+
+**真正驗到 production 的部分**：(1) `PydanticAIModelPort` 依 `capability_set` 過濾 SDK 工具清單（凍結集合外的工具不在清單內）；(2) 新增的 `messages_to_json`／`messages_from_json`／`history_hash`；(3) SDK 的 `tool_call_id` 與 args 在 history 往返後保持。S2-2 的冪等（receipt、approval、epoch、UNKNOWN）與 S2-3 的「凍結 ∩ 註冊表」收窄邏輯，目前只是測試 harness 證明設計自洽，**production 路徑要在切片 D／E 重驗**。
 
 **限制與切片 D／E 的待辦**：
 
@@ -772,8 +774,9 @@ class ModelPort(Protocol):
 2. **checkpoint 鍵缺口**：`CHECKPOINT_KEYS`（§6.4）沒有 `child_context_ref`、`child_revision`、`history_hash`、凍結工具集合（含版本）、`step_id`；`TaskManager.save_checkpoint` 目前會以 `PolicyViolation` 拒絕這些鍵。切片 D 必須擴充（`test_s2_1_checkpoint_contract_gap_is_known` 會在擴充後失敗，屆時改為斷言差集為空）。
 3. **雜湊對象必須是 Core 的 `ChatMessage`**：SDK 的 `ModelResponse` 帶執行當下的 timestamp，不可拿來雜湊。合成的 call_id（Ollama 的 `attempt:index`）必須隨 assistant 訊息一起持久化進 child history，不可在 resume 時用新 attempt_id 重新合成。
 4. 回餵必須維持「每個 `tool_call` 都有對應 `tool` 訊息」（缺一個 provider 會拒絕整段）：park 時未執行的同批後續項，resume 時由 Core 補 `blocked(deferred_by_approval_wait)`，與 §6.4 一致。
+5. **推理內容不進 history**：`ChatMessage` 只存 role、content、tool_calls、tool_call_id；thought 與 reasoning item 不會進 history，所以 park／resume 之後推理內容必定遺失。`history_hash` 的涵蓋範圍也僅限這幾個欄位。
 
-**未驗證**：(a) 真實 provider（OpenAI chat／Responses／Ollama）對「帶 tool_call 與 tool_return 的 history 起新 run」的行為，只有 FunctionModel 的結構驗證；(b) 真實 PostgreSQL 的 `TaskManager`（`park_run`、`resume_run` 與 `worker_epoch`、approval 單次消耗）——本 Spike 的 Store／executor 是 fake，切片 E 實作後要用 DB 測試重驗 S2-2；(c) echo_thought_core `session_store` 作為 child session 的耐久性（§15 既有假設，未動）。
+**未驗證**：(0) reasoning 不持久化對 OpenAI Responses 這類「續跑時要帶回 reasoning item」的 provider 有何影響（可能要求帶回、可能降低推理品質或直接報錯），未測；(a) 真實 provider（OpenAI chat／Responses／Ollama）對「帶 tool_call 與 tool_return 的 history 起新 run」的行為，只有 FunctionModel 的結構驗證；(b) 真實 PostgreSQL 的 `TaskManager`（`park_run`、`resume_run` 與 `worker_epoch`、approval 單次消耗）——本 Spike 的 Store／executor 是 fake，切片 E 實作後要用 DB 測試重驗 S2-2；(c) echo_thought_core `session_store` 作為 child session 的耐久性（§15 既有假設，未動）。
 
 ---
 

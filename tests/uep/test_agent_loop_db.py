@@ -102,8 +102,9 @@ def test_db_illegal_transition_when_unknown_blocks_succeeded(session_factory):
         run_id=rig.run.run_id, step_id=step.step_id, tool="write.s", params={"path": "x"}, worker_epoch=rig.run.worker_epoch,
     )
     rig.executor.execute_behavior(action.action_id, "lose_after_exec")
-    with pytest.raises(Exception):  # noqa: B017  executor 失聯：Manager 標 UNKNOWN 並重新拋出
-        rig.tm.execute_action(action.action_id, {"path": "x"}, worker_epoch=rig.run.worker_epoch)
+    # executor 回應失聯（ToolResponseLost）：Manager 不拋出，回傳 UNKNOWN outcome
+    outcome = rig.tm.execute_action(action.action_id, {"path": "x"}, worker_epoch=rig.run.worker_epoch)
+    assert outcome.status is ActionStatus.UNKNOWN
     assert rig.tm.get_action(action.action_id).status == ActionStatus.UNKNOWN.value
     with pytest.raises(IllegalTransition):
         rig.tm.transition_run(rig.run.run_id, RunStatus.SUCCEEDED, worker_epoch=rig.run.worker_epoch)

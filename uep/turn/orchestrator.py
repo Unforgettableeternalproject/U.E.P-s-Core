@@ -210,6 +210,9 @@ class TurnOrchestrator:
         self._finished: OrderedDict[str, None] = OrderedDict()
         self._ctx: SessionContext | None = None  # tick 完成的 turn 用最近一次看到的 session
         self._tick_seq = 0
+        # route=agent_loop 的掛點（切片 D1）：只有 UEP_TOOL_PATH=agent 的組裝層會綁定；None（預設）時 route 不被消費，
+        # agent_loop 與 direct_chat 行為完全相同（legacy）
+        self._loop_entry: Callable[[CoreTicket, Proposal], object] | None = None
 
     # ---- turn.reply engine 的委派屬性（重設 _proposer 等仍立即生效，如包裝前）----
 
@@ -260,6 +263,10 @@ class TurnOrchestrator:
     @_on_shadow.setter
     def _on_shadow(self, value: Callable[[ShadowRecord], None] | None) -> None:
         self._reply_engine.on_shadow = value
+
+    def bind_loop_entry(self, entry: Callable[[CoreTicket, Proposal], object] | None) -> None:
+        """綁定 ``route=agent_loop`` 的 LoopTrigger 入口（只由 agent 工具路徑的組裝層呼叫）。入口須自行非同步化，不得阻塞 turn。"""
+        self._loop_entry = entry
 
     def bind_state(self, state: StateCoordinator) -> None:
         self.state = state
@@ -525,7 +532,18 @@ class TurnOrchestrator:
             self._live[turn_id] = _Live(ticket, trace_id, event_id, candidate_id, proposal.reason_code, speakers)
         self._emit(ticket, "turn.started", {"status": "started"})
         self._phase(InteractionState.THINKING, turn_id)
+        self._enter_loop(ticket, proposal)
         return IntakeResult(ticket, "issued", proposal, utterance_event_id=event_id, fact=fact)
+
+    def _enter_loop(self, ticket: CoreTicket, proposal: Proposal) -> None:
+        """route=agent_loop 且已綁定入口時交給 Agent 層（Run 之後脫離 turn 獨立存活，§4.6）；入口失敗不影響 turn。"""
+        if proposal.route != "agent_loop" or self._loop_entry is None:
+            return
+        try:
+            self._loop_entry(ticket, proposal)
+        except Exception:  # Agent 層的失敗不得讓 turn 簽發失敗
+            self.metrics["turn.loop_entry_failed"] += 1
+            logger.exception("agent_loop 入口失敗：turn=%s", ticket.turn_id)
 
     def on_think_started(self, turn_id: str) -> bool:
         """ES 真的開始 think（``_on_think_start``，入佇列後呼叫）：提議在這裡才算被採用，回饋 proposer。

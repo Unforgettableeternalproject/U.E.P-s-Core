@@ -30,6 +30,7 @@ class LoopBudget:
     max_parallel: int = 1  # 同一波並行度；TC-3 的 DB 強制（D1b）解鎖前真實 TaskManager 只能是 1
     repeat_limit: int = 3
     rejected_limit: int = 3
+    consult_no_progress_n: int = 3  # 連續無進展達此次數就不再投出 consult（與 max_consults 誰先到就照誰）
     finalize_on_exhausted: bool = True  # 耗盡時先以 tools=[] 要求收束；False 直接 FAILED(budget_exhausted)
     heartbeat_interval_s: float = 5.0
 

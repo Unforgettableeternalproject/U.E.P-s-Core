@@ -86,6 +86,7 @@ CHECKPOINT_KEYS = frozenset({
     "consumed_action_ids", "next_step_semantic", "tool_receipts",
     "child_context_ref", "child_revision", "history_hash", "frozen_tools", "frozen_tags", "step_id",
     "budget_counters", "visible_tools",
+    "frozen_modalities", "frozen_platforms",
 })
 
 

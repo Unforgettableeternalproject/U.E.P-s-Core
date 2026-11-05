@@ -94,6 +94,7 @@ class FakeTasks:
         self.actions: dict[str, dict[str, Any]] = {}
         self.outcomes: dict[str, ActionOutcome] = {}
         self.contents: dict[str, str] = {}
+        self.executors: dict[str, Any] = {}  # tool -> 真正的 ToolExecutor（例如 decision.consult 的 executor）；沒設定就用 behaviors
         self.unknown: set[str] = set()  # executor 失聯而持久化為 UNKNOWN 的 action
         self.executions: list[tuple[str, str]] = []  # (action_id, tool)：真正執行副作用的紀錄
         self.fail_tools: set[str] = set()  # 這些工具的 action 以 FAILED 收尾（receipt succeeded=False）
@@ -159,7 +160,16 @@ class FakeTasks:
                 raise ApprovalRequired(action_id)  # 沒有 approval_id 的執行路徑（核准後執行屬切片 E）
         behavior = self.behaviors.get(tool, lambda args: f"{tool}:{args.get('path')}")
         try:
-            text = behavior(dict(params))  # 在鎖外執行，讓並行波能真的並行
+            if tool in self.executors:
+                from uep.adapters.tool import ToolCall
+
+                self.executors[tool].execute(ToolCall(
+                    action_id=action_id, tool=tool, params=dict(params), params_hash="h",
+                    side_effect_class="internal_read", idempotency="native",
+                ))
+                text = f"{tool}:executor"
+            else:
+                text = behavior(dict(params))  # 在鎖外執行，讓並行波能真的並行
         except Exception:
             with self.lock:
                 self.unknown.add(action_id)  # 真實 Manager：executor 例外 ⇒ action 標 UNKNOWN 並重新拋出

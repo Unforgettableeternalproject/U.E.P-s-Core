@@ -64,6 +64,7 @@ class MemoryDreamEngine:
         self._spec = spec or memory_dream_spec()
         self._lock = threading.Lock()
         self._last: tuple[str, DreamDecision] | None = None  # 只留最新一筆（逾時的遲到結果不累積）
+        self._last_wait_reason: str | None = None  # 日誌靜默抑制：上一筆已記錄的 wait 原因
 
     def decide(self, request: DecisionRequest) -> DecisionResult:
         spec = self._spec
@@ -84,6 +85,18 @@ class MemoryDreamEngine:
             plan=self._plan(decision, snap), confidence=1.0, reason_code=decision.reason,
             engine=DecisionEngineInfo(tier="rule", id=_ENGINE_ID, version=_ENGINE_VERSION),
         )
+
+    def log_quiet(self, result: DecisionResult) -> bool:
+        """決策日誌的靜默抑制（比照 turn.interject）：run 與 fallback 一定記；wait 只在 reason_code 與上一筆不同時記，
+        其餘回 True（呼叫端只累加計數）。每個結果只應被問一次（由日誌觀察者呼叫）。"""
+        with self._lock:
+            if result.fallback or result.outcome != OUTCOME_WAIT:
+                self._last_wait_reason = None
+                return False
+            if result.reason_code == self._last_wait_reason:
+                return True
+            self._last_wait_reason = result.reason_code
+            return False
 
     def take(self, request_id: str) -> DreamDecision | None:
         """取回同一次 ``decide`` 留存的精確 ``DreamDecision``（取一次即清除）。"""

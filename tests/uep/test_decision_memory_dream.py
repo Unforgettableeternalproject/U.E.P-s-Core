@@ -254,6 +254,51 @@ def test_decision_log_attaches_memory_dream_without_raw_data(tmp_path):
     assert OWNER_NS not in blob and "snapshot" not in blob
 
 
+def test_decision_log_suppresses_repeated_quiet_waits(tmp_path):
+    rig = Rig(tmp_path, cfg=replace(CFG, min_gap_s=1000.0))
+    hub = DecisionHub()
+    rig.loop.set_decider(register_memory_dream(hub, rig.loop.planner))
+    sink = _Sink()
+    writer = DecisionLogWriter(sink, flush_interval=0.01)
+    writer.attach(hub)
+    try:
+        rig.loop.tick()  # run：記
+        for _ in range(3):
+            rig.tick_after(0.2)  # min_gap wait：第一筆記，其餘靜默
+        rig.engine().readiness["pending"] = 0
+        rig.tick_after(70)  # 原因改變（not_enough_pending）：記
+        rig.tick_after(70)  # 同原因：靜默
+        assert writer.flush()
+    finally:
+        writer.close()
+    rows = [r for r in sink.rows if r["kind"] == KIND_MEMORY_DREAM]
+    assert [(r["outcome"], r["reason_code"]) for r in rows] == [
+        ("run", "eligible"), ("wait", "min_gap"), ("wait", "not_enough_pending")]
+    assert writer.metrics["memory.dream.quiet"] == 3
+
+
+def test_fallback_is_always_logged_and_resets_quiet_state():
+    hub, _p, _d = _wired()
+    engine = hub.engine(KIND_MEMORY_DREAM)
+    sink = _Sink()
+    writer = DecisionLogWriter(sink, flush_interval=0.01)
+    writer.attach(hub)
+    try:
+        wait = _snap(quiet=100.0)
+        hub.submit(KIND_MEMORY_DREAM, _req(wait, 1))
+        hub.submit(KIND_MEMORY_DREAM, _req(wait, 2))  # 靜默
+        from uep.decision.contracts import DecisionRequest
+        for n in (3, 4):  # fallback 每次都記
+            hub.submit(KIND_MEMORY_DREAM, DecisionRequest(request_id=f"b{n}", kind=KIND_MEMORY_DREAM, facts={}))
+        hub.submit(KIND_MEMORY_DREAM, _req(wait, 5))  # fallback 之後同原因 wait 再記一次
+        assert writer.flush()
+    finally:
+        writer.close()
+    assert engine is not None
+    assert [(r["outcome"], r["status"]) for r in sink.rows] == [
+        ("wait", "ok"), ("wait", "invalid"), ("wait", "invalid"), ("wait", "ok")]
+
+
 # ---- import 邊界 ----
 
 def test_memory_package_does_not_import_decision():

@@ -133,6 +133,7 @@ class DecisionLogWriter:
         self._start_lock = threading.Lock()
         self._closed = False
         self._failing = False
+        self._quiet: dict[str, Callable[[DecisionResult], bool]] = {}  # kind -> 靜默抑制判斷（True＝不寫日誌）
 
     @property
     def enabled(self) -> bool:
@@ -146,6 +147,10 @@ class DecisionLogWriter:
         if not self.enabled:
             return
         try:
+            quiet = self._quiet.get(result.kind)
+            if quiet is not None and quiet(result):
+                self.metrics[f"{result.kind}.quiet"] += 1  # 靜默的 tick 只計數，不寫列
+                return
             self._enqueue(primary_row(request, result, spec, elapsed_ms))
         except Exception:
             self.metrics["decision_log.dropped"] += 1
@@ -175,6 +180,8 @@ class DecisionLogWriter:
         hub.add_observer(self.on_decision)
         for name in (kind,) if kind is not None else ("turn.reply", "turn.interject", "memory.dream"):
             engine = hub.engine(name)
+            if engine is not None and callable(getattr(engine, "log_quiet", None)):
+                self._quiet[name] = engine.log_quiet
             if engine is not None and hasattr(engine, "on_shadow"):
                 self._chain_shadow(engine)
 

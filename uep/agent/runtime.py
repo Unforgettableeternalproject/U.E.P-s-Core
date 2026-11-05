@@ -63,6 +63,9 @@ def _result_text(result: Mapping[str, Any]) -> str:
     return f"tool {status}" + (f": {reason}" if isinstance(reason, str) else "")
 
 
+result_text = _result_text  # 供 AgentLoop 以同一份規則組 child history（與 Runtime 內部 history 逐則相等）
+
+
 class ModelPortRuntime:
     def __init__(
         self, port: ModelPort, messages_for: MessagesFor, *, max_output_tokens: int = 256,
@@ -105,7 +108,7 @@ class ModelPortRuntime:
         attempt = self._attempts.get(attempt_id)
         if attempt is None:
             return RuntimeStatus(attempt_id, "unknown")
-        return RuntimeStatus(attempt_id, attempt.state, attempt.seq)  # type: ignore[arg-type]
+        return RuntimeStatus(attempt_id, attempt.state, attempt.seq, {"usage": dict(attempt.usage)})  # type: ignore[arg-type]
 
     def submit_tool_result(self, attempt_id: str, action_id: str, result: Mapping[str, Any]) -> None:
         attempt = self._attempts.get(attempt_id)
@@ -207,6 +210,7 @@ class ModelPortRuntime:
                 yield self._event(attempt, "tool_intent", tool_intent={
                     "tool": i.tool, "args": dict(i.args or {}), "args_complete": bool(i.args_complete),
                     "call_id": i.call_id, "index": i.index, "side_effect_hint": None,
+                    "batch_size": len(intents),  # 同一則模型訊息內的呼叫數；AgentLoop 據此收齊整批再排程（§6.4-1）
                 })
             if not self._continue:
                 attempt.state = "completed"

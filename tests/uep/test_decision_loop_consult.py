@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 
 import pytest
 
@@ -338,3 +339,54 @@ def test_log_row_status_for_fallbacks():
         request_id="r1", kind=KIND_LOOP_CONSULT, facts=facts(), deadline=0.0))
     hub.decide(KIND_LOOP_CONSULT, DecisionRequest(request_id="r2", kind=KIND_LOOP_CONSULT, facts={}))
     assert seen == ["timeout", "invalid"]
+
+
+def test_concurrent_runs_not_busy():
+    """不同執行緒、不同 run_id 同時 consult 不得互相判成 busy（用 barrier 讓兩個規則確實重疊）。"""
+    barrier = threading.Barrier(2, timeout=5)
+
+    def slow(f, s):
+        barrier.wait()  # 兩個呼叫都進到規則內才放行 => 一定重疊
+        return DecisionPlan(reply=DecisionReply(mode="pass")), "pass", "x"
+
+    eng = LoopConsultEngine(rules={**DEFAULT_RULES, "speak": slow})
+    out = {}
+
+    def run(name):
+        out[name] = eng.consult(facts("speak", run_id=name))
+
+    threads = [threading.Thread(target=run, args=(n,)) for n in ("run_a", "run_b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert set(out) == {"run_a", "run_b"}
+    assert all(not r.fallback and r.advice is not None for r in out.values())
+    assert out["run_a"].decision_id != out["run_b"].decision_id
+
+
+def test_invalid_without_key_uses_fresh_id(engine):
+    a = engine.consult(None, fallback_key="")  # type: ignore[arg-type]
+    b = engine.consult(None, fallback_key="")  # type: ignore[arg-type]
+    _assert_fallback(a, "consult_invalid")
+    assert a.decision_id != b.decision_id  # 無鍵時不保證重放決定性
+    k1 = engine.consult(None, fallback_key="req_1")  # type: ignore[arg-type]
+    assert k1.decision_id == engine.consult(None, fallback_key="req_1").decision_id  # type: ignore[arg-type]
+
+
+def test_plan_from_dict_ignores_unknown_keys_in_sections():
+    data = {
+        "route": "direct_chat", "future_top": 1,
+        "reply": {"mode": "respond", "x": 1},
+        "output": {"modalities": ["text"], "tts": True, "emotion": {"source": "preset", "y": 2}, "z": 3},
+        "placement": {"target_platform": "pc", "q": 1},
+        "loop": {"outcome": "finalize", "reeval_on": ["timeout"], "q": 1},
+        "followups": [{"kind": "completion_report", "q": 1}],
+    }
+    plan = plan_from_dict(data)
+    assert plan.reply == DecisionReply(mode="respond")
+    assert plan.output == DecisionOutput(modalities=("text",), tts=True, emotion=plan.output.emotion)
+    assert plan.output.emotion.source == "preset"
+    assert plan.placement == DecisionPlacement(target_platform="pc")
+    assert plan.loop == DecisionLoop(outcome="finalize", reeval_on=("timeout",))
+    assert plan.followups == (DecisionFollowup(kind="completion_report"),)

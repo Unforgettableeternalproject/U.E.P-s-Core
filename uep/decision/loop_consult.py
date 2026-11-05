@@ -30,7 +30,7 @@ from uep.decision.contracts import (
 )
 from uep.decision.hub import DecisionHub
 from uep.decision.registry import DecisionPointRegistry, DecisionPointSpec
-from uep.ids import derived_id
+from uep.ids import derived_id, new_id
 
 logger = logging.getLogger("uep.decision.loop_consult")
 
@@ -183,7 +183,7 @@ _KIND_ADVICE_SCHEMAS: dict[str, dict[str, Any]] = {
 
 
 def input_schema(sub_kind: str) -> dict[str, Any]:
-    """該 sub_kind 的 ``facts`` JSON schema（英文列舉／ID，不含原文）。"""
+    """該 sub_kind 的 ``facts`` JSON schema（英文列舉／ID，不含原文）。bool 旗標缺漏一律視為 False（保守）。"""
     _require_sub_kind(sub_kind)
     return {
         "type": "object", "required": ["sub_kind", "run_id", "step_id", "ordinal", "frozen", "capability_snapshot"],
@@ -381,9 +381,9 @@ def _validate_advice(sub_kind: str, plan: DecisionPlan) -> None:
 class LoopConsultEngine:
     """``loop.consult`` 的規則 engine：同步、無 LLM、不拋例外。
 
-    busy：同一 engine 同時只處理一個 consult，重入或並發的呼叫立即回 ``consult_busy``（不排隊）。
-    逾時：規則本身是純記憶體運算；若超出 spec 預算（或 ``request.deadline`` 已過）則捨棄結果回 ``consult_timeout``
-    （不另開執行緒搶佔，與 sync 規則 engine 的語意一致）。
+    busy：只攔「同一執行緒重入」（``threading.local`` 旗標）；不同 Run／平行 context 的並發 consult 互不影響。
+    逾時：只在事後比對（超出 spec 預算或 ``request.deadline`` 已過則捨棄結果回 ``consult_timeout``），不搶佔。
+    規則限純運算；日後有 LLM 或 I/O 規則時改走 ``ProposerGuard``。
     """
 
     def __init__(
@@ -396,7 +396,7 @@ class LoopConsultEngine:
         self._registry = registry
         self._rules = dict(rules) if rules is not None else dict(DEFAULT_RULES)
         self._clock = clock
-        self._lock = threading.Lock()
+        self._local = threading.local()
 
     @property
     def spec(self) -> DecisionPointSpec:
@@ -405,18 +405,20 @@ class LoopConsultEngine:
     # -- consult：回傳工具層需要的形狀 --
 
     def consult(self, facts: Mapping[str, Any], *, deadline: float | None = None, fallback_key: str = "") -> ConsultResult:
-        """永不拋例外。``fallback_key`` 只用於 facts 無法取得鍵時導出決定性 ID（如 request_id）。"""
+        """永不拋例外。``fallback_key`` 只用於 facts 無法取得鍵時導出 ID（如 request_id）；
+        為空字串時改用 ``new_id("dec")``。invalid 路徑不保證重放決定性。"""
         spec = self.spec
         try:
             key = self._identity(facts)
         except _ConsultInvalid:
             return self._fallback(
-                derived_id("dec", KIND_LOOP_CONSULT, "invalid", fallback_key), None, spec.on_invalid_reason
+                derived_id("dec", KIND_LOOP_CONSULT, "invalid", fallback_key) if fallback_key else new_id("dec"), None, spec.on_invalid_reason
             )
         sub_kind = key[3]
         decision_id = consult_decision_id(*key)
-        if not self._lock.acquire(blocking=False):
+        if getattr(self._local, "active", False):
             return self._fallback(decision_id, sub_kind, spec.on_busy_reason)
+        self._local.active = True
         try:
             started = self._clock()
             if deadline is not None and started >= deadline:
@@ -437,7 +439,7 @@ class LoopConsultEngine:
                 return self._fallback(decision_id, sub_kind, spec.on_timeout_reason)
             return result
         finally:
-            self._lock.release()
+            self._local.active = False
 
     @staticmethod
     def _identity(facts: Mapping[str, Any]) -> tuple[str, str, int, str]:

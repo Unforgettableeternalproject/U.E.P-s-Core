@@ -6,7 +6,7 @@ P0 的 ``DecisionPlan`` 只有 ``route`` 與 ``reply``（``reply.mode``、``inte
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 Trigger = Literal["initial", "reeval", "event", "tick"]
@@ -125,28 +125,29 @@ def plan_to_dict(plan: DecisionPlan) -> dict[str, Any]:
     return {k: v for k, v in data.items() if v is not None}
 
 
+def _build(cls: type, data: dict[str, Any], **override: Any) -> Any:
+    """依 dataclass fields 過濾未知鍵後建構。"""
+    names = {f.name for f in fields(cls)}
+    return cls(**{**{k: v for k, v in data.items() if k in names}, **override})
+
+
 def plan_from_dict(data: dict[str, Any]) -> DecisionPlan:
-    """反序列化；缺少的區段為 None（相容只含 route／reply 的舊資料），未知鍵忽略。"""
-    reply = data.get("reply")
-    output = data.get("output")
-    placement = data.get("placement")
-    loop = data.get("loop")
-    followups = data.get("followups")
+    """反序列化；缺少的區段為 None（相容只含 route／reply 的舊資料），頂層與區段內的未知鍵一律忽略。"""
+    reply, output, placement = data.get("reply"), data.get("output"), data.get("placement")
+    loop, followups = data.get("loop"), data.get("followups")
     return DecisionPlan(
         route=data.get("route"),
-        reply=DecisionReply(**reply) if reply is not None else None,
+        reply=_build(DecisionReply, reply) if reply is not None else None,
         output=(
-            DecisionOutput(
-                modalities=tuple(output.get("modalities", ())), tts=output.get("tts", False),
-                emotion=DecisionEmotion(**output.get("emotion", {})), history=output.get("history", "commit"),
+            _build(
+                DecisionOutput, output, modalities=tuple(output.get("modalities", ())),
+                emotion=_build(DecisionEmotion, output.get("emotion") or {}),
             )
             if output is not None else None
         ),
-        placement=DecisionPlacement(**placement) if placement is not None else None,
-        loop=(
-            DecisionLoop(**{**loop, "reeval_on": tuple(loop.get("reeval_on", ()))}) if loop is not None else None
-        ),
-        followups=tuple(DecisionFollowup(**f) for f in followups) if followups is not None else None,
+        placement=_build(DecisionPlacement, placement) if placement is not None else None,
+        loop=_build(DecisionLoop, loop, reeval_on=tuple(loop.get("reeval_on", ()))) if loop is not None else None,
+        followups=tuple(_build(DecisionFollowup, f) for f in followups) if followups is not None else None,
     )
 
 

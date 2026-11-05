@@ -42,7 +42,7 @@ from pydantic_ai import (
 from pydantic_ai import (
     ModelResponse as SdkResponse,
 )
-from pydantic_ai.exceptions import RunCancelled
+from pydantic_ai.exceptions import ModelRetry, RunCancelled, UnexpectedModelBehavior
 from pydantic_ai.messages import FunctionToolResultEvent
 from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResultEvent
@@ -103,7 +103,11 @@ class PydanticAIModelPort:
         self._model = model if model is not None else self._build_model(
             dialect, model_name, api_key, project, organization, base_url, timeout,
         )
-        self._agent: Agent[None, Any] = Agent(self._model, output_type=[str, DeferredToolRequests])
+        # 工具重試設 0：模型叫了不在清單內的工具時，SDK 預設會自行再打一次模型（多一次請求），這裡不要；
+        # 未知工具改由 ``stream`` 轉成 tool_intent 交給 Core 的 Gateway 拒絕（output 重試維持預設）
+        self._agent: Agent[None, Any] = Agent(
+            self._model, output_type=[str, DeferredToolRequests], retries={"tools": 0},
+        )
         self._tokens: dict[str, CancellationToken] = {}
         self._cancelled: set[str] = set()
         self.sdk_tool_executions: list[int] = [0]  # S1-1：SDK 自行執行工具的次數（必須恆為 0）
@@ -211,6 +215,8 @@ class PydanticAIModelPort:
         toolset = _GuardedExternalToolset(defs, self.sdk_tool_executions)
         history = self._history(list(req.messages))
         finish: str = "stop"
+        called: set[str] = set()  # 模型這次呼叫過的工具名稱（判斷是否為「未知工具」造成的中止）
+        known = {d.name for d in defs}
         try:
             async with self._agent.run_stream_events(
                 None, message_history=history, toolsets=[toolset],
@@ -223,6 +229,8 @@ class PydanticAIModelPort:
                     for out in router.route(ev):
                         if out.kind == "tool_call_delta":
                             assembler.feed(out)
+                            if out.tool:
+                                called.add(out.tool)
                         if req.attempt_id in self._cancelled:
                             finish = "cancelled"
                             break
@@ -243,6 +251,15 @@ class PydanticAIModelPort:
                         })
         except RunCancelled:
             finish = "cancelled"
+        except UnexpectedModelBehavior as exc:
+            if isinstance(exc.__cause__, ModelRetry) and called - known:
+                # 模型呼叫了清單外的工具：SDK 因重試為 0 而中止。呼叫已完整收到，照常輸出 tool_intent，
+                # 清單外者由 Gateway 以 capability_missing 拒絕（不會執行，也不多打一次模型）
+                logger.warning("模型呼叫了清單外的工具（%d 個），交由 Gateway 拒絕", len(called - known))
+                finish = "tool_calls"
+            else:
+                logger.exception("模型層串流失敗 attempt=%s", req.attempt_id)
+                finish = "error"
         except Exception:
             logger.exception("模型層串流失敗 attempt=%s", req.attempt_id)
             finish = "error"

@@ -480,17 +480,15 @@ async def test_s2_3_widening_the_capability_set_on_resume_is_refused():
 
 
 async def test_s2_3_model_calling_tool_outside_snapshot_never_reaches_executor():
-    """續跑的模型亂叫凍結集合外的工具：該名稱不在 SDK 的工具清單內，SDK 自己把它當未知工具、重試一次後放棄
-    （``UnexpectedModelBehavior``）。Port 以 ``finish=error`` 收尾、不會產生可執行（args_complete）的 tool_intent，所以不會進到 Core 的 executor。
-
-    限制（寫進 §7.4）：這個重試發生在 SDK 內部，同一個 run 會多打一次模型請求（本例 seen 為 2）。"""
+    """續跑的模型亂叫凍結集合外的工具：該名稱不在 SDK 的工具清單內。切片 D1 起 Port 把 SDK 的工具重試設為 0，
+    不再多打一次模型；呼叫照常成為 tool_intent（args_complete），由 Core 的 Gateway 以 capability_missing 拒絕，不會進到 executor。"""
     store, _, _ = await _park(late_call="brand_new_tool")
     _approved_store(store)
     model = Model(late_call="brand_new_tool")
     _, events = await Driver(store, model.port(), FakeExecutor(store), dict(REGISTRY)).resume()
     assert model.seen[-1][1] <= set(Driver.frozen(FROZEN_CAP))
-    # 兩次重試的 tool_call_delta 同 index，被 ToolCallAssembler 串在一起 -> 壞 JSON：args_complete=False，Core 一律拒絕、不執行
-    assert all(not e.args_complete and e.error_code == "invalid_tool_args" for e in events if e.kind == "tool_intent")
-    assert events[-1].finish_reason == "error"
-    assert len(model.seen) == 2  # resume 後的第一次 + SDK 內部重試（同一個 run 內多打一次模型）
+    intents = [e for e in events if e.kind == "tool_intent"]
+    assert [(e.tool, e.args_complete) for e in intents] == [("brand_new_tool", True)]
+    assert events[-1].finish_reason == "tool_calls"
+    assert len(model.seen) == 1  # resume 後只打一次；沒有 SDK 內部重試（修正前為 2）
     assert store.side_effects == [READ_ACTION, WRITE_ACTION]

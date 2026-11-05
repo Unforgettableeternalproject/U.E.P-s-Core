@@ -10,7 +10,12 @@ import pytest
 
 from uep.assembly import AssemblyError, assemble_core
 from uep.control.channel import InProcessControlChannel
-from uep.echo.agent_wiring import LOOP_GOAL_USER_TURN, LoopEntry, create_loop_run, trigger_from_turn
+from uep.echo.agent_wiring import (
+    LOOP_GOAL_USER_TURN,
+    LoopEntry,
+    create_loop_run,
+    trigger_from_turn,
+)
 from uep.events.bus import EventBus
 from uep.events.publisher import EventPublisher
 from uep.fakes.output import FakeOutputAdapter

@@ -79,10 +79,13 @@ SYSTEM_ACTOR = "uep:task_manager"
 # resume_run 預設可自動解除的暫停原因；其餘（user、cooldown、resource_missing）需呼叫端明確傳入
 DEFAULT_RESUME_REASONS: frozenset[PauseReason] = frozenset({PauseReason.CORE_SHUTDOWN, PauseReason.PRESENCE_LEFT})
 
-# 契約 §6.4 的 checkpoint 內容鍵
+# 契約 §6.4 的 checkpoint 內容鍵；後七個為切片 D1 擴充（§4.7、§4.10、§8.2）：平行 context 的引用與雜湊、
+# 凍結的工具集合（{name: version}）與能力標籤、目前 Step、預算計數器。仍是 ID／短碼／數字，不存私人原文
 CHECKPOINT_KEYS = frozenset({
     "completed_steps", "input_result_refs", "auth_snapshot", "pending_approvals",
     "consumed_action_ids", "next_step_semantic", "tool_receipts",
+    "child_context_ref", "child_revision", "history_hash", "frozen_tools", "frozen_tags", "step_id",
+    "budget_counters",
 })
 
 

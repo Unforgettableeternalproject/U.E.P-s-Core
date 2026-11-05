@@ -373,16 +373,13 @@ async def test_s2_1_tampered_or_lost_child_fails_closed_without_model_call_or_ef
     assert model.seen == [] and store.side_effects == [READ_ACTION]  # 只有 park 前的唯讀那一次
 
 
-def test_s2_1_checkpoint_contract_gap_is_known():
-    """已存在的 §6.4 鍵與 Spike 新增鍵分開：新增鍵目前不在 ``CHECKPOINT_KEYS``，``save_checkpoint`` 會以 PolicyViolation 拒絕。
-    切片 D 必須擴充 CHECKPOINT_KEYS；擴充後本測試的 extra 會變空，屆時把這個測試改成斷言為空。"""
+def test_s2_1_checkpoint_contract_gap_is_closed():
+    """Spike 用到的 checkpoint 鍵已由切片 D1 納入 ``CHECKPOINT_KEYS``：差集為空，``save_checkpoint`` 不再拒絕它們。"""
     cp_keys = {
         "next_step_semantic", "pending_approvals", "consumed_action_ids", "child_context_ref", "child_revision",
         "history_hash", "frozen_tools", "step_id",
     }
-    assert sorted(cp_keys - CHECKPOINT_KEYS) == [
-        "child_context_ref", "child_revision", "frozen_tools", "history_hash", "step_id",
-    ]
+    assert sorted(cp_keys - CHECKPOINT_KEYS) == []
 
 
 # ───────────────────────── S2-2 ─────────────────────────

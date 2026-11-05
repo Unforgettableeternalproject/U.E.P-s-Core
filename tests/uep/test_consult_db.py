@@ -17,7 +17,11 @@ from uep.agent.budget import LoopBudget
 from uep.agent.core import stable_action_id
 from uep.agent.loop import AgentLoop
 from uep.decision.hub import DecisionHub
-from uep.decision.loop_consult import MAX_CONSULTS, register_loop_consult
+from uep.decision.loop_consult import (
+    MAX_CONSULTS,
+    consult_decision_id,
+    register_loop_consult,
+)
 from uep.events.bus import EventBus
 from uep.events.publisher import EventPublisher
 from uep.fakes.loop_context import InMemoryLoopContextStore
@@ -35,6 +39,7 @@ pytestmark = pytest.mark.usefixtures("session_factory")
 class _Spy:
     def __init__(self, inner):
         self.inner, self.count = inner, 0
+        self.params: list[dict] = []  # 建立 action 時的完整參數（含 Gateway 注入）：重放要用同一份，否則 ParamsHashMismatch
 
     @property
     def lookup_authoritative(self):
@@ -45,6 +50,7 @@ class _Spy:
 
     def execute(self, call_):
         self.count += 1
+        self.params.append(dict(call_.params))
         return self.inner.execute(call_)
 
 
@@ -86,8 +92,12 @@ def test_db_consult_full_four_phase_and_replay_does_not_rerun_executor(session_f
         (action,) = list(s.scalars(select(ActionIntentRow).where(ActionIntentRow.tool == CONSULT_TOOL)))
     assert action.status == ActionStatus.SUCCEEDED.value and action.side_effect_class == "internal_read"
     assert action.action_id == stable_action_id(run.run_id, action.step_id, 0)
-    again = tm.execute_action(action.action_id, {}, worker_epoch=run.worker_epoch)
+    again = tm.execute_action(action.action_id, spy.params[0], worker_epoch=run.worker_epoch)  # 完整 args，不是空 dict
     assert again.executed is False and spy.count == 1
+    # CN-9：decision_id 進 receipt meta 與 checkpoint（JSONB 往返後）
+    decision_id = consult_decision_id(run.run_id, action.step_id, 0, "loop_end")
+    assert tm.get_receipt(action.action_id).meta["decision_id"] == decision_id
+    assert steps["last_decision_id"] == decision_id
 
 
 def test_db_escalate_fails_the_run_with_escalated_and_emits_candidate_once(session_factory):
@@ -99,3 +109,6 @@ def test_db_escalate_fails_the_run_with_escalated_and_emits_candidate_once(sessi
     out = loop.run(trigger(tags=CTAGS), run.run_id, parent=PARENT, system_text="s")
     assert (out.state, out.reason_code) == ("failed", "escalated")
     assert tm.get_run(run.run_id).status == RunStatus.FAILED.value and len(escalations) == 1
+    cp = tm.get_run(run.run_id).checkpoint  # 終態 checkpoint 帶 decision_id 與缺口碼（耐久紀錄）
+    assert cp["next_step_semantic"] == "end:escalated" and cp["escalate_gap"] == "scope_exceeded"
+    assert cp["last_decision_id"] == escalations[0].decision_id

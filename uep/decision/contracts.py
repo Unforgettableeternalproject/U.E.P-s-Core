@@ -6,7 +6,7 @@ P0 的 ``DecisionPlan`` 只有 ``route`` 與 ``reply``（``reply.mode``、``inte
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 Trigger = Literal["initial", "reeval", "event", "tick"]
@@ -49,11 +49,106 @@ class DecisionReply:
 
 
 @dataclass(frozen=True)
+class DecisionEmotion:
+    """``DecisionOutput.emotion``（提案 §3.3）。"""
+
+    source: str = "none"  # none | llm_marker | preset
+    preset: str | None = None
+
+
+@dataclass(frozen=True)
+class DecisionOutput:
+    """``DecisionPlan.output``：輸出處置建議（``loop.consult(output_modality)`` 的 advice 區段）。"""
+
+    modalities: tuple[str, ...] = ()  # text | audio_stream | typing | animation
+    tts: bool = False
+    emotion: DecisionEmotion = field(default_factory=DecisionEmotion)
+    history: str = "commit"  # commit | ephemeral
+
+
+@dataclass(frozen=True)
+class DecisionPlacement:
+    """``DecisionPlan.placement``：平台／executor／Presence 預配置建議。"""
+
+    target_platform: str | None = None
+    executor_ref: str | None = None
+    presence_intent: str = "none"  # stay | request_move | none
+    audience_scope_max: str | None = None
+
+
+@dataclass(frozen=True)
+class DecisionLoop:
+    """``DecisionPlan.loop``：啟動範圍；``outcome`` 只用於 ``loop.consult(loop_end)`` 的 advice，start 路徑不填。"""
+
+    start: bool = False
+    trigger_kind: str | None = None
+    goal_code: str | None = None
+    policy_ref: str | None = None
+    reeval_on: tuple[str, ...] = ()
+    outcome: str | None = None  # continue | finalize
+
+
+@dataclass(frozen=True)
+class DecisionFollowup:
+    """``DecisionPlan.followups`` 的一項：後續請求（如完成後回報）。"""
+
+    kind: str
+    after_ms: int | None = None
+    on_event: str | None = None
+
+
+@dataclass(frozen=True)
+class Escalate:
+    """consult 的升級旗標：需要超出凍結範圍的決定時只回 ``needed=True``，不回 advice（CN-1）。"""
+
+    needed: bool = False
+    reason_code: str = ""
+
+
+@dataclass(frozen=True)
 class DecisionPlan:
-    """提議的集合（不是命令）；所有區段選填。P0 只有 ``route`` 與 ``reply``。"""
+    """提議的集合（不是命令）；所有區段選填，預設 None。已實作 ``route``、``reply`` 與 consult 用的
+    ``output``／``placement``／``loop``／``followups``；其餘區段（capability、provisioning、model）之後依提案 §3.3 擴充。
+    """
 
     route: str | None = None  # direct_chat | agent_loop | task_request | ignore
     reply: DecisionReply | None = None
+    output: DecisionOutput | None = None
+    placement: DecisionPlacement | None = None
+    loop: DecisionLoop | None = None
+    followups: tuple[DecisionFollowup, ...] | None = None
+
+
+def plan_to_dict(plan: DecisionPlan) -> dict[str, Any]:
+    """序列化；值為 None 的區段不輸出，故舊格式（只有 route／reply）的輸出維持不變。"""
+    data = asdict(plan)
+    return {k: v for k, v in data.items() if v is not None}
+
+
+def _build(cls: type, data: dict[str, Any], **override: Any) -> Any:
+    """依 dataclass fields 過濾未知鍵後建構。"""
+    names = {f.name for f in fields(cls)}
+    return cls(**{**{k: v for k, v in data.items() if k in names}, **override})
+
+
+def plan_from_dict(data: dict[str, Any]) -> DecisionPlan:
+    """反序列化；缺少的區段為 None（相容只含 route／reply 的舊資料），頂層與區段內的未知鍵一律忽略。"""
+    reply, output, placement = data.get("reply"), data.get("output"), data.get("placement")
+    loop, followups = data.get("loop"), data.get("followups")
+    return DecisionPlan(
+        route=data.get("route"),
+        reply=_build(DecisionReply, reply) if reply is not None else None,
+        output=(
+            _build(
+                DecisionOutput, output, modalities=tuple(output.get("modalities", ())),
+                emotion=_build(DecisionEmotion, output.get("emotion") or {}),
+            )
+            if output is not None else None
+        ),
+        placement=_build(DecisionPlacement, placement) if placement is not None else None,
+        loop=_build(DecisionLoop, loop, reeval_on=tuple(loop.get("reeval_on", ()))) if loop is not None else None,
+        followups=tuple(_build(DecisionFollowup, f) for f in followups) if followups is not None else None,
+    )
 
 
 @dataclass(frozen=True)

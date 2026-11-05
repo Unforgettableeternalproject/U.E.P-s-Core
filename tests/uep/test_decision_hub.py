@@ -292,6 +292,7 @@ def test_decision_package_boundary():
             # DL-3：DB 落盤與 turn.reply 離線重跑是葉節點之外的轉接層
             "db.py": {"uep.config", "uep.db.base", "uep.db.engine"},
             "replay_turn.py": {"uep.turn.models", "uep.turn.proposer", "uep.turn.registry", "uep.ids"},
+            "loop_consult.py": {"uep.ids"},  # DL-C1：決定性 decision_id 用 derived_id
         }
         if path.name in allowed_outside:
             allowed = allowed_outside[path.name]

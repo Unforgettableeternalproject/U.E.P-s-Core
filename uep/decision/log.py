@@ -167,19 +167,26 @@ class DecisionLogWriter:
         except queue.Full:
             self.metrics["decision_log.dropped"] += 1
 
-    def attach(self, hub: DecisionHub, kind: str = "turn.reply") -> None:
-        """掛到中樞：登記結果觀察者；並串接該 kind engine 的 ``on_shadow``（保留原回呼）。不需改 Host。"""
+    def attach(self, hub: DecisionHub, kind: str | None = None) -> None:
+        """掛到中樞：登記結果觀察者；並串接 engine 的 ``on_shadow``（保留原回呼）。不需改 Host。
+
+        ``kind`` 預設為所有有 shadow 回呼的內建決策點（turn.reply、turn.interject）；指定時只串接該 kind。
+        """
         hub.add_observer(self.on_decision)
-        engine = hub.engine(kind)
-        if engine is not None and hasattr(engine, "on_shadow"):
-            previous: Callable[[Any], None] | None = engine.on_shadow
+        for name in (kind,) if kind is not None else ("turn.reply", "turn.interject"):
+            engine = hub.engine(name)
+            if engine is not None and hasattr(engine, "on_shadow"):
+                self._chain_shadow(engine)
 
-            def chained(record: Any) -> None:
-                if previous is not None:
-                    previous(record)
-                self.on_shadow(record)
+    def _chain_shadow(self, engine: Any) -> None:
+        previous: Callable[[Any], None] | None = engine.on_shadow
 
-            engine.on_shadow = chained
+        def chained(record: Any) -> None:
+            if previous is not None:
+                previous(record)
+            self.on_shadow(record)
+
+        engine.on_shadow = chained
 
     # ---- 背景寫入 ----
 

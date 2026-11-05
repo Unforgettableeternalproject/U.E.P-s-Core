@@ -289,6 +289,8 @@ def test_decision_package_boundary():
         outside = {i for i in imports if not (i == "uep.decision" or i.startswith("uep.decision."))}
         allowed_outside = {
             "turn_reply.py": {"uep.turn.models", "uep.turn.proposer", "uep.ids"},
+            # DL-P1：turn.interject 轉接層（與 turn_reply 共用 ShadowRecord／engine）
+            "turn_interject.py": {"uep.turn.models", "uep.turn.proposer", "uep.ids"},
             # DL-3：DB 落盤與 turn.reply 離線重跑是葉節點之外的轉接層
             "db.py": {"uep.config", "uep.db.base", "uep.db.engine"},
             "replay_turn.py": {"uep.turn.models", "uep.turn.proposer", "uep.turn.registry", "uep.ids"},
@@ -301,8 +303,10 @@ def test_decision_package_boundary():
 
 
 def test_turn_package_only_uses_hub_public_modules():
-    """uep.turn 只允許經 contracts／hub／turn_reply 使用中樞。"""
-    allowed = {"uep.decision.contracts", "uep.decision.hub", "uep.decision.turn_reply"}
+    """uep.turn 只允許經 contracts／hub／turn_reply／turn_interject 使用中樞。"""
+    allowed = {
+        "uep.decision.contracts", "uep.decision.hub", "uep.decision.turn_reply", "uep.decision.turn_interject",
+    }
     for path in sorted((UEP_ROOT / "turn").glob("*.py")):
         bad = {i for i in _uep_imports(path) if i.startswith("uep.decision")} - allowed
         assert not bad, f"{path.name}: {sorted(bad)}"

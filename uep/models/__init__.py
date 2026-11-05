@@ -7,9 +7,12 @@ from uep.models.port import (
     ModelRequest,
     ProviderCapabilities,
     ToolCallAssembler,
+    history_hash,
+    messages_from_json,
+    messages_to_json,
 )
 
 __all__ = [
     "CapabilityMissingError", "ChatMessage", "ModelEvent", "ModelPort", "ModelRequest",
-    "ProviderCapabilities", "ToolCallAssembler",
+    "ProviderCapabilities", "ToolCallAssembler", "history_hash", "messages_from_json", "messages_to_json",
 ]

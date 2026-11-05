@@ -754,6 +754,27 @@ class ModelPort(Protocol):
 | S2-2 | **重複核准只產生一次副作用**（重送核准／重放 resume 不重複執行 action） |
 | S2-3 | resume 後的**工具集合 ⊆ 凍結集合**（AL-3） |
 
+**Spike 2 結果（2026-11-06，pydantic-ai-slim 2.65.0；`feature/spike2-park-resume`；離線測試 `tests/uep/test_spike2_park_resume.py`，13 項，不需 DB）**
+
+做法：以 in-memory `Store`（child session、checkpoint、receipt、approval）加 fake executor，用 FunctionModel 驅動 `PydanticAIModelPort`（遇工具呼叫即結束 run）。第一輪模型吐一則文字＋三個工具呼叫（`deep_recall`、需核准的 `desktop_write`、`member_recall`）→ 唯讀者先執行、需核准者 park、同批後續項不執行 → 寫 child history 與 checkpoint → 「崩潰」（丟棄 Driver／Port／Model，只留 Store）→ 新 Driver 重建 → 驗證 → 以新 run 續跑。history 的序列化與雜湊在 `uep/models/port.py`（`messages_to_json`／`messages_from_json`／`history_hash`，對象是 Core 的 `ChatMessage`，不是 SDK 型別）。
+
+| # | 結果 | 證據 |
+|---|---|---|
+| S2-1 | 通過（離線） | 崩潰重建後 history 與崩潰前逐則相等、`history_hash` 一致（`test_s2_1_rebuild_after_crash_history_equal_and_hash_equal`）；轉成 SDK 訊息後與「不崩潰、記憶體直接續跑」的對照組逐則相等，`ToolCallPart`／`ToolReturnPart` 的 `tool_call_id` 與工具名稱對應保持，回餵依 index（`..._sdk_messages_after_resume_are_message_by_message_equal`）；雜湊對鍵順序不敏感、對任何內容差異敏感（`..._hash_is_canonical_and_sensitive`）；child 被改或遺失 ⇒ `ContextLost` fail-closed，模型 0 次呼叫、無新增副作用（`..._tampered_or_lost_child_fails_closed...`） |
+| S2-2 | 通過（離線，fake executor 與 in-memory receipt） | 重送核准 2 次＋重放 resume 3 次：副作用 `[READ, WRITE]` 各 1 次，唯讀者也未在 resume 重做；4 執行緒同時 resume：WRITE 1 次；副作用後、receipt 前崩潰：視為 UNKNOWN 不重做，模型只看到 `unknown` 短碼；無核准則不執行（`approval_missing`）；舊 epoch 寫 checkpoint 被拒（`StaleEpoch`） |
+| S2-3 | 通過（離線） | 註冊表新增工具：SDK 工具清單仍 ＝ 凍結集合；註冊表移除或升版 `desktop_write`：清單收窄、該 action 不執行（`tool_not_in_snapshot`）；resume 帶超出凍結的集合 ⇒ 拒絕且模型 0 次呼叫；模型續跑時叫凍結集合外的工具 ⇒ 不可執行（見限制 1） |
+
+**判定（建議，待艾斯維爾裁決）**：**PydanticAI 撐得住這條路，不必退回自寫 adapter。** 理由：SDK 在每個工具呼叫處結束 run、不保存跨 run history、不執行工具（S1-1 已證，本輪再次 `sdk_tool_executions=0`）；park 與 resume 的權威狀態（history、checkpoint、receipt、approval、epoch）全在 Core，resume 只是「Core 組好 history 開新 run」，SDK 對此沒有額外要求。S2 的三項驗收有賴的是 Core 側的設計（child session＋hash、receipt 冪等、凍結集合交集），不是 SDK 能力，所以換 adapter 也一樣要做。
+
+**限制與切片 D／E 的待辦**：
+
+1. **SDK 對未知工具名稱自行重試**：模型叫了不在工具清單內的工具，SDK 內部會再打一次模型請求（同一個 run 內），重試仍失敗就丟 `UnexpectedModelBehavior`，Port 以 `finish=error` 收尾。兩次呼叫的 `tool_call_delta` 同 index，被 `ToolCallAssembler` 串成壞 JSON ⇒ 只會產生 `args_complete=false`／`invalid_tool_args` 的 intent，Core 一律拒絕，不會執行。這是一次額外的模型請求（成本與延遲）而非安全問題；若要避免，Port 需在 SDK 重試前攔截（設 `max_retries=0` 或自行處理未知工具），切片 D 決定。
+2. **checkpoint 鍵缺口**：`CHECKPOINT_KEYS`（§6.4）沒有 `child_context_ref`、`child_revision`、`history_hash`、凍結工具集合（含版本）、`step_id`；`TaskManager.save_checkpoint` 目前會以 `PolicyViolation` 拒絕這些鍵。切片 D 必須擴充（`test_s2_1_checkpoint_contract_gap_is_known` 會在擴充後失敗，屆時改為斷言差集為空）。
+3. **雜湊對象必須是 Core 的 `ChatMessage`**：SDK 的 `ModelResponse` 帶執行當下的 timestamp，不可拿來雜湊。合成的 call_id（Ollama 的 `attempt:index`）必須隨 assistant 訊息一起持久化進 child history，不可在 resume 時用新 attempt_id 重新合成。
+4. 回餵必須維持「每個 `tool_call` 都有對應 `tool` 訊息」（缺一個 provider 會拒絕整段）：park 時未執行的同批後續項，resume 時由 Core 補 `blocked(deferred_by_approval_wait)`，與 §6.4 一致。
+
+**未驗證**：(a) 真實 provider（OpenAI chat／Responses／Ollama）對「帶 tool_call 與 tool_return 的 history 起新 run」的行為，只有 FunctionModel 的結構驗證；(b) 真實 PostgreSQL 的 `TaskManager`（`park_run`、`resume_run` 與 `worker_epoch`、approval 單次消耗）——本 Spike 的 Store／executor 是 fake，切片 E 實作後要用 DB 測試重驗 S2-2；(c) echo_thought_core `session_store` 作為 child session 的耐久性（§15 既有假設，未動）。
+
 ---
 
 ## 8. 題 5：副作用與核准

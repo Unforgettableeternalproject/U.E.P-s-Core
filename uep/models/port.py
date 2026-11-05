@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -43,6 +44,35 @@ class ChatMessage:
     content: str = ""
     tool_calls: tuple[Mapping[str, Any], ...] = ()
     tool_call_id: str | None = None
+
+
+def messages_to_json(messages: Sequence[ChatMessage]) -> str:
+    """Core history -> 正規化 JSON（鍵排序、不跳脫中文）。park 時持久化與 ``history_hash`` 共用同一份表示。"""
+    return json.dumps(
+        [
+            {
+                "role": m.role, "content": m.content, "tool_call_id": m.tool_call_id,
+                "tool_calls": [dict(c) for c in m.tool_calls],
+            }
+            for m in messages
+        ],
+        sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+    )
+
+
+def messages_from_json(text: str) -> list[ChatMessage]:
+    return [
+        ChatMessage(
+            d["role"], d["content"], tool_calls=tuple(d["tool_calls"]), tool_call_id=d["tool_call_id"],
+        )
+        for d in json.loads(text)
+    ]
+
+
+def history_hash(messages: Sequence[ChatMessage]) -> str:
+    """checkpoint 的 ``history_hash``（§4.10、S2-1）：對 Core 持有的 ``ChatMessage`` 序列做 SHA-256，
+    不碰 SDK 型別（SDK 的 ModelResponse 帶 timestamp，不可作為雜湊對象）。"""
+    return hashlib.sha256(messages_to_json(messages).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)

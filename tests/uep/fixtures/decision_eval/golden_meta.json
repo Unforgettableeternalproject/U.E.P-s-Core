@@ -1,0 +1,11 @@
+{
+  "kind": "characterization",
+  "note": "現況行為快照，非人工真值，不可用於訓練",
+  "generated_at": "2026-11-05T18:41:19+00:00",
+  "commit": "498dd0248cc5fa950eca954fe7e459feb2ea19de",
+  "proposers": {
+    "rules.default": "s5-bot-port",
+    "respond.minimal": "s3-respond"
+  },
+  "records": 59
+}

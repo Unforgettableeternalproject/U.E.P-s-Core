@@ -114,9 +114,12 @@ class DreamLoop:
         health_sink: Callable[[str], None] | None = None,
         clock: Callable[[], float] = _time.monotonic,
         wall_clock: Callable[[], datetime] | None = None,
+        decider: Callable[[DreamSnapshot], DreamDecision] | None = None,
     ) -> None:
         self._cfg = config
         self._planner = DreamPlanner(config)
+        # 決策入口（選填）：沒注入時直接呼叫 planner；注入時 decide 改走決策中樞（memory.dream），planner 與狀態仍只有這一份
+        self._decider = decider
         self._targets = targets
         self._probe: ForegroundProbe = probe or UnavailableProbe()
         self._rest_policy: RestWindowPolicy = rest_policy or FixedWindowPolicy()
@@ -155,6 +158,14 @@ class DreamLoop:
     @property
     def config(self) -> DreamLoopConfig:
         return self._cfg
+
+    @property
+    def planner(self) -> DreamPlanner:
+        return self._planner
+
+    def set_decider(self, decider: Callable[[DreamSnapshot], DreamDecision] | None) -> None:
+        """注入／移除決策入口（None＝直接呼叫 planner）。"""
+        self._decider = decider
 
     def start(self) -> None:
         """啟動執行緒（冪等）。必須在所有 namespace 完成『建 engine -> configure_dream -> 注入 -> set_dream_listener』之後。"""
@@ -256,7 +267,9 @@ class DreamLoop:
         if gate is not None:
             return self._wait(gate)
 
-        decision = self._planner.decide(self._snapshot(now, fg, targets, rest_remaining, with_readiness=True))
+        snap = self._snapshot(now, fg, targets, rest_remaining, with_readiness=True)
+        decider = self._decider
+        decision = self._planner.decide(snap) if decider is None else decider(snap)
         if decision.action != "run":
             return self._wait(decision)
         assert decision.namespace_id is not None and decision.trigger is not None

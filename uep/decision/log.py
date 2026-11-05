@@ -170,10 +170,10 @@ class DecisionLogWriter:
     def attach(self, hub: DecisionHub, kind: str | None = None) -> None:
         """掛到中樞：登記結果觀察者；並串接 engine 的 ``on_shadow``（保留原回呼）。不需改 Host。
 
-        ``kind`` 預設為所有有 shadow 回呼的內建決策點（turn.reply、turn.interject）；指定時只串接該 kind。
+        ``kind`` 預設為所有有 shadow 回呼的內建決策點（turn.reply、turn.interject、memory.dream）；指定時只串接該 kind。
         """
         hub.add_observer(self.on_decision)
-        for name in (kind,) if kind is not None else ("turn.reply", "turn.interject"):
+        for name in (kind,) if kind is not None else ("turn.reply", "turn.interject", "memory.dream"):
             engine = hub.engine(name)
             if engine is not None and hasattr(engine, "on_shadow"):
                 self._chain_shadow(engine)

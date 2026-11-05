@@ -295,6 +295,8 @@ def test_decision_package_boundary():
             "db.py": {"uep.config", "uep.db.base", "uep.db.engine"},
             "replay_turn.py": {"uep.turn.models", "uep.turn.proposer", "uep.turn.registry", "uep.ids"},
             "loop_consult.py": {"uep.ids"},  # DL-C1：決定性 decision_id 用 derived_id
+            # DL-P1c：memory.dream 包裝 DreamPlanner.decide（memory 端不反向 import decision）
+            "memory_dream.py": {"uep.ids", "uep.memory.dream_planner"},
         }
         if path.name in allowed_outside:
             allowed = allowed_outside[path.name]

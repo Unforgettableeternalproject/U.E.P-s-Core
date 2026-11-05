@@ -225,3 +225,36 @@ def test_blocked_sink_does_not_delay_publish():
     assert source.version == 51 and source.core_current().version == 51
     assert elapsed < 1.0
     assert dropped > 0
+
+
+def test_blocked_listener_does_not_block_readers_or_other_publishes():
+    """listener 在鎖外執行：卡住的 listener 只卡住發布者自己的執行緒。
+
+    讀端（current／core_current）讀到已換入的新版；其他執行緒的 publish 也不會被擋（鎖在 listener 前已釋放）。
+    """
+    source = HostPolicySource("web")
+    entered, release = threading.Event(), threading.Event()
+    calls: list[int] = []
+
+    def listener(pub):
+        calls.append(pub.version)
+        if pub.version == 2:  # 只卡第一次發布
+            entered.set()
+            release.wait(10)
+
+    source.add_publish_listener(listener)
+    result: list[int] = []
+    thread_a = threading.Thread(target=lambda: result.append(source.publish().version), daemon=True)
+    thread_a.start()
+    try:
+        assert entered.wait(2)
+        started = time.perf_counter()
+        assert source.current().version == 2 and source.core_current().version == 2
+        assert source.publish_channel_mode(ChannelMode.ACTIVE).version == 3  # 其他發布不被擋
+        assert time.perf_counter() - started < 1.0
+        assert thread_a.is_alive() and not result  # A 仍卡在 listener
+    finally:
+        release.set()
+    thread_a.join(2)
+    assert result == [2] and not thread_a.is_alive()
+    assert calls == [2, 3]

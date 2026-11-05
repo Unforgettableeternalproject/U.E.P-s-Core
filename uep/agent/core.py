@@ -72,6 +72,27 @@ class StepOutcome:
     error: Mapping[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class ScreenedIntent:
+    """通過 Gateway 篩選的 tool_intent（切片 D1）：``args`` 是驗證並注入後的參數，``action_id`` 由 ``stable_action_id`` 決定。"""
+
+    run_id: str
+    step_id: str
+    ordinal: int
+    tool: str
+    args: Mapping[str, Any]
+    action_id: str
+
+
+@dataclass(frozen=True)
+class IntentResult:
+    """一個 tool_intent 的處理結果：紀錄、要交給模型的 D61 視圖，以及是否因需核准而停住（呼叫端 park）。"""
+
+    record: IntentRecord
+    view: Mapping[str, Any]
+    approval_required: bool = False
+
+
 class AgentCore:
     def __init__(
         self, runtime: Runtime | None, tasks: TaskManager, gateway: ToolGateway, *, worker_epoch: int,
@@ -202,3 +223,69 @@ class AgentCore:
         """交一個不含項目的狀態結果；``created=False`` 表示沒有 act_ 列（action_id 僅供 Runtime 對應）。"""
         deliver(action_id, self._gateway.result_view(status))
         return IntentRecord(ordinal, tool, action_id if created else None, status, reason)
+
+    # ---- 切片 D1：AgentLoop 的分段介面（篩選／建立／執行分開，平行排程器才能先建立整波再並行執行）----
+    # 與 ``_handle_intent`` 同一套判定與例外對映；``_handle_intent``／``run_step``（legacy 與切片 C 路徑）不經過這裡。
+
+    def screen_intent(
+        self, *, run_id: str, step_id: str, ordinal: int, capability_set: Mapping[str, Any], tool: str, args: Any,
+        injected: Mapping[str, Any] | None = None,
+    ) -> ScreenedIntent | IntentResult:
+        """Gateway 篩選（capability／schema／注入）。通過回 ``ScreenedIntent``（含驗證並注入後的參數與穩定 action_id），
+        被拒回帶 ``rejected`` 視圖的 ``IntentResult``（不建 action）。"""
+        action_id = stable_action_id(run_id, step_id, ordinal)
+        try:
+            checked = self._gateway.check_intent(
+                tool, args, capability_set, injected=self._injected if injected is None else injected,
+            )
+        except GatewayRejected as exc:
+            return IntentResult(
+                IntentRecord(ordinal, tool, None, "rejected", exc.code), self._gateway.rejection_view(exc),
+            )
+        return ScreenedIntent(run_id, step_id, ordinal, tool, checked, action_id)
+
+    def create_screened(self, item: ScreenedIntent) -> IntentResult | None:
+        """建立 INTENDED 的 action（同 id 冪等）。成功回 None；被擋回對應狀態的 ``IntentResult``。"""
+        try:
+            self._tasks.create_action(
+                run_id=item.run_id, step_id=item.step_id, tool=item.tool, params=item.args,
+                worker_epoch=self._worker_epoch, action_id=item.action_id,
+            )
+        except StaleWorkerEpoch:
+            raise
+        except (PolicyViolation, ParamsHashMismatch) as exc:
+            code = getattr(exc, "code", None) or type(exc).__name__
+            return self._status_result(item, "rejected", code, created=False)
+        except ActionBlocked:
+            return self._status_result(item, "blocked", "action_blocked", created=False)
+        except Exception as exc:  # noqa: BLE001  基礎設施錯誤：沒有建出 action
+            logger.error("create_action 失敗：tool=%s error=%s", item.tool, type(exc).__name__)
+            return self._status_result(item, "failed", type(exc).__name__, created=False)
+        return None
+
+    def execute_screened(self, item: ScreenedIntent) -> IntentResult:
+        """執行已建立的 action。``ApprovalRequired`` 以 ``approval_required=True`` 回報（呼叫端 park），不自行建立或消耗 approval。"""
+        try:
+            outcome = self._tasks.execute_action(item.action_id, item.args, worker_epoch=self._worker_epoch)
+        except StaleWorkerEpoch:
+            raise
+        except ParamsHashMismatch:
+            return self._status_result(item, "rejected", "params_hash_mismatch")
+        except ApprovalRequired:
+            result = self._status_result(item, "blocked", "ApprovalRequired")
+            return IntentResult(result.record, result.view, approval_required=True)
+        except (ActionBlocked, PresenceRequired, ApprovalInvalid) as exc:
+            return self._status_result(item, "blocked", type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001  executor 例外：Manager 已把 action 標 UNKNOWN
+            logger.error("execute_action 失敗：action=%s error=%s", item.action_id, type(exc).__name__)
+            return self._status_result(item, "unknown", type(exc).__name__)
+        view = self._gateway.outcome_view(outcome, content_lookup=self._content_lookup)
+        return IntentResult(IntentRecord(item.ordinal, item.tool, item.action_id, view["status"]), view)
+
+    def _status_result(
+        self, item: ScreenedIntent, status: ResultStatus, reason: str, *, created: bool = True,
+    ) -> IntentResult:
+        return IntentResult(
+            IntentRecord(item.ordinal, item.tool, item.action_id if created else None, status, reason),
+            self._gateway.result_view(status),
+        )

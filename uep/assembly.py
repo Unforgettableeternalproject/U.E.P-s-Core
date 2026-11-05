@@ -368,6 +368,7 @@ def assemble_core(
     internal_executors: Collection[str] = (),
     tool_path: str | None = None,
     model_port: Any | None = None,
+    loop_entry: Callable[[Any, Any], object] | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -377,6 +378,8 @@ def assemble_core(
     且使用 ``ModelPortBackend``）與 MemoryPort；``MemoryToolExecutor`` 以 ``MEMORY_EXECUTOR`` 為鍵併入 ``executors``
     （TG-5 對併入後的映射做雙向檢查），並把回合工具 Port 綁到 think stage。任何前提不成立即 ``AssemblyError``，
     不會退回 legacy。``legacy`` 時組裝結果與先前完全相同。
+    ``loop_entry``（``route=agent_loop`` -> ``LoopTrigger`` 的入口，見 ``uep.echo.agent_wiring.LoopEntry``）只在
+    ``tool_path == "agent"`` 且有 ``echo`` 時可給，綁到 ``echo.orchestrator``；legacy 下給了即 ``AssemblyError``（不可達）。
     ``strict`` 為 True 時，缺少（或過短的）``UEP_PAYLOAD_HASH_KEY`` 直接拒絕組裝；預設只告警。
     ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
@@ -415,6 +418,8 @@ def assemble_core(
     agent_cache = None
     tool_path = tool_path or get_settings().tool_path  # 工具路徑只在這裡決定一次；Host 與 think stage 必須與之一致
     _check_tool_path_consistency(tool_path, echo)
+    if loop_entry is not None and (tool_path != "agent" or echo is None):
+        raise AssemblyError("loop_entry 只能在 UEP_TOOL_PATH=agent 且有 echo 時使用（legacy 下 agent_loop 不可達）")
     if tool_path == "agent":
         memory_executor, agent_cache = _prepare_agent_tools(echo, model_port)
         executors = {**executors, MEMORY_EXECUTOR: memory_executor}
@@ -459,6 +464,8 @@ def assemble_core(
     if agent_cache is not None:
         assert echo is not None
         attach_agent_tools(echo.think, tasks, agent_cache)
+        if loop_entry is not None:
+            echo.orchestrator.bind_loop_entry(loop_entry)
     if echo is not None:
         # ES 端點以行程內專用的隨機 secret 經 EndpointService 走既有 acquire／renew 流程（沿用 P-21／P-22，
         # 不離開 loopback）；secret 不落地、不離開行程

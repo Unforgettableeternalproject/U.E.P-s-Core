@@ -87,3 +87,28 @@ def test_runtime_status_reports_usage_for_token_budget():
     assert out.state == "completed"
     attempt_id = next(iter(runtime._attempts))
     assert "usage" in runtime.status(attempt_id).meta
+
+
+def test_missing_snapshot_fails_without_calling_the_model():
+    """起始 history 遺失 ⇒ LoopSnapshots.take 拋 KeyError ⇒ 迴圈以 snapshot_missing 失敗，模型 0 次呼叫（不以空 history 呼叫）。"""
+    calls = {"n": 0}
+
+    async def fn(messages, info: AgentInfo):
+        calls["n"] += 1
+        yield "不該被呼叫"
+
+    class Lossy(LoopSnapshots):
+        def put(self, ref, messages):
+            pass
+
+    registry = make_registry()
+    tasks = FakeTasks(registry)
+    snapshots = Lossy()
+    port = PydanticAIModelPort("openai_chat", model=FunctionModel(stream_function=fn))
+    runtime = ModelPortRuntime(port, snapshots.take, continue_after_tools=True, max_rounds=5)
+    loop = AgentLoop(
+        runtime=runtime, tasks=tasks, gateway=ToolGateway(registry), registry=registry, store=InMemoryLoopContextStore(),
+        projector=projector_for(registry), budget=LoopBudget(), worker_epoch=1, snapshots=snapshots,
+    )
+    out = loop.run(trigger(), RUN, parent=PARENT, system_text="s")
+    assert (out.state, out.reason_code) == ("failed", "snapshot_missing") and calls["n"] == 0

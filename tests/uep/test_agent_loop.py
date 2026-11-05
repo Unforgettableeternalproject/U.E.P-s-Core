@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -125,7 +126,8 @@ def test_budget_exhausted_finalizes_with_no_tools():
         budget=LoopBudget(max_steps=2),
     )
     out = rig.run()
-    assert (out.state, out.reason_code, out.text) == ("completed", "budget_finalized_steps", "總結如下")
+    assert (out.state, out.reason_code, out.text) == ("completed", "budget_finalized", "總結如下")
+    assert rig.tasks.checkpoints[-1]["next_step_semantic"] == "end:budget_finalized:steps"
     assert rig.runtime.round_caps[-1] == []  # finalize attempt 的 capability_set 為空
     assert rig.tasks.steps[-1].label == "finalize"
     # finalize 提示不寫進 child history
@@ -354,8 +356,9 @@ def test_executor_exception_marks_unknown_and_blocks_later_waves():
         [Round("", (call("write.s", "1"), call("read.a", "2"))), Round("好")],
         behaviors={"write.s": lost}, budget=LoopBudget(max_parallel=4),
     )
-    rig.run()
+    out = rig.run()
     fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert (out.state, out.reason_code) == ("failed", "unresolved_actions")
     assert fed[0]["status"] == "unknown"
     assert fed[1]["status"] == "blocked" and fed[1]["reason_code"] == "unknown_unresolved"
     assert [t for _, t in rig.tasks.executions] == []  # write.s 例外時沒有 receipt；read.a 沒有被執行
@@ -424,78 +427,229 @@ def test_approval_parks_with_persisted_child_and_checkpoint():
     assert rig.runtime.cancels[-1][1] == "park"
 
 
-def test_resume_after_crash_rebuilds_history_and_executes_once():
+def _park_checkpoint(rig: Rig) -> dict:
+    return dict(rig.tasks.checkpoints[-1])
+
+
+def _crash(rig: Rig, epoch: int = 2, rounds=None, **over) -> AgentLoop:
+    """「崩潰」：丟棄 loop 與 runtime，只留 store 與 tasks（持久層），以新 epoch 的新 loop 接手。"""
+    rig.tasks.epoch = epoch
+    script = list(rounds if rounds is not None else [Round("不該到這裡")])
+    rig.last_runtime = ScriptedRuntime(script)
+    return rig.new_loop(runtime=rig.last_runtime, worker_epoch=epoch, **over)
+
+
+def test_resume_rebuilds_history_and_parks_again_without_approval():
+    """D1 的 resume 還沒有核准執行路徑（歸切片 E）：重建 history、不重做已完成的唯讀項，缺核准時再次 park。"""
     rig = _park_rig()
     rig.run()
-    checkpoint = dict(rig.tasks.checkpoints[-1])
+    checkpoint = _park_checkpoint(rig)
+    before = rig.child()
     action = stable_action_id(RUN, "step_1", 1)
-    rig.tasks.approved.add(action)
+    out = _crash(rig).resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent")
+    assert (out.state, out.reason_code, out.pending_action_ids) == ("awaiting_approval", "approval_required", (action,))
+    assert [t for _, t in rig.tasks.executions] == ["read.lone"]  # 沒有重做、post.ask 沒有執行
+    assert rig.child() == before  # history 逐則相等（缺的 tool 訊息仍待核准後補）
+    cp = _park_checkpoint(rig)
+    assert cp["history_hash"] == checkpoint["history_hash"] and cp["next_step_semantic"] == f"await_approval:{action}"
+    assert rig.tasks.run_status == []
 
-    # 「崩潰」：丟棄 loop 與 runtime，只留 store 與 tasks（持久層）
-    rig.tasks.epoch = 2
-    new_runtime = ScriptedRuntime([Round("全部完成")])
-    loop2 = rig.new_loop(runtime=new_runtime, worker_epoch=2)
-    out = loop2.resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent")
-    assert (out.state, out.text) == ("completed", "全部完成")
-    assert [t for _, t in rig.tasks.executions] == ["read.lone", "post.ask"]  # post.ask 一次；read.lone 沒有重做
+
+def test_resume_replay_never_repeats_side_effects():
+    rig = _park_rig()
+    rig.run()
+    checkpoint = _park_checkpoint(rig)
+    for epoch in (2, 3, 4):
+        out = _crash(rig, epoch).resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent")
+        assert out.state == "awaiting_approval"
+    assert [t for _, t in rig.tasks.executions] == ["read.lone"]
+
+
+def test_resume_executes_read_only_pending_action_once_and_fills_the_rest():
+    """pending 項若不需核准（唯讀）在 resume 時仍可直接執行；未在 pending 的同批後續項補 deferred_by_approval_wait。"""
+    rig = _park_rig()
+    rig.run()
+    checkpoint = _park_checkpoint(rig)
+    checkpoint["pending_approvals"] = [stable_action_id(RUN, "step_1", 2)]  # 只有第三項（read.lone）在 pending
+    out = _crash(rig, 2, rounds=[Round("全部完成")]).resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent")
+    assert out.state == "completed"
+    assert [t for _, t in rig.tasks.executions] == ["read.lone", "read.lone"]
+    assistant = next(m for m in rig.child() if m.role == "assistant" and len(m.tool_calls) == 3)
     tools = [m for m in rig.child() if m.role == "tool"]
-    assert [m.tool_call_id for m in tools] == [c["id"] for c in next(m for m in rig.child() if m.role == "assistant" and m.tool_calls).tool_calls]
-    assert tools[1].content == "post.ask:2" and tools[2].content == "tool blocked: deferred_by_approval_wait"
-    assert rig.tasks.run_status == [RunStatus.SUCCEEDED]
+    assert [m.tool_call_id for m in tools] == [c["id"] for c in assistant.tool_calls]  # 每個呼叫都有 tool 訊息，依序
+    assert tools[1].content == "tool blocked: deferred_by_approval_wait" and tools[2].content == "read.lone:3"
+    # 重放同一個 checkpoint：同 id 的 action 已有 receipt，不重做
+    _crash(rig, 3, rounds=[Round("再來一次")]).resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent")
+    assert [t for _, t in rig.tasks.executions] == ["read.lone", "read.lone"]
 
 
-def test_resume_replay_does_not_repeat_side_effect():
+def test_resume_never_widens_and_drops_tools_missing_from_snapshot():
     rig = _park_rig()
     rig.run()
-    checkpoint = dict(rig.tasks.checkpoints[-1])
-    rig.tasks.approved.add(stable_action_id(RUN, "step_1", 1))
-    for epoch in (2, 3):
-        rig.tasks.epoch = epoch
-        rig.new_loop(runtime=ScriptedRuntime([Round("完成")]), worker_epoch=epoch).resume(
-            RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent",
-        )
-    assert [t for _, t in rig.tasks.executions].count("post.ask") == 1
+    checkpoint = _park_checkpoint(rig)
+    checkpoint["pending_approvals"] = []  # 核准路徑屬 E：這裡只驗證集合收窄與補齊
+    base = projector_for(rig.registry)
 
+    def wide(tags, prior):
+        # 當下投影「更寬」（忽略 prior、給全部標籤）；post.ask 已不在當下投影
+        return {"tools": [t for t in base(TAGS, None)["tools"] if t["tool"] != "post.ask"]}
 
-def test_resume_without_approval_parks_again():
-    rig = _park_rig()
-    rig.run()
-    checkpoint = dict(rig.tasks.checkpoints[-1])
-    rig.tasks.epoch = 2
-    out = rig.new_loop(runtime=ScriptedRuntime([Round("不該到這裡")]), worker_epoch=2).resume(
+    out = _crash(rig, rounds=[Round("完成")], projector=wide).resume(
         RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent",
     )
-    assert out.state == "awaiting_approval" and [t for _, t in rig.tasks.executions] == ["read.lone"]
+    assert out.state == "completed" and [t for _, t in rig.tasks.executions] == ["read.lone"]
+    assert "post.ask" not in rig.last_runtime.round_caps[0]
+
+
+def test_narrowed_set_survives_park_and_resume():
+    """收窄 → park → resume：被收窄的工具不會回來（resume 以 park 當下的可見集合為 prior，不是整個凍結集合）。"""
+    registry = make_registry()
+    base = projector_for(registry)
+
+    def shrinking(tags, prior):
+        cap = base(tags, prior)
+        return cap if prior is None else {"tools": [t for t in cap["tools"] if t["tool"] != "read.b"]}  # 第一個 Step 後收窄
+
+    rig = Rig(
+        [Round("", (call("read.lone", "1"),)), Round("", (call("read.lone", "2"), call("post.ask", "3"))), Round("完成")],
+        projector=shrinking, registry=registry, budget=LoopBudget(repeat_limit=99),
+    )
+    out = rig.run()
+    assert out.state == "awaiting_approval" and "read.b" not in rig.runtime.round_caps[1]
+    checkpoint = _park_checkpoint(rig)
+    assert "read.b" not in checkpoint["visible_tools"] and "read.b" in checkpoint["frozen_tools"]
+    checkpoint["pending_approvals"] = []  # 讓 resume 一路補齊後真的起新 attempt
+    out = _crash(rig, rounds=[Round("完成")], projector=base).resume(  # 當下投影「又變寬」
+        RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent",
+    )
+    assert out.state == "completed" and "read.b" not in rig.last_runtime.round_caps[0]
 
 
 @pytest.mark.parametrize("damage", ["tamper", "lose"])
 def test_resume_with_damaged_child_fails_closed(damage):
     rig = _park_rig()
     rig.run()
-    checkpoint = dict(rig.tasks.checkpoints[-1])
+    checkpoint = _park_checkpoint(rig)
     getattr(rig.store, damage)(child_ref(RUN))
-    rig.tasks.epoch = 2
-    runtime = ScriptedRuntime([Round("不該到這裡")])
-    out = rig.new_loop(runtime=runtime, worker_epoch=2).resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent")
+    out = _crash(rig).resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent")
     assert (out.state, out.reason_code) == ("failed", "context_lost")
-    assert runtime.requests == [] and [t for _, t in rig.tasks.executions] == ["read.lone"]  # 模型 0 次呼叫、無新增副作用
+    assert rig.last_runtime.requests == [] and [t for _, t in rig.tasks.executions] == ["read.lone"]  # 模型 0 次呼叫、無新增副作用
     assert rig.tasks.run_status == [RunStatus.FAILED]
 
 
-def test_resume_never_widens_and_drops_tools_missing_from_snapshot():
+@pytest.mark.parametrize("key", ["frozen_tags", "budget_counters", "visible_tools", "frozen_tools", "step_id", "history_hash"])
+def test_resume_with_incomplete_checkpoint_fails_closed_without_defaults(key):
     rig = _park_rig()
     rig.run()
-    checkpoint = dict(rig.tasks.checkpoints[-1])
-    rig.tasks.approved.add(stable_action_id(RUN, "step_1", 1))
-    rig.tasks.epoch = 2
-    base = projector_for(rig.registry)
-    # 當下投影「更寬」（全部標籤）也不會超出凍結集合；且 post.ask 已不在當下投影 ⇒ 不執行
-    rig.projector = lambda tags, prior: {"tools": [t for t in base(TAGS, None)["tools"] if t["tool"] != "post.ask"]}
-    runtime = ScriptedRuntime([Round("完成")])
-    out = rig.new_loop(runtime=runtime, worker_epoch=2, projector=rig.projector).resume(
-        RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent",
+    checkpoint = _park_checkpoint(rig)
+    del checkpoint[key]
+    out = _crash(rig).resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent")
+    assert (out.state, out.reason_code) == ("failed", "checkpoint_incomplete")
+    assert rig.last_runtime.requests == [] and rig.tasks.run_status == [RunStatus.FAILED]
+    assert [t for _, t in rig.tasks.executions] == ["read.lone"]
+
+
+# ───────────────────────── 審查修正：B1／S1／S4／S5／原因碼／建議項 ─────────────────────────
+
+def test_unknown_action_turns_completion_into_failed_unresolved_actions():
+    def lost(args):
+        raise ConnectionError("失聯")
+
+    rig = Rig(
+        [Round("", (call("write.s", "1"), call("read.a", "2"))), Round("全部完成")],
+        behaviors={"write.s": lost}, budget=LoopBudget(max_parallel=4),
     )
-    assert out.state == "completed" and [t for _, t in rig.tasks.executions] == ["read.lone"]
-    tools = [m.content for m in rig.child() if m.role == "tool"]
-    assert tools[1] == "tool blocked: tool_not_in_snapshot"
-    assert "post.ask" not in runtime.round_caps[0]
+    out = rig.run()
+    assert (out.state, out.reason_code) == ("failed", "unresolved_actions")
+    assert rig.tasks.run_status == [RunStatus.FAILED]  # 不是 SUCCEEDED，Run 不會卡在 RUNNING
+    assert rig.tasks.checkpoints[-1]["next_step_semantic"] == "end:unresolved_actions"
+
+
+def test_illegal_transition_on_succeeded_is_caught_and_run_fails():
+    rig = Rig([Round("", (call("read.lone", "1"),)), Round("完成")])
+    rig.tasks.unknown.add("act_elsewhere")  # 這次執行沒看到、但 Run 內另有 UNKNOWN（例如先前崩潰留下的）
+    out = rig.run()
+    assert (out.state, out.reason_code) == ("failed", "unresolved_actions")
+    assert rig.tasks.run_status == [RunStatus.FAILED]
+
+
+def test_fake_tasks_guards_match_real_manager_semantics():
+    from uep.tasks.manager import ActionBlocked, ApprovalRequired, IllegalTransition
+
+    rig = Rig([Round("")])
+    tasks = rig.tasks
+    tasks.create_action(run_id=RUN, step_id="s", tool="write.s", params={"path": "x"}, worker_epoch=1, action_id="act_w")
+
+    def lost(args):
+        raise ConnectionError("x")
+
+    tasks.behaviors["write.s"] = lost
+    with pytest.raises(ConnectionError):
+        tasks.execute_action("act_w", {"path": "x"}, worker_epoch=1)
+    assert "act_w" in tasks.unknown
+    with pytest.raises(ActionBlocked):  # UNKNOWN 的 action 同 id 重放不重做
+        tasks.execute_action("act_w", {"path": "x"}, worker_epoch=1)
+    with pytest.raises(IllegalTransition):
+        tasks.transition_run(RUN, RunStatus.SUCCEEDED, worker_epoch=1)
+    tasks.transition_run(RUN, RunStatus.SUCCEEDED, worker_epoch=99)  # 舊 epoch：記 warning、忽略、不拋
+    assert tasks.run_status == []
+    tasks.create_action(run_id=RUN, step_id="s", tool="post.ask", params={"path": "x"}, worker_epoch=1, action_id="act_p")
+    with pytest.raises(ApprovalRequired):  # 沒有 approval_id 的路徑：一律要核准
+        tasks.execute_action("act_p", {"path": "x"}, worker_epoch=1)
+
+
+def test_max_parallel_requires_tasks_that_support_it():
+    from uep.tasks.manager import TaskManager
+
+    rig = Rig([Round("x")])
+    rig.tasks.supports_parallel_execution = False
+    with pytest.raises(ValueError, match="supports_parallel_execution"):
+        rig.new_loop(budget=LoopBudget(max_parallel=2))
+    rig.new_loop(budget=LoopBudget(max_parallel=1))  # 1 一律可以
+    assert TaskManager.supports_parallel_execution is False  # 真實 Manager 在 D1b 放寬前不支援
+
+
+def test_snapshots_take_raises_keyerror_when_missing():
+    from uep.agent.loop import LoopSnapshots
+
+    with pytest.raises(KeyError):
+        LoopSnapshots().take(SimpleNamespace(snapshot_ref="nope"))  # type: ignore[arg-type]
+
+
+def test_empty_result_fails_instead_of_completing():
+    rig = Rig([Round("   ")])
+    out = rig.run()
+    assert (out.state, out.reason_code) == ("failed", "empty_result") and rig.tasks.run_status == [RunStatus.FAILED]
+
+
+def test_budget_finalize_with_empty_text_fails_empty_result():
+    rig = Rig([Round("", (call("read.lone", "1"),)), Round("")], budget=LoopBudget(max_steps=1))
+    out = rig.run()
+    assert (out.state, out.reason_code) == ("failed", "empty_result")
+
+
+def test_budget_exhausted_semantic_records_dimension():
+    rig = Rig([Round("", (call("read.lone", "1"),)), Round("不該")], budget=LoopBudget(max_tool_calls=1, finalize_on_exhausted=False))
+    out = rig.run()
+    assert out.reason_code == "budget_exhausted"
+    assert rig.tasks.checkpoints[-1]["next_step_semantic"] == "end:budget_exhausted:tool_calls"
+
+
+def test_reason_codes_come_from_the_fixed_set():
+    from uep.adapters.runtime import ERROR_CODES
+    from uep.agent.reasons import LoopReason, runtime_reason
+
+    with pytest.raises(ValueError):
+        LoopOutcome("failed", RUN, "some_free_text")
+    assert LoopOutcome("failed", RUN, "no_progress").reason_code == LoopReason.NO_PROGRESS
+    assert {runtime_reason(c) for c in ERROR_CODES}  # 每個 Runtime 錯誤碼都有對應的固定原因碼
+    values = {r.value for r in LoopReason}
+    for rig_case in (
+        Rig([Round("", (call("read.lone", "same"),))] * 4, budget=LoopBudget(repeat_limit=2)),
+        Rig([Round(error="TIMEOUT")]),
+        Rig([Round("")]),
+    ):
+        out = rig_case.run()
+        assert out.reason_code in values
+        parts = rig_case.tasks.checkpoints[-1]["next_step_semantic"].split(":")
+        assert parts[0] == "end" and parts[1] in values

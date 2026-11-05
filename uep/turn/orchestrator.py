@@ -537,7 +537,7 @@ class TurnOrchestrator:
 
     def _enter_loop(self, ticket: CoreTicket, proposal: Proposal) -> None:
         """route=agent_loop 且已綁定入口時交給 Agent 層（Run 之後脫離 turn 獨立存活，§4.6）；入口失敗不影響 turn。"""
-        if proposal.route != "agent_loop" or self._loop_entry is None:
+        if self._loop_entry is None or proposal.route != "agent_loop":
             return
         try:
             self._loop_entry(ticket, proposal)

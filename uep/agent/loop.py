@@ -42,6 +42,7 @@ from uep.agent.loop_context import (
     merge_back,
     persist_child,
 )
+from uep.agent.reasons import LoopReason, runtime_reason
 from uep.agent.runtime import result_text
 from uep.agent.scheduler import (
     DEFERRED_BATCH_LIMIT,
@@ -57,7 +58,7 @@ from uep.agent.scheduler import (
 from uep.agent.trigger import LoopTrigger
 from uep.ids import new_id
 from uep.models.port import ChatMessage
-from uep.tasks.manager import StaleWorkerEpoch
+from uep.tasks.manager import IllegalTransition, StaleWorkerEpoch
 from uep.tasks.states import RunStatus
 from uep.tools.gateway import INVALID_TOOL_ARGS, ToolGateway, visible_tools
 
@@ -67,6 +68,9 @@ LoopState = Literal["completed", "failed", "awaiting_approval", "cancelled", "st
 Projector = Callable[[frozenset[str], frozenset[str] | None], Mapping[str, Any]]
 
 TOOL_NOT_IN_SNAPSHOT = "tool_not_in_snapshot"
+RESUME_REQUIRED_KEYS = (
+    "child_context_ref", "history_hash", "frozen_tools", "frozen_tags", "visible_tools", "budget_counters", "step_id",
+)
 FINALIZE_NOTE = "預算已用盡：請根據目前已取得的資訊直接收束並回覆，不要再呼叫任何工具。"
 
 
@@ -74,12 +78,16 @@ FINALIZE_NOTE = "預算已用盡：請根據目前已取得的資訊直接收束
 class LoopOutcome:
     state: LoopState
     run_id: str
-    reason_code: str | None = None
+    reason_code: str | None = None  # 只能是 ``LoopReason`` 的值（固定集合）
     text: str = ""  # 最終文字（只放這裡，由呼叫端交付；AL-4）
     steps: int = 0
     tool_calls: int = 0
     pending_action_ids: tuple[str, ...] = ()
     delivered: bool = False
+
+    def __post_init__(self) -> None:
+        if self.reason_code is not None:
+            LoopReason(self.reason_code)  # 不在固定集合內即 ValueError
 
 
 class _Stop(Exception):
@@ -109,6 +117,7 @@ class _State:
     step_started: float = 0.0
     attempt_id: str | None = None
     consumed: list[str] = field(default_factory=list)
+    unresolved: bool = False  # 本次執行中出現過 UNKNOWN 的 action：Run 不可宣稱 SUCCEEDED
     usage_seen: dict[str, int] = field(default_factory=dict)
 
 
@@ -117,6 +126,7 @@ class _End:
     kind: Literal["result", "park", "exhausted", "restart", "fail"]
     text: str = ""
     reason: str = ""
+    dim: str = ""  # exhausted 時耗盡的維度（steps／tool_calls／tokens／run_deadline／rounds）
     cap: Mapping[str, Any] | None = None
     pending: tuple[str, ...] = ()
 
@@ -138,8 +148,9 @@ class LoopSnapshots:
             self._data[ref] = list(messages)
 
     def take(self, request: RuntimeRequest) -> list[ChatMessage]:
+        """找不到就 ``KeyError``（絕不以空 history 呼叫模型）；``AgentLoop`` 會把它轉成 ``snapshot_missing`` 失敗。"""
         with self._lock:
-            return self._data.pop(request.snapshot_ref, [])
+            return self._data.pop(request.snapshot_ref)
 
 
 class AgentLoop:
@@ -159,6 +170,9 @@ class AgentLoop:
         self._projector = projector
         self._budget = budget
         self._epoch = worker_epoch
+        if budget.max_parallel > 1 and not getattr(tasks, "supports_parallel_execution", False):
+            # TC-3 的 DB 強制（_check_single_executing＋部分唯一索引）在 D1b 放寬前會擋並行；明示支援才允許
+            raise ValueError("max_parallel > 1 需要 tasks.supports_parallel_execution（D1b 之前真實 TaskManager 為 False）")
         self._snapshots = snapshots
         self._clock = clock
         self._cancelled = cancelled
@@ -174,12 +188,12 @@ class AgentLoop:
         """啟動一個 Run 的迴圈（Run 已由呼叫端建立並進入 RUNNING）。``capability_tags`` 為空或投影為空 ⇒ 拒絕（介面違規）。"""
         if not trigger.capability_tags:
             logger.error("LoopTrigger 的 capability_tags 為空，拒絕啟動：run=%s", run_id)
-            return LoopOutcome("rejected", run_id, "capability_empty")
+            return LoopOutcome("rejected", run_id, LoopReason.CAPABILITY_EMPTY)
         cap = self._projector(trigger.capability_tags, None)
         frozen = {t["tool"]: int(t.get("version", 1)) for t in cap.get("tools", ())}
         if not frozen:
             logger.error("能力投影為空，拒絕啟動：run=%s", run_id)
-            return LoopOutcome("rejected", run_id, "capability_empty")
+            return LoopOutcome("rejected", run_id, LoopReason.CAPABILITY_EMPTY)
         child = fork_child(
             self._store, run_id, parent=parent, system_text=system_text, goal_code=trigger.goal_code,
             trigger_text=trigger_text, persona_version=persona_version, scope_ref=trigger.scope_ref,
@@ -191,21 +205,29 @@ class AgentLoop:
     def resume(self, run_id: str, checkpoint: Mapping[str, Any], *, trigger: LoopTrigger, parent_id: str) -> LoopOutcome:
         """核准後的續行（呼叫端已 ``resume_run`` 取得新 epoch 並建構本物件）。重建 child 並驗 hash（失敗 ⇒ FAILED(context_lost)），
         能力＝凍結集合 ∩ 當下投影（只收窄，AL-3），補齊缺少的工具結果後以新 attempt 續跑。"""
-        frozen = {str(k): int(v) for k, v in dict(checkpoint.get("frozen_tools") or {}).items()}
-        tags = frozenset(str(t) for t in checkpoint.get("frozen_tags") or ())
-        counters = BudgetCounters.from_checkpoint(checkpoint.get("budget_counters"))
+        missing = [k for k in RESUME_REQUIRED_KEYS if checkpoint.get(k) is None]
+        if missing:
+            # 舊版或殘缺的 checkpoint：不以預設值補，fail-closed
+            logger.error("checkpoint 缺少必要的鍵，不續跑：run=%s keys=%s", run_id, missing)
+            st = self._new_state(run_id, trigger, parent_id, {"tools": []}, {}, frozenset(), [], "", BudgetCounters())
+            return self._guarded(st, lambda: self._finish(st, "failed", LoopReason.CHECKPOINT_INCOMPLETE))
+        frozen = {str(k): int(v) for k, v in dict(checkpoint["frozen_tools"]).items()}
+        tags = frozenset(str(t) for t in checkpoint["frozen_tags"])
+        visible = frozenset(str(t) for t in checkpoint["visible_tools"])  # park 當下的可見集合：resume 的 prior（單調收窄）
+        counters = BudgetCounters.from_checkpoint(checkpoint["budget_counters"])
         try:
             messages, _revision = load_verified(
-                self._store, str(checkpoint.get("child_context_ref", "")), str(checkpoint.get("history_hash", "")),
+                self._store, str(checkpoint["child_context_ref"]), str(checkpoint["history_hash"]),
             )
         except ContextLost:
             logger.error("child context 無法重建：run=%s", run_id)
             st = self._new_state(run_id, trigger, parent_id, {"tools": []}, frozen, tags, [],
-                                 str(checkpoint.get("child_context_ref", "")), counters)
-            return self._guarded(st, lambda: self._finish(st, "failed", "context_lost"))
-        cap = self._narrow(self._projector(tags, frozenset(frozen)), frozen, frozenset(frozen))
+                                 str(checkpoint["child_context_ref"]), counters)
+            return self._guarded(st, lambda: self._finish(st, "failed", LoopReason.CONTEXT_LOST))
+        prior = visible & frozenset(frozen)
+        cap = self._narrow(self._projector(tags, prior), frozen, prior)
         st = self._new_state(run_id, trigger, parent_id, cap, frozen, tags, messages, str(checkpoint["child_context_ref"]), counters)
-        st.step_id = checkpoint.get("step_id") if isinstance(checkpoint.get("step_id"), str) else None
+        st.step_id = str(checkpoint["step_id"])
         st.consumed = list(checkpoint.get("consumed_action_ids") or ())
         return self._drive(st, resume_fill=frozenset(checkpoint.get("pending_approvals") or ()))
 
@@ -251,21 +273,34 @@ class AgentLoop:
         if st.open_step:
             self._end_step(st, ok=False)
         if outcome.state == "failed":
-            return self._finish(st, "failed", outcome.reason_code or "failed")
+            return self._finish(st, "failed", LoopReason(outcome.reason_code or LoopReason.NO_PROGRESS))
         merge_back(self._store, run_id=st.run_id, parent_id=st.parent_id, scope_ref=st.trigger.scope_ref,
                    state=outcome.state, reason_code=outcome.reason_code)
         return outcome
 
-    def _finish(self, st: _State, state: LoopState, reason: str | None, text: str = "") -> LoopOutcome:
-        """終態：Run 轉移、最後 checkpoint、merge-back。"""
-        if st.transcript:  # context_lost 時沒有可寫的 history
-            self._checkpoint(st, f"end:{reason or state}")
+    def _finish(
+        self, st: _State, state: LoopState, reason: LoopReason | None, text: str = "", detail: str = "",
+    ) -> LoopOutcome:
+        """終態：Run 轉移、最後 checkpoint、merge-back。``completed`` 在最終文字為空、或 Run 內仍有結果未明（UNKNOWN／EXECUTING）
+        的 action 時改走 ``FAILED``（真實 TaskManager 的 ``_assert_no_inflight`` 也會拒絕轉 SUCCEEDED）。"""
+        if state == "completed" and not text.strip():
+            state, reason, detail = "failed", LoopReason.EMPTY_RESULT, ""
         if state == "completed":
-            self._tasks.transition_run(st.run_id, RunStatus.SUCCEEDED, worker_epoch=self._epoch)
-        elif state == "failed":
+            if st.unresolved:
+                state, reason, detail = "failed", LoopReason.UNRESOLVED_ACTIONS, ""
+            else:
+                try:
+                    self._tasks.transition_run(st.run_id, RunStatus.SUCCEEDED, worker_epoch=self._epoch)
+                except IllegalTransition:
+                    logger.warning("Run 仍有結果未明的 action，改轉 FAILED：run=%s", st.run_id)
+                    state, reason, detail = "failed", LoopReason.UNRESOLVED_ACTIONS, ""
+        if state == "failed":
             self._tasks.transition_run(st.run_id, RunStatus.FAILED, worker_epoch=self._epoch)
+        if st.transcript:  # context_lost／checkpoint_incomplete 時沒有可寫的 history
+            tail = f":{detail}" if detail else ""
+            self._checkpoint(st, f"end:{reason or state}{tail}")
         delivered = False
-        if state == "completed" and self._deliver_result is not None and text:
+        if state == "completed" and self._deliver_result is not None:
             delivered = bool(self._deliver_result(text))
         merge_back(
             self._store, run_id=st.run_id, parent_id=st.parent_id, scope_ref=st.trigger.scope_ref, state=state,
@@ -282,7 +317,7 @@ class AgentLoop:
             "next_step_semantic": semantic, "pending_approvals": list(pending),
             "consumed_action_ids": list(st.consumed), "child_context_ref": st.child_ref, "child_revision": revision,
             "history_hash": digest, "frozen_tools": dict(st.frozen_tools), "frozen_tags": sorted(st.frozen_tags),
-            "budget_counters": st.counters.to_checkpoint(),
+            "budget_counters": st.counters.to_checkpoint(), "visible_tools": sorted(visible_tools(st.cap)),
         }
         if st.step_id:
             cp["step_id"] = st.step_id
@@ -298,7 +333,7 @@ class AgentLoop:
         while True:
             dim = exhausted(self._budget, st.counters, elapsed_s=self._elapsed(st))
             if dim is not None:
-                end = _End("exhausted", reason=dim)
+                end = _End("exhausted", dim=dim)
             else:
                 end = self._run_attempt(st, st.cap, finalize=False)
                 if end.kind == "restart":
@@ -313,27 +348,27 @@ class AgentLoop:
         if end.kind == "park":
             mark_parked(self._store, run_id=st.run_id, parent_id=st.parent_id)
             return LoopOutcome(
-                "awaiting_approval", st.run_id, "approval_required", steps=st.counters.steps,
+                "awaiting_approval", st.run_id, LoopReason.APPROVAL_REQUIRED, steps=st.counters.steps,
                 tool_calls=st.counters.tool_calls, pending_action_ids=end.pending,
             )
         if end.kind == "exhausted":
-            if end.reason not in ("run_deadline",) and self._budget.finalize_on_exhausted:
+            if end.dim != "run_deadline" and self._budget.finalize_on_exhausted:
                 final = self._run_attempt(st, {"tools": []}, finalize=True)
                 if final.kind == "result":
                     st.transcript.append(ChatMessage("assistant", final.text))
-                    return self._finish(st, "completed", f"budget_finalized_{end.reason}", final.text)
-            return self._finish(st, "failed", "budget_exhausted")
-        return self._finish(st, "failed", end.reason or "failed")
+                    return self._finish(st, "completed", LoopReason.BUDGET_FINALIZED, final.text, end.dim)
+            return self._finish(st, "failed", LoopReason.BUDGET_EXHAUSTED, detail=end.dim)
+        return self._finish(st, "failed", LoopReason(end.reason or LoopReason.NO_PROGRESS))
 
     def _gate(self, st: _State) -> None:
         """heartbeat／取消／牆鐘／Step 逾時。舊 epoch 的 StaleWorkerEpoch 直接往外拋。"""
         if self._cancelled():
-            raise _Stop(LoopOutcome("cancelled", st.run_id, "cancelled", steps=st.counters.steps))
+            raise _Stop(LoopOutcome("cancelled", st.run_id, LoopReason.CANCELLED, steps=st.counters.steps))
         if self._budget.run_deadline_s is not None and self._elapsed(st) >= self._budget.run_deadline_s:
-            raise _Stop(LoopOutcome("failed", st.run_id, "run_deadline"))
+            raise _Stop(LoopOutcome("failed", st.run_id, LoopReason.RUN_DEADLINE))
         now = self._clock()
         if self._budget.step_timeout_s is not None and st.open_step and now - st.step_started >= self._budget.step_timeout_s:
-            raise _Stop(LoopOutcome("failed", st.run_id, "step_timeout"))
+            raise _Stop(LoopOutcome("failed", st.run_id, LoopReason.STEP_TIMEOUT))
         if now - st.last_hb >= self._budget.heartbeat_interval_s:
             self._tasks.heartbeat(st.run_id, worker_epoch=self._epoch)
             st.last_hb = now
@@ -375,13 +410,17 @@ class AgentLoop:
         return attempt_id
 
     def _run_attempt(self, st: _State, cap: Mapping[str, Any], *, finalize: bool) -> _End:
-        attempt_id = self._start_attempt(st, cap, finalize)
+        try:
+            attempt_id = self._start_attempt(st, cap, finalize)
+        except KeyError:
+            logger.error("attempt 的起始 history 遺失，不呼叫模型：run=%s", st.run_id)
+            return _End("fail", reason=LoopReason.SNAPSHOT_MISSING)
         events = iter(self._runtime.stream(attempt_id))
         texts: list[str] = []
         batch: list[Mapping[str, Any]] = []
 
         def stop(end: _End, *, ok: bool = False) -> _End:
-            self._runtime.cancel(attempt_id, end.reason or end.kind)
+            self._runtime.cancel(attempt_id, end.reason or end.dim or end.kind)
             self._end_step(st, ok=ok)
             return end
 
@@ -395,7 +434,7 @@ class AgentLoop:
                 raise
             event = next(events, None)
             if event is None:
-                return stop(_End("fail", reason="runtime_stream_ended"))
+                return stop(_End("fail", reason=LoopReason.STREAM_ENDED))
             if event.kind == "text_delta":
                 texts.append(event.text_delta or "")
             elif event.kind == "tool_intent":
@@ -403,7 +442,7 @@ class AgentLoop:
                 if len(batch) < int((event.tool_intent or {}).get("batch_size", 1)):
                     continue
                 if finalize:
-                    return stop(_End("fail", reason="finalize_tool_intent"))
+                    return stop(_End("fail", reason=LoopReason.FINALIZE_TOOL_INTENT))
                 intents, batch = batch, []
                 text, texts = "".join(texts), []
                 end = self._handle_batch(st, cap, attempt_id, intents, text)
@@ -412,7 +451,7 @@ class AgentLoop:
                 dim = exhausted(self._budget, st.counters, elapsed_s=self._elapsed(st))
                 if dim is not None:
                     self._runtime.cancel(attempt_id, "budget_exhausted")
-                    return _End("exhausted", reason=dim)
+                    return _End("exhausted", dim=dim)
                 prior = visible_tools(cap)
                 narrowed = self._narrow(self._projector(st.frozen_tags, prior), st.frozen_tools, prior)
                 if visible_tools(narrowed) != prior:  # AL-3：只可能變窄；變窄就以較窄的集合重開 attempt
@@ -423,12 +462,11 @@ class AgentLoop:
                 self._end_step(st, ok=True)
                 status = (event.result or {}).get("status", "ok")
                 if status == "max_rounds":
-                    return _End("exhausted", reason="rounds")
+                    return _End("exhausted", dim="rounds")
                 return _End("result", text="".join(texts))
             elif event.kind == "error":
-                code = str((event.error or {}).get("code", "UNKNOWN")).lower()
                 self._end_step(st, ok=False)
-                return _End("fail", reason=f"runtime_{code}")
+                return _End("fail", reason=runtime_reason(str((event.error or {}).get("code", "PROVIDER_UNAVAILABLE"))))
 
     # ───────────────────────── 內部：批次執行 ─────────────────────────
 
@@ -497,6 +535,8 @@ class AgentLoop:
             for m, res in self._execute_wave(wave, members):
                 views[m.ordinal], observed[m.ordinal] = res.view, str(res.view.get("status", "unknown"))
                 st.counters.tool_calls += 1
+                if res.view.get("status") == "unknown":
+                    st.unresolved = True
                 if res.record.action_id and not res.approval_required:
                     st.consumed.append(res.record.action_id)
                 if res.approval_required and parked_at is None:
@@ -525,7 +565,7 @@ class AgentLoop:
             return _End("park", pending=tuple(pending))
         if no_progress is not None:
             self._runtime.cancel(attempt_id, no_progress)
-            return _End("fail", reason="no_progress")
+            return _End("fail", reason=LoopReason.NO_PROGRESS)
         for k in range(n):
             self._runtime.submit_tool_result(attempt_id, stable_action_id(st.run_id, step_id, k), views[k])
         self._checkpoint(st, "think")
@@ -591,10 +631,12 @@ class AgentLoop:
                         self._checkpoint(st, f"await_approval:{action_id}", [action_id])
                         mark_parked(self._store, run_id=st.run_id, parent_id=st.parent_id)
                         return LoopOutcome(
-                            "awaiting_approval", st.run_id, "approval_required", steps=st.counters.steps,
+                            "awaiting_approval", st.run_id, LoopReason.APPROVAL_REQUIRED, steps=st.counters.steps,
                             tool_calls=st.counters.tool_calls, pending_action_ids=(action_id,),
                         )
                     st.counters.tool_calls += 1
+                    if res.view.get("status") == "unknown":
+                        st.unresolved = True
                     if res.record.action_id:
                         st.consumed.append(res.record.action_id)
                     view = res.view

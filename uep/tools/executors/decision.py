@@ -5,13 +5,18 @@
 - 結果放在 ``ConsultResults``（回合外、記憶體）：AgentLoop 讀它判斷 escalate（CN-2、CN-3），Gateway 的 ``content_lookup``
   從它取要回餵給模型的文字。receipt 只記 ``result_ref``，結果原文不進 receipt／DB（D33）。
 - 重放：同 ``(run_id, step_id, ordinal, sub_kind)`` 不重算（回同一個結果與 ``decision_id``）；``decision_id`` 本身也由
-  ``consult_decision_id`` 決定性導出，所以 ``ConsultResults`` 遺失（崩潰後）重算也得到同一個 ID。
+  ``consult_decision_id`` 決定性導出，所以 ``ConsultResults`` 遺失（崩潰後）重算也得到同一個 ID。**只保證 ID 一致，不保證
+  advice 一致**（規則或快照變了，重算的 advice 可能不同）。
+- 生命週期：Run 終態時由 AgentLoop 呼叫 ``discard_run`` 清除；另有容量上限（``max_entries``，淘汰最舊）。結果被清掉後，若同一個
+  action 被重放，Gateway 的 ``content_lookup`` 取不到內容 ⇒ 該項視圖為 ``unknown`` ⇒ 迴圈把 Run 收成 ``FAILED(unresolved_actions)``
+  （不編造內容，fail-closed）。
 """
 from __future__ import annotations
 
 import json
 import logging
 import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -30,17 +35,20 @@ from uep.ids import new_id
 from uep.tools.catalog.decision import INJECTED_CONSULT
 
 logger = logging.getLogger(__name__)
+DEFAULT_MAX_ENTRIES = 1024
 _SCOPE_KEYS = ("capability_tags", "modalities", "platforms")
 
 
 class ConsultResults:
     """consult 結果暫存：以 action_id 取用，並以決定性身分去重（重放不重算）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, max_entries: int = DEFAULT_MAX_ENTRIES) -> None:
         self._lock = threading.Lock()
-        self._by_action: dict[str, dict[str, Any]] = {}
+        self._by_action: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._by_identity: dict[tuple[str, str, int, str], dict[str, Any]] = {}
         self._receipts: dict[str, ToolReceipt] = {}
+        self._run_of: dict[str, str] = {}
+        self._max_entries = max_entries
 
     def get(self, action_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -61,6 +69,27 @@ class ConsultResults:
             self._by_action[action_id] = dict(payload)
             if key is not None:
                 self._by_identity[key] = dict(payload)
+                self._run_of[action_id] = key[0]
+            while len(self._by_action) > self._max_entries:  # 容量上限：淘汰最舊的（重放走 unresolved_actions，見模組說明）
+                oldest, _ = self._by_action.popitem(last=False)
+                self._receipts.pop(oldest, None)
+                self._run_of.pop(oldest, None)
+            while len(self._by_identity) > self._max_entries:
+                self._by_identity.pop(next(iter(self._by_identity)))
+
+    def discard_run(self, run_id: str) -> None:
+        """Run 進入終態：清掉該 Run 的所有 consult 結果、receipt 查核表與去重鍵。"""
+        with self._lock:
+            for action_id in [a for a, r in self._run_of.items() if r == run_id]:
+                self._by_action.pop(action_id, None)
+                self._receipts.pop(action_id, None)
+                self._run_of.pop(action_id, None)
+            for key in [k for k in self._by_identity if k[0] == run_id]:
+                self._by_identity.pop(key, None)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._by_action)
 
     def receipt(self, action_id: str) -> ToolReceipt | None:
         with self._lock:
@@ -98,7 +127,8 @@ class ConsultToolExecutor:
         self.results.put(call.action_id, key, payload)
         receipt = ToolReceipt(
             receipt_id=new_id("rcpt"), action_id=call.action_id, succeeded=True, result_ref=f"blob_{call.action_id}",
-            recorded_at=datetime.now(UTC), source_verified=True, meta={"status": "executed"},
+            recorded_at=datetime.now(UTC), source_verified=True,
+            meta={"status": "executed", "decision_id": str(payload.get("decision_id", ""))[:64] or "none"},  # CN-9
         )
         self.results.put_receipt(call.action_id, receipt)
         return receipt

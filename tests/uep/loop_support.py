@@ -89,6 +89,7 @@ class FakeTasks:
         self.steps: list[SimpleNamespace] = []
         self.checkpoints: list[dict[str, Any]] = []
         self.heartbeats = 0
+        self.log: list[str] = []  # 寫入類操作的順序（checkpoint／transition），驗證耐久順序用
         self.stale_on_heartbeat = False
         self.run_status: list[RunStatus] = []
         self.actions: dict[str, dict[str, Any]] = {}
@@ -125,6 +126,7 @@ class FakeTasks:
             assert not extra, f"checkpoint 含契約外的鍵：{extra}"
             check_safe_value(dict(checkpoint), "checkpoint")
             self.checkpoints.append(dict(checkpoint))
+            self.log.append("checkpoint")
 
     def heartbeat(self, run_id: str, *, worker_epoch: int) -> None:
         with self.lock:
@@ -141,6 +143,7 @@ class FakeTasks:
             if to is RunStatus.SUCCEEDED and self.unknown:
                 raise IllegalTransition("仍有結果未明的 action，不可轉 SUCCEEDED")
             self.run_status.append(to)
+            self.log.append(f"transition:{to.value}")
 
     def create_action(self, *, run_id, step_id, tool, params, worker_epoch, presence_bound=None, action_id=None):
         with self.lock:

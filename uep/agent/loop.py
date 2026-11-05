@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -72,6 +73,7 @@ Projector = Callable[[frozenset[str], frozenset[str] | None], Mapping[str, Any]]
 TOOL_NOT_IN_SNAPSHOT = "tool_not_in_snapshot"
 RESUME_REQUIRED_KEYS = (
     "child_context_ref", "history_hash", "frozen_tools", "frozen_tags", "visible_tools", "budget_counters", "step_id",
+    "frozen_modalities", "frozen_platforms",
 )
 FINALIZE_NOTE = "預算已用盡：請根據目前已取得的資訊直接收束並回覆，不要再呼叫任何工具。"
 
@@ -113,6 +115,9 @@ class _ConsultStore(Protocol):
     def content(self, action_id: str) -> str | None:
         ...
 
+    def discard_run(self, run_id: str) -> None:
+        ...
+
 
 class _Stop(Exception):
     """內部用：需要立刻結束本次執行的終局（取消、牆鐘）。"""
@@ -143,6 +148,8 @@ class _State:
     consumed: list[str] = field(default_factory=list)
     frozen_modalities: frozenset[str] = frozenset()  # consult 的凍結範圍（呼叫端提供，Run 內不變）
     frozen_platforms: frozenset[str] = frozenset()
+    last_decision_id: str = ""  # CN-9：最近一次 consult 的 decision_id（進 checkpoint）
+    escalate_gap: str = ""  # escalate 的缺口碼（進終態 checkpoint，崩潰後仍可重送候選事件）
     unresolved: bool = False  # 本次執行中出現過 UNKNOWN 的 action：Run 不可宣稱 SUCCEEDED
     usage_seen: dict[str, int] = field(default_factory=dict)
 
@@ -271,9 +278,8 @@ class AgentLoop:
         cap = self._narrow(self._projector(tags, prior), frozen, prior)
         st = self._new_state(run_id, trigger, parent_id, cap, frozen, tags, messages, str(checkpoint["child_context_ref"]), counters)
         st.step_id = str(checkpoint["step_id"])
-        # 新增的 consult 範圍鍵可缺：缺 ⇒ 空集合（只會讓 consult 更保守地 escalate，不會放寬）
-        st.frozen_modalities = frozenset(str(m) for m in checkpoint.get("frozen_modalities") or ())
-        st.frozen_platforms = frozenset(str(m) for m in checkpoint.get("frozen_platforms") or ())
+        st.frozen_modalities = frozenset(str(m) for m in checkpoint["frozen_modalities"])
+        st.frozen_platforms = frozenset(str(m) for m in checkpoint["frozen_platforms"])
         st.cap = self._offer(st, st.cap)
         st.consumed = list(checkpoint.get("consumed_action_ids") or ())
         return self._drive(st, resume_fill=frozenset(checkpoint.get("pending_approvals") or ()))
@@ -326,7 +332,7 @@ class AgentLoop:
         return (
             CONSULT_TAG in st.frozen_tags and self._consults is not None and budget.max_consults > 0
             and st.counters.consults < budget.max_consults
-            and self._no_progress_count(st) < budget.consult_no_progress_n
+            and self._no_progress_count(st) < budget.consult_no_progress_limit
         )
 
     def _offer(self, st: _State, cap: Mapping[str, Any]) -> dict[str, Any]:
@@ -345,13 +351,17 @@ class AgentLoop:
             "snapshot_platforms": sorted(now["platforms"]),
             "consults_used": st.counters.consults, "no_progress_count": self._no_progress_count(st),
         }
-        assert set(values) == set(INJECTED_CONSULT)
+        if set(values) != set(INJECTED_CONSULT):  # 組裝錯誤：注入欄位與條目宣告不一致
+            raise RuntimeError("consult 注入欄位與 decision.consult 條目的 injected_params 不一致")
         return {**self._base_injected, **values}
 
     def _consult_info(self, st: _State, action_id: str | None) -> Mapping[str, Any] | None:
         if self._consults is None or not action_id:
             return None
-        return self._consults.get(action_id)
+        info = self._consults.get(action_id)
+        if info is not None and isinstance(info.get("decision_id"), str):
+            st.last_decision_id = info["decision_id"]
+        return info
 
     def _recheck_escalation(self, st: _State, info: Mapping[str, Any]) -> str | None:
         """CN-2 縱深防禦：回傳要 escalate 的缺口碼，或 None。中樞已回 escalate、或 advice 超出「凍結 ∩ 當下快照」都算。"""
@@ -396,6 +406,8 @@ class AgentLoop:
             return self._finish(st, "failed", LoopReason(outcome.reason_code or LoopReason.NO_PROGRESS))
         merge_back(self._store, run_id=st.run_id, parent_id=st.parent_id, scope_ref=st.trigger.scope_ref,
                    state=outcome.state, reason_code=outcome.reason_code)
+        if outcome.state == "cancelled":
+            self._discard_consults(st)
         return outcome
 
     def _finish(
@@ -414,11 +426,15 @@ class AgentLoop:
                 except IllegalTransition:
                     logger.warning("Run 仍有結果未明的 action，改轉 FAILED：run=%s", st.run_id)
                     state, reason, detail = "failed", LoopReason.UNRESOLVED_ACTIONS, ""
+        semantic = f"end:{reason or state}{f':{detail}' if detail else ''}"
         if state == "failed":
+            # 終態 checkpoint（含 last_decision_id／escalate_gap）先於轉移：兩者之間崩潰也不會丟失缺口紀錄
+            if st.transcript:  # context_lost／checkpoint_incomplete 時沒有可寫的 history
+                self._checkpoint(st, semantic)
             self._tasks.transition_run(st.run_id, RunStatus.FAILED, worker_epoch=self._epoch)
-        if st.transcript:  # context_lost／checkpoint_incomplete 時沒有可寫的 history
-            tail = f":{detail}" if detail else ""
-            self._checkpoint(st, f"end:{reason or state}{tail}")
+        elif st.transcript:
+            self._checkpoint(st, semantic)
+        self._discard_consults(st)
         delivered = False
         if state == "completed" and self._deliver_result is not None:
             delivered = bool(self._deliver_result(text))
@@ -430,6 +446,12 @@ class AgentLoop:
             state, st.run_id, reason, text, st.counters.steps, st.counters.tool_calls, delivered=delivered,
         )
 
+    def _discard_consults(self, st: _State) -> None:
+        """Run 終態：清掉該 Run 的 consult 結果暫存（park 不是終態，不清）。"""
+        discard = getattr(self._consults, "discard_run", None)
+        if callable(discard):
+            discard(st.run_id)
+
     def _checkpoint(self, st: _State, semantic: str, pending: Sequence[str] = ()) -> None:
         revision, digest = persist_child(self._store, st.child_ref, st.transcript)
         st.counters.elapsed_s = self._elapsed(st)
@@ -440,6 +462,10 @@ class AgentLoop:
             "budget_counters": st.counters.to_checkpoint(), "visible_tools": sorted(visible_tools(st.cap)),
             "frozen_modalities": sorted(st.frozen_modalities), "frozen_platforms": sorted(st.frozen_platforms),
         }
+        if st.last_decision_id:
+            cp["last_decision_id"] = st.last_decision_id
+        if st.escalate_gap:
+            cp["escalate_gap"] = st.escalate_gap
         if st.step_id:
             cp["step_id"] = st.step_id
         self._tasks.save_checkpoint(st.run_id, cp, worker_epoch=self._epoch)
@@ -476,7 +502,7 @@ class AgentLoop:
             return self._escalate(st, end)
         if end.kind == "exhausted":
             by_consult = end.dim == "consult"  # 中樞建議 finalize：不是預算耗盡
-            if end.dim != "run_deadline" and (self._budget.finalize_on_exhausted or by_consult):
+            if end.dim != "run_deadline" and self._budget.finalize_on_exhausted:
                 final = self._run_attempt(st, {"tools": []}, finalize=True)
                 if final.kind == "result":
                     st.transcript.append(ChatMessage("assistant", final.text))
@@ -490,12 +516,16 @@ class AgentLoop:
     def _escalate(self, st: _State, end: _End) -> LoopOutcome:
         """CN-3：結束本 Run（``FAILED(escalated)``，不回饋模型、不在同一個 Run 續做），並送出候選事件。"""
         info = end.info or {}
+        gap = end.reason if re.fullmatch(r"[a-z0-9_.:\-]{1,64}", end.reason or "") else "scope_exceeded"
+        if isinstance(info.get("decision_id"), str):
+            st.last_decision_id = info["decision_id"]
+        st.escalate_gap = gap  # 進終態 checkpoint（耐久紀錄；恢復掃描器的重送屬切片 F）
         outcome = self._finish(st, "failed", LoopReason.ESCALATED)
         if self._on_escalate is not None:
             origin = st.trigger
             candidate = EscalationCandidate(
                 run_id=st.run_id, decision_id=str(info.get("decision_id", "")), sub_kind=str(info.get("sub_kind", "")),
-                gap_code=end.reason or "scope_exceeded",
+                gap_code=gap,
                 trigger=LoopTrigger(
                     kind="external_event", origin_ref=str(info.get("decision_id", "")) or origin.origin_ref,
                     goal_code=origin.goal_code, capability_tags=origin.capability_tags,  # 只帶原本凍結的標籤，不擴大
@@ -510,14 +540,15 @@ class AgentLoop:
         return outcome
 
     def _active_consult_due(self, st: _State, cap: Mapping[str, Any]) -> bool:
-        """CN-8：迴圈在 Policy 規定的點主動諮詢（D2 的點：預算將盡，剩一步或一次工具呼叫）。凍結集合沒有標籤、
+        """CN-8：觸發點由 Policy 決定（``LoopBudget.consult_loop_end_margin``，None ⇒ 關閉），不寫死在迴圈。
+        剩餘步數 <= margin 且 >= 2（consult 自己要用掉一步，不吃掉最後一步）才諮詢；剩餘工具次數也要 >= 2。凍結集合沒有標籤、
         或目前集合不含 consult 時不得呼叫。"""
-        if CONSULT_TOOL not in visible_tools(cap) or not self._consult_allowed(st):
+        margin = self._budget.consult_loop_end_margin
+        if margin is None or CONSULT_TOOL not in visible_tools(cap) or not self._consult_allowed(st):
             return False
-        return (
-            self._budget.max_steps - st.counters.steps <= 1
-            or self._budget.max_tool_calls - st.counters.tool_calls <= 1
-        )
+        steps_left = self._budget.max_steps - st.counters.steps
+        calls_left = self._budget.max_tool_calls - st.counters.tool_calls
+        return 2 <= steps_left <= margin and calls_left >= 2
 
     def _active_consult(self, st: _State, cap: Mapping[str, Any]) -> _End | None:
         """預算將盡時問中樞 ``loop_end``：自己的 Step（計入步數、工具次數與 consults），走 ActionIntent。
@@ -546,7 +577,7 @@ class AgentLoop:
             if gap is not None:
                 return _End("escalate", reason=gap, info=info)
             outcome = ((info.get("advice") or {}).get("loop") or {}).get("outcome")
-            if outcome == "finalize":
+            if outcome == "finalize" and self._budget.finalize_on_exhausted:  # 不繞過 finalize 的政策開關
                 return _End("exhausted", dim="consult")
         self._checkpoint(st, "think")
         return None

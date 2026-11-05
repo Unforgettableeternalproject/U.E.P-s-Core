@@ -30,7 +30,11 @@ class LoopBudget:
     max_parallel: int = 1  # 同一波並行度；TC-3 的 DB 強制（D1b）解鎖前真實 TaskManager 只能是 1
     repeat_limit: int = 3
     rejected_limit: int = 3
-    consult_no_progress_n: int = 3  # 連續無進展達此次數就不再投出 consult（與 max_consults 誰先到就照誰）
+    # 連續無進展達此次數就不再投出 consult（與 max_consults 誰先到就照誰）。None ⇒ 由 Run 的失敗閾值導出（見
+    # ``consult_no_progress_limit``），確保 consult 在 Run 因無進展失敗「之前」就被收掉
+    consult_no_progress_n: int | None = None
+    # 主動諮詢（CN-8）：剩餘步數 <= 此值（且 >= 2，不吃掉最後一步）時問中樞 loop_end；None ⇒ 關閉。觸發條件屬 Policy，不寫死在迴圈
+    consult_loop_end_margin: int | None = None
     finalize_on_exhausted: bool = True  # 耗盡時先以 tools=[] 要求收束；False 直接 FAILED(budget_exhausted)
     heartbeat_interval_s: float = 5.0
 
@@ -40,6 +44,22 @@ class LoopBudget:
                 raise ValueError(f"{name} 必須 >= 1")
         if self.max_consults < 0:
             raise ValueError("max_consults 不可為負")
+        if self.consult_loop_end_margin is not None and self.consult_loop_end_margin < 2:
+            raise ValueError("consult_loop_end_margin 必須 >= 2（主動諮詢本身要用掉一步，剩餘步數須 >= 2）")
+        if self.consult_no_progress_n is not None:
+            if self.consult_no_progress_n < 1:
+                raise ValueError("consult_no_progress_n 必須 >= 1")
+            if self.consult_no_progress_n > self._consult_no_progress_ceiling():
+                raise ValueError("consult_no_progress_n 必須嚴格小於 Run 的無進展失敗閾值，否則 consult 來不及被收掉")
+
+    def _consult_no_progress_ceiling(self) -> int:
+        """consult 的無進展計數（重複次數不含第一次、連續被拒次數）可容許的上限：嚴格小於 Run 失敗的計數（repeat_limit-1／rejected_limit），下限 1。"""
+        return max(min(self.repeat_limit - 1, self.rejected_limit) - 1, 1)
+
+    @property
+    def consult_no_progress_limit(self) -> int:
+        n = self.consult_no_progress_n
+        return n if n is not None else self._consult_no_progress_ceiling()
 
 
 @dataclass

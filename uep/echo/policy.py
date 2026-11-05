@@ -10,10 +10,11 @@ sink 二次接納負責，不依賴快照時效。S3 預設 ``ttl_s=None``（不
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from uep.stream.contracts.output import (
     ModeFlags,
@@ -29,6 +30,34 @@ from uep.turn.policy import PolicySnapshot as CorePolicySnapshot
 from uep.turn.policy import YieldAccumulator, mode_flags, yieldable
 
 YIELD_REASON = "listener_voice"
+
+logger = logging.getLogger("uep.echo.policy")
+
+CAUSE_PARTICIPANTS = "participants"
+CAUSE_CHANNEL_MODE = "channel_mode"
+CAUSE_PLATFORM = "platform"
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyPublication:
+    """一次 ``publish`` 的事實（DL-P1d）：換入當下的版本、前一版與兩份快照的版本／模式，供發布監聽者審計。
+
+    ``cause`` 由 ``publish`` 內部判定：帶 channel_mode 為 channel_mode，平台改變為 platform，其餘為 participants。
+    """
+
+    version: int
+    prev_version: int
+    platform: str
+    channel_mode: ChannelMode | None
+    prev_channel_mode: ChannelMode | None
+    cause: str
+    ttl_s: float | None
+    es_version: int
+    core_version: int
+    core_channel_mode: ChannelMode | None
+
+
+PublishListener = Callable[[PolicyPublication], None]
 
 
 class CoreModeRules:
@@ -54,6 +83,7 @@ class HostPolicySource:
         barge_in_channel_modes: frozenset[ChannelMode] | None = None,
     ) -> None:
         self._lock = threading.Lock()
+        self._publish_listeners: list[PublishListener] = []
         self._ttl_s = ttl_s
         self._listener = listener or ListenerConfig()
         overrides: dict[str, object] = {}
@@ -76,12 +106,17 @@ class HostPolicySource:
     def version(self) -> int:
         return self._snapshot.version
 
+    def add_publish_listener(self, listener: PublishListener) -> None:
+        """登記發布監聽者：快照換入且鎖釋放後呼叫（同步、在發布者的執行緒上），須輕量；例外一律吞掉並記 log。"""
+        self._publish_listeners.append(listener)
+
     def publish(
         self, *, platform: str | None = None, channel_mode: ChannelMode | None = None
     ) -> PolicySnapshot:
         """推送新版快照（參與者變動、Presence 或頻道模式變化時）；兩份快照同版、issued_at 重新起算。"""
         with self._lock:
             old = self._snapshot
+            old_mode = self._core.channel_mode
             version = old.version + 1
             self._core = replace(
                 self._core, version=version, issued_at=time.perf_counter(),
@@ -94,7 +129,23 @@ class HostPolicySource:
             else:
                 fresh = replace(old, version=version, issued_at=time.perf_counter())
             self._snapshot = fresh
-            return fresh
+            if channel_mode is not None:
+                cause = CAUSE_CHANNEL_MODE
+            elif platform is not None and platform != old.platform:
+                cause = CAUSE_PLATFORM
+            else:
+                cause = CAUSE_PARTICIPANTS
+            publication = PolicyPublication(
+                version=version, prev_version=old.version, platform=fresh.platform,
+                channel_mode=self._core.channel_mode, prev_channel_mode=old_mode, cause=cause, ttl_s=self._ttl_s,
+                es_version=fresh.version, core_version=self._core.version, core_channel_mode=self._core.channel_mode,
+            )
+        for listener in tuple(self._publish_listeners):
+            try:
+                listener(publication)
+            except Exception:
+                logger.exception("政策發布監聽者失敗")
+        return fresh
 
     def publish_channel_mode(self, mode: ChannelMode) -> PolicySnapshot:
         return self.publish(channel_mode=mode)

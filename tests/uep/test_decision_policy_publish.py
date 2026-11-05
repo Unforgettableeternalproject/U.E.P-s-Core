@@ -1,0 +1,227 @@
+"""DL-P1d：policy.snapshot／channel.mode 收編（publish 模式，不需資料庫）。"""
+from __future__ import annotations
+
+import threading
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from uep.decision import DecisionHub, DecisionPointSpec, DecisionRequest
+from uep.decision.log import DecisionLogWriter
+from uep.decision.policy_publish import (
+    KIND_CHANNEL_MODE,
+    KIND_POLICY_SNAPSHOT,
+    ChannelModeEngine,
+    PolicySnapshotEngine,
+    register_policy_publish,
+)
+from uep.echo.policy import HostPolicySource
+from uep.turn.engagement import ChannelMode
+
+
+class _ListSink:
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def write(self, rows) -> None:
+        self.rows.extend(rows)
+
+
+def _wired(*, run_id="run1"):
+    hub = DecisionHub()
+    source = HostPolicySource("web")
+    sink = _ListSink()
+    writer = DecisionLogWriter(sink, flush_interval=0.01)
+    writer.attach(hub)
+    register_policy_publish(hub, source, run_id=run_id)
+    return hub, source, writer, sink
+
+
+def _script(source: HostPolicySource):
+    out = [
+        source.publish(), source.publish_channel_mode(ChannelMode.ACTIVE),
+        source.publish_channel_mode(ChannelMode.ACTIVE), source.publish(platform="discord"),
+        source.publish_channel_mode(ChannelMode.PASSIVE), source.publish(),
+    ]
+    return (
+        [(s.version, s.platform) for s in out], source.current().version, source.core_current().channel_mode,
+        source.core_current().version,
+    )
+
+
+def _no_listener_source():
+    return SimpleNamespace(add_publish_listener=lambda cb: None)
+
+
+def test_listener_does_not_change_versions_or_returns():
+    bare = HostPolicySource("web")
+    _, wired, writer, _ = _wired()
+    assert _script(bare) == _script(wired)
+    assert wired.current().platform == bare.current().platform
+    writer.close()
+
+
+def test_listener_sees_published_snapshot_and_publication_fields():
+    source = HostPolicySource("web", ttl_s=5.0)
+    seen = []
+    source.add_publish_listener(lambda pub: seen.append((pub, source.current().version, source.core_current().version)))
+    source.publish_channel_mode(ChannelMode.ACTIVE)
+    source.publish()
+    source.publish(platform="discord")
+    pub0, es_v, core_v = seen[0]
+    assert (pub0.version, es_v, core_v) == (2, 2, 2)
+    assert (pub0.prev_version, pub0.cause, pub0.ttl_s) == (1, "channel_mode", 5.0)
+    assert (pub0.prev_channel_mode, pub0.channel_mode) == (None, ChannelMode.ACTIVE)
+    assert [p.cause for p, _, _ in seen] == ["channel_mode", "participants", "platform"]
+    assert seen[2][0].platform == "discord" and seen[2][0].channel_mode is ChannelMode.ACTIVE
+
+
+def test_listener_exception_does_not_break_publish():
+    source = HostPolicySource("web")
+    calls = []
+
+    def boom(_pub):
+        calls.append(1)
+        raise RuntimeError("x")
+
+    source.add_publish_listener(boom)
+    source.add_publish_listener(lambda pub: calls.append(pub.version))
+    snap = source.publish()
+    assert snap is source.current() and snap.version == 2
+    assert calls == [1, 2]
+
+
+def test_flip_writes_two_rows_participants_one_row():
+    _, source, writer, sink = _wired()
+    source.publish_channel_mode(ChannelMode.ACTIVE)
+    assert writer.flush()
+    rows = {r["kind"]: r for r in sink.rows}
+    assert set(rows) == {KIND_POLICY_SNAPSHOT, KIND_CHANNEL_MODE} and len(sink.rows) == 2
+    assert rows[KIND_CHANNEL_MODE]["outcome"] == "active" and rows[KIND_CHANNEL_MODE]["reason_code"] == "mode_flip"
+    assert rows[KIND_POLICY_SNAPSHOT]["outcome"] == "published"
+    assert rows[KIND_POLICY_SNAPSHOT]["reason_code"] == "channel_mode"
+    assert rows[KIND_CHANNEL_MODE]["request_id"] == rows[KIND_POLICY_SNAPSHOT]["request_id"] == "run1:policy:2"
+    sink.rows.clear()
+    source.publish_channel_mode(ChannelMode.ACTIVE)  # 沒有翻轉：只記快照
+    source.publish()  # 參與者變動
+    assert writer.flush()
+    assert [(r["kind"], r["reason_code"], r["request_id"]) for r in sink.rows] == [
+        (KIND_POLICY_SNAPSHOT, "channel_mode", "run1:policy:3"), (KIND_POLICY_SNAPSHOT, "participants", "run1:policy:4"),
+    ]
+    sink.rows.clear()
+    source.publish_channel_mode(ChannelMode.PASSIVE)
+    assert writer.flush()
+    assert sorted((r["kind"], r["outcome"]) for r in sink.rows) == [
+        (KIND_CHANNEL_MODE, "passive"), (KIND_POLICY_SNAPSHOT, "published"),
+    ]
+    assert all(r["status"] == "ok" and r["fallback"] is False for r in sink.rows)
+    assert all(r["candidate_id"] is None and r["utterance_refs"] is None for r in sink.rows)
+    writer.close()
+
+
+def test_disabled_log_and_no_hub_are_free():
+    source = HostPolicySource("web")
+    assert source.publish().version == 2  # 無監聽者
+    hub = DecisionHub()
+    writer = DecisionLogWriter(None)  # 停用
+    writer.attach(hub)
+    register_policy_publish(hub, source)
+    source.publish_channel_mode(ChannelMode.ACTIVE)
+    assert source.version == 3 and not writer.enabled and writer._thread is None
+
+
+def _pub(**kw):
+    base = {
+        "version": 5, "prev_version": 4, "platform": "web", "channel_mode": ChannelMode.ACTIVE,
+        "prev_channel_mode": None, "cause": "channel_mode", "ttl_s": None, "es_version": 5, "core_version": 5,
+        "core_channel_mode": ChannelMode.ACTIVE,
+    }
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize(
+    ("override", "reason"),
+    [
+        ({"prev_version": 3}, "version_gap"),
+        ({"core_version": 4}, "split_version"),
+        ({"core_channel_mode": ChannelMode.PASSIVE}, "mode_mismatch"),
+        ({}, "channel_mode"),
+    ],
+)
+def test_invariant_audit_reason_codes(override, reason):
+    hub = DecisionHub()
+    sink = _ListSink()
+    writer = DecisionLogWriter(sink, flush_interval=0.01)
+    writer.attach(hub)
+    recorder = register_policy_publish(hub, _no_listener_source())
+    recorder(_pub(**override))
+    assert writer.flush()
+    snap = next(r for r in sink.rows if r["kind"] == KIND_POLICY_SNAPSHOT)
+    assert (snap["outcome"], snap["reason_code"], snap["status"], snap["fallback"]) == ("published", reason, "ok", False)
+    writer.close()
+
+
+def test_invalid_facts_fall_back():
+    hub = DecisionHub()
+    recorder = register_policy_publish(hub, _no_listener_source())
+    results = []
+    hub.add_observer(lambda req, res, spec, ms: results.append(res))
+    recorder(_pub(version="5"))
+    recorder(_pub(cause="bogus", prev_channel_mode=ChannelMode.PASSIVE))
+    assert results and all(r.fallback and r.reason_code == "policy_publish_invalid" for r in results)
+    for engine in (PolicySnapshotEngine(), ChannelModeEngine()):
+        res = engine.decide(DecisionRequest(request_id="r", kind="k", facts={}))
+        assert res.fallback and res.reason_code == "policy_publish_invalid"
+
+
+def test_modes_are_mutually_exclusive():
+    hub = DecisionHub()
+    register_policy_publish(hub, _no_listener_source())
+    hub.register(DecisionPointSpec(kind="s.sync", mode="sync"), PolicySnapshotEngine())
+    hub.register(DecisionPointSpec(kind="s.async", mode="async"), PolicySnapshotEngine())
+
+    def req(kind, **kw):
+        return DecisionRequest(request_id="r", kind=kind, **kw)
+
+    with pytest.raises(ValueError):
+        hub.decide(KIND_POLICY_SNAPSHOT, req(KIND_POLICY_SNAPSHOT))
+    with pytest.raises(ValueError):
+        hub.submit(KIND_POLICY_SNAPSHOT, req(KIND_POLICY_SNAPSHOT))
+    with pytest.raises(ValueError):
+        hub.publish("s.sync", req("s.sync"))
+    with pytest.raises(ValueError):
+        hub.publish("s.async", req("s.async"))
+    with pytest.raises(ValueError):
+        hub.decide("s.async", req("s.async"))
+    with pytest.raises(ValueError):
+        hub.submit("s.sync", req("s.sync"))
+    with pytest.raises(ValueError):
+        hub.publish(KIND_POLICY_SNAPSHOT, req(KIND_CHANNEL_MODE))
+    with pytest.raises(ValueError):
+        hub.publish(KIND_POLICY_SNAPSHOT, req(KIND_POLICY_SNAPSHOT, native=object()))
+
+
+def test_blocked_sink_does_not_delay_publish():
+    hub = DecisionHub()
+    source = HostPolicySource("web")
+    gate = threading.Event()
+
+    class _Blocked:
+        def write(self, rows) -> None:
+            gate.wait(10)
+
+    writer = DecisionLogWriter(_Blocked(), flush_interval=0.01, max_queue=4)
+    writer.attach(hub)
+    register_policy_publish(hub, source)
+    started = time.perf_counter()
+    for i in range(50):  # 超過佇列容量也不阻塞：滿了只計數丟棄
+        source.publish_channel_mode(ChannelMode.ACTIVE if i % 2 == 0 else ChannelMode.PASSIVE)
+    elapsed = time.perf_counter() - started
+    dropped = writer.metrics["decision_log.dropped"]
+    gate.set()
+    writer.close(timeout=2)
+    assert source.version == 51 and source.core_current().version == 51
+    assert elapsed < 1.0
+    assert dropped > 0

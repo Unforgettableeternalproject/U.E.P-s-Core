@@ -18,6 +18,7 @@ from uep.control.channel import InProcessControlChannel
 from uep.db.engine import make_engine, make_session_factory
 from uep.decision.db import DbSink
 from uep.decision.log import DecisionLogWriter
+from uep.decision.policy_publish import register_policy_publish
 from uep.echo.host import EchoPipelineHost
 from uep.events.bus import EventBus
 from uep.events.publisher import EventPublisher
@@ -147,6 +148,11 @@ def _attach_decision_log(host: EchoPipelineHost, session_factory: sessionmaker[S
         return None
     writer = DecisionLogWriter(DbSink(session_factory))
     writer.attach(host.decision_hub)
+    # DL-P1d：政策發布記錄；只在日誌啟用時登記（停用時零成本）。hub 觀察者對所有 kind 生效，故與 attach 的先後無關，
+    # 但須在 Host 開始發布前（rig 組裝階段）完成。
+    policy = getattr(host, "policy", None)
+    if policy is not None:
+        register_policy_publish(host.decision_hub, policy, run_id=getattr(host, "run_id", None))
     return writer
 
 

@@ -297,6 +297,7 @@ def test_decision_package_boundary():
             "loop_consult.py": {"uep.ids"},  # DL-C1：決定性 decision_id 用 derived_id
             # DL-P1c：memory.dream 包裝 DreamPlanner.decide（memory 端不反向 import decision）
             "memory_dream.py": {"uep.ids", "uep.memory.dream_planner"},
+            "policy_publish.py": {"uep.ids"},  # DL-P1d：policy.snapshot／channel.mode（鴨子型別接 HostPolicySource）
         }
         if path.name in allowed_outside:
             allowed = allowed_outside[path.name]

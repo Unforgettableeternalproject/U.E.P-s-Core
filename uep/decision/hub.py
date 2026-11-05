@@ -64,6 +64,20 @@ class DecisionHub:
             raise ValueError(f"決策點 {kind} 不接受 native")
         return self._dispatch(kind, spec, request)
 
+    def publish(self, kind: str, request: DecisionRequest) -> DecisionResult:
+        """publish 決策點的登記入口（提案 §3.4）：記錄別處已定案的發布事實（如政策快照），不帶 native。
+
+        engine 只記錄與審計，不重新計算；呼叫端（發布監聽者）必須輕量。
+        """
+        spec = self.registry.get(kind)
+        if spec.mode != "publish":
+            raise ValueError(f"publish 只支援 publish 決策點：{kind}（{spec.mode}）")
+        if request.kind != kind:
+            raise ValueError(f"request.kind（{request.kind}）與 kind（{kind}）不符")
+        if request.native is not None:
+            raise ValueError(f"決策點 {kind} 不接受 native")
+        return self._dispatch(kind, spec, request)
+
     def _dispatch(self, kind: str, spec: DecisionPointSpec, request: DecisionRequest) -> DecisionResult:
         started = time.perf_counter()
         result = self._engines[kind].decide(request)

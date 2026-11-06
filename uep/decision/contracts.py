@@ -89,6 +89,18 @@ class DecisionLoop:
 
 
 @dataclass(frozen=True)
+class DecisionPolicy:
+    """``DecisionPlan.policy``：政策發布事實的記錄（僅記錄，不被任何元件套用）。
+
+    只有 ``policy.snapshot``／``channel.mode`` 可帶（spec ``plan_sections`` 宣告 ``policy``）；
+    P2 之前不得新增任何讀取此區段的消費者（由 ``test_decision_policy_section_lock`` 鎖住）。
+    """
+
+    channel_mode: str | None = None  # active | passive
+    snapshot_version: int | None = None
+
+
+@dataclass(frozen=True)
 class DecisionFollowup:
     """``DecisionPlan.followups`` 的一項：後續請求（如完成後回報）。"""
 
@@ -117,6 +129,7 @@ class DecisionPlan:
     placement: DecisionPlacement | None = None
     loop: DecisionLoop | None = None
     followups: tuple[DecisionFollowup, ...] | None = None
+    policy: DecisionPolicy | None = None  # 僅記錄（policy.snapshot／channel.mode），不被套用
 
 
 def plan_to_dict(plan: DecisionPlan) -> dict[str, Any]:
@@ -135,6 +148,7 @@ def plan_from_dict(data: dict[str, Any]) -> DecisionPlan:
     """反序列化；缺少的區段為 None（相容只含 route／reply 的舊資料），頂層與區段內的未知鍵一律忽略。"""
     reply, output, placement = data.get("reply"), data.get("output"), data.get("placement")
     loop, followups = data.get("loop"), data.get("followups")
+    policy = data.get("policy")
     return DecisionPlan(
         route=data.get("route"),
         reply=_build(DecisionReply, reply) if reply is not None else None,
@@ -148,6 +162,7 @@ def plan_from_dict(data: dict[str, Any]) -> DecisionPlan:
         placement=_build(DecisionPlacement, placement) if placement is not None else None,
         loop=_build(DecisionLoop, loop, reeval_on=tuple(loop.get("reeval_on", ()))) if loop is not None else None,
         followups=tuple(_build(DecisionFollowup, f) for f in followups) if followups is not None else None,
+        policy=_build(DecisionPolicy, policy) if policy is not None else None,
     )
 
 

@@ -6,6 +6,7 @@ P0 只包裝既有 ``turn.reply`` 決策點（行為零變化）。``contracts``
 from uep.decision.contracts import (
     DecisionEngineInfo,
     DecisionPlan,
+    DecisionPolicy,
     DecisionReply,
     DecisionRequest,
     DecisionResult,
@@ -20,6 +21,7 @@ __all__ = [
     "DecisionPlan",
     "DecisionPointRegistry",
     "DecisionPointSpec",
+    "DecisionPolicy",
     "DecisionReply",
     "DecisionRequest",
     "DecisionResult",

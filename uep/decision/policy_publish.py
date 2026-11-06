@@ -27,6 +27,7 @@ from typing import Any
 from uep.decision.contracts import (
     DecisionEngineInfo,
     DecisionPlan,
+    DecisionPolicy,
     DecisionRequest,
     DecisionResult,
 )
@@ -60,6 +61,7 @@ def policy_snapshot_spec() -> DecisionPointSpec:
     return DecisionPointSpec(
         kind=KIND_POLICY_SNAPSHOT, mode="publish", owner="echo", outcomes=(OUTCOME_PUBLISHED,),
         budget_ms=None, on_invalid_reason=ON_INVALID_REASON, allow_native=False, shadow=False,
+        plan_sections=("policy",),
     )
 
 
@@ -67,6 +69,7 @@ def channel_mode_spec() -> DecisionPointSpec:
     return DecisionPointSpec(
         kind=KIND_CHANNEL_MODE, mode="publish", owner="echo", outcomes=(OUTCOME_ACTIVE, OUTCOME_PASSIVE),
         budget_ms=None, on_invalid_reason=ON_INVALID_REASON, allow_native=False, shadow=False,
+        plan_sections=("policy",),
     )
 
 
@@ -91,13 +94,24 @@ def _valid_facts(facts: dict[str, Any]) -> bool:
     )
 
 
-def _result(request: DecisionRequest, outcome: str, reason: str, *, fallback: bool = False) -> DecisionResult:
+def _policy_plan(facts: dict[str, Any]) -> DecisionPlan:
+    """把已驗證的 facts 記進 plan.policy（僅記錄）；channel_mode 取字串，version 限 int 非 bool。"""
+    mode, version = facts.get("channel_mode"), facts.get("version")
+    return DecisionPlan(policy=DecisionPolicy(
+        channel_mode=mode if isinstance(mode, str) else None,
+        snapshot_version=version if _is_int(version) else None,
+    ))
+
+
+def _result(
+    request: DecisionRequest, outcome: str, reason: str, *, fallback: bool = False, plan: DecisionPlan | None = None
+) -> DecisionResult:
     engine = (
         DecisionEngineInfo(tier="fallback", id="core.fallback", version="d80") if fallback
         else DecisionEngineInfo(tier="rule", id=_ENGINE_ID, version=_ENGINE_VERSION)
     )
     return DecisionResult(
-        decision_id=new_id("dec"), request_id=request.request_id, kind=request.kind, outcome=outcome, plan=DecisionPlan(),
+        decision_id=new_id("dec"), request_id=request.request_id, kind=request.kind, outcome=outcome, plan=plan or DecisionPlan(),
         confidence=0.0 if fallback else 1.0, reason_code=reason, engine=engine, fallback=fallback,
     )
 
@@ -128,7 +142,7 @@ class PolicySnapshotEngine:
             reason = REASON_MODE_MISMATCH
         else:
             reason = facts["cause"]
-        return _result(request, OUTCOME_PUBLISHED, reason)
+        return _result(request, OUTCOME_PUBLISHED, reason, plan=_policy_plan(facts))
 
 
 class ChannelModeEngine:
@@ -138,7 +152,7 @@ class ChannelModeEngine:
         facts = request.facts
         if not _valid_facts(facts) or facts["channel_mode"] not in _MODES:
             return _result(request, OUTCOME_INVALID, ON_INVALID_REASON, fallback=True)
-        return _result(request, facts["channel_mode"], REASON_MODE_FLIP)
+        return _result(request, facts["channel_mode"], REASON_MODE_FLIP, plan=_policy_plan(facts))
 
 
 def _mode_text(value: Any) -> Any:

@@ -36,6 +36,7 @@ logger = logging.getLogger("uep.echo.policy")
 CAUSE_PARTICIPANTS = "participants"
 CAUSE_CHANNEL_MODE = "channel_mode"
 CAUSE_PLATFORM = "platform"
+CAUSE_INITIAL = "initial"
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,10 +44,12 @@ class PolicyPublication:
     """一次 ``publish`` 的事實（DL-P1d）：換入當下的版本、前一版與兩份快照的版本／模式，供發布監聽者審計。
 
     ``cause`` 由 ``publish`` 內部判定：帶 channel_mode 為 channel_mode，平台改變為 platform，其餘為 participants。
+    ``cause="initial"`` 是登記監聽者時補送的基準（``add_publish_listener_with_baseline``）：此時 ``prev_version``
+    與 ``prev_channel_mode`` 皆為 None，其餘欄位取自當下快照。
     """
 
     version: int
-    prev_version: int
+    prev_version: int | None
     platform: str
     channel_mode: ChannelMode | None
     prev_channel_mode: ChannelMode | None
@@ -109,6 +112,21 @@ class HostPolicySource:
     def add_publish_listener(self, listener: PublishListener) -> None:
         """登記發布監聽者：快照換入且鎖釋放後呼叫（同步、在發布者的執行緒上），須輕量；例外一律吞掉並記 log。"""
         self._publish_listeners.append(listener)
+
+    def add_publish_listener_with_baseline(self, listener: PublishListener) -> PolicyPublication:
+        """在發布鎖內登記監聽者並回傳當下快照的基準 publication（``cause="initial"``）。
+
+        「讀當前快照」與「掛監聽者」同鎖，所以基準之後的每次發布都會通知到 ``listener``、之前的都不會，不漏也不重。
+        基準由呼叫者自行送出；listener 在鎖外被呼叫，因此基準與後續發布的先後順序須由呼叫者保證。
+        """
+        with self._lock:
+            self._publish_listeners.append(listener)
+            snap, core = self._snapshot, self._core
+            return PolicyPublication(
+                version=snap.version, prev_version=None, platform=snap.platform,
+                channel_mode=core.channel_mode, prev_channel_mode=None, cause=CAUSE_INITIAL, ttl_s=self._ttl_s,
+                es_version=snap.version, core_version=core.version, core_channel_mode=core.channel_mode,
+            )
 
     def publish(
         self, *, platform: str | None = None, channel_mode: ChannelMode | None = None

@@ -354,6 +354,7 @@ def test_db_migration_0013_upgrade_downgrade_roundtrip(alembic_cfg, engine):
     try:
         command.downgrade(alembic_cfg, "0012_action_concurrency")
         assert not (new & columns())
+        assert "ck_runs_cancel_reason" not in {c["name"] for c in inspect(engine).get_check_constraints("runs")}
     finally:
         command.upgrade(alembic_cfg, "head")
     assert new <= columns()

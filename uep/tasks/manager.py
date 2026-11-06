@@ -995,8 +995,7 @@ class TaskManager:
             logger.warning(
                 "強制轉移 Run：run=%s %s -> %s reason=%s", run_id, run.status, to.value, reason
             )
-            self._check_transition("run", run, to, pause_reason)  # 不合法的轉移先拋，不留下 epoch／action 的半套變更
-            run.worker_epoch += 1
+            run.worker_epoch += 1  # 轉移不合法時（_set_run_status 內檢查）整個交易回滾，epoch／action 都不會留下半套變更
             for action in s.scalars(
                 select(ActionIntentRow).where(
                     ActionIntentRow.run_id == run_id, ActionIntentRow.status == ActionStatus.EXECUTING.value
@@ -1175,7 +1174,7 @@ class TaskManager:
         """Supervisor 要處理的 Run（其 Task 皆未終態），依建立時間排序：
 
         1. 非終態、非 PAUSED，且 ``run_deadline`` 或 ``Task.deadline`` 已到；
-        2. 非終態且已設取消旗標（等待 worker 自行收尾，或判斷是否強制）；
+        2. 非終態且已設 run_deadline／task_deadline 取消旗標（等待 worker 自行收尾，或判斷是否強制；step_timeout 旗標留給 F-4）；
         3. **FAILED／CANCELLED**（不含 SUCCEEDED：Run 已成功完成就不該把 Task 判失敗）、帶 run_deadline／task_deadline
            取消旗標，且 Task 沒有其他未終態 Run（需要收尾 Task）；
         4. WAITING_APPROVAL 且 ``approval_expiry`` 已到、尚未對該 expiry 通知過。
@@ -1190,7 +1189,7 @@ class TaskManager:
         due = (
             ((RunRow.status.notin_(done + [RunStatus.PAUSED.value]))
              & ((RunRow.run_deadline <= now) | (TaskRow.deadline <= now)))
-            | (RunRow.status.notin_(done) & RunRow.cancel_requested_at.is_not(None))
+            | (RunRow.status.notin_(done) & RunRow.cancel_requested_at.is_not(None) & RunRow.cancel_reason.in_(deadline_reasons))
             | (RunRow.status.in_(failed_like) & RunRow.cancel_reason.in_(deadline_reasons) & ~other_live)
             | ((RunRow.status == RunStatus.WAITING_APPROVAL.value) & (RunRow.approval_expiry <= now)
                & (RunRow.approval_expired_at.is_(None) | (RunRow.approval_expired_at != RunRow.approval_expiry)))

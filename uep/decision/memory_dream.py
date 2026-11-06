@@ -5,7 +5,7 @@
 - ``DecisionResult``／``DecisionPlan`` 是給日誌與審計看的面向（只有 ID、原因碼、trigger 這類欄位，沒有原文）；
   精確的 ``DreamDecision``（含 namespace_id 與 not_before 浮點）由 engine 在同一次呼叫內留存，decider 以 request_id 取回。
 - 中樞這條路失敗、逾時、忙碌或例外，一律回 wait 並帶 reason_code，不再呼叫一次 decide；``DreamLoop`` 不中斷。
-- 預算在 engine 內執行（沿用 turn.reply 的 ``ProposerGuard``）：planner 逾時、上一次還在跑（busy）、例外，engine 自己回
+- 預算在 engine 內執行（模組內私有的 ``_BudgetGuard``，語意對齊 turn.reply 的 ``ProposerGuard``，但 decision 層不 import ``uep.turn``）：planner 逾時、上一次還在跑（busy）、例外，engine 自己回
   fallback ``DecisionResult``（outcome=wait、fallback=True、reason 取自 spec），所以 hub 照常通知觀察者，決策日誌記的是
   實際採用的值。planner 遲到的結果直接丟棄（只記 debug log）：不經中樞、不經觀察者、不寫入 ``take`` 的暫存。
 - 預算數值關係：engine 預算 = ``spec.budget_ms``；decider 外層預算 = ``spec.budget_ms`` + ``_OUTER_MARGIN_MS``（見
@@ -21,6 +21,7 @@ import threading
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from itertools import count
+from typing import Any, Callable
 
 from uep.decision.contracts import (
     DecisionEngineInfo,
@@ -34,7 +35,6 @@ from uep.decision.hub import DecisionHub
 from uep.decision.registry import DecisionPointSpec
 from uep.ids import new_id
 from uep.memory.dream_planner import DreamDecision, DreamPlanner, DreamSnapshot
-from uep.turn.proposer import ProposerGuard
 
 logger = logging.getLogger("uep.decision.memory_dream")
 
@@ -65,6 +65,51 @@ def _fallback_wait(reason: str) -> DreamDecision:
     return DreamDecision("wait", None, None, reason, None)
 
 
+class _BudgetGuard:
+    """在 daemon 執行緒上執行 planner，呼叫端以預算等待；逾時就放棄結果。
+
+    上一次還在跑（busy）時新呼叫不啟動執行緒、立即回 busy。busy 旗標在 worker 結束時於鎖內先清除，
+    之後才交付結果，所以呼叫端拿到結果後緊接著的下一次呼叫不會誤判 busy。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._busy = False
+
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
+    def call(self, fn: Callable[[Any], Any], arg: Any, budget_s: float | None) -> tuple[Any, str]:
+        """回傳 ``(結果, 狀態)``；狀態為 ok／timeout／busy／error，非 ok 時結果為 None。"""
+        with self._lock:
+            if self._busy:
+                return None, "busy"
+            self._busy = True
+        future: Future[Any] = Future()
+
+        def work() -> None:
+            try:
+                value, error = fn(arg), None
+            except BaseException as exc:  # noqa: BLE001 - 任何例外都交回呼叫端
+                value, error = None, exc
+            with self._lock:
+                self._busy = False
+            if error is None:
+                future.set_result(value)
+            else:
+                future.set_exception(error)
+
+        threading.Thread(target=work, name="uep-dream-planner", daemon=True).start()
+        try:
+            return future.result(timeout=budget_s), "ok"
+        except FutureTimeout:
+            return None, "timeout"
+        except Exception as exc:  # noqa: BLE001 - 只記型別名，不外洩訊息
+            logger.warning("memory.dream planner 例外：%s", type(exc).__name__)
+            return None, "error"
+
+
 def engine_budget_s(spec: DecisionPointSpec) -> float | None:
     """engine 內執行 planner 的預算（秒）：``spec.budget_ms``；<= 0 代表不設上限。"""
     return spec.budget_ms / 1000 if spec.budget_ms and spec.budget_ms > 0 else None
@@ -85,7 +130,7 @@ class MemoryDreamEngine:
         self._lock = threading.Lock()
         self._last: tuple[str, DreamDecision] | None = None  # 只留最新一筆（逾時的遲到結果不累積）
         self._last_wait_reason: str | None = None  # 日誌靜默抑制：上一筆已記錄的 wait 原因
-        self._guard = ProposerGuard("memory-dream")  # 單執行緒；上一次還在跑時新呼叫立即回 busy，不排隊
+        self._guard = _BudgetGuard()  # 單執行緒；上一次還在跑時新呼叫立即回 busy，不排隊
 
     def decide(self, request: DecisionRequest) -> DecisionResult:
         spec = self._spec

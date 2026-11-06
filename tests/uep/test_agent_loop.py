@@ -594,6 +594,9 @@ def test_fake_tasks_guards_match_real_manager_semantics():
     tasks.transition_run(RUN, RunStatus.SUCCEEDED, worker_epoch=99)  # 舊 epoch：記 warning、忽略、不拋
     assert tasks.run_status == []
     tasks.create_action(run_id=RUN, step_id="s", tool="post.ask", params={"path": "x"}, worker_epoch=1, action_id="act_p")
+    with pytest.raises(ActionBlocked):  # 真實 Manager 先做 TC-3（非唯讀 UNKNOWN 阻擋），再判斷核准
+        tasks.execute_action("act_p", {"path": "x"}, worker_epoch=1)
+    tasks.unknown.discard("act_w")
     with pytest.raises(ApprovalRequired):  # 沒有 approval_id 的路徑：一律要核准
         tasks.execute_action("act_p", {"path": "x"}, worker_epoch=1)
 
@@ -606,7 +609,7 @@ def test_max_parallel_requires_tasks_that_support_it():
     with pytest.raises(ValueError, match="supports_parallel_execution"):
         rig.new_loop(budget=LoopBudget(max_parallel=2))
     rig.new_loop(budget=LoopBudget(max_parallel=1))  # 1 一律可以
-    assert TaskManager.supports_parallel_execution is False  # 真實 Manager 在 D1b 放寬前不支援
+    assert TaskManager.supports_parallel_execution is True  # D1b 起真實 Manager 支援同 Run 內並行
 
 
 def test_snapshots_take_raises_keyerror_when_missing():

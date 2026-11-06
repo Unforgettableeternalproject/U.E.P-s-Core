@@ -11,7 +11,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import IntegrityError
 
 from tests.uep.test_task_model import (  # noqa: F401  fixture 與輔助函式沿用 test_task_model
     add_action,
@@ -58,14 +57,19 @@ def test_derived_id_is_deterministic_and_valid():
         derived_id("nope", turn_id)
 
 
-def test_migration_0011_chain_and_index_declared():
+def test_migration_0011_chain_and_0012_replaces_index_with_concurrency():
     from importlib import import_module
 
     mod = import_module("uep.db.migrations.versions.0011_one_executing_per_run")
     assert mod.revision == "0011_one_executing_per_run"
     assert mod.down_revision == "0010_decision_log"
-    index = next(i for i in ActionIntentRow.__table__.indexes if i.name == "uq_action_intents_one_executing_per_run")
-    assert index.unique and "EXECUTING" in str(index.dialect_options["postgresql"]["where"])
+    mod12 = import_module("uep.db.migrations.versions.0012_action_concurrency")
+    assert mod12.revision == "0012_action_concurrency" and mod12.down_revision == "0011_one_executing_per_run"
+    # D1b：部分唯一索引已移除，改由 Manager 在 Run 鎖內檢查；concurrency 欄與 check 約束已宣告
+    assert all(i.name != "uq_action_intents_one_executing_per_run" for i in ActionIntentRow.__table__.indexes)
+    col = ActionIntentRow.__table__.c.concurrency
+    assert not col.nullable and str(col.server_default.arg) == "serial"
+    assert any(c.name == "ck_action_intents_concurrency" for c in ActionIntentRow.__table__.constraints)
 
 
 # ---- 回合 Task ----
@@ -179,14 +183,11 @@ def test_internal_read_unknown_does_not_block(mgr, session_factory):
     assert mgr.execute_action(b.action_id, {"n": "b"}, worker_epoch=run.worker_epoch).status is ActionStatus.SUCCEEDED
 
 
-def test_db_rejects_two_executing_in_same_run(mgr, session_factory):
+def test_db_no_longer_has_one_executing_index(mgr, session_factory):
+    """D1b（0012）：部分唯一索引已移除，同 Run 多個 EXECUTING 的限制改由 Manager 在 Run 鎖內檢查。"""
     _run, a, b = two_actions(mgr)
     force_status(session_factory, a.action_id, "EXECUTING")
-    with pytest.raises(IntegrityError):
-        force_status(session_factory, b.action_id, "EXECUTING")
-    # 不同 Run 不受限；終態不計
-    force_status(session_factory, a.action_id, "SUCCEEDED")
-    force_status(session_factory, b.action_id, "EXECUTING")
+    force_status(session_factory, b.action_id, "EXECUTING")  # 不再 IntegrityError
 
 
 def test_vc_s3_4_concurrent_intended_one_blocked(mgr, executor):

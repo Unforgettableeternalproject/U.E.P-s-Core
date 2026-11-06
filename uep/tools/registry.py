@@ -412,6 +412,10 @@ class ToolRegistry:
     def specs(self) -> Mapping[str, ToolSpec]:
         return self._specs
 
+    def concurrency_of(self, tool: str) -> Concurrency:
+        """工具的並行宣告（TC-3 的 action.concurrency 快照來源）；解析不到拋 ``PolicyViolation``。"""
+        return self.entry(tool).concurrency
+
     # --- 查詢與衍生 ---
 
     def entry(self, tool: str) -> ToolEntry:

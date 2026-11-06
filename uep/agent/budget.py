@@ -27,7 +27,7 @@ class LoopBudget:
     run_deadline_s: float | None = None  # 累計牆鐘上限（秒）
     step_timeout_s: float | None = None  # 單一 Step 的上限（只取消卡住的 Step，SV-2）
     max_batch: int = 8  # 同一則模型訊息內處理的 tool_intent 上限（§6.4-1）
-    max_parallel: int = 1  # 同一波並行度；TC-3 的 DB 強制（D1b）解鎖前真實 TaskManager 只能是 1
+    max_parallel: int = 1  # 同一波並行度；預設 1（序列）。>1 需 tasks.supports_parallel_execution（D1b 起真實 TaskManager 為 True）
     repeat_limit: int = 3
     rejected_limit: int = 3
     # 連續無進展達此次數就不再投出 consult（與 max_consults 誰先到就照誰）。None ⇒ 由 Run 的失敗閾值導出（見

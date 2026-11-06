@@ -111,7 +111,8 @@ class FakeTasks:
         self.versions: dict[str, int] = {}  # tool -> 目前註冊表版本（預設取註冊表條目的 tool_version）
         self.created_versions: dict[str, int] = {}  # action_id -> 建立時的 tool_version
         self.park_calls: list[tuple[str, int]] = []
-        self.presence_missing = False  # True ⇒ execute_action 拋可重試的 PresenceRequired（階段 1，核准未消耗）
+        self.presence_missing = False  # True ⇒ execute_action 因 Presence 不足被擋（見 presence_retryable）
+        self.presence_retryable = True  # True：階段 1 被擋（action 維持 INTENDED、核准未消耗）；False：階段 1.5（核准已消耗、action FAILED）
         self.executing: dict[str, str] = {}  # 進行中的 action_id -> concurrency（TC-3 守衛用）
         self.executions: list[tuple[str, str]] = []  # (action_id, tool)：真正執行副作用的紀錄
         self.fail_tools: set[str] = set()  # 這些工具的 action 以 FAILED 收尾（receipt succeeded=False）
@@ -206,7 +207,7 @@ class FakeTasks:
             tool = self.actions[action_id]["tool"]
             if self.created_versions[action_id] != self._version(tool):  # 真實 Manager：版本檢查早於 TC-3 與核准
                 raise ActionBlocked("tool_version_changed", code="tool_version_changed")
-            if self.presence_missing:
+            if self.presence_missing and self.presence_retryable:
                 raise PresenceRequired("前景 action 需要有效 Presence", retryable=True)
             blocked = next((
                 u for u in self.unknown
@@ -231,6 +232,12 @@ class FakeTasks:
                     raise ApprovalInvalid("hash_mismatch")  # 核准綁 params_hash：對錯 action
                 approval.state, approval.consumed_by = "consumed", action_id  # 單次消耗
             self.waiting_approval = False  # 真實 Manager：進入執行時 _back_to_running
+            if self.presence_missing and not self.presence_retryable:
+                # 階段 1.5：階段 1 已提交（核准已消耗、Run 回 RUNNING），executor 呼叫前 Presence 失效 ⇒ action 終態 FAILED
+                self.outcomes[action_id] = ActionOutcome(
+                    action_id, ActionStatus.FAILED, True, SimpleNamespace(result_ref=None, source_verified=True),
+                )
+                raise PresenceRequired("呼叫 executor 前 Presence 已失效", retryable=False)
             self.executing[action_id] = concurrency
         try:
             return self._run_action(action_id, tool, params)

@@ -332,6 +332,7 @@ def _res(status, *, reason=None, action_id="act_1", **extra):
     (_res("blocked", reason="ApprovalInvalid", approval_code="expired"), "repark"),
     (_res("blocked", reason="ApprovalRequired", approval_required=True), "repark"),
     (_res("blocked", reason="PresenceRequired"), "repark"),
+    (_res("blocked", reason="PresenceRequired", retryable=True), "repark"),
     (_res("ok"), None),
     (_res("failed"), None),  # 已執行但工具失敗
     (_res("unknown", reason="ConnectionError"), "unresolved_actions"),
@@ -346,3 +347,19 @@ def test_pending_stop_maps_every_outcome_to_one_code(res, expected):
     from uep.agent.loop import AgentLoop
 
     assert AgentLoop._pending_stop(res) == expected
+
+
+def test_non_retryable_presence_loss_is_an_executed_failure_not_a_repark():
+    """階段 1.5 的 PresenceRequired(retryable=False)：action 已 FAILED、核准已消耗、Run 已回 RUNNING。
+    不能再 park（核准已用掉，永遠等不到下一份）；視為已執行且失敗，回 failed 視圖並續跑，不呼叫第二次 park_run。"""
+    rig, checkpoint = _parked()
+    rig.tasks.grant("appr_ok", ACTION)
+    rig.tasks.presence_missing, rig.tasks.presence_retryable = True, False
+    parks_before = len(rig.tasks.park_calls)
+    out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
+    assert out.state == "completed" and out.state != "awaiting_approval"
+    assert len(rig.tasks.park_calls) == parks_before  # 沒有再 park
+    assert rig.tasks.approvals["appr_ok"].consumed_by == ACTION and rig.tasks.run_status == [RunStatus.SUCCEEDED]
+    assert [t for _, t in rig.tasks.executions] == ["read.lone"]  # executor 沒被呼叫
+    tools = [m for m in rig.child() if m.role == "tool"]
+    assert "failed" in tools[1].content

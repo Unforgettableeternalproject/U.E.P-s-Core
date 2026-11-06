@@ -94,6 +94,7 @@ class IntentResult:
     # 以下兩個欄位只在 resume 帶 approval 執行時才可能有值（加性、預設 None，legacy 輸出不變）
     approval_code: str | None = None  # ``ApprovalInvalid.code``（not_found／consumed／expired／hash_mismatch…）
     block_code: str | None = None  # ``ActionBlocked.code``（目前只有 ``tool_version_changed``）
+    retryable: bool | None = None  # ``PresenceRequired.retryable``：False ⇒ 階段 1.5 被擋，action 已 FAILED、核准已消耗
 
 
 class AgentCore:
@@ -290,7 +291,8 @@ class AgentCore:
             result = self._status_result(item, "blocked", type(exc).__name__)
             return IntentResult(result.record, result.view, block_code=exc.code)
         except PresenceRequired as exc:
-            return self._status_result(item, "blocked", type(exc).__name__)
+            result = self._status_result(item, "blocked", type(exc).__name__)
+            return IntentResult(result.record, result.view, retryable=exc.retryable)
         except Exception as exc:  # noqa: BLE001  executor 例外：Manager 已把 action 標 UNKNOWN
             logger.error("execute_action 失敗：action=%s error=%s", item.action_id, type(exc).__name__)
             return self._status_result(item, "unknown", type(exc).__name__)

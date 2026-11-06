@@ -982,7 +982,7 @@ class AgentLoop:
 
         沒有真的執行的結果（screen 被拒、建立被拒、參數 hash 不符、Presence 不足、TC-3 被擋、UNKNOWN）若放行續跑，Run 仍是
         WAITING_APPROVAL，白喚醒一次模型，最後還會被補成 ``unresolved_actions``；所以直接結束 Run（原因碼見 ``_pending_stop``），
-        可重試的 ``PresenceRequired`` 與缺／過期核准一樣再次 park。"""
+        可重試的 ``PresenceRequired`` 與缺／過期核准一樣再次 park；不可重試的（階段 1.5，action 已 FAILED、核准已消耗）視為已執行且失敗。"""
         screened = self._core.screen_intent(
             run_id=st.run_id, step_id=step_id, ordinal=ordinal, capability_set=st.cap, tool=call["name"], args=call["args"],
         )
@@ -992,6 +992,12 @@ class AgentLoop:
             res = self._core.create_screened(screened) or self._core.execute_screened(
                 screened, approval_id=approvals.get(action_id),
             )
+        if res.record.reason == "PresenceRequired" and res.retryable is False:
+            # 階段 1.5 被擋（不可重試）：action 已是終態 FAILED、核准已消耗、Run 已回 RUNNING ⇒ 等同「已執行且失敗」，
+            # 回 failed 視圖續跑（與工具失敗一致），不再 park（再 park 會讓已消耗核准的 action 永遠等不到下一份核准）
+            st.counters.tool_calls += 1
+            st.consumed.append(action_id)
+            return self._gateway.result_view("failed")
         stop = self._pending_stop(res)
         if stop is None:  # 已執行（成功或失敗）：沿用既有計數續跑
             st.counters.tool_calls += 1

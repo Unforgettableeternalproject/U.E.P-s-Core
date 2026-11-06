@@ -326,3 +326,31 @@ def test_park_run_emits_no_journal_event(session_factory):
     rig.tm.park_run(run_id, worker_epoch=epoch)
     with rig.tm._sf() as s:
         assert s.scalar(select(func.count()).select_from(EventRow)) == before
+
+
+def test_non_retryable_presence_loss_after_consumption_is_an_executed_failure(session_factory):
+    """階段 1.5（executor 呼叫前 Presence 失效，retryable=False）：核准已消耗、action 終態 FAILED、Run 已回 RUNNING。
+    resume 不能再 park：視為已執行且失敗，回 failed 視圖續跑到 completed；executor 沒被呼叫。"""
+    from uep.tasks.models import TaskRow
+
+    rig = parked_rig(session_factory)
+    action = post_action(rig)
+    approval = approve_for(rig, action)
+    with session_factory.begin() as s:  # 讓 Manager 的 Presence 檢查生效
+        s.get(TaskRow, rig.run.task_id).presence_bound = True
+    calls = []
+
+    def presence(_persona_id):  # 階段 1 有效，階段 1.5 的重檢失效
+        calls.append(1)
+        return len(calls) == 1
+
+    tm2 = make_tm(session_factory, rig.executor, tool_resolver=rig.registry, presence_check=presence)
+    plan, checkpoint = takeover(rig)
+    parks = []
+    original = tm2.park_run
+    tm2.park_run = lambda *a, **k: (parks.append(1), original(*a, **k))[1]
+    out = resume(rig, new_loop(rig, tm=tm2, epoch=plan.run.worker_epoch), checkpoint, {action.action_id: approval.approval_id})
+    assert out.state == "completed" and parks == []
+    assert tm2.get_action(action.action_id).status == ActionStatus.FAILED.value
+    assert approval_row(rig, approval.approval_id).consumed_by_action_id == action.action_id
+    assert rig.executor.execution_count(action.action_id) == 0

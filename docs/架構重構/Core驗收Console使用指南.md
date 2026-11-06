@@ -61,6 +61,21 @@ real 模式啟動會先暖機，**看到各元件 warmup 耗時印完、出現 `
 
 TTS 引擎預設 VOX，改用 IndexTTS 2.5 設 `UEP_INFER_TTS_ENGINE=indextts2`（另需 `UEP_TTS_INDEXTTS_DIR` 指向權重）。
 
+### 1.5 系統日誌
+
+進入點（console／endpoint／stop）啟動時自動設定日誌：console 只印 WARNING 以上到 **stderr**（REPL 的 stdout 不受影響），完整日誌寫到 repo 的 `logs/`（每個行程一組檔案：`uep-<啟動時間>-pid<pid>.log`、`.error.log`，開 JSON 時多 `.jsonl`）。每行自動標註來源，例如 `[core.tasks] uep/tasks/manager.py:123 execute_action | ...`，呼叫端不必改；子系統日誌標成 `echo_tts` 等名稱。密鑰形式（`api_key=`、`token=`、`secret=`、`Bearer xxx`）會被遮成 `***`。
+
+| 環境變數 | 說明 |
+|---|---|
+| `UEP_LOG_DEPTH` | 1..4 ＝ KEY／INFO／DEBUG／TRACE 門檻（預設 2，INFO）；WARNING 以上永遠輸出 |
+| `UEP_LOG_LEVEL` | 直接指定 root 等級（如 `DEBUG`），優先於 DEPTH |
+| `UEP_LOG_LEVELS` | 命名空間覆寫，例：`uep.decision=DEBUG,echo_tts=WARNING`；格式錯的項目會警告一次並忽略 |
+| `UEP_LOG_CONSOLE_LEVEL` | console 門檻（預設 `WARNING`） |
+| `UEP_LOG_FILE` / `UEP_LOG_DIR` | 檔案輸出開關（預設開）與目錄（預設 repo `logs/`） |
+| `UEP_LOG_JSON` | 設 `1` 另寫 JSONL（`ts/level/subsystem/logger/where/msg/context`），供查核 |
+
+REPL：`/log` 看目前等級；`/log level <名稱空間> <等級>` 即時調整（例：`/log level uep.decision DEBUG`）；`/log console <等級>` 調整 console 門檻。httpx、urllib3、torch、transformers、sqlalchemy.engine 等第三方預設壓在 WARNING，可用 `UEP_LOG_LEVELS` 覆寫。程式內：`from uep.log import get_logger, log_context`，`with log_context(turn_id=...):` 內的日誌會自動帶上該欄位。
+
 ---
 
 ## 2. 指令

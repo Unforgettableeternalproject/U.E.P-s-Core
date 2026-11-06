@@ -57,6 +57,16 @@ class UepSettings(BaseSettings):
     # （N5 實測：相關 0.49–0.69、無關最近鄰 0.30–0.56，重疊大），0.35 幾乎不過濾；要收緊以 A5 實資料校準後在此設定。
     memory_min_similarity: float | None = Field(default=None, validation_alias="UEP_MEMORY_MIN_SIMILARITY")
 
+    # 系統日誌（uep/log.py，只在進入點 configure_logging 讀取）：UEP_LOG_LEVEL 優先於 UEP_LOG_DEPTH（1..4＝KEY／INFO／DEBUG／TRACE）；
+    # log_levels 為 "uep.decision=DEBUG,echo_tts=WARNING" 的命名空間覆寫；console 輸出到 stderr；檔案每行程一組，JSONL 供查核
+    log_level: str | None = Field(default=None, validation_alias="UEP_LOG_LEVEL")
+    log_depth: str | None = Field(default=None, validation_alias="UEP_LOG_DEPTH")
+    log_levels: str | None = Field(default=None, validation_alias="UEP_LOG_LEVELS")
+    log_console_level: str = Field(default="WARNING", validation_alias="UEP_LOG_CONSOLE_LEVEL")
+    log_file: bool = Field(default=True, validation_alias="UEP_LOG_FILE")
+    log_dir: Path | None = Field(default=None, validation_alias="UEP_LOG_DIR")
+    log_json: bool = Field(default=False, validation_alias="UEP_LOG_JSON")
+
     # 推理 Host 組裝（P3 S6，uep/echo/inference_wiring.py）：子系統 repo 路徑一律由設定明確給（不猜同層目錄；
     # ES 的同層猜測在非 editable 安裝下指向 site-packages 之上而失效）。未設定時對應的 stage 拒絕組裝。
     infer_tts_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_TTS_REPO")

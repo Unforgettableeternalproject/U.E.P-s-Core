@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 
 from uep.console.app import main
+from uep.log import configure_logging
 
 
 def _use_utf8() -> None:
@@ -16,4 +17,5 @@ def _use_utf8() -> None:
 
 if __name__ == "__main__":
     _use_utf8()
+    configure_logging()
     sys.exit(main())

@@ -10,11 +10,14 @@ import pytest
 from tests.uep.loop_support import Round, projector_for
 from tests.uep.test_agent_loop import (
     RUN,
+    Rig,
     _crash,
     _park_checkpoint,
     _park_rig,
+    call,
     trigger,
 )
+from uep.agent.budget import LoopBudget
 from uep.agent.core import stable_action_id
 from uep.tasks.states import RunStatus
 
@@ -202,3 +205,22 @@ def test_resume_without_approvals_argument_behaves_like_before():
     rig, checkpoint = _parked()
     out = _crash(rig, 2).resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent")
     assert out.state == "awaiting_approval" and [t for _, t in rig.tasks.executions] == ["read.lone"]
+
+
+def test_narrowed_non_pending_tail_call_is_blocked_but_pending_still_executes():
+    """B1：pending 項帶核准執行（副作用已發生、Run 回 RUNNING）之後，同批非 pending 的後續呼叫被收窄移除：
+    只回 blocked(tool_not_in_snapshot)，Run 繼續並能 completed，不能因此把已執行的 Run 判成 FAILED。"""
+    rig = Rig(
+        [Round("先查再發", (call("read.lone", "1"), call("post.ask", "2"), call("read.b", "3"))), Round("全部完成")],
+        budget=LoopBudget(repeat_limit=99),
+    )
+    assert rig.run().state == "awaiting_approval"
+    checkpoint = _park_checkpoint(rig)
+    rig.tasks.grant("appr_ok", ACTION)
+    project = _with_post_ask(rig, lambda t: None if t["tool"] == "read.b" else t)  # park 之後 read.b 被收窄移除
+    out = _resume(rig, checkpoint, {ACTION: "appr_ok"}, projector=project)
+    assert (out.state, out.text) == ("completed", "全部完成")
+    assert [t for _, t in rig.tasks.executions] == ["read.lone", "post.ask"]  # pending 照常執行一次
+    assert rig.tasks.approvals["appr_ok"].consumed_by == ACTION and rig.tasks.run_status == [RunStatus.SUCCEEDED]
+    tools = [m for m in rig.child() if m.role == "tool"]
+    assert tools[1].content == "post.ask:2" and tools[2].content == "tool blocked: tool_not_in_snapshot"

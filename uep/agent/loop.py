@@ -934,7 +934,8 @@ class AgentLoop:
         self, st: _State, pending: frozenset[str], approvals: Mapping[str, str] | None = None,
     ) -> LoopOutcome | None:
         """為最後一則 assistant 訊息中缺少 tool 訊息的呼叫補上結果：已核准的 pending 項經完整流程執行（冪等，
-        不重做已有 receipt 者）；凍結集合外 ⇒ ``FAILED(capability_revoked)``；其餘同批後續項 ⇒ blocked(deferred_by_approval_wait)。
+        不重做已有 receipt 者）；pending 項在凍結集合外 ⇒ ``FAILED(capability_revoked)``；非 pending 的後續項在凍結集合外 ⇒
+        blocked(tool_not_in_snapshot)，其餘 ⇒ blocked(deferred_by_approval_wait)。
         pending 項仍缺核准、或其 approval 已過期 ⇒ 再次 park（回 awaiting_approval，Run 維持 WAITING_APPROVAL）；
         approval 有其他問題（不存在、已消耗、hash／target／scope 不符…）⇒ ``FAILED(approval_invalid)``；執行時工具版本已變 ⇒
         ``FAILED(tool_version_changed)``。重驗失敗一律結束 Run：WAITING_APPROVAL 不能轉 SUCCEEDED。"""
@@ -948,11 +949,15 @@ class AgentLoop:
             if call["id"] in done:
                 continue
             action_id = stable_action_id(st.run_id, step_id, ordinal)
-            if call["name"] not in allowed:
-                # 能力已被撤銷或收窄到不含此工具：Run 此時仍是 WAITING_APPROVAL（尚未有任何 action 執行而回 RUNNING），
-                # 該狀態不能轉 SUCCEEDED（states.py），繼續跑只會在收尾被拒並誤判成 unresolved_actions ⇒ 直接結束 Run
-                logger.warning("resume：工具 %s 不在當下可見集合，Run 改轉 FAILED(capability_revoked)：run=%s", call["name"], st.run_id)
+            if action_id in pending and call["name"] not in allowed:
+                # pending 項的能力已被撤銷或收窄（預檢理應已攔下，這裡是保險）：Run 此時仍是 WAITING_APPROVAL
+                # （這個 action 還沒執行，Run 尚未回 RUNNING），該狀態不能轉 SUCCEEDED（states.py），繼續跑只會在收尾
+                # 被拒並誤判成 unresolved_actions ⇒ 直接結束 Run。只限 pending 項：非 pending 的後續項是在 pending 項
+                # 執行（Run 已回 RUNNING、副作用可能已發生）之後才處理，被收窄時照舊回 blocked(tool_not_in_snapshot)
+                logger.warning("resume：pending 工具 %s 不在當下可見集合，Run 改轉 FAILED(capability_revoked)：run=%s", call["name"], st.run_id)
                 return self._finish(st, "failed", LoopReason.CAPABILITY_REVOKED)
+            elif call["name"] not in allowed:
+                view = self._blocked(TOOL_NOT_IN_SNAPSHOT)
             elif action_id in pending:
                 screened = self._core.screen_intent(
                     run_id=st.run_id, step_id=step_id, ordinal=ordinal, capability_set=st.cap, tool=call["name"], args=call["args"],

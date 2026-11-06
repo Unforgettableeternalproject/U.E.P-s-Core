@@ -487,15 +487,14 @@ def test_resume_never_widens_and_drops_tools_missing_from_snapshot():
     rig = _park_rig()
     rig.run()
     checkpoint = _park_checkpoint(rig)
-    checkpoint["pending_approvals"] = []
     base = projector_for(rig.registry)
 
     def wide(tags, prior):
         # 當下投影「更寬」（忽略 prior、給全部標籤）；post.ask 已不在當下投影
         return {"tools": [t for t in base(TAGS, None)["tools"] if t["tool"] != "post.ask"]}
 
-    # 同批的 post.ask 已不在當下可見集合：Run 仍是 WAITING_APPROVAL（不能 SUCCEEDED），所以直接 FAILED(capability_revoked)，
-    # 不是 blocked 後續跑（那樣收尾會被拒並誤判成 unresolved_actions）；模型 0 次呼叫、不新增副作用
+    # pending 的 post.ask 已不在當下可見集合：Run 仍是 WAITING_APPROVAL（不能 SUCCEEDED），所以直接 FAILED(capability_revoked)
+    # （預檢攔下），不是 blocked 後續跑（那樣收尾會被拒並誤判成 unresolved_actions）；模型 0 次呼叫、不新增副作用
     out = _crash(rig, rounds=[Round("不該到這裡")], projector=wide).resume(
         RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent",
     )

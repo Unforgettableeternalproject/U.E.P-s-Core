@@ -181,6 +181,7 @@ class ApprovalRow(Base):
 
 _SIDE_EFFECTS = "side_effect_class IN ('internal_read', 'reversible_local', 'external_effect', 'high_impact')"
 _IDEMPOTENCY = "idempotency IN ('native', 'via_action_id', 'none')"
+_CONCURRENCY = "concurrency IN ('parallel_safe', 'parallel_one_shot', 'serial')"
 
 
 class ActionIntentRow(Base):
@@ -189,13 +190,11 @@ class ActionIntentRow(Base):
         CheckConstraint(in_list("status", ActionStatus), name="status"),
         CheckConstraint(_SIDE_EFFECTS, name="side_effect_class"),
         CheckConstraint(_IDEMPOTENCY, name="idempotency"),
+        CheckConstraint(_CONCURRENCY, name="concurrency"),
         Index("ix_action_intents_run_id", "run_id"),
         Index("ix_action_intents_step_id", "step_id"),
-        # D62／TC-3：同一個 Run 至多一個 EXECUTING（DB 層保險；首版只有 serial，並行資格啟用前不放寬）
-        Index(
-            "uq_action_intents_one_executing_per_run", "run_id", unique=True,
-            postgresql_where=text("status = 'EXECUTING'"),
-        ),
+        # D62／TC-3（D1b 修訂）：一 Run 的 EXECUTING 集合不再由部分唯一索引限制；改由 Manager 在持有 Run 鎖的
+        # 同一交易內檢查（``TaskManager._check_single_executing``）
     )
 
     action_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -209,6 +208,8 @@ class ActionIntentRow(Base):
     tool_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")  # 建立時由註冊表寫入（D55）
     approval_ref: Mapped[str | None] = mapped_column(ForeignKey("approvals.approval_id"))
     presence_bound: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # 建立時由註冊表快照（TG-1），建立後不可改（TaskManager 沒有任何更新路徑）；fail-closed 預設 serial
+    concurrency: Mapped[str] = mapped_column(String, nullable=False, server_default="serial")
     status: Mapped[str] = mapped_column(String, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     created_at: Mapped[datetime] = _ts()

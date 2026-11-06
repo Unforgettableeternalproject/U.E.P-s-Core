@@ -20,16 +20,25 @@ _DEFAULTS: dict[str, Any] = {
 class FakeToolSpecResolver:
     def __init__(self, **tools: Mapping[str, Any]) -> None:
         self._specs: dict[str, ToolSpec] = {}
+        self._concurrency: dict[str, str] = {}
         for name, spec in tools.items():
             self.register(name, **spec)
 
     def register(self, tool: str, **spec: Any) -> ToolSpec:
+        concurrency = spec.pop("concurrency", "serial")  # 並行宣告不在 ToolSpec 上（在 ToolEntry），這裡單獨記
         built = ToolSpec(**{**_DEFAULTS, **spec})
         self._specs[tool] = built
+        self._concurrency[tool] = concurrency
         return built
 
     def unregister(self, tool: str) -> None:
         self._specs.pop(tool, None)
+        self._concurrency.pop(tool, None)
+
+    def concurrency_of(self, tool: str) -> str:
+        if tool not in self._specs:
+            raise unknown_tool(tool)
+        return self._concurrency.get(tool, "serial")
 
     def resolve(self, tool: str) -> ToolSpec:
         spec = self._specs.get(tool)

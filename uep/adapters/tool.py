@@ -147,6 +147,9 @@ class ToolSpecResolver(Protocol):
     ``resolve`` 必須是記憶體內查詢，不得做 I/O：``execute_action`` 在 FOR UPDATE 交易內呼叫它。
 
     可見集合（capability_set 投影）是 Registry／Gateway 的另一個介面，不屬於這個協定。
+
+    並行宣告（D1b）：resolver 可另提供選用方法 ``concurrency_of(tool) -> Concurrency``；TaskManager 建立 action 時
+    快照到 ``action_intents.concurrency``。沒有這個方法、方法拋例外或回傳非法值一律視為 ``serial``（fail-closed）。
     """
 
     def resolve(self, tool: str) -> ToolSpec:

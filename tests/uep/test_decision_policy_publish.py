@@ -28,13 +28,13 @@ class _ListSink:
         self.rows.extend(rows)
 
 
-def _wired(*, run_id="run1"):
+def _wired(*, run_id="run1", record_initial=False):
     hub = DecisionHub()
     source = HostPolicySource("web")
     sink = _ListSink()
     writer = DecisionLogWriter(sink, flush_interval=0.01)
     writer.attach(hub)
-    register_policy_publish(hub, source, run_id=run_id)
+    register_policy_publish(hub, source, run_id=run_id, record_initial=record_initial)
     return hub, source, writer, sink
 
 
@@ -258,3 +258,132 @@ def test_blocked_listener_does_not_block_readers_or_other_publishes():
     thread_a.join(2)
     assert result == [2] and not thread_a.is_alive()
     assert calls == [2, 3]
+
+
+def _rows(sink):
+    return [(r["kind"], r["request_id"], r["outcome"], r["reason_code"]) for r in sink.rows]
+
+
+def test_initial_record_then_v2_without_gap():
+    _, source, writer, sink = _wired(record_initial=True)
+    assert writer.flush()
+    snap = [r for r in sink.rows if r["kind"] == KIND_POLICY_SNAPSHOT]
+    assert [(r["request_id"], r["reason_code"]) for r in snap] == [("run1:policy:1", "initial")]
+    mode_rows = [r for r in sink.rows if r["kind"] == KIND_CHANNEL_MODE]
+    assert len(mode_rows) == (1 if source.core_current().channel_mode is not None else 0)
+    source.publish()
+    assert writer.flush()
+    snap = [r for r in sink.rows if r["kind"] == KIND_POLICY_SNAPSHOT]
+    assert [(r["request_id"], r["reason_code"]) for r in snap] == [
+        ("run1:policy:1", "initial"), ("run1:policy:2", "participants"),
+    ]
+    writer.close()
+
+
+def test_record_initial_false_has_no_v1_record():
+    _, source, writer, sink = _wired(record_initial=False)
+    source.publish()
+    assert writer.flush()
+    assert [(r["kind"], r["request_id"]) for r in sink.rows] == [(KIND_POLICY_SNAPSHOT, "run1:policy:2")]
+    writer.close()
+
+
+def test_source_without_baseline_method_skips_initial():
+    hub = DecisionHub()
+    attached = []
+    fake = SimpleNamespace(add_publish_listener=attached.append)
+    recorder = register_policy_publish(hub, fake)  # 預設 record_initial=True 也不拋錯
+    assert attached == [recorder]
+
+
+def _facts(**kw):
+    base = {
+        "version": 1, "prev_version": None, "platform": "web", "cause": "initial", "ttl_s": None,
+        "es_version": 1, "core_version": 1, "channel_mode": None, "prev_channel_mode": None,
+        "core_channel_mode": None,
+    }
+    base.update(kw)
+    return DecisionRequest(request_id="r", kind=KIND_POLICY_SNAPSHOT, facts=base)
+
+
+def test_initial_must_be_first_for_audit():
+    engine = PolicySnapshotEngine()
+    assert engine.decide(_facts()).reason_code == "initial"
+    assert engine.decide(_facts(version=2, prev_version=1, cause="participants", es_version=2, core_version=2)).reason_code == "participants"
+    assert engine.decide(_facts()).reason_code == "initial_not_first"
+    assert engine.decide(_facts(cause="participants")).reason_code == "initial_not_first"
+    res = engine.decide(_facts(cause="initial", prev_version=3))
+    assert res.fallback and res.reason_code == "policy_publish_invalid"
+    # 第一筆就不是 initial：其後的 initial 同樣不合法
+    other = PolicySnapshotEngine()
+    other.decide(_facts(version=2, prev_version=1, cause="participants", es_version=2, core_version=2))
+    res = other.decide(_facts())
+    assert (res.outcome, res.reason_code) == ("published", "initial_not_first")
+
+
+class _RaceSource:
+    """模擬：listener 已掛上、基準尚未回傳時，另一執行緒的 v2 先到。"""
+
+    def __init__(self, attached: threading.Event, go: threading.Event) -> None:
+        self.listeners = []
+        self._attached, self._go = attached, go
+
+    def add_publish_listener_with_baseline(self, listener):
+        self.listeners.append(listener)
+        self._attached.set()
+        assert self._go.wait(5)
+        return _pub(version=1, prev_version=None, prev_channel_mode=None, cause="initial", es_version=1, core_version=1)
+
+
+def test_initial_is_published_before_concurrent_v2():
+    hub = DecisionHub()
+    order = []
+    hub.add_observer(lambda req, res, spec, ms: order.append((req.kind, req.facts["version"])))
+    attached, go = threading.Event(), threading.Event()
+    source = _RaceSource(attached, go)
+    reg = threading.Thread(target=lambda: register_policy_publish(hub, source), daemon=True)
+    reg.start()
+    assert attached.wait(5)
+    v2 = threading.Thread(target=lambda: source.listeners[0](_pub(version=2, prev_version=1, cause="participants", es_version=2, core_version=2)), daemon=True)
+    v2.start()
+    v2.join(2)
+    assert not v2.is_alive()  # 只入列，不等待
+    assert order == []
+    go.set()
+    reg.join(5)
+    assert not reg.is_alive()
+    versions = [v for k, v in order if k == KIND_POLICY_SNAPSHOT]
+    assert versions == [1, 2]
+
+
+def test_blocked_hub_does_not_block_other_publishers_and_order_is_kept():
+    hub = DecisionHub()
+    source = HostPolicySource("web")
+    seen: list[int] = []
+    gate, entered = threading.Event(), threading.Event()
+
+    def observer(req, res, spec, ms):
+        if spec.kind == KIND_POLICY_SNAPSHOT:
+            seen.append(req.facts["version"])
+            if req.facts["version"] == 1:
+                entered.set()
+                gate.wait(10)
+
+    hub.add_observer(observer)
+    reg = threading.Thread(target=lambda: register_policy_publish(hub, source), daemon=True)
+    reg.start()
+    try:
+        assert entered.wait(5)  # 基準的 hub.publish 卡住
+        done: list[int] = []
+        t = threading.Thread(target=lambda: done.append(source.publish().version), daemon=True)
+        started = time.perf_counter()
+        t.start()
+        t.join(2)
+        assert done == [2] and time.perf_counter() - started < 1.0
+        assert source.publish_channel_mode(ChannelMode.ACTIVE).version == 3
+        assert seen == [1]  # 其餘尚在佇列
+    finally:
+        gate.set()
+    reg.join(5)
+    assert not reg.is_alive()
+    assert seen == [1, 2, 3]

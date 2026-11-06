@@ -11,6 +11,7 @@ from uep.decision.log import DecisionLogWriter
 from uep.decision.policy_publish import KIND_POLICY_SNAPSHOT, register_policy_publish
 from uep.echo.host import EchoPipelineHost
 from uep.echo.policy import CAUSE_TTL_REFRESH, HostPolicySource
+from uep.turn.aggregator import PassThroughAggregator
 from uep.turn.engagement import ChannelMode
 
 TTL = 10.0
@@ -37,6 +38,11 @@ class StopAfter:
         return False
 
 
+class _TickingStub:
+    def tick(self):
+        return []
+
+
 class _Ctx:
     guild_id = None
 
@@ -48,7 +54,7 @@ def clock(monkeypatch):
     return c
 
 
-def make_host(clock, *, ttl=TTL, ticks=1, on_tick=None, on_sync=None):
+def make_host(clock, *, ttl=TTL, ticks=1, on_tick=None, on_sync=None, ticking=True):
     """不經 __init__ 的最小 Host：只放 _tick_loop／_refresh_policy_if_due 用到的欄位。"""
     host = object.__new__(EchoPipelineHost)
     host.policy = HostPolicySource("web", ttl_s=ttl)
@@ -56,6 +62,10 @@ def make_host(clock, *, ttl=TTL, ticks=1, on_tick=None, on_sync=None):
     host._tick_stop = StopAfter(ticks)
     host._decision = SimpleNamespace(tick_interval_s=0.05)
     host.calls = []
+    host.orchestrator = SimpleNamespace(
+        proposer=object() if not ticking else _TickingStub(), aggregator=PassThroughAggregator(),
+        tick=lambda *_a: host.calls.append("orch.tick"), _observe_interject=lambda *_a: host.calls.append("interject"),
+    )
 
     def submit_tick():
         host.calls.append("tick")
@@ -194,3 +204,45 @@ def test_audit_records_ttl_refresh_with_contiguous_versions(clock):
     ]
     assert all(r["outcome"] == "published" for r in rows)
     writer.close()
+
+
+def test_ttl_only_assembly_starts_thread_refreshes_and_never_touches_orchestrator(clock):
+    host = make_host(clock, ticking=False)
+    assert not host.needs_tick and host._runs_tick_thread  # 條件：僅因 ttl 啟動
+    clock.t += TTL * 0.6
+    host._tick_loop()
+    assert host.calls == ["sync"]  # 不呼叫 submit_tick／orchestrator.tick／interject
+    assert host.policy.version == 2 and host.policy.age_s() == 0.0
+
+
+def test_ttl_only_assembly_with_failing_sync_still_expires(clock):
+    def boom(_h):
+        raise RuntimeError("x")
+
+    host = make_host(clock, ticking=False, on_sync=boom)
+    clock.t += TTL * 0.6
+    host._tick_loop()
+    assert host.policy.version == 1
+    clock.t += TTL
+    assert stale(host, clock)
+
+
+def test_ticking_assembly_requires_submit_tick_success(clock):
+    def boom(_h):
+        raise RuntimeError("tick 壞了")
+
+    host = make_host(clock, on_tick=boom)
+    assert host.needs_tick and host._runs_tick_thread
+    clock.t += TTL * 0.6
+    host._tick_loop()
+    assert host.calls == ["tick"] and host.policy.version == 1  # 失敗不重讀、不刷新
+
+
+def test_ttl_none_thread_condition_unchanged(clock):
+    plain = make_host(clock, ttl=None, ticking=False)
+    assert not plain.needs_tick and not plain._runs_tick_thread  # 不啟動
+    ticking = make_host(clock, ttl=None)
+    assert ticking.needs_tick and ticking._runs_tick_thread  # 照舊啟動
+    clock.t += 10_000
+    plain._tick_loop()
+    assert plain.calls == [] and plain.policy.version == 1

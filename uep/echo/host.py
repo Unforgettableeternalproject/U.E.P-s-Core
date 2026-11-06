@@ -350,6 +350,8 @@ class EchoPipelineHost:
         流程：ttl_s 為 None 或年齡 < ttl_s×0.5 即返回；否則先 ``_sync_participants`` 重讀。重讀會經 proposer 的
         模式翻轉監聽器間接 publish，所以重讀後再看一次年齡：已歸零（版本已換）就不再補 ttl_refresh，
         同一 tick 只出一版。任何一步失敗只記 log、不 publish，讓快照自然過期。
+        證據等級：需要 tick 的組裝＝submit_tick 成功＋roster 重讀成功；僅 ttl 的組裝（``needs_tick`` 為假、
+        只因 ttl 啟動 tick 執行緒）＝tick 執行緒在跑＋roster 重讀成功，較弱。tick 執行緒卡住或死掉仍會過期（Q-5）。
         """
         ttl = self.policy.ttl_s
         if ttl is None:
@@ -364,6 +366,11 @@ class EchoPipelineHost:
             self.policy.publish(cause=CAUSE_TTL_REFRESH)
         except Exception:
             logger.exception("政策快照 ttl 刷新失敗")
+
+    @property
+    def _runs_tick_thread(self) -> bool:
+        """tick 執行緒是否要啟動：需要 tick，或設了政策快照 ttl（僅 ttl 的組裝只做快照刷新，不呼叫 submit_tick）。"""
+        return self.needs_tick or self.policy.ttl_s is not None
 
     @property
     def needs_tick(self) -> bool:
@@ -431,7 +438,7 @@ class EchoPipelineHost:
                 self._memory.set_session(self._session.segment_id)  # 記憶 episode 標記與 exclude 自我回聲用
             self._es.run(self._startup(), timeout=self._start_timeout_s)
             self._intake_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uep-echo-intake")
-            if self.needs_tick:
+            if self._runs_tick_thread:
                 self._tick_stop.clear()
                 self._tick_thread = threading.Thread(target=self._tick_loop, name="uep-echo-tick", daemon=True)
                 self._tick_thread.start()
@@ -608,12 +615,14 @@ class EchoPipelineHost:
 
     def _tick_loop(self) -> None:
         interval = max(0.05, self._decision.tick_interval_s)
+        ticking = self.needs_tick  # 僅 ttl 的組裝（PassThrough＋非 ticking）不碰 orchestrator.tick／interject
         while not self._tick_stop.wait(interval):
-            try:
-                self.submit_tick()
-            except Exception:
-                logger.exception("週期性決策失敗")
-                continue  # tick 失敗不刷新政策快照
+            if ticking:
+                try:
+                    self.submit_tick()
+                except Exception:
+                    logger.exception("週期性決策失敗")
+                    continue  # tick 失敗不刷新政策快照
             self._refresh_policy_if_due()
 
     def _start_turn(self, ticket: CoreTicket, fact: UtteranceFact) -> None:

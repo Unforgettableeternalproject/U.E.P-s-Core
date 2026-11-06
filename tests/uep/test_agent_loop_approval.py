@@ -340,6 +340,7 @@ def _res(status, *, reason=None, action_id="act_1", **extra):
     (_res("rejected", reason="params_hash_mismatch"), "params_mismatch"),
     (_res("rejected", reason="schema_invalid", action_id=None), "intent_rejected"),
     (_res("rejected", reason="tool_unknown", action_id=None), "intent_rejected"),
+    (_res("blocked", reason="ActionBlocked", block_code="action_unresolved"), "unresolved_actions"),
     (_res("blocked", reason="ActionBlocked"), "action_blocked"),
     (_res("blocked", reason="action_blocked", action_id=None), "action_blocked"),
     (_res("failed", reason="OperationalError", action_id=None), "action_blocked"),
@@ -374,3 +375,14 @@ def test_presence_check_only_applies_to_presence_bound_tools():
     rig.tasks.presence_missing = True  # post.ask 未登記為 presence_bound
     out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
     assert out.state == "completed" and rig.tasks.approvals["appr_ok"].consumed_by == ACTION
+
+
+def test_pending_action_already_unknown_ends_run_with_unresolved_actions():
+    """崩潰後重放：pending 的 action 本身已是 UNKNOWN（副作用可能已發生）⇒ unresolved_actions，不是 action_blocked。"""
+    rig, checkpoint = _parked()
+    rig.tasks.grant("appr_ok", ACTION)
+    rig.tasks.actions[ACTION]["run_id"] = RUN
+    rig.tasks.unknown.add(ACTION)
+    out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
+    _assert_ended_without_waking_model(rig, out, "unresolved_actions")
+    assert rig.tasks.approvals["appr_ok"].consumed_by is None

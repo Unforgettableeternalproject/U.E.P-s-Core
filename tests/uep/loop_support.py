@@ -204,7 +204,7 @@ class FakeTasks:
             if action_id in self.outcomes:
                 return self.outcomes[action_id]  # 冪等：已有 receipt 不重做
             if action_id in self.unknown:
-                raise ActionBlocked(f"action {action_id} 結果未明（UNKNOWN），不可重做")
+                raise ActionBlocked(f"action {action_id} 結果未明（UNKNOWN），不可重做", code="action_unresolved")
             tool = self.actions[action_id]["tool"]
             if self.created_versions[action_id] != self._version(tool):  # 真實 Manager：版本檢查早於 TC-3 與核准
                 raise ActionBlocked("tool_version_changed", code="tool_version_changed")

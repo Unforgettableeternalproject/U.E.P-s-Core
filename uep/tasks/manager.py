@@ -136,7 +136,7 @@ class ParamsHashMismatch(TaskError):
 class ActionBlocked(TaskError):
     """action 目前不可執行（UNKNOWN 待查核、EXECUTING 進行中、Run 非執行中、找不到 executor）。
 
-    需要機器可判讀的原因時帶 ``code``（目前只有 ``tool_version_changed``），比照 ``PolicyViolation``；多數情況為 None。"""
+    需要機器可判讀的原因時帶 ``code``（``tool_version_changed``、``action_unresolved``），比照 ``PolicyViolation``；多數情況為 None。"""
 
     def __init__(self, message: str = "", *, code: str | None = None) -> None:
         super().__init__(message)
@@ -242,6 +242,7 @@ class ParamsLimits:
 DEFAULT_PARAMS_LIMITS = ParamsLimits()
 PARAMS_NOT_CANONICAL = "params_not_canonical"
 TOOL_VERSION_CHANGED = "tool_version_changed"
+ACTION_UNRESOLVED = "action_unresolved"  # ActionBlocked.code：action 本身為 UNKNOWN／EXECUTING（副作用可能已發生、尚無定論）
 
 
 def _not_canonical(reason: str) -> PolicyViolation:
@@ -1385,9 +1386,9 @@ class TaskManager:
                 receipt = s.scalar(select(ReceiptRow).where(ReceiptRow.action_id == action_id))
                 return ActionOutcome(action_id, status, False, receipt)
             if status is ActionStatus.UNKNOWN:
-                raise ActionBlocked("action 為 UNKNOWN，須先 resolve_unknown 查核，禁止盲目重試")
+                raise ActionBlocked("action 為 UNKNOWN，須先 resolve_unknown 查核，禁止盲目重試", code=ACTION_UNRESOLVED)
             if status is ActionStatus.EXECUTING:
-                raise ActionBlocked("action 正在執行中或結果未明；崩潰後請走 resume_run")
+                raise ActionBlocked("action 正在執行中或結果未明；崩潰後請走 resume_run", code=ACTION_UNRESOLVED)
             if RunStatus(task.status) in TERMINAL_STATUSES:
                 raise ActionBlocked(f"task 已是終態 {task.status}，不可執行 action")
             if task.status not in (RunStatus.RUNNING.value, RunStatus.WAITING_APPROVAL.value):

@@ -62,7 +62,12 @@ from uep.agent.trigger import LoopTrigger
 from uep.decision.loop_consult import advice_in_scope
 from uep.ids import new_id
 from uep.models.port import ChatMessage
-from uep.tasks.manager import TOOL_VERSION_CHANGED, IllegalTransition, StaleWorkerEpoch
+from uep.tasks.manager import (
+    ACTION_UNRESOLVED,
+    TOOL_VERSION_CHANGED,
+    IllegalTransition,
+    StaleWorkerEpoch,
+)
 from uep.tasks.states import RunStatus
 from uep.tools.catalog.decision import CONSULT_TAG, CONSULT_TOOL, INJECTED_CONSULT
 from uep.tools.gateway import INVALID_TOOL_ARGS, ToolGateway, visible_tools
@@ -1027,11 +1032,14 @@ class AgentLoop:
         | 執行時工具版本已變 | ``tool_version_changed`` |
         | screen／建立被拒（Gateway、PolicyViolation） | ``intent_rejected`` |
         | 參數 hash 不符 | ``params_mismatch`` |
+        | action 本身 UNKNOWN／EXECUTING（``block_code=action_unresolved``） | ``unresolved_actions`` |
         | TC-3／其他 ActionBlocked、建立時的基礎設施錯誤 | ``action_blocked`` |
         | UNKNOWN（executor 例外、結果未明） | ``unresolved_actions`` |
         """
         if res.block_code == TOOL_VERSION_CHANGED:
             return LoopReason.TOOL_VERSION_CHANGED
+        if res.block_code == ACTION_UNRESOLVED:  # action 本身 UNKNOWN／EXECUTING：副作用可能已發生，不是單純被擋
+            return LoopReason.UNRESOLVED_ACTIONS
         if res.approval_code is not None:
             return "repark" if res.approval_code == "expired" else LoopReason.APPROVAL_INVALID
         if res.approval_required or res.record.reason == "PresenceRequired":

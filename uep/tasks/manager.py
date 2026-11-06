@@ -1466,6 +1466,9 @@ class TaskManager:
         該交易（單一 ``_tx``）以 ``_lock_action`` 先鎖 task 再鎖 run（``FOR UPDATE``），同 Run 的其他
         ``execute_action`` 階段 1 在此序列化；檢查 EXECUTING 集合與其後 ``_set_action_status(EXECUTING)`` 都在同一個
         交易、同一把 Run 鎖內，後到者在 READ COMMITTED 下鎖釋放後重新查詢就看得到先到者已提交的 EXECUTING。
+
+        依賴 READ COMMITTED（PostgreSQL 預設，``make_engine`` 未改）：REPEATABLE READ 的快照在第一次查詢（鎖之前）
+        就固定，鎖釋放後再查仍讀不到先到者的 EXECUTING（phantom），檢查會失效。DB 測試斷言隔離等級以防被改。
         """
         other = s.execute(
             select(ActionIntentRow.action_id, ActionIntentRow.status).where(

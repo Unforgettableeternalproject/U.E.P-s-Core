@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_DEADLINE_GRACE = timedelta(seconds=30)
 DEFAULT_ORPHAN_OLDER_THAN = TURN_MAX_DURATION * 3  # 必須大於 TURN_MAX_DURATION
 _DEADLINE_REASONS = frozenset({CancelReason.RUN_DEADLINE.value, CancelReason.TASK_DEADLINE.value})
+_FAILED_LIKE = frozenset({RunStatus.FAILED.value, RunStatus.CANCELLED.value})
 
 
 @dataclass
@@ -102,8 +103,9 @@ class Supervisor:
 
     def _handle_run(self, run: RunRow, now: datetime, stats: SupervisorStats) -> None:
         if RunStatus(run.status) in TERMINAL_STATUSES:
-            # worker 已自行把 Run 轉成終態（讀到旗標後）：Task 不會自動結束，由這裡收尾（SV-2(4)）
-            if run.cancel_reason in _DEADLINE_REASONS:
+            # worker 已自行把 Run 轉成 FAILED／CANCELLED（讀到旗標後）：Task 不會自動結束，由這裡收尾（SV-2(4)）。
+            # SUCCEEDED 不動：Run 已成功完成，Task 留給擁有者收尾，不可判成失敗
+            if run.cancel_reason in _DEADLINE_REASONS and run.status in _FAILED_LIKE:
                 self._fail_task(run.task_id, stats)
             return
         forced = self._handle_deadline(run, now, stats)
@@ -131,7 +133,14 @@ class Supervisor:
             self._tasks.force_transition_run(run.run_id, RunStatus.FAILED, reason=str(reason))
             stats.forced += 1
         except IllegalTransition:
-            logger.debug("Run 已在別處轉成終態，略過 force：%s", run.run_id)
+            # force 輸給 worker：只有 Run 現在是 FAILED／CANCELLED 才收尾 Task；SUCCEEDED 不動；其他狀態是真的失敗，上拋計數
+            current = self._tasks.get_run(run.run_id)
+            if current.status not in _FAILED_LIKE and current.status != RunStatus.SUCCEEDED.value:
+                raise
+            logger.debug("Run 已在別處轉成終態 %s，略過 force：%s", current.status, run.run_id)
+            if current.status in _FAILED_LIKE:
+                self._fail_task(run.task_id, stats)
+            return True
         self._fail_task(run.task_id, stats)
         return True
 

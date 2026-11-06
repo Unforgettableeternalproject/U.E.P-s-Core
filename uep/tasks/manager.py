@@ -1176,10 +1176,12 @@ class TaskManager:
 
         1. 非終態、非 PAUSED，且 ``run_deadline`` 或 ``Task.deadline`` 已到；
         2. 非終態且已設取消旗標（等待 worker 自行收尾，或判斷是否強制）；
-        3. 終態、帶 run_deadline／task_deadline 取消旗標，且 Task 沒有其他未終態 Run（需要收尾 Task）；
+        3. **FAILED／CANCELLED**（不含 SUCCEEDED：Run 已成功完成就不該把 Task 判失敗）、帶 run_deadline／task_deadline
+           取消旗標，且 Task 沒有其他未終態 Run（需要收尾 Task）；
         4. WAITING_APPROVAL 且 ``approval_expiry`` 已到、尚未對該 expiry 通知過。
         """
         done = [x.value for x in TERMINAL_STATUSES]
+        failed_like = [RunStatus.FAILED.value, RunStatus.CANCELLED.value]
         deadline_reasons = [CancelReason.RUN_DEADLINE.value, CancelReason.TASK_DEADLINE.value]
         sibling = aliased(RunRow)
         other_live = (
@@ -1189,7 +1191,7 @@ class TaskManager:
             ((RunRow.status.notin_(done + [RunStatus.PAUSED.value]))
              & ((RunRow.run_deadline <= now) | (TaskRow.deadline <= now)))
             | (RunRow.status.notin_(done) & RunRow.cancel_requested_at.is_not(None))
-            | (RunRow.status.in_(done) & RunRow.cancel_reason.in_(deadline_reasons) & ~other_live)
+            | (RunRow.status.in_(failed_like) & RunRow.cancel_reason.in_(deadline_reasons) & ~other_live)
             | ((RunRow.status == RunStatus.WAITING_APPROVAL.value) & (RunRow.approval_expiry <= now)
                & (RunRow.approval_expired_at.is_(None) | (RunRow.approval_expired_at != RunRow.approval_expiry)))
         )

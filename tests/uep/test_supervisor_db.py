@@ -118,6 +118,32 @@ def test_task_deadline_flags_with_its_own_reason(session_factory):
     assert env.run_row().cancel_reason == CancelReason.TASK_DEADLINE.value
 
 
+def test_run_succeeded_after_the_flag_was_set_does_not_fail_the_task(session_factory):
+    env = Env(session_factory, run_deadline=past())
+    env.sup.tick(env.clock.now)  # 設旗標
+    env.mgr.transition_run(env.run.run_id, RunStatus.SUCCEEDED, worker_epoch=env.epoch)  # worker 還沒讀到旗標就先成功
+    assert env.run.run_id not in {r.run_id for r in env.mgr.list_runs_due(env.clock.advance(5))}  # SUCCEEDED 不再被撈出
+    stats = env.sup.tick(env.clock.now)
+    assert (stats.tasks_failed, stats.forced, stats.failures) == (0, 0, 0)
+    assert env.mgr.get_task(env.task.task_id).status == RunStatus.RUNNING.value  # Task 留給擁有者收尾
+
+
+def test_force_losing_to_a_worker_that_succeeded_does_not_fail_the_task(session_factory):
+    env = Env(session_factory, run_deadline=past())
+    env.sup.tick(env.clock.now)  # 設旗標
+    original = env.mgr.force_transition_run
+
+    def worker_wins(run_id, to, **kw):
+        env.mgr.transition_run(run_id, RunStatus.SUCCEEDED, worker_epoch=env.epoch)  # worker 在 Supervisor 之前轉成功
+        return original(run_id, to, **kw)  # 這裡會拋 IllegalTransition
+
+    env.mgr.force_transition_run = worker_wins
+    stats = env.sup.tick(env.clock.advance(31))
+    assert (stats.forced, stats.tasks_failed, stats.failures) == (0, 0, 0)
+    assert env.run_row().status == RunStatus.SUCCEEDED.value
+    assert env.mgr.get_task(env.task.task_id).status == RunStatus.RUNNING.value
+
+
 # ---- force 路徑的兩個條件 ----
 
 def test_force_turns_executing_into_unknown_in_the_same_transaction(session_factory):

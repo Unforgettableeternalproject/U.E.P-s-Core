@@ -55,6 +55,9 @@ class FakeManager:
     def get_task(self, task_id):
         return self.tasks[task_id]
 
+    def get_run(self, run_id):
+        return SimpleNamespace(**vars(self.runs[run_id]))
+
     def request_cancel(self, run_id, reason):
         self._maybe_fail("request_cancel")
         run = self.runs[run_id]
@@ -211,18 +214,44 @@ def test_no_deadline_no_action():
     assert (stats.cancel_requested, stats.forced, stats.tasks_failed, stats.approvals_expired) == (0, 0, 0, 0)
 
 
-def test_force_losing_the_race_to_the_worker_is_benign():
+@pytest.mark.parametrize(("worker_result", "task_failed"), [("FAILED", 1), ("CANCELLED", 1), ("SUCCEEDED", 0)])
+def test_force_losing_the_race_to_the_worker_only_closes_the_task_if_the_run_failed(worker_result, task_failed):
+    """force 輸給 worker：Run 被 worker 轉成 FAILED／CANCELLED ⇒ 收尾 Task；轉成 SUCCEEDED ⇒ Task 不動（不可判成失敗）。"""
     manager, sup, _ = make()
     manager.add(run_deadline=T0 - timedelta(seconds=1), beat=None)
     original = manager.force_transition_run
 
     def lost(run_id, to, **kw):
-        manager.runs[run_id].status = "FAILED"  # worker 剛好自己轉成終態
+        manager.runs[run_id].status = worker_result  # worker 剛好自己轉成終態
         return original(run_id, to, **kw)
 
     manager.force_transition_run = lost
     stats = sup.tick(T0)
-    assert stats.failures == 0 and stats.forced == 0 and stats.tasks_failed == 1
+    assert stats.failures == 0 and stats.forced == 0 and stats.tasks_failed == task_failed
+    assert ("transition_task", "task_run_1", "FAILED") in manager.calls or task_failed == 0
+    if not task_failed:
+        assert "transition_task" not in names(manager) and manager.tasks["task_run_1"].status == "RUNNING"
+
+
+def test_run_succeeded_after_the_flag_was_set_leaves_the_task_alone():
+    manager, sup, _ = make()
+    run = manager.add(status="SUCCEEDED", task_status="RUNNING", beat=T0)
+    run.cancel_reason, run.cancel_requested_at = "run_deadline", T0  # 旗標設好後 worker 還沒讀到就先成功完成
+    stats = sup.tick(T0)
+    assert (stats.forced, stats.tasks_failed, stats.failures) == (0, 0, 0)
+    assert "transition_task" not in names(manager) and manager.tasks["task_run_1"].status == "RUNNING"
+
+
+def test_force_done_but_task_closure_failed_is_completed_by_the_next_tick():
+    manager, sup, _ = make()
+    manager.add(run_deadline=T0 - timedelta(seconds=1), beat=None)
+    manager.fail_on = {"transition_task"}
+    first = sup.tick(T0)
+    assert (first.forced, first.tasks_failed, first.failures) == (1, 0, 1)
+    assert manager.runs["run_1"].status == "FAILED" and manager.tasks["task_run_1"].status == "RUNNING"
+    manager.fail_on = set()
+    second = sup.tick(at(manager, 5))
+    assert (second.forced, second.tasks_failed) == (0, 1) and manager.tasks["task_run_1"].status == "FAILED"
 
 
 # ---- SV-2(5) 核准過期 ----

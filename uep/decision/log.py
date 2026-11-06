@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import threading
 import time
 from collections import Counter
@@ -31,7 +32,19 @@ COLUMNS: tuple[str, ...] = (
     "decision_id", "request_id", "kind", "created_at", "role", "primary_decision_id",
     "engine", "proposer_id", "version", "outcome", "reason_code", "confidence", "elapsed_ms",
     "status", "agree", "fallback", "candidate_id", "participant_count", "addressed_hint", "utterance_refs",
+    "sub_kind", "trigger", "namespace", "snapshot_version",
 )
+
+# 新增四欄只收 ID／列舉類的安全字元短字串，原文般的內容一律記 None（不存原文原則）
+_SAFE_TOKEN = re.compile(r"^[a-z0-9_.:-]{1,64}$")
+
+
+def _safe_token(value: Any) -> str | None:
+    return value if isinstance(value, str) and _SAFE_TOKEN.fullmatch(value) else None
+
+
+def _safe_version(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 class DecisionLogSink(Protocol):
@@ -73,6 +86,9 @@ def primary_row(
         participant_count=getattr(native, "participant_count", None),
         addressed_hint=getattr(native, "addressed_hint", None),
         utterance_refs=list(refs) if refs is not None else (list(request.text_refs) or None),
+        sub_kind=_safe_token(request.facts.get("sub_kind")), trigger=_safe_token(request.trigger),
+        namespace=_safe_token(request.subject.get("namespace")),
+        snapshot_version=_safe_version(request.snapshot_versions.get("policy")),
     )
     return row
 

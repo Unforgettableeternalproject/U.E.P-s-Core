@@ -252,7 +252,7 @@ def test_decision_log_attaches_memory_dream_without_raw_data(tmp_path):
     rows = [r for r in sink.rows if r["kind"] == KIND_MEMORY_DREAM]
     assert [(r["role"], r["outcome"], r["status"]) for r in rows] == [("primary", "run", "ok"), ("primary", "wait", "ok")]
     assert rows[1]["reason_code"] == "min_gap"
-    blob = json.dumps(rows, default=str)
+    blob = json.dumps([list(r.values()) for r in rows], default=str)  # 只看值；欄名 snapshot_version 不算原始資料
     assert OWNER_NS not in blob and "snapshot" not in blob
 
 

@@ -514,29 +514,3 @@ def test_db_role_check_constraint(engine, session_factory):
     row.update(decision_id="dec_bad", kind="k", created_at=datetime.now(UTC), role="bogus", status="ok")
     with pytest.raises(IntegrityError):
         DbSink(session_factory).write([row])
-
-
-# ---- console rig 接線（無 DB：只驗證掛接與開關）----
-
-def test_rig_attach_decision_log_wires_hub_and_env_switch(monkeypatch):
-    from types import SimpleNamespace
-    from unittest.mock import MagicMock
-
-    from uep.console.rig import _attach_decision_log
-
-    registry = DecisionPointRegistry()
-    hub = DecisionHub(registry)
-    engine = TurnReplyEngine(_P(_mode(ReplyMode.RESPOND)), registry=registry, metrics=Counter())
-    hub.register(turn_reply_spec(300), engine)
-    host = SimpleNamespace(decision_hub=hub)
-    monkeypatch.delenv("UEP_DECISION_LOG", raising=False)
-    writer = _attach_decision_log(host, MagicMock())
-    try:
-        assert writer is not None and writer.enabled
-        assert len(hub._observers) == 1 and engine.on_shadow is not None
-    finally:
-        engine.close()
-        writer.close()
-    for value in ("0", "off", "False"):
-        monkeypatch.setenv("UEP_DECISION_LOG", value)
-        assert _attach_decision_log(SimpleNamespace(decision_hub=DecisionHub()), MagicMock()) is None

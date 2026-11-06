@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -47,6 +48,9 @@ from uep.control.channel import (
     ControlSubscription,
 )
 from uep.control.socket_transport import SocketControlServer
+from uep.decision.db import DbSink
+from uep.decision.log import DecisionLogWriter
+from uep.decision.policy_publish import register_policy_publish
 from uep.echo.agent_wiring import attach_agent_tools
 from uep.echo.services import EchoServices
 from uep.endpoint.auth import (
@@ -86,6 +90,16 @@ if TYPE_CHECKING:  # 組裝層不得硬依賴 uep.stream：只有 uep/echo/host 
     from uep.echo.host import EchoPipelineHost
 
 logger = logging.getLogger("uep.assembly")
+
+DECISION_LOG_CLOSE_TIMEOUT = 5.0  # 關閉時等待決策日誌排空的上限（秒）；sink 卡住時 shutdown 不會被拖住
+
+
+def _decision_log_enabled(flag: bool | None) -> bool:
+    """決策日誌是否啟用：明示 True／False 優先；None 時依 ``UEP_DECISION_LOG``（0／off／false／no 停用，預設啟用）。"""
+    if flag is not None:
+        return flag
+    return os.environ.get("UEP_DECISION_LOG", "").strip().lower() not in {"0", "off", "false", "no"}
+
 
 # Presence Manager 會發出、且帶 status 的事件（Presence 軸投影用）
 _PRESENCE_PROJECTED = (
@@ -157,6 +171,7 @@ class CoreAssembly:
     started: bool = False
     memory: MemoryHost | None = None  # P3-M：可選；啟動於 presence／Bus／維護迴圈之後、relay 之前
     echo: EchoPipelineHost | None = None  # P3 S3：可選；啟動於 memory 之後（ES 需要 MemoryPort）、relay 之前
+    decision_log: DecisionLogWriter | None = None  # 決策日誌寫入器（有 echo 且啟用時才有）；於 echo／memory 停止後才關閉
 
     def start(self) -> None:
         """依上述順序啟動；冪等。失敗時關閉已綁定的入口（stop API、endpoint socket）、訂閱與 Bus 後上拋。"""
@@ -222,6 +237,13 @@ class CoreAssembly:
             except Exception:
                 logger.exception("MemoryHost 停止失敗")
             self.start_log.append("memory.stop")
+        if self.decision_log is not None:
+            # 最後才關：echo／memory（含其擁有的 dream）停止前仍可能送出決策；排空佇列後才釋放連線
+            try:
+                self.decision_log.close(timeout=DECISION_LOG_CLOSE_TIMEOUT)
+            except Exception:
+                logger.exception("決策日誌寫入器關閉失敗")
+            self.start_log.append("decision_log.close")
         if self.stop_api is not None:
             self.stop_api.stop()
         if self.endpoint_server is not None:
@@ -369,6 +391,7 @@ def assemble_core(
     tool_path: str | None = None,
     model_port: Any | None = None,
     loop_entry: Callable[[Any, Any], object] | None = None,
+    decision_log: bool | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -380,6 +403,9 @@ def assemble_core(
     不會退回 legacy。``legacy`` 時組裝結果與先前完全相同。
     ``loop_entry``（``route=agent_loop`` -> ``LoopTrigger`` 的入口，見 ``uep.echo.agent_wiring.LoopEntry``）只在
     ``tool_path == "agent"`` 且有 ``echo`` 時可給，綁到 ``echo.orchestrator``；legacy 下給了即 ``AssemblyError``（不可達）。
+    ``decision_log``：None 依 ``UEP_DECISION_LOG``（預設啟用）；False 停用；True 啟用（覆寫 env 的停用）。僅在有 ``echo``
+    且啟用時，用本函式的 ``session_factory`` 建 DB sink 與寫入器並掛到 ``echo.decision_hub``（連同政策發布記錄）；
+    於所有驗證之後才建立，任何 ``AssemblyError`` 都不會留下寫入器，關閉由 ``CoreAssembly.shutdown`` 負責。
     ``strict`` 為 True 時，缺少（或過短的）``UEP_PAYLOAD_HASH_KEY`` 直接拒絕組裝；預設只告警。
     ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
@@ -509,9 +535,18 @@ def assemble_core(
         if api is not None:
             api.stop()  # 已 bind 的 stop API 不能留著
         raise
+    writer: DecisionLogWriter | None = None
+    if echo is not None and _decision_log_enabled(decision_log):
+        writer = DecisionLogWriter(DbSink(session_factory))
+        writer.attach(echo.decision_hub)
+        # 政策發布記錄只在日誌啟用時登記（停用時零成本）；須在 Host 開始發布前（組裝階段）完成
+        policy = getattr(echo, "policy", None)
+        if policy is not None:
+            register_policy_publish(echo.decision_hub, policy, run_id=getattr(echo, "run_id", None))
     return CoreAssembly(
         persona_id=persona_id, bus=bus, publisher=publisher, control=control, presence=presence, gate=gate,
         delivery=delivery, tasks=tasks, state=state, stop=stop, bridge=bridge, maintenance=maintenance,
         stop_api=api,
         endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory, echo=echo,
+        decision_log=writer,
     )

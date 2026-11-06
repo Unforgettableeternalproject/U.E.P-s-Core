@@ -178,12 +178,14 @@ def build_rig(
         session=session or make_session(), identity=make_identity(), memory=memory, tracer=tracer,
         endpoint_kwargs={"tick_interval": 0.05}, **(host_kwargs or {}),
     )
+    assemble_kw = dict(assemble_over or {})
+    assemble_kw.setdefault("decision_log", False)  # 預設不接決策日誌；要測時明確傳 decision_log=None／True
     core = assemble_core(
         session_factory, bus=bus, publisher=publisher, control=InProcessControlChannel(), adapter=host.adapter,
         executors={"fake": FakeToolExecutor()}, tool_resolver=FakeToolSpecResolver(**{"files.read": {}}),
         turn_generation_source=host.generation_source,
         presence_audience=presence_audience, epoch_store=HostEpochStore(tmp_path / "host_epoch.json"),
-        maintenance_interval=None, echo=host, memory=memory_host, **(assemble_over or {}),
+        maintenance_interval=None, echo=host, memory=memory_host, **assemble_kw,
     )
     rig = Rig(core, host, session_factory, think, speak, tracer, inner_sinks)
     if start:

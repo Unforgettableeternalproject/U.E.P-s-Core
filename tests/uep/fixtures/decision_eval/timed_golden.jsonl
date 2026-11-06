@@ -1,0 +1,52 @@
+{"id": "timed-en-silence-01", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-silence-02", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-silence-03", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-silence-04", "type": "tick", "interjections": []}
+{"id": "timed-en-silence-06", "type": "tick", "interjections": [{"reason_code": "interject_silence", "reply_mode": "respond", "speaker_ref": "eval:u4", "speakers": ["eval:u2", "eval:u3", "eval:u4"], "utterance_refs": ["evt-timed-en-silence-03"]}]}
+{"id": "timed-zh-silence-01", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-silence-02", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-silence-03", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-silence-04", "type": "tick", "interjections": []}
+{"id": "timed-zh-silence-06", "type": "tick", "interjections": [{"reason_code": "interject_silence", "reply_mode": "respond", "speaker_ref": "eval:u4", "speakers": ["eval:u2", "eval:u3", "eval:u4"], "utterance_refs": ["evt-timed-zh-silence-03"]}]}
+{"id": "timed-en-interject-context-01", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-en-interject-context-04", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-interject-context-05", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-interject-context-06", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-interject-context-07", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-interject-context-08", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-interject-context-09", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-interject-context-10", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-interject-context-11", "type": "tick", "interjections": []}
+{"id": "timed-en-interject-context-13", "type": "tick", "interjections": [{"reason_code": "interject_context", "reply_mode": "respond", "speaker_ref": "eval:u2", "speakers": ["eval:u2", "eval:u3"], "utterance_refs": ["evt-timed-en-interject-context-10"]}]}
+{"id": "timed-zh-interject-context-01", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-zh-interject-context-04", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-interject-context-05", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-interject-context-06", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-interject-context-07", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-interject-context-08", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-interject-context-09", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-interject-context-10", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-interject-context-11", "type": "tick", "interjections": []}
+{"id": "timed-zh-interject-context-13", "type": "tick", "interjections": [{"reason_code": "interject_context", "reply_mode": "respond", "speaker_ref": "eval:u2", "speakers": ["eval:u2", "eval:u3"], "utterance_refs": ["evt-timed-zh-interject-context-10"]}]}
+{"id": "timed-en-context-01", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-en-context-05", "type": "candidate", "outcome": "respond", "reason_code": "context"}
+{"id": "timed-en-context-07", "type": "candidate", "outcome": "respond", "reason_code": "active"}
+{"id": "timed-zh-context-01", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-zh-context-05", "type": "candidate", "outcome": "respond", "reason_code": "context"}
+{"id": "timed-zh-context-07", "type": "candidate", "outcome": "respond", "reason_code": "active"}
+{"id": "timed-en-context-passive-01", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-en-context-passive-05", "type": "candidate", "outcome": "respond", "reason_code": "context_passive"}
+{"id": "timed-en-context-passive-07", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-context-passive-01", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-zh-context-passive-05", "type": "candidate", "outcome": "respond", "reason_code": "context_passive"}
+{"id": "timed-zh-context-passive-07", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-en-barge-cooldown-01", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-en-barge-cooldown-05", "type": "candidate", "outcome": "pass", "reason_code": "barge_in_cooldown"}
+{"id": "timed-en-barge-cooldown-07", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-en-barge-cooldown-11", "type": "candidate", "outcome": "respond", "reason_code": "context_passive"}
+{"id": "timed-en-barge-cooldown-13", "type": "candidate", "outcome": "pass", "reason_code": "observe"}
+{"id": "timed-zh-barge-cooldown-01", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-zh-barge-cooldown-05", "type": "candidate", "outcome": "pass", "reason_code": "barge_in_cooldown"}
+{"id": "timed-zh-barge-cooldown-07", "type": "candidate", "outcome": "respond", "reason_code": "called"}
+{"id": "timed-zh-barge-cooldown-11", "type": "candidate", "outcome": "respond", "reason_code": "context_passive"}
+{"id": "timed-zh-barge-cooldown-13", "type": "candidate", "outcome": "pass", "reason_code": "observe"}

@@ -3,14 +3,16 @@
 形式仿 ``PresenceMaintenance``：可手動 ``tick(now)``（測試不需要真時間），所有轉移都走 ``TaskManager`` 公開方法（SV-4），
 單一 Run／Task 失敗只記 log 並計數，下個 tick 重試。
 
-- **SV-2 deadline**：``run_deadline`` 或 ``Task.deadline`` 到期 ⇒ ``request_cancel``（只設旗標）。**心跳新鮮時絕對不 force**
-  （T-12）：worker 於下次 ``heartbeat`` 讀到 ``CancelSignal`` 後自行收尾。旗標設定後超過 ``deadline_grace``、或心跳已過期
-  （沿用 ``resume_run`` 的判準 ``TaskManager.heartbeat_stale_after``，含 park 後心跳為 None）才
-  ``force_transition_run(FAILED, reason=<cancel_reason>)``，隨後 ``transition_task(FAILED)``。有未決 action 時 ``run.ended``
+- **SV-2 deadline**：``run_deadline`` 或 ``Task.deadline`` 到期 ⇒ ``request_cancel``（只設旗標）。心跳新鮮時，在
+  ``deadline_grace`` 內不 force（T-12）：worker 於下次 ``heartbeat`` 讀到 ``CancelSignal`` 後自行收尾；**超過 grace 就 force**
+  （卡在同步 executor 的 worker 讀不到旗標，這是預期路徑），並以 ``worker_epoch`` 遞增圍堵慢 worker。心跳已過期
+  （沿用 ``resume_run`` 的判準 ``TaskManager.heartbeat_stale_after``，含 park 後心跳為 None）則不必等 grace。
+  force 用 ``force_transition_run(FAILED, reason=<cancel_reason>)``，隨後 ``transition_task(FAILED)``。有未決 action 時 ``run.ended``
   帶 ``reason_code=unresolved_actions``（T-13，由 TaskManager 寫入）。Run 已被 worker 自行轉成終態時，只補 Task 收尾。
-- **SV-2(5) 核准過期**：``approval_expiry`` 到期且 Run 在 WAITING_APPROVAL ⇒ ``mark_approval_expired``；只有回 True（同一
-  expiry 只一次）才呼叫 ``notify(run_id, idempotency_key)``，key 為 ``appr_expired:{run_id}:{expiry 的 epoch 秒整數}``（E-20）。
-  不自動轉失敗（SA-8）。已知限制：標記先於通知，``notify`` 若失敗只記 log 並計數，同一 expiry 不會重發。
+- **SV-2(5) 核准過期**（at-least-once）：``approval_expiry`` 到期、Run 在 WAITING_APPROVAL 且 ``approval_expired_at`` 不等於該 expiry
+  ⇒ 先 ``notify(run_id, idempotency_key)``，key 為 ``appr_expired:{run_id}:{expiry 的 epoch 秒整數}``（E-20）；通知成功後才
+  ``mark_approval_expired``。``notify`` 失敗不標記，下個 tick 重試；標記失敗則下個 tick 以**同一個 key** 重送，由消費端去重。
+  不自動轉失敗（SA-8）。
 - **孤兒掃描**：每個 tick 呼叫 ``sweep_orphan_turn_tasks(older_than)``。
 - **SV-1 ``pause_all``**：對未終態 Task 呼叫 ``pause_task``；UNKNOWN 的 Task／Run 無 PAUSED 邊，略過並記 warning；單一失敗不影響其餘；
   不寫 ``task.cancelled``／``task.failed``。**這次不等 ``shutdown_grace``**（等 EXECUTING action 的 receipt 屬關機接線，
@@ -76,7 +78,9 @@ class Supervisor:
     # ---- tick ----
 
     def tick(self, now: datetime | None = None) -> SupervisorStats:
-        """執行一輪；任何步驟的例外都不外洩（記 log、計數，下個 tick 重試）。回傳本輪統計。"""
+        """執行一輪；任何步驟的例外都不外洩（記 log、計數，下個 tick 重試）。回傳本輪統計。
+
+        deadline 的 force 規則：心跳新鮮時，在 ``deadline_grace`` 內不 force；超過 grace 就 force，並以 epoch 遞增圍堵慢 worker。"""
         at = now or self._clock()
         stats = SupervisorStats()
         try:
@@ -165,14 +169,20 @@ class Supervisor:
         expiry = run.approval_expiry
         if run.status != RunStatus.WAITING_APPROVAL.value or expiry is None or expiry > now:
             return
-        if not self._tasks.mark_approval_expired(run.run_id, expiry):
-            return  # 同一 expiry 已通知過（或 Run 已離開 WAITING_APPROVAL）
-        stats.approvals_expired += 1
+        if run.approval_expired_at == expiry:
+            return  # 同一 expiry 已通知並標記過
+        key = approval_expired_key(run.run_id, expiry)
         try:
-            self._notify(run.run_id, approval_expired_key(run.run_id, expiry))
-            stats.notified += 1
+            self._notify(run.run_id, key)
         except Exception:  # noqa: BLE001
-            self._fail(stats, f"核准過期通知失敗（同一 expiry 不會重發）：{run.run_id}")
+            self._fail(stats, f"核准過期通知失敗，不標記，下個 tick 重試：{run.run_id}")
+            return
+        stats.notified += 1
+        try:
+            if self._tasks.mark_approval_expired(run.run_id, expiry):
+                stats.approvals_expired += 1
+        except Exception:  # noqa: BLE001
+            self._fail(stats, f"標記核准過期失敗，下個 tick 以同一個 key 重送：{run.run_id} {key}")
 
     # ---- SV-1 ----
 

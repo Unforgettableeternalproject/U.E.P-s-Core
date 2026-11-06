@@ -59,9 +59,13 @@ class Env:
         self.epoch = self.run.worker_epoch
         self.mgr.heartbeat(self.run.run_id, worker_epoch=self.epoch)
         self.notified: list[tuple[str, str]] = []
-        self.sup = Supervisor(
-            self.mgr, deadline_grace=GRACE, clock=self.clock, notify=lambda run_id, key: self.notified.append((run_id, key)),
-        )
+        self.notify_broken = False
+        self.sup = Supervisor(self.mgr, deadline_grace=GRACE, clock=self.clock, notify=self._notify)
+
+    def _notify(self, run_id: str, key: str) -> None:
+        if self.notify_broken:
+            raise RuntimeError("通知通道失敗")
+        self.notified.append((run_id, key))
 
     def run_row(self) -> RunRow:
         return self.mgr.get_run(self.run.run_id)
@@ -288,6 +292,7 @@ def test_supervisor_notifies_an_expired_approval_once_per_expiry(session_factory
     expiry = past(10)
     env = _waiting_env(session_factory, expiry)
     assert env.sup.tick(env.clock.now).notified == 1
+    assert env.run_row().approval_expired_at == expiry  # 通知成功後才標記
     assert env.notified == [(env.run.run_id, approval_expired_key(env.run.run_id, expiry))]
     assert env.sup.tick(env.clock.advance(5)).notified == 0
     assert env.run_row().status == RunStatus.WAITING_APPROVAL.value  # 不自動轉失敗
@@ -297,6 +302,18 @@ def test_supervisor_notifies_an_expired_approval_once_per_expiry(session_factory
     assert env.sup.tick(env.clock.advance(60)).notified == 0
     assert env.sup.tick(env.clock.advance(300)).notified == 1
     assert len(env.notified) == 2
+
+
+def test_notify_failure_leaves_the_expiry_unmarked_and_the_next_tick_retries(session_factory):
+    expiry = past(10)
+    env = _waiting_env(session_factory, expiry)
+    env.notify_broken = True
+    stats = env.sup.tick(env.clock.now)
+    assert (stats.notified, stats.failures) == (0, 1) and env.run_row().approval_expired_at is None
+    env.notify_broken = False
+    assert env.sup.tick(env.clock.advance(5)).notified == 1
+    assert env.run_row().approval_expired_at == expiry and len(env.notified) == 1
+    assert env.sup.tick(env.clock.advance(5)).notified == 0
 
 
 # ---- VC-SV-1 pause_all ----

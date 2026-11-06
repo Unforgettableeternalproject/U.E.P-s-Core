@@ -278,14 +278,43 @@ def test_approval_key_format_matches_e20_charset():
     assert "T" not in key.split(":")[-1]  # 不放 ISO 時間字串
 
 
-def test_notify_failure_is_counted_and_does_not_stop_the_tick():
+def test_notify_failure_is_counted_not_marked_and_retried_by_the_next_tick():
+    """at-least-once：notify 失敗不標記，下個 tick 重試（同一個 key）。"""
     manager = FakeManager()
-    sup = Supervisor(manager, clock=lambda: T0, notify=lambda *_: (_ for _ in ()).throw(RuntimeError("通道壞了")))  # type: ignore[arg-type]
+    sent: list[tuple[str, str]] = []
+    broken = {"on": True}
+
+    def notify(run_id, key):
+        if broken["on"]:
+            raise RuntimeError("通道壞了")
+        sent.append((run_id, key))
+
+    sup = Supervisor(manager, clock=lambda: T0, notify=notify)  # type: ignore[arg-type]
     run = manager.add(status="WAITING_APPROVAL", beat=None)
     run.approval_expiry = T0 - timedelta(seconds=1)
     manager.add("run_2", run_deadline=T0 - timedelta(seconds=1), beat=T0)
     stats = sup.tick()
     assert stats.failures == 1 and stats.cancel_requested == 1 and sup.failures == 1
+    assert stats.notified == 0 and manager.runs["run_1"].approval_expired_at is None  # 沒標記
+    broken["on"] = False
+    retry = sup.tick()
+    assert retry.notified == 1 and retry.approvals_expired == 1 and len(sent) == 1
+    assert manager.runs["run_1"].approval_expired_at == run.approval_expiry
+    assert sup.tick().notified == 0 and len(sent) == 1  # 成功標記後不再通知
+
+
+def test_mark_failure_after_notify_resends_with_the_same_key():
+    manager, sup, notified = make()
+    run = manager.add(status="WAITING_APPROVAL", beat=None)
+    run.approval_expiry = T0 - timedelta(seconds=1)
+    manager.fail_on = {"mark_approval_expired"}
+    first = sup.tick(T0)
+    assert (first.notified, first.approvals_expired, first.failures) == (1, 0, 1)
+    manager.fail_on = set()
+    second = sup.tick(at(manager, 5))
+    assert (second.notified, second.approvals_expired) == (1, 1)
+    assert len(notified) == 2 and notified[0] == notified[1]  # 同一個 key，由消費端去重
+    assert sup.tick(at(manager, 10)).notified == 0
 
 
 def test_default_notify_is_a_noop():

@@ -4,12 +4,13 @@
 迴圈側再驗與計步不在這裡。回傳只是建議（資料，不是授權）：
 
 - ``advice`` 只能落在「凍結集合 ∩ 本次 capability_snapshot」內（CN-1）；超出時只回 ``escalate.needed=True``，不回 advice。
-- snapshot／凍結集合缺漏或格式錯 -> fail-closed（escalate）。``placement`` 第一版一律 escalate（Q26 的逐 kind 清單待定）。
+- snapshot／凍結集合缺漏或格式錯 -> fail-closed（escalate）。``placement`` 依 Bernie 裁決 Q26 分流：同平台內只換 executor 由中樞自決，跨平台與能力擴張一律 escalate。
 - 逾時、busy、invalid、engine 例外一律回 ``advice=None``＋對應 ``reason_code``，不拋例外，由迴圈套用 ``FAILSAFE_DEFAULTS``。
 """
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable, Collection, Mapping
@@ -22,6 +23,7 @@ from uep.decision.contracts import (
     DecisionFollowup,
     DecisionLoop,
     DecisionOutput,
+    DecisionPlacement,
     DecisionPlan,
     DecisionReply,
     DecisionRequest,
@@ -68,6 +70,10 @@ ASK_USER_MODES: tuple[str, ...] = ("defer", "ask")
 LOOP_OUTCOMES: tuple[str, ...] = ("continue", "finalize")
 OUTPUT_MODALITIES: tuple[str, ...] = ("text", "audio_stream", "typing", "animation")
 FOLLOWUP_KINDS: tuple[str, ...] = ("completion_report",)
+PLACEMENT_INTENTS: tuple[str, ...] = ("stay", "request_move", "none")  # 同 DecisionPlacement.presence_intent
+PLACEMENT_ADVICE_INTENTS: tuple[str, ...] = ("none", "stay")  # 中樞只放行不搬家的意圖；request_move 一律 escalate
+# executor_ref 的安全字元集：沿用本檔 output_schema 的 reason_code 字元集（小寫英數與 _ . : -），但必須非空
+_SAFE_REF = re.compile(r"^[a-z0-9_.:-]{1,64}$")
 
 # fail-safe 預設表（提案 §4.6.6）：advice=∅ 時由迴圈側套用，全取最保守、不擴權、不產生新副作用的一側
 FAILSAFE_DEFAULTS: Mapping[str, str] = MappingProxyType({
@@ -85,7 +91,7 @@ _ESCALATE_CONFIDENCE = 1.0
 
 def loop_consult_spec(budget_ms: int = CONSULT_BUDGET_MS) -> DecisionPointSpec:
     """``loop.consult`` 的規格：sync、可 shadow、不開 native、不用 LLM；fallback reason 由此提供。"""
-    outcomes = sorted({*SPEAK_MODES, *ASK_USER_MODES, *LOOP_OUTCOMES, "output_set", "completion_report", "escalate", "none"})
+    outcomes = sorted({*SPEAK_MODES, *ASK_USER_MODES, *LOOP_OUTCOMES, "output_set", "placement_set", "completion_report", "escalate", "none"})
     return DecisionPointSpec(
         kind=KIND_LOOP_CONSULT, mode="sync", owner="loop", outcomes=tuple(outcomes), budget_ms=budget_ms,
         on_timeout_reason=ON_TIMEOUT_REASON, on_busy_reason=ON_BUSY_REASON,
@@ -115,7 +121,15 @@ _COMMON_INPUT_PROPS: dict[str, Any] = {
 _KIND_INPUT_PROPS: dict[str, dict[str, Any]] = {
     "speak": {"user_present": {"type": "boolean"}, "result_ready": {"type": "boolean"}},
     "output_modality": {"proposed_modalities": {"type": "array", "items": {"enum": list(OUTPUT_MODALITIES)}}},
-    "placement": {"target_platform": {"type": "string"}, "executor_ref": {"type": "string"}},
+    # target_platform／executor_ref／presence_intent／audience_scope_max 是「提議值」（照 DecisionPlacement）。
+    # current_platform／available_executors 是「注入值」：必須由迴圈注入，模型不可提供；中樞看不出值的來源，
+    # 「不信任模型自帶值」由工具層 Gateway 的 injected_params 保證。
+    "placement": {
+        "target_platform": {"type": "string"}, "executor_ref": {"type": "string"},
+        "presence_intent": {"enum": list(PLACEMENT_INTENTS)}, "audience_scope_max": {"type": ["string", "null"]},
+        "current_platform": {"type": "string"},  # injected：當下所在平台
+        "available_executors": _STR_LIST,  # injected：當下平台已就緒的合法 executor
+    },
     "ask_user": {"confident_default": {"type": "boolean"}},
     "loop_end": {
         "goal_satisfied": {"type": "boolean"}, "made_progress": {"type": "boolean"},
@@ -143,14 +157,14 @@ _KIND_ADVICE_SCHEMAS: dict[str, dict[str, Any]] = {
             },
         }},
     },
-    # 第一版 placement 一律 escalate，不會有 advice；schema 保留區段形狀供之後放寬
+    # placement advice 只會是同平台換 executor（presence_intent 限 none／stay，不帶 audience_scope_max）
     "placement": {
         "type": "object", "required": ["placement"], "additionalProperties": False,
         "properties": {"placement": {
             "type": "object",
             "properties": {
                 "target_platform": {"type": ["string", "null"]}, "executor_ref": {"type": ["string", "null"]},
-                "presence_intent": {"enum": ["stay", "request_move", "none"]},
+                "presence_intent": {"enum": list(PLACEMENT_ADVICE_INTENTS)},
             },
         }},
     },
@@ -270,9 +284,10 @@ def advice_in_scope(
 
     advice 為 None 通過（沒有建議就沒有越權；中樞已回 escalate 的分支由迴圈先處理，不走這裡）。其餘依序檢查：
     consult 標籤（``CONSULT_TAG``）必須在 frozen["capability_tags"] ∩ snapshot["capability_tags"] 內，任一方缺
-    ``capability_tags`` 鍵一律 fail-closed -> scope_exceeded；placement、未知 sub_kind、區段不是剛好
+    ``capability_tags`` 鍵一律 fail-closed -> scope_exceeded；未知 sub_kind、區段不是剛好
     ``ADVICE_SECTION`` 那一段 -> scope_exceeded；output_modality 的 modalities 必須 ⊆ frozen["modalities"] ∩
-    snapshot["modalities"]（缺鍵視為空集合）。
+    snapshot["modalities"]（缺鍵視為空集合）。placement 只在 snapshot 帶 ``current_platform``（字串）與 ``executors``（集合）
+    時才可能放行（同平台換 executor，條件見 ``_placement_in_scope``），任何缺鍵或越界 -> scope_exceeded。
     目前 advice 的種類都不直接引用標籤，所以只驗 consult 標籤本身；之後 advice 若帶標籤／工具欄位，也須落在同一個
     交集內。引擎的事前檢查（CN-1）是另一層，不走這裡。
     """
@@ -283,13 +298,43 @@ def advice_in_scope(
     if CONSULT_TAG not in frozenset(frozen["capability_tags"]) & frozenset(snapshot["capability_tags"]):
         return ESC_SCOPE_EXCEEDED
     section = ADVICE_SECTION.get(sub_kind)
-    if sub_kind == "placement" or section is None or set(advice) != {section}:
+    if section is None or set(advice) != {section}:
         return ESC_SCOPE_EXCEEDED
+    if sub_kind == "placement":
+        return None if _placement_in_scope(advice.get("placement"), frozen, snapshot) else ESC_SCOPE_EXCEEDED
     if sub_kind == "output_modality":
         allowed = frozenset(frozen.get("modalities", ())) & frozenset(snapshot.get("modalities", ()))
         if not set((advice.get("output") or {}).get("modalities") or ()) <= allowed:
             return ESC_SCOPE_EXCEEDED
     return None
+
+
+def _is_str_collection(value: Any) -> bool:
+    return isinstance(value, (list, tuple, set, frozenset)) and all(isinstance(v, str) for v in value)
+
+
+def _placement_in_scope(
+    placement: Any, frozen: Mapping[str, Collection[str]], snapshot: Mapping[str, Collection[str]],
+) -> bool:
+    """placement advice 的 CN-2 再驗（fail-closed，缺鍵／型別錯一律 False）：同平台換 executor 才放行。
+
+    target_platform ∈ frozen["platforms"] ∩ snapshot["platforms"] 且 == snapshot["current_platform"]；
+    executor_ref 安全且 ∈ snapshot["executors"]；presence_intent ∈ {none, stay}；audience_scope_max 為 None。
+    """
+    if not isinstance(placement, Mapping):
+        return False
+    current, executors = snapshot.get("current_platform"), snapshot.get("executors")
+    frozen_platforms, snap_platforms = frozen.get("platforms"), snapshot.get("platforms")
+    if not isinstance(current, str) or not _is_str_collection(executors):
+        return False
+    if not _is_str_collection(frozen_platforms) or not _is_str_collection(snap_platforms):
+        return False
+    target, executor = placement.get("target_platform"), placement.get("executor_ref")
+    if not isinstance(target, str) or target != current or target not in frozenset(frozen_platforms) & frozenset(snap_platforms):
+        return False
+    if not isinstance(executor, str) or not _SAFE_REF.match(executor) or executor not in frozenset(executors):
+        return False
+    return placement.get("presence_intent", "none") in PLACEMENT_ADVICE_INTENTS and placement.get("audience_scope_max") is None
 
 
 # ---- 規則（每個回傳 advice 區段與決定值；只用 facts 內的英文欄位）----
@@ -337,8 +382,38 @@ def _rule_output_modality(facts: Mapping[str, Any], scope: Mapping[str, frozense
     return plan, "output_set", "output_modality_in_scope"
 
 
-def _rule_placement(_facts: Mapping[str, Any], _scope: Mapping[str, frozenset[str]]):
-    return Escalate(True, ESC_PLACEMENT_REVIEW)  # 第一版最保守：一律交給 escalate（Q26 逐 kind 清單待 Bernie）
+def _rule_placement(facts: Mapping[str, Any], scope: Mapping[str, frozenset[str]]):
+    """Q26：同平台內只換 executor 由中樞自決；跨平台、搬家意圖與能力擴張一律 escalate。
+
+    格式錯（型別不對、executor 空或含不安全字元、意圖不在閉集）-> _ConsultInvalid；缺 current_platform 或跨平台 ->
+    placement_review；缺 available_executors 視為無法確認 executor 合法，fail-closed 回 scope_exceeded
+    （與 advice_in_scope 缺鍵一律 scope_exceeded 一致；不丟 invalid，避免把注入缺漏誤當成模型輸入格式錯）。
+    """
+    target, executor = facts.get("target_platform"), facts.get("executor_ref")
+    if not isinstance(target, str) or not target:
+        raise _ConsultInvalid("target_platform 必須是非空字串")
+    if not isinstance(executor, str) or not _SAFE_REF.match(executor):
+        raise _ConsultInvalid("executor_ref 必須是非空且字元安全的字串")
+    intent = facts.get("presence_intent", "none")
+    if intent not in PLACEMENT_INTENTS:
+        raise _ConsultInvalid("presence_intent 不在閉集內")
+    audience = facts.get("audience_scope_max")
+    if audience is not None and not isinstance(audience, str):
+        raise _ConsultInvalid("audience_scope_max 必須是字串或 None")
+    current = facts.get("current_platform")
+    if current is not None and not isinstance(current, str):
+        raise _ConsultInvalid("current_platform 必須是字串")
+    available = facts.get("available_executors")
+    if available is not None and (
+        not isinstance(available, (list, tuple)) or not all(isinstance(e, str) for e in available)
+    ):
+        raise _ConsultInvalid("available_executors 必須是字串清單")
+    if not current or target != current or current not in scope["platforms"]:
+        return Escalate(True, ESC_PLACEMENT_REVIEW)  # 缺 current_platform、跨平台或平台不在交集內
+    if available is None or intent not in PLACEMENT_ADVICE_INTENTS or audience is not None or executor not in available:
+        return Escalate(True, ESC_SCOPE_EXCEEDED)  # 缺清單、搬家意圖、帶 audience、executor 不在清單
+    plan = DecisionPlan(placement=DecisionPlacement(target_platform=target, executor_ref=executor, presence_intent=intent))
+    return plan, "placement_set", "placement_same_platform"
 
 
 def _rule_ask_user(facts: Mapping[str, Any], _scope: Mapping[str, frozenset[str]]):
@@ -374,7 +449,7 @@ DEFAULT_RULES: Mapping[str, Rule] = MappingProxyType({
 # 每個 sub_kind 需要的 scope 鍵（缺漏即 fail-closed）；consult 本身需要 decision.consult 標籤
 _REQUIRED_SCOPE: Mapping[str, tuple[str, ...]] = MappingProxyType({
     "speak": ("capability_tags",), "output_modality": ("capability_tags", "modalities"),
-    "placement": ("capability_tags",), "ask_user": ("capability_tags",),
+    "placement": ("capability_tags", "platforms"), "ask_user": ("capability_tags",),
     "loop_end": ("capability_tags",), "followup": ("capability_tags",),
 })
 CONSULT_TAG = "decision.consult"
@@ -402,6 +477,12 @@ def _validate_advice(sub_kind: str, plan: DecisionPlan) -> None:
         plan.output is None or not plan.output.modalities or any(m not in OUTPUT_MODALITIES for m in plan.output.modalities)
     ):
         raise _ConsultInvalid("output.modalities 不合法")
+    if sub_kind == "placement" and (
+        plan.placement is None or not isinstance(plan.placement.target_platform, str) or not plan.placement.target_platform
+        or not isinstance(plan.placement.executor_ref, str) or not _SAFE_REF.match(plan.placement.executor_ref)
+        or plan.placement.presence_intent not in PLACEMENT_ADVICE_INTENTS or plan.placement.audience_scope_max is not None
+    ):
+        raise _ConsultInvalid("placement 只能是同平台換 executor（presence_intent 限 none／stay，不帶 audience_scope_max）")
     if sub_kind == "followup" and (
         plan.followups is None or any(f.kind not in FOLLOWUP_KINDS for f in plan.followups)
     ):
@@ -485,9 +566,6 @@ class LoopConsultEngine:
         return run_id, step_id, ordinal, sub_kind
 
     def _run(self, facts: Mapping[str, Any], sub_kind: str, decision_id: str) -> ConsultResult:
-        if sub_kind == "placement":
-            # 第一版一律 escalate，連 snapshot 都不看（最保守，且不因 snapshot 狀況改變 reason）
-            return self._escalate(decision_id, sub_kind, ESC_PLACEMENT_REVIEW)
         scope = _effective_scope(facts.get("frozen"), facts.get("capability_snapshot"), _REQUIRED_SCOPE[sub_kind])
         if scope is None:
             return self._escalate(decision_id, sub_kind, ESC_SNAPSHOT_INVALID)

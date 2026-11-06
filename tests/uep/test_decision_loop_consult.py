@@ -42,7 +42,10 @@ SNAP = {"capability_tags": ["decision.consult", "web.search"], "modalities": ["t
 KIND_FACTS = {
     "speak": {"user_present": True, "result_ready": True},
     "output_modality": {"proposed_modalities": ["text"]},
-    "placement": {"target_platform": "pc"},
+    "placement": {
+        "target_platform": "pc", "executor_ref": "exec.pc.local", "current_platform": "pc",
+        "available_executors": ["exec.pc.local", "exec.pc.alt"],
+    },
     "ask_user": {"confident_default": False},
     "loop_end": {"goal_satisfied": False, "made_progress": True, "consults_used": 1, "no_progress_count": 0},
     "followup": {"report_pending": True},
@@ -198,10 +201,87 @@ def test_output_modality_needs_modalities_key(engine):
     assert not engine.consult(facts("speak", capability_snapshot=snap)).escalate.needed  # speak 不需要 modalities
 
 
-def test_placement_always_escalates(engine):
-    for over in ({}, {"capability_snapshot": None}, {"frozen": {}}):
-        r = engine.consult(facts("placement", **over))
-        assert r.advice is None and r.escalate == Escalate(True, "placement_review") and not r.fallback
+def test_placement_same_platform_executor_swap_is_advice(engine):
+    r = engine.consult(facts("placement"))
+    assert r.escalate == Escalate() and not r.fallback and r.outcome == "placement_set"
+    assert r.reason_code == "placement_same_platform"
+    assert r.advice == DecisionPlan(placement=DecisionPlacement(
+        target_platform="pc", executor_ref="exec.pc.local", presence_intent="none"))
+    stay = engine.consult(facts("placement", presence_intent="stay", executor_ref="exec.pc.alt"))
+    assert stay.advice.placement == DecisionPlacement("pc", "exec.pc.alt", "stay")
+    assert set(plan_to_dict(r.advice)) == {"placement"}  # 只有 placement 區段
+
+
+def _placement_escalates(engine, reason, **over):
+    r = engine.consult(facts("placement", **over))
+    assert r.advice is None and r.escalate == Escalate(True, reason) and not r.fallback and r.outcome == "escalate"
+
+
+def test_placement_cross_platform_or_missing_current_platform_needs_review(engine):
+    _placement_escalates(engine, "placement_review", target_platform="phone")
+    _placement_escalates(engine, "placement_review", target_platform="phone", current_platform="phone")  # 不在交集
+    _placement_escalates(engine, "placement_review", current_platform=None)
+    _placement_escalates(engine, "placement_review", current_platform="")
+    # 目前平台只在凍結、快照任一方 -> 不在交集
+    _placement_escalates(engine, "placement_review", frozen={**FROZEN, "platforms": ["phone"]})
+    _placement_escalates(engine, "placement_review", capability_snapshot={**SNAP, "platforms": []})
+
+
+def test_placement_scope_exceeded_cases(engine):
+    _placement_escalates(engine, "scope_exceeded", executor_ref="exec.unknown")
+    _placement_escalates(engine, "scope_exceeded", presence_intent="request_move")
+    _placement_escalates(engine, "scope_exceeded", audience_scope_max="public")
+    _placement_escalates(engine, "scope_exceeded", available_executors=[])
+    # 缺 available_executors：fail-closed，無法確認 executor 合法
+    base = facts("placement")
+    del base["available_executors"]
+    r = engine.consult(base)
+    assert r.advice is None and r.escalate == Escalate(True, "scope_exceeded") and not r.fallback
+
+
+def test_placement_consult_tag_revoked_or_scope_key_missing(engine):
+    snap = {**SNAP, "capability_tags": ["web.search"]}
+    _placement_escalates(engine, "scope_exceeded", capability_snapshot=snap)
+    _placement_escalates(engine, "scope_exceeded", frozen={**FROZEN, "capability_tags": ["web.search"]})
+    no_platforms = {k: v for k, v in SNAP.items() if k != "platforms"}
+    _placement_escalates(engine, "snapshot_invalid", capability_snapshot=no_platforms)
+    _placement_escalates(engine, "snapshot_invalid", frozen={k: v for k, v in FROZEN.items() if k != "platforms"})
+    _placement_escalates(engine, "snapshot_invalid", capability_snapshot=None)
+    _placement_escalates(engine, "snapshot_invalid", frozen={})
+
+
+@pytest.mark.parametrize("over", [
+    {"executor_ref": ""}, {"executor_ref": "Exec Bad/../x"}, {"executor_ref": "x" * 65}, {"executor_ref": 3},
+    {"executor_ref": None}, {"target_platform": ""}, {"target_platform": None}, {"target_platform": 5},
+    {"presence_intent": "teleport"}, {"presence_intent": 1}, {"audience_scope_max": 3}, {"current_platform": 1},
+    {"available_executors": "exec.pc.local"}, {"available_executors": [1]},
+])
+def test_placement_malformed_facts_are_invalid_fallback(engine, over):
+    r = engine.consult(facts("placement", **over))
+    assert r.advice is None and r.fallback and r.reason_code == "consult_invalid" and not r.escalate.needed
+
+
+def test_placement_validate_advice_rejects_other_sections_and_bad_values():
+    from uep.decision.loop_consult import _ConsultInvalid, _validate_advice
+    ok = DecisionPlacement("pc", "exec.pc.local", "stay")
+    _validate_advice("placement", DecisionPlan(placement=ok))
+    bad = (
+        DecisionPlan(), DecisionPlan(placement=ok, reply=DecisionReply(mode="respond")),
+        DecisionPlan(placement=DecisionPlacement("pc", None)), DecisionPlan(placement=DecisionPlacement(None, "e")),
+        DecisionPlan(placement=DecisionPlacement("pc", "BAD REF")),
+        DecisionPlan(placement=DecisionPlacement("pc", "e", "request_move")),
+        DecisionPlan(placement=DecisionPlacement("pc", "e", "none", "public")),
+        DecisionPlan(route="direct_chat", placement=ok),
+    )
+    for plan in bad:
+        with pytest.raises(_ConsultInvalid):
+            _validate_advice("placement", plan)
+
+
+def test_placement_decision_id_deterministic(engine):
+    a, b = engine.consult(facts("placement")), engine.consult(facts("placement", executor_ref="exec.pc.alt"))
+    assert a.decision_id == b.decision_id == consult_decision_id("run_1", "step_1", 0, "placement")
+    assert engine.consult(facts("placement", target_platform="phone")).decision_id == a.decision_id
 
 
 # ---- fallback：逾時／busy／invalid／例外 ----

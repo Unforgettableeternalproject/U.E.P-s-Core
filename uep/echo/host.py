@@ -59,7 +59,7 @@ from uep.echo.loop import EsLoop
 from uep.echo.memory import GuildRoster, make_memory_resolver
 from uep.echo.metrics import Metrics
 from uep.echo.outcomes import facts_from_outcome
-from uep.echo.policy import CoreYieldPolicy, HostPolicySource
+from uep.echo.policy import CAUSE_TTL_REFRESH, CoreYieldPolicy, HostPolicySource
 from uep.echo.services import EchoServices
 from uep.echo.sink import AdmittingSink, SentenceEvidence
 from uep.echo.tools import CoreToolExecutor
@@ -341,6 +341,30 @@ class EchoPipelineHost:
             except Exception:
                 logger.exception("proposer.set_participant_count 失敗")
 
+    def _refresh_policy_if_due(self) -> None:
+        """tick 成功後，政策快照年齡過半 ttl 才「確認後刷新」；永不拋例外（tick 執行緒不可因此中斷）。
+
+        確認的層級＝Host roster：只證明 Host 這端的 roster 仍可讀、tick 路徑仍在轉；roster 是本機快取
+        （GuildRoster 由平台轉接器經 set_members 灌入，沒有任何時間戳或新鮮度欄位可檢查），重讀成功並不代表
+        外部來源（Discord 等）仍存活。外部來源失聯的偵測不在此處。
+        流程：ttl_s 為 None 或年齡 < ttl_s×0.5 即返回；否則先 ``_sync_participants`` 重讀。重讀會經 proposer 的
+        模式翻轉監聽器間接 publish，所以重讀後再看一次年齡：已歸零（版本已換）就不再補 ttl_refresh，
+        同一 tick 只出一版。任何一步失敗只記 log、不 publish，讓快照自然過期。
+        """
+        ttl = self.policy.ttl_s
+        if ttl is None:
+            return
+        threshold = ttl * 0.5
+        try:
+            if self.policy.age_s() < threshold:
+                return
+            self._sync_participants(self._session)
+            if self.policy.age_s() < threshold:
+                return  # 重讀已觸發 publish（年齡重新起算）
+            self.policy.publish(cause=CAUSE_TTL_REFRESH)
+        except Exception:
+            logger.exception("政策快照 ttl 刷新失敗")
+
     @property
     def needs_tick(self) -> bool:
         """是否需要週期性 tick：aggregator 有等待，或 proposer 會插話。"""
@@ -589,6 +613,8 @@ class EchoPipelineHost:
                 self.submit_tick()
             except Exception:
                 logger.exception("週期性決策失敗")
+                continue  # tick 失敗不刷新政策快照
+            self._refresh_policy_if_due()
 
     def _start_turn(self, ticket: CoreTicket, fact: UtteranceFact) -> None:
         """ES loop 上：建 TurnRequest 並 submit（立即返回）。"""

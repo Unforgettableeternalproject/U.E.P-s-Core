@@ -381,15 +381,27 @@ class AgentLoop:
         raw = self._consult_scope() if self._consult_scope is not None else {}
         return {k: frozenset(str(v) for v in raw.get(k, ())) for k in ("modalities", "platforms")}
 
-    def _snapshot_tags(self, st: _State) -> frozenset[str]:
-        """目前快照的能力標籤：當下可見工具的標籤（不比可見集合寬）。"""
+    def _cap_tags(self, cap: Mapping[str, Any]) -> frozenset[str]:
+        """某個 capability_set 的能力標籤：可見工具的標籤（不比可見集合寬）。"""
         tags: set[str] = set()
-        for name in visible_tools(st.cap):
+        for name in visible_tools(cap):
             try:
                 tags.add(self._registry.entry(name).spec.capability)
             except Exception:  # noqa: BLE001  查不到的工具不貢獻標籤（保守）
                 logger.debug("snapshot 標籤：查不到工具 %s", name)
         return frozenset(tags)
+
+    def _snapshot_tags(self, st: _State) -> frozenset[str]:
+        """目前快照的能力標籤：Run 目前持有（已過 ``_offer``）的可見工具的標籤。注入給中樞用。"""
+        return self._cap_tags(st.cap)
+
+    def _projection_tags(self, st: _State) -> frozenset[str]:
+        """「當下投影」的能力標籤：重算 AL-3 投影（純記憶體、無副作用），**不經 ``_offer``**。
+
+        與 ``_snapshot_tags`` 來源不同：後者是 ``st.cap``（含 consult 次數／無進展上限造成的移除，屬預算）；
+        這裡只反映真正的能力收窄（投影器不再給、凍結集合或前一步集合之外），供 CN-2 再驗使用。"""
+        prior = visible_tools(st.cap)
+        return self._cap_tags(self._narrow(self._projector(st.frozen_tags, prior), st.frozen_tools, prior))
 
     def _no_progress_count(self, st: _State) -> int:
         # 連續無進展的次數：同一呼叫「重複」的次數（第一次不算）與連續被拒次數，取大者
@@ -433,7 +445,10 @@ class AgentLoop:
         return info
 
     def _recheck_escalation(self, st: _State, info: Mapping[str, Any]) -> str | None:
-        """CN-2 縱深防禦：回傳要 escalate 的缺口碼，或 None。中樞已回 escalate、或 advice 超出「凍結 ∩ 當下快照」都算。"""
+        """CN-2 縱深防禦：回傳要 escalate 的缺口碼，或 None。中樞已回 escalate、或 advice 超出「凍結 ∩ 當下快照」都算。
+
+        再驗的標籤快照是「當下投影」（``_projection_tags``，不經 ``_offer``），不是注入給中樞的 ``_snapshot_tags``：
+        consult 因預算被 ``_offer`` 拿掉不算能力收窄，投影器真的不再給 consult 才算。"""
         esc = info.get("escalate") or {}
         if esc.get("needed"):
             return str(esc.get("reason_code") or "scope_exceeded")
@@ -441,7 +456,10 @@ class AgentLoop:
         if advice is None:
             return None
         sub_kind = str(info.get("sub_kind", ""))
-        gap = advice_in_scope(sub_kind, advice, {"modalities": st.frozen_modalities}, self._scope_now())
+        gap = advice_in_scope(
+            sub_kind, advice, {"modalities": st.frozen_modalities, "capability_tags": st.frozen_tags},
+            {**self._scope_now(), "capability_tags": self._projection_tags(st)},
+        )
         if gap is not None:
             logger.warning("consult 的 advice 形狀不合或超出凍結範圍 ∩ 快照，改當 escalate 處理（稽核）：sub_kind=%s", sub_kind)
         return gap

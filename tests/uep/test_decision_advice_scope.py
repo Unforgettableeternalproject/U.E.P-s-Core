@@ -1,4 +1,4 @@
-"""``advice_in_scope``（CN-2 迴圈側再驗）：與迴圈原本 ``_recheck_escalation`` 的判定逐輸入等價。離線、純函式。"""
+"""``advice_in_scope``（CN-2 迴圈側再驗）：舊判定（形狀＋modalities）加上 consult 標籤條件。離線、純函式。"""
 from __future__ import annotations
 
 import itertools
@@ -7,7 +7,12 @@ from typing import Any
 
 import pytest
 
-from uep.decision.loop_consult import ADVICE_SECTION, SUB_KINDS, advice_in_scope
+from uep.decision.loop_consult import (
+    ADVICE_SECTION,
+    CONSULT_TAG,
+    SUB_KINDS,
+    advice_in_scope,
+)
 
 
 def _legacy_recheck(sub_kind: str, advice: Mapping[str, Any] | None,
@@ -25,6 +30,7 @@ def _legacy_recheck(sub_kind: str, advice: Mapping[str, Any] | None,
     return None
 
 
+_F = {"capability_tags": {CONSULT_TAG}}  # 只有 consult 標籤、沒有 modalities 鍵的範圍
 _SUB_KINDS = (*SUB_KINDS, "", "unknown")
 _ADVICES: tuple[Mapping[str, Any] | None, ...] = (
     None,
@@ -44,31 +50,57 @@ _ADVICES: tuple[Mapping[str, Any] | None, ...] = (
 _SETS = (frozenset(), frozenset({"text"}), frozenset({"text", "audio_stream"}), frozenset({"animation", "typing"}))
 
 
+_TAG_SETS = (frozenset({CONSULT_TAG}), frozenset({CONSULT_TAG, "memory.write"}))
+
+
 @pytest.mark.parametrize("sub_kind", _SUB_KINDS)
-def test_equivalent_to_legacy_recheck(sub_kind: str) -> None:
+def test_equivalent_to_legacy_recheck_when_consult_tag_in_intersection(sub_kind: str) -> None:
+    # consult 標籤在交集內時，結果必須與舊判定逐輸入一致
     for advice, frozen, now in itertools.product(_ADVICES, _SETS, _SETS):
         expected = _legacy_recheck(sub_kind, advice, frozen, now)
-        got = advice_in_scope(sub_kind, advice, {"modalities": frozen}, {"modalities": now})
-        assert got == expected, (sub_kind, advice, frozen, now)
+        for tags in _TAG_SETS:
+            got = advice_in_scope(
+                sub_kind, advice, {"modalities": frozen, "capability_tags": tags}, {"modalities": now, "capability_tags": tags},
+            )
+            assert got == expected, (sub_kind, advice, frozen, now, tags)
+
+
+@pytest.mark.parametrize("sub_kind", _SUB_KINDS)
+def test_consult_tag_outside_intersection_or_missing_key_escalates(sub_kind: str) -> None:
+    has, lacks = frozenset({CONSULT_TAG}), frozenset({"memory.write"})
+    for advice, frozen, now in itertools.product(_ADVICES, _SETS, _SETS):
+        mods = {"modalities": frozen}, {"modalities": now}
+        cases = (
+            ({**mods[0], "capability_tags": lacks}, {**mods[1], "capability_tags": has}),  # 凍結沒有
+            ({**mods[0], "capability_tags": has}, {**mods[1], "capability_tags": lacks}),  # 當下投影沒有
+            ({**mods[0], "capability_tags": lacks}, {**mods[1], "capability_tags": lacks}),
+            (mods[0], {**mods[1], "capability_tags": has}),  # 凍結缺鍵 fail-closed
+            ({**mods[0], "capability_tags": has}, mods[1]),  # 快照缺鍵 fail-closed
+            (mods[0], mods[1]),
+        )
+        for fz, sn in cases:
+            got = advice_in_scope(sub_kind, advice, fz, sn)
+            assert got == (None if advice is None else "scope_exceeded"), (sub_kind, advice, fz, sn)
 
 
 def test_none_advice_passes() -> None:
-    assert advice_in_scope("output_modality", None, {}, {}) is None
+    assert advice_in_scope("output_modality", None, {}, {}) is None  # 沒有建議就沒有越權（連缺鍵也通過）
 
 
 def test_placement_and_unknown_always_escalate() -> None:
-    assert advice_in_scope("placement", {"placement": {}}, {"modalities": {"text"}}, {"modalities": {"text"}}) == "scope_exceeded"
-    assert advice_in_scope("bogus", {"reply": {}}, {}, {}) == "scope_exceeded"
+    assert advice_in_scope("placement", {"placement": {}}, _F, _F) == "scope_exceeded"
+    assert advice_in_scope("bogus", {"reply": {}}, _F, _F) == "scope_exceeded"
 
 
 def test_section_must_match_exactly() -> None:
-    assert advice_in_scope("speak", {"output": {"modalities": ["text"]}}, {}, {}) == "scope_exceeded"
-    assert advice_in_scope("speak", {"reply": {"mode": "respond"}, "loop": {}}, {}, {}) == "scope_exceeded"
-    assert advice_in_scope("ask_user", {"reply": {"mode": "ask"}}, {}, {}) is None
+    assert advice_in_scope("speak", {"output": {"modalities": ["text"]}}, _F, _F) == "scope_exceeded"
+    assert advice_in_scope("speak", {"reply": {"mode": "respond"}, "loop": {}}, _F, _F) == "scope_exceeded"
+    assert advice_in_scope("ask_user", {"reply": {"mode": "ask"}}, _F, _F) is None
 
 
 def test_output_modality_narrowed_by_intersection() -> None:
-    frozen, snap = {"modalities": {"text", "audio_stream"}}, {"modalities": {"text"}}
+    frozen = {"modalities": {"text", "audio_stream"}, "capability_tags": {CONSULT_TAG}}
+    snap = {"modalities": {"text"}, "capability_tags": {CONSULT_TAG}}
     assert advice_in_scope("output_modality", {"output": {"modalities": ["text"]}}, frozen, snap) is None
     # 凍結內有、但當下快照已收回 -> 超出
     assert advice_in_scope("output_modality", {"output": {"modalities": ["audio_stream"]}}, frozen, snap) == "scope_exceeded"
@@ -76,5 +108,5 @@ def test_output_modality_narrowed_by_intersection() -> None:
 
 def test_missing_modalities_key_is_empty_set() -> None:
     # 缺鍵視為空集合（與迴圈現況一致）：非空 modalities 一律超出，空 modalities 通過
-    assert advice_in_scope("output_modality", {"output": {"modalities": ["text"]}}, {}, {"modalities": {"text"}}) == "scope_exceeded"
-    assert advice_in_scope("output_modality", {"output": {"modalities": []}}, {}, {}) is None
+    assert advice_in_scope("output_modality", {"output": {"modalities": ["text"]}}, _F, {**_F, "modalities": {"text"}}) == "scope_exceeded"
+    assert advice_in_scope("output_modality", {"output": {"modalities": []}}, _F, _F) is None

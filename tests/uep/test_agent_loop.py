@@ -606,7 +606,7 @@ def test_max_parallel_requires_tasks_that_support_it():
     with pytest.raises(ValueError, match="supports_parallel_execution"):
         rig.new_loop(budget=LoopBudget(max_parallel=2))
     rig.new_loop(budget=LoopBudget(max_parallel=1))  # 1 一律可以
-    assert TaskManager.supports_parallel_execution is False  # 真實 Manager 在 D1b 放寬前不支援
+    assert TaskManager.supports_parallel_execution is True  # D1b 起真實 Manager 支援同 Run 內並行
 
 
 def test_snapshots_take_raises_keyerror_when_missing():

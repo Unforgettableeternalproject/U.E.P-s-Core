@@ -14,7 +14,7 @@ import json
 import logging
 import math
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -354,14 +354,29 @@ def _is_safe(value: Any) -> bool:
     return True
 
 
+CONCURRENCY_VALUES = frozenset({"parallel_safe", "parallel_one_shot", "serial"})
+
+
+def executing_set_allowed(incoming: str, executing: Iterable[str]) -> bool:
+    """TC-3 規則（D1b）：EXECUTING 集合（含 incoming）要麼恰好一個 serial，要麼全部 parallel_safe。
+
+    非 ``parallel_safe`` 的值一律視同 serial（含本期尚未放行的 ``parallel_one_shot``，以及任何未知值）。
+    FakeTasks 與真實 Manager 共用這個函式，守衛規則不會分歧。
+    """
+    current = list(executing)
+    if not current:
+        return True
+    return incoming == "parallel_safe" and all(c == "parallel_safe" for c in current)
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
 class TaskManager:
-    # 同一 Run 的 action 能否真的並行執行：TC-3 的應用層檢查與 DB 部分唯一索引（D62）在 D1b 放寬前會擋，所以為 False；
-    # AgentLoop 以此拒絕 max_parallel > 1
-    supports_parallel_execution = False
+    # 同一 Run 的 action 能否真的並行執行：D1b 起 TC-3 放寬為「EXECUTING 集合恰好一個 serial，或全部 parallel_safe」
+    # （``_check_single_executing``，DB 部分唯一索引已於 0012 移除）；AgentLoop 以此決定是否接受 max_parallel > 1
+    supports_parallel_execution = True
 
     def __init__(
         self,
@@ -1134,6 +1149,7 @@ class TaskManager:
         ``presence_bound`` 只能收緊（TG-3）：註冊表為真時不可傳 False。
         """
         spec = self._tool_resolver.resolve(tool)  # 解析不到拋 PolicyViolation；在交易之前
+        concurrency = self._resolve_concurrency(tool)
         if presence_bound is False and spec.presence_bound:
             raise PolicyViolation("presence_bound 只能收緊，不可放寬註冊表的宣告", code="presence_bound_loosened")
         digest = canonical_params_hash(tool, spec.tool_version, params, self._params_limits)  # 不合規不產生 act_ 列
@@ -1154,7 +1170,7 @@ class TaskManager:
                 action_id=action_id or new_id("act"), run_id=run_id, step_id=step_id, tool=tool,
                 executor=spec.executor, params_hash=digest, side_effect_class=spec.side_effect_class,
                 idempotency=spec.idempotency, tool_version=spec.tool_version,
-                presence_bound=spec.presence_bound or bool(presence_bound),
+                presence_bound=spec.presence_bound or bool(presence_bound), concurrency=concurrency,
                 status=ActionStatus.INTENDED.value, version=1,
             )
             try:
@@ -1172,6 +1188,17 @@ class TaskManager:
                 run_id=run_id, payload={"action_id": action.action_id, "status": action.status},
             )
             return action
+
+    def _resolve_concurrency(self, tool: str) -> str:
+        """從 resolver 取工具的並行宣告（TG-1，不看工具名稱）；resolver 不支援、解析失敗或值非法一律 serial。"""
+        fn = getattr(self._tool_resolver, "concurrency_of", None)
+        if not callable(fn):
+            return "serial"
+        try:
+            value = fn(tool)
+        except Exception:  # noqa: BLE001  fail-closed：任何解析問題都當 serial
+            return "serial"
+        return value if value in CONCURRENCY_VALUES else "serial"
 
     def _lock_action(self, s: Session, action_id: str) -> tuple[TaskRow, RunRow, ActionIntentRow]:
         """鎖定順序 task -> run -> action；鎖前只取純量 id（H2）。"""
@@ -1432,21 +1459,32 @@ class TaskManager:
 
     @staticmethod
     def _check_single_executing(s: Session, action: ActionIntentRow) -> None:
-        """TC-3（首版只有 serial）：同一 Run 另有 EXECUTING，或另有非 internal_read 的 UNKNOWN，一律擋。
+        """TC-3（D1b 修訂，Agent 架構提案 §6.5）：同一 Run 的 EXECUTING 集合（含即將進入的這一筆）要麼恰好一個
+        serial，要麼全部 parallel_safe；``parallel_one_shot`` 本期視同 serial。另有非 internal_read 的 UNKNOWN 一律擋。
 
-        呼叫端已鎖定 Run 列，同 Run 內不會競態；EXECUTING 另有 DB 部分唯一索引兜底，UNKNOWN 只在這裡擋。
+        併發安全依據（0012 移除部分唯一索引後，不變量只剩這裡在守）：本函式只在 ``execute_action`` 階段 1 呼叫，
+        該交易（單一 ``_tx``）以 ``_lock_action`` 先鎖 task 再鎖 run（``FOR UPDATE``），同 Run 的其他
+        ``execute_action`` 階段 1 在此序列化；檢查 EXECUTING 集合與其後 ``_set_action_status(EXECUTING)`` 都在同一個
+        交易、同一把 Run 鎖內，後到者在 READ COMMITTED 下鎖釋放後重新查詢就看得到先到者已提交的 EXECUTING。
         """
         other = s.execute(
             select(ActionIntentRow.action_id, ActionIntentRow.status).where(
                 ActionIntentRow.run_id == action.run_id,
                 ActionIntentRow.action_id != action.action_id,
-                (ActionIntentRow.status == ActionStatus.EXECUTING.value)
-                | (
-                    (ActionIntentRow.status == ActionStatus.UNKNOWN.value)
-                    & (ActionIntentRow.side_effect_class != "internal_read")
-                ),
+                ActionIntentRow.status == ActionStatus.UNKNOWN.value,
+                ActionIntentRow.side_effect_class != "internal_read",
             ).order_by(ActionIntentRow.created_at).limit(1)
         ).first()
+        if other is None:
+            executing = s.execute(
+                select(ActionIntentRow.action_id, ActionIntentRow.status, ActionIntentRow.concurrency).where(
+                    ActionIntentRow.run_id == action.run_id,
+                    ActionIntentRow.action_id != action.action_id,
+                    ActionIntentRow.status == ActionStatus.EXECUTING.value,
+                ).order_by(ActionIntentRow.created_at)
+            ).all()
+            if not executing_set_allowed(action.concurrency, [row.concurrency for row in executing]):
+                other = executing[0]
         if other is not None:
             raise ActionBlocked(
                 f"同一 Run 已有 {other.status} 的 action（{other.action_id}），不可再進入執行（TC-3）"

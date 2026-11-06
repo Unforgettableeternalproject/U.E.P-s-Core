@@ -9,7 +9,7 @@
 - 舊 epoch 的 ``transition_run`` 記 warning 後忽略、不拋例外。
 - 已有 receipt 的 action 重放不重做（``executed`` 為 False）。
 - ``save_checkpoint`` 接受 D1 擴充的鍵、拒絕契約外的鍵；JSONB 往返後 resume 仍可用。
-- ``TaskManager.supports_parallel_execution`` 為 False。
+- ``TaskManager.supports_parallel_execution`` 為 True（D1b）；並行的 DB 測試在 ``test_tc3_parallel_db.py``。
 """
 from __future__ import annotations
 
@@ -167,11 +167,10 @@ def test_db_checkpoint_keys_are_enforced(session_factory):
         rig.tm.save_checkpoint(rig.run.run_id, {"next_step_semantic": "這是 自由文字"}, worker_epoch=epoch)
 
 
-def test_db_task_manager_does_not_support_parallel_execution(session_factory):
-    assert TaskManager.supports_parallel_execution is False
+def test_db_task_manager_supports_parallel_execution(session_factory):
+    assert TaskManager.supports_parallel_execution is True
     rig = DbRig(session_factory, [], budget=LoopBudget(max_parallel=2))
-    with pytest.raises(ValueError, match="supports_parallel_execution"):
-        rig.loop()
+    rig.loop()  # D1b：不再拒絕 max_parallel > 1
 
 
 def test_db_budget_and_tags_sanity(session_factory):

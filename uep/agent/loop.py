@@ -15,8 +15,8 @@
   ``park_run``（釋放 worker）、否決路徑屬切片 E；``resume`` 在這裡只做「重建＋補齊缺的工具結果＋續跑」。
 - 不直接發話（AL-4）：最終文字放在 ``LoopOutcome.text``，由呼叫端經 Output Gate 交付；``deliver_result`` 回報是否已交付，
   merge-back 只在已交付時寫入 ``result``。
-- ``max_parallel`` 預設 1：TC-3 的 DB 強制（``_check_single_executing``＋部分唯一索引）要到 D1b 才放寬，真實 TaskManager 下
-  同波成員不能真的並行；``> 1`` 只能搭配不擋並行的 TaskManager 替身。分波、屏障、序列化語意與並行度無關。
+- ``max_parallel`` 預設 1（序列，行為與並行度無關的部分不變）。D1b 起真實 TaskManager 的 TC-3 放寬為同 Run 內
+  「全部 parallel_safe 或恰好一個 serial」，``> 1`` 時同波的 parallel_safe 成員可真的並行。分波、屏障、序列化語意與並行度無關。
 """
 from __future__ import annotations
 
@@ -211,8 +211,8 @@ class AgentLoop:
         self._budget = budget
         self._epoch = worker_epoch
         if budget.max_parallel > 1 and not getattr(tasks, "supports_parallel_execution", False):
-            # TC-3 的 DB 強制（_check_single_executing＋部分唯一索引）在 D1b 放寬前會擋並行；明示支援才允許
-            raise ValueError("max_parallel > 1 需要 tasks.supports_parallel_execution（D1b 之前真實 TaskManager 為 False）")
+            # 並行需要 tasks 端的 TC-3 放寬（D1b：_check_single_executing 的新規則）；明示支援才允許
+            raise ValueError("max_parallel > 1 需要 tasks.supports_parallel_execution（tasks 端須實作 TC-3 的 Run 內並行規則）")
         self._snapshots = snapshots
         self._clock = clock
         self._cancelled = cancelled

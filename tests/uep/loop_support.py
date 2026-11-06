@@ -6,8 +6,9 @@
   一律 ``ApprovalRequired``（沒有 approval_id 的執行路徑，核准後執行屬切片 E）；executor 例外 ⇒ action 持久化為 UNKNOWN，
   同 id 重放回 ``ActionBlocked``；有 UNKNOWN／EXECUTING 時 ``transition_run(SUCCEEDED)`` 拋 ``IllegalTransition``；
   舊 epoch 的 ``transition_run`` 記 warning 後忽略。
-  **fake 沒有**：``params_hash`` 驗證、``_check_single_executing``（TC-3，故 ``supports_parallel_execution=True``，真實為 False）、
-  presence／CC-7 檢查。
+  TC-3（D1b）：與真實 ``_check_single_executing`` 共用 ``executing_set_allowed``——同 Run 的 EXECUTING 集合要麼恰好一個
+  serial、要麼全部 parallel_safe（``parallel_one_shot`` 視同 serial），另有非 internal_read 的 UNKNOWN 時一律 ``ActionBlocked``。
+  **fake 沒有**：``params_hash`` 驗證、presence／CC-7 檢查、跨執行緒的 Run 鎖（以 ``self.lock`` 序列化檢查與登記）。
 - ``ScriptedRuntime``：依「回合腳本」產生 RuntimeEvent 的 Runtime（遵守 D61 A 路徑：送出整批 tool_intent 後暫停，
   等 submit_tool_result 到齊才續跑下一回合）。
 - ``make_registry``：含並行／序列／需核准工具的註冊表。
@@ -32,6 +33,7 @@ from uep.tasks.manager import (
     IllegalTransition,
     StaleWorkerEpoch,
     check_safe_value,
+    executing_set_allowed,
 )
 from uep.tasks.states import ActionStatus, RunStatus
 from uep.tools.projection import ProjectionContext
@@ -79,7 +81,7 @@ Behavior = Callable[[dict[str, Any]], str]  # 回傳結果文字；拋例外 ⇒
 
 
 class FakeTasks:
-    supports_parallel_execution = True  # fake 沒有 TC-3 的單一 EXECUTING 檢查；真實 TaskManager 為 False
+    supports_parallel_execution = True  # D1b 起真實 TaskManager 同為 True
 
     def __init__(self, registry: ToolRegistry, behaviors: Mapping[str, Behavior] | None = None) -> None:
         self.registry = registry
@@ -97,6 +99,7 @@ class FakeTasks:
         self.contents: dict[str, str] = {}
         self.executors: dict[str, Any] = {}  # tool -> 真正的 ToolExecutor（例如 decision.consult 的 executor）；沒設定就用 behaviors
         self.unknown: set[str] = set()  # executor 失聯而持久化為 UNKNOWN 的 action
+        self.executing: dict[str, str] = {}  # 進行中的 action_id -> concurrency（TC-3 守衛用）
         self.executions: list[tuple[str, str]] = []  # (action_id, tool)：真正執行副作用的紀錄
         self.fail_tools: set[str] = set()  # 這些工具的 action 以 FAILED 收尾（receipt succeeded=False）
 
@@ -161,6 +164,23 @@ class FakeTasks:
             tool = self.actions[action_id]["tool"]
             if self.registry.entry(tool).spec.approval_level != "none":
                 raise ApprovalRequired(action_id)  # 沒有 approval_id 的執行路徑（核准後執行屬切片 E）
+            blocked = next((
+                u for u in self.unknown
+                if u != action_id and self.registry.entry(self.actions[u]["tool"]).spec.side_effect_class != "internal_read"
+            ), None)
+            if blocked is not None:
+                raise ActionBlocked(f"同一 Run 已有 UNKNOWN 的 action（{blocked}），不可再進入執行（TC-3）")
+            concurrency = self.registry.entry(tool).concurrency
+            if not executing_set_allowed(concurrency, list(self.executing.values())):
+                raise ActionBlocked(f"同一 Run 已有 EXECUTING 的 action，不可再進入執行（TC-3，{concurrency}）")
+            self.executing[action_id] = concurrency
+        try:
+            return self._run_action(action_id, tool, params)
+        finally:
+            with self.lock:
+                self.executing.pop(action_id, None)
+
+    def _run_action(self, action_id: str, tool: str, params: Mapping[str, Any]) -> ActionOutcome:
         behavior = self.behaviors.get(tool, lambda args: f"{tool}:{args.get('path')}")
         try:
             if tool in self.executors:

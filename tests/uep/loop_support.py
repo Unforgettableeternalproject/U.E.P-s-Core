@@ -36,6 +36,8 @@ from uep.tasks.manager import (
     ApprovalInvalid,
     ApprovalRequired,
     IllegalTransition,
+    ParamsHashMismatch,
+    PresenceRequired,
     StaleWorkerEpoch,
     check_safe_value,
     executing_set_allowed,
@@ -109,6 +111,7 @@ class FakeTasks:
         self.versions: dict[str, int] = {}  # tool -> 目前註冊表版本（預設取註冊表條目的 tool_version）
         self.created_versions: dict[str, int] = {}  # action_id -> 建立時的 tool_version
         self.park_calls: list[tuple[str, int]] = []
+        self.presence_missing = False  # True ⇒ execute_action 拋可重試的 PresenceRequired（階段 1，核准未消耗）
         self.executing: dict[str, str] = {}  # 進行中的 action_id -> concurrency（TC-3 守衛用）
         self.executions: list[tuple[str, str]] = []  # (action_id, tool)：真正執行副作用的紀錄
         self.fail_tools: set[str] = set()  # 這些工具的 action 以 FAILED 收尾（receipt succeeded=False）
@@ -194,6 +197,8 @@ class FakeTasks:
     ) -> ActionOutcome:
         with self.lock:
             self._check(worker_epoch)
+            if dict(params) != self.actions[action_id]["params"]:  # 真實 Manager 以 params_hash 判定（此處簡化為參數相等）
+                raise ParamsHashMismatch("參數與 action 不符")
             if action_id in self.outcomes:
                 return self.outcomes[action_id]  # 冪等：已有 receipt 不重做
             if action_id in self.unknown:
@@ -201,6 +206,8 @@ class FakeTasks:
             tool = self.actions[action_id]["tool"]
             if self.created_versions[action_id] != self._version(tool):  # 真實 Manager：版本檢查早於 TC-3 與核准
                 raise ActionBlocked("tool_version_changed", code="tool_version_changed")
+            if self.presence_missing:
+                raise PresenceRequired("前景 action 需要有效 Presence", retryable=True)
             blocked = next((
                 u for u in self.unknown
                 if u != action_id and self.registry.entry(self.actions[u]["tool"]).spec.side_effect_class != "internal_read"

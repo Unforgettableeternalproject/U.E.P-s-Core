@@ -94,8 +94,8 @@ def test_without_park_run_resume_run_raises_active_worker(session_factory, monke
     monkeypatch.setattr(TaskManager, "park_run", lambda self, run_id, *, worker_epoch: self.get_run(run_id))
     rig = parked_rig(session_factory)
     assert rig.tm.get_run(rig.run.run_id).worker_heartbeat_at is not None
-    with pytest.raises(ActiveWorker):
-        rig.tm.resume_run(rig.run.run_id)
+    with pytest.raises(ActiveWorker):  # 明確傳大的 stale_after，不依賴預設值
+        rig.tm.resume_run(rig.run.run_id, stale_after=timedelta(hours=1))
 
 
 # ---- 全流程 ----
@@ -163,6 +163,24 @@ def test_approval_for_another_action_is_rejected(session_factory):
     assert rig.tm.get_run(rig.run.run_id).status == RunStatus.FAILED.value
 
 
+def test_approval_for_same_tool_but_different_params_is_rejected(session_factory):
+    """單獨鑑別 hash 綁定：target（工具名）、scope、核准者都對，只有 params 不同（同一個 post.ask）。"""
+    rig = parked_rig(session_factory)
+    action = post_action(rig)
+    sibling = rig.tm.create_action(
+        run_id=rig.run.run_id, step_id=action.step_id, tool="post.ask", params={"path": "不同的參數"},
+        worker_epoch=rig.run.worker_epoch,
+    )
+    assert sibling.tool == action.tool and sibling.params_hash != action.params_hash
+    wrong = approve_for(rig, sibling)
+    plan, checkpoint = takeover(rig)
+    out = resume(rig, new_loop(rig, epoch=plan.run.worker_epoch, rounds=[Round("不該到這裡")]), checkpoint,
+                 {action.action_id: wrong.approval_id})
+    assert (out.state, out.reason_code) == ("failed", "approval_invalid")
+    assert rig.tm.get_action(action.action_id).status == ActionStatus.INTENDED.value
+    assert approval_row(rig, wrong.approval_id).consumed_at is None and rig.executor.execution_count(action.action_id) == 0
+
+
 def test_unknown_approval_id_is_rejected(session_factory):
     rig = parked_rig(session_factory)
     action = post_action(rig)
@@ -184,7 +202,9 @@ def _registry_with_post_ask_v2(registry: ToolRegistry) -> ToolRegistry:
 
 @pytest.mark.parametrize("stale_projector", [False, True])
 def test_tool_version_change_is_rejected_and_approval_not_consumed(session_factory, stale_projector):
-    """stale_projector=False：預檢攔下（投影版本 ≠ 凍結版本）。True：投影仍是舊版、Manager 的 tool_version 檢查是最後一道防線。"""
+    """stale_projector=False：預檢攔下（投影版本 ≠ 凍結版本）。True：投影仍是舊版，實際攔下的是 Manager 的 create 層
+    （``create_action`` 對既有 action 的 ``_assert_same_action`` 版本檢查，``ActionBlocked(code=tool_version_changed)``）；
+    ``execute_action`` 內的同名檢查在 create 層之後，是更後面的防線。"""
     rig = parked_rig(session_factory)
     action = post_action(rig)
     approval = approve_for(rig, action)

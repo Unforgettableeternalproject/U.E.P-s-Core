@@ -18,7 +18,7 @@ from tests.uep.test_agent_loop import (
     trigger,
 )
 from uep.agent.budget import LoopBudget
-from uep.agent.core import stable_action_id
+from uep.agent.core import IntentRecord, IntentResult, stable_action_id
 from uep.tasks.states import RunStatus
 
 ACTION = stable_action_id(RUN, "step_1", 1)  # _park_rig 的 post.ask
@@ -157,8 +157,9 @@ def test_projection_version_change_fails_before_touching_approval():
     assert rig.tasks.approvals["appr_ok"].consumed_by is None and [t for _, t in rig.tasks.executions] == ["read.lone"]
 
 
-def test_manager_version_check_is_the_last_line_of_defense():
-    """預檢看不到（投影仍是舊版）、但註冊表在執行時已升版：Manager 回 tool_version_changed ⇒ FAILED，核准不消耗。"""
+def test_registry_bump_missed_by_precheck_is_caught_by_the_create_layer():
+    """預檢看不到（投影仍是舊版）、但註冊表已升版：實際攔下的是 create 層（fake 的 ``create_action`` 對應真實 Manager 的
+    ``_assert_same_action``），回 ``tool_version_changed`` ⇒ FAILED，核准不消耗。"""
     rig, checkpoint = _parked()
     rig.tasks.grant("appr_ok", ACTION)
     rig.tasks.bump_version("post.ask")
@@ -224,3 +225,95 @@ def test_narrowed_non_pending_tail_call_is_blocked_but_pending_still_executes():
     assert rig.tasks.approvals["appr_ok"].consumed_by == ACTION and rig.tasks.run_status == [RunStatus.SUCCEEDED]
     tools = [m for m in rig.child() if m.role == "tool"]
     assert tools[1].content == "post.ask:2" and tools[2].content == "tool blocked: tool_not_in_snapshot"
+
+
+# ---- S1：pending 項沒有真的執行 ⇒ 不續跑（不白喚醒模型），原因碼明確 ----
+
+def _assert_ended_without_waking_model(rig, out, reason):
+    assert (out.state, out.reason_code) == ("failed", reason)
+    assert rig.last_runtime.requests == []  # 沒有白花一次模型呼叫
+    assert rig.tasks.run_status == [RunStatus.FAILED] and rig.tasks.checkpoints[-1]["next_step_semantic"] == f"end:{reason}"
+
+
+def test_pending_unknown_result_ends_run_with_unresolved_actions():
+    def lost(args):
+        raise ConnectionError("失聯")
+
+    rig = _park_rig(behaviors={"post.ask": lost})
+    rig.run()
+    checkpoint = _park_checkpoint(rig)
+    rig.tasks.grant("appr_ok", ACTION)
+    out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
+    _assert_ended_without_waking_model(rig, out, "unresolved_actions")
+    assert ACTION in rig.tasks.unknown and rig.tasks.approvals["appr_ok"].consumed_by == ACTION  # 副作用可能已發生：交 resolve_unknown
+
+
+def test_pending_blocked_by_tc3_ends_run_with_unresolved_actions():
+    rig, checkpoint = _parked()
+    rig.tasks.grant("appr_ok", ACTION)
+    rig.tasks.actions["act_elsewhere"] = {"run_id": RUN, "step_id": "s", "tool": "write.s", "params": {}}
+    rig.tasks.unknown.add("act_elsewhere")  # Run 內另有非唯讀的 UNKNOWN ⇒ TC-3 擋下
+    out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
+    _assert_ended_without_waking_model(rig, out, "unresolved_actions")
+    assert rig.tasks.approvals["appr_ok"].consumed_by is None and ACTION not in rig.tasks.outcomes
+
+
+def test_pending_params_hash_mismatch_ends_run_with_checkpoint_incomplete():
+    rig, checkpoint = _parked()
+    rig.tasks.grant("appr_ok", ACTION)
+    rig.tasks.actions[ACTION]["params"] = {"path": "不同的參數"}  # 已建 action 的參數與 checkpoint 還原的呼叫不一致
+    out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
+    _assert_ended_without_waking_model(rig, out, "checkpoint_incomplete")
+    assert rig.tasks.approvals["appr_ok"].consumed_by is None
+
+
+def test_pending_presence_required_parks_again_without_consuming_approval():
+    rig, checkpoint = _parked()
+    rig.tasks.grant("appr_ok", ACTION)
+    rig.tasks.presence_missing = True
+    out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
+    assert (out.state, out.reason_code, out.pending_action_ids) == ("awaiting_approval", "approval_required", (ACTION,))
+    assert rig.last_runtime.requests == [] and rig.tasks.approvals["appr_ok"].consumed_by is None
+    assert [p[1] for p in rig.tasks.park_calls] == [1, 2]
+    rig.tasks.presence_missing = False  # Presence 恢復後可重試同一份核准
+    again = _resume(rig, _park_checkpoint(rig), {ACTION: "appr_ok"}, epoch=3)
+    assert again.state == "completed" and rig.tasks.approvals["appr_ok"].consumed_by == ACTION
+
+
+def test_pending_rejected_by_screening_ends_run_with_capability_revoked():
+    rig, checkpoint = _parked()
+    loop = _crash(rig, 2, rounds=[Round("不該到這裡")])
+    core = loop._core
+    loop._core.screen_intent = lambda **kw: IntentResult(
+        IntentRecord(kw["ordinal"], kw["tool"], None, "rejected", "schema_invalid"), core._gateway.result_view("rejected"),
+    )
+    out = loop.resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent", approvals={})
+    _assert_ended_without_waking_model(rig, out, "capability_revoked")
+
+
+@pytest.mark.parametrize(("status", "reason"), [
+    ("rejected", "capability_revoked"),  # 建立被拒（PolicyViolation）
+    ("blocked", "unresolved_actions"),  # 建立被擋（ActionBlocked，如 task 已終態）
+    ("failed", "unresolved_actions"),  # 建立時的基礎設施錯誤
+])
+def test_pending_not_created_ends_run(status, reason):
+    rig, checkpoint = _parked()
+    loop = _crash(rig, 2, rounds=[Round("不該到這裡")])
+    core = loop._core
+    loop._core.create_screened = lambda item: IntentResult(
+        IntentRecord(item.ordinal, item.tool, None, status, "x"), core._gateway.result_view(status),
+    )
+    out = loop.resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent", approvals={})
+    _assert_ended_without_waking_model(rig, out, reason)
+
+
+def test_pending_executed_but_failed_still_continues():
+    """已執行（有 receipt）但工具失敗：不是「沒執行」，照常把失敗結果回饋模型並續跑。"""
+    rig = _park_rig()
+    rig.run()
+    checkpoint = _park_checkpoint(rig)
+    rig.tasks.fail_tools.add("post.ask")
+    rig.tasks.grant("appr_ok", ACTION)
+    out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
+    assert out.state == "completed" and rig.last_runtime.requests != []
+    assert rig.tasks.approvals["appr_ok"].consumed_by == ACTION

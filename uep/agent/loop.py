@@ -938,7 +938,11 @@ class AgentLoop:
         blocked(tool_not_in_snapshot)，其餘 ⇒ blocked(deferred_by_approval_wait)。
         pending 項仍缺核准、或其 approval 已過期 ⇒ 再次 park（回 awaiting_approval，Run 維持 WAITING_APPROVAL）；
         approval 有其他問題（不存在、已消耗、hash／target／scope 不符…）⇒ ``FAILED(approval_invalid)``；執行時工具版本已變 ⇒
-        ``FAILED(tool_version_changed)``。重驗失敗一律結束 Run：WAITING_APPROVAL 不能轉 SUCCEEDED。"""
+        ``FAILED(tool_version_changed)``。重驗失敗一律結束 Run：WAITING_APPROVAL 不能轉 SUCCEEDED。
+
+        **pending 最多一個**：需核准的工具是屏障（§6.4），批次裡第一個 ``approval_required`` 之後的項目全部 deferred，
+        所以 ``pending`` 至多一個 action，pending 項的終局（再 park／結束 Run）不會漏掉其他 pending。pending 項的各種
+        結果與原因碼見 ``_resume_pending``／``_pending_stop``。"""
         assistant = next((m for m in reversed(st.transcript) if m.role == "assistant" and m.tool_calls), None)
         if assistant is None:
             return None
@@ -959,34 +963,80 @@ class AgentLoop:
             elif call["name"] not in allowed:
                 view = self._blocked(TOOL_NOT_IN_SNAPSHOT)
             elif action_id in pending:
-                screened = self._core.screen_intent(
-                    run_id=st.run_id, step_id=step_id, ordinal=ordinal, capability_set=st.cap, tool=call["name"], args=call["args"],
-                )
-                if isinstance(screened, IntentResult):
-                    view = screened.view
-                else:
-                    res = self._core.create_screened(screened) or self._core.execute_screened(
-                        screened, approval_id=(approvals or {}).get(action_id),
-                    )
-                    if res.block_code == TOOL_VERSION_CHANGED:
-                        return self._finish(st, "failed", LoopReason.TOOL_VERSION_CHANGED)
-                    if res.approval_code is not None and res.approval_code != "expired":
-                        logger.warning("resume：approval 無效（%s），Run 改轉 FAILED：action=%s", res.approval_code, action_id)
-                        return self._finish(st, "failed", LoopReason.APPROVAL_INVALID)
-                    if res.approval_required or res.approval_code == "expired":
-                        self._checkpoint(st, f"await_approval:{action_id}", [action_id])
-                        self._park(st)
-                        return LoopOutcome(
-                            "awaiting_approval", st.run_id, LoopReason.APPROVAL_REQUIRED, steps=st.counters.steps,
-                            tool_calls=st.counters.tool_calls, pending_action_ids=(action_id,),
-                        )
-                    st.counters.tool_calls += 1
-                    if res.view.get("status") == "unknown":
-                        st.unresolved = True
-                    if res.record.action_id:
-                        st.consumed.append(res.record.action_id)
-                    view = res.view
+                outcome = self._resume_pending(st, ordinal, call, action_id, step_id, approvals or {})
+                if isinstance(outcome, LoopOutcome):
+                    return outcome
+                view = outcome
             else:
                 view = self._blocked(DEFERRED_BY_APPROVAL_WAIT)
             st.transcript.append(ChatMessage("tool", result_text(view), tool_call_id=call["id"]))
         return None
+
+    def _resume_pending(
+        self, st: _State, ordinal: int, call: Mapping[str, Any], action_id: str, step_id: str, approvals: Mapping[str, str],
+    ) -> LoopOutcome | Mapping[str, Any]:
+        """resume 時處理一個 pending 項：已執行（成功或失敗，有 receipt）⇒ 回 tool 視圖讓迴圈續跑；其餘一律不續跑，回終局。
+
+        不變量：**pending 最多一個**。需核准的工具是屏障（§6.4）：批次裡第一個 ``approval_required`` 之後的項目全部 deferred，
+        所以 checkpoint 的 ``pending_approvals`` 只會有那一個 action；因此這裡的終局（再 park／結束 Run）不會漏掉其他 pending。
+
+        沒有真的執行的結果（screen 被拒、建立被拒、參數 hash 不符、Presence 不足、TC-3 被擋、UNKNOWN）若放行續跑，Run 仍是
+        WAITING_APPROVAL，白喚醒一次模型，最後還會被補成 ``unresolved_actions``；所以直接結束 Run（原因碼見 ``_pending_stop``），
+        可重試的 ``PresenceRequired`` 與缺／過期核准一樣再次 park。"""
+        screened = self._core.screen_intent(
+            run_id=st.run_id, step_id=step_id, ordinal=ordinal, capability_set=st.cap, tool=call["name"], args=call["args"],
+        )
+        if isinstance(screened, IntentResult):
+            res = screened
+        else:
+            res = self._core.create_screened(screened) or self._core.execute_screened(
+                screened, approval_id=approvals.get(action_id),
+            )
+        stop = self._pending_stop(res)
+        if stop is None:  # 已執行（成功或失敗）：沿用既有計數續跑
+            st.counters.tool_calls += 1
+            st.consumed.append(action_id)
+            return res.view
+        if stop == "repark":
+            self._checkpoint(st, f"await_approval:{action_id}", [action_id])
+            self._park(st)
+            return LoopOutcome(
+                "awaiting_approval", st.run_id, LoopReason.APPROVAL_REQUIRED, steps=st.counters.steps,
+                tool_calls=st.counters.tool_calls, pending_action_ids=(action_id,),
+            )
+        logger.warning(
+            "resume：pending 項沒有執行，Run 改轉 FAILED(%s)：action=%s status=%s reason=%s",
+            stop.value, action_id, res.view.get("status"), res.record.reason,
+        )
+        return self._finish(st, "failed", stop)
+
+    @staticmethod
+    def _pending_stop(res: IntentResult) -> LoopReason | Literal["repark"] | None:
+        """pending 項的結果 -> 下一步：None＝已執行（續跑）、``"repark"``＝再 park、``LoopReason``＝結束 Run 的原因碼。
+
+        | 結果 | 原因碼（現有代碼；括號內為建議改用的新代碼） |
+        |---|---|
+        | 缺 approval／approval 過期／Presence 不足（可重試） | 再 park（``approval_required``） |
+        | 其他 ApprovalInvalid | ``approval_invalid`` |
+        | 執行時工具版本已變 | ``tool_version_changed`` |
+        | screen／建立被拒（Gateway、PolicyViolation） | ``capability_revoked``（``intent_rejected``） |
+        | 參數 hash 不符 | ``checkpoint_incomplete``（``params_mismatch``） |
+        | TC-3／其他 ActionBlocked、建立時的基礎設施錯誤 | ``unresolved_actions``（``action_blocked``） |
+        | UNKNOWN（executor 例外、結果未明） | ``unresolved_actions`` |
+        """
+        if res.block_code == TOOL_VERSION_CHANGED:
+            return LoopReason.TOOL_VERSION_CHANGED
+        if res.approval_code is not None:
+            return "repark" if res.approval_code == "expired" else LoopReason.APPROVAL_INVALID
+        if res.approval_required or res.record.reason == "PresenceRequired":
+            return "repark"
+        status = res.view.get("status")
+        if res.record.action_id and status in ("ok", "failed"):
+            return None
+        if status == "unknown":
+            return LoopReason.UNRESOLVED_ACTIONS
+        if status == "rejected":
+            if res.record.reason == "params_hash_mismatch":
+                return LoopReason.CHECKPOINT_INCOMPLETE
+            return LoopReason.CAPABILITY_REVOKED
+        return LoopReason.UNRESOLVED_ACTIONS  # blocked（TC-3 等）或建立時的基礎設施錯誤

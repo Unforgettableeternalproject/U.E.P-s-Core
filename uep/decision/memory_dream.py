@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from itertools import count
-from typing import Any, Callable
+from typing import Any
 
 from uep.decision.contracts import (
     DecisionEngineInfo,

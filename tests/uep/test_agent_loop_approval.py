@@ -270,6 +270,7 @@ def test_pending_params_hash_mismatch_ends_run_with_checkpoint_incomplete():
 def test_pending_presence_required_parks_again_without_consuming_approval():
     rig, checkpoint = _parked()
     rig.tasks.grant("appr_ok", ACTION)
+    rig.tasks.presence_bound_tools.add("post.ask")
     rig.tasks.presence_missing = True
     out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
     assert (out.state, out.reason_code, out.pending_action_ids) == ("awaiting_approval", "approval_required", (ACTION,))
@@ -354,6 +355,7 @@ def test_non_retryable_presence_loss_is_an_executed_failure_not_a_repark():
     不能再 park（核准已用掉，永遠等不到下一份）；視為已執行且失敗，回 failed 視圖並續跑，不呼叫第二次 park_run。"""
     rig, checkpoint = _parked()
     rig.tasks.grant("appr_ok", ACTION)
+    rig.tasks.presence_bound_tools.add("post.ask")
     rig.tasks.presence_missing, rig.tasks.presence_retryable = True, False
     parks_before = len(rig.tasks.park_calls)
     out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
@@ -363,3 +365,12 @@ def test_non_retryable_presence_loss_is_an_executed_failure_not_a_repark():
     assert [t for _, t in rig.tasks.executions] == ["read.lone"]  # executor 沒被呼叫
     tools = [m for m in rig.child() if m.role == "tool"]
     assert "failed" in tools[1].content
+
+
+def test_presence_check_only_applies_to_presence_bound_tools():
+    """FakeTasks 與真實 Manager 一致：沒有宣告 presence_bound 的工具不受 Presence 不足影響。"""
+    rig, checkpoint = _parked()
+    rig.tasks.grant("appr_ok", ACTION)
+    rig.tasks.presence_missing = True  # post.ask 未登記為 presence_bound
+    out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
+    assert out.state == "completed" and rig.tasks.approvals["appr_ok"].consumed_by == ACTION

@@ -7,6 +7,8 @@ yield_hint 等完整政策留在 Core。讓位判定需要的頻道模式與門�
 
 Q-5：快照過期（``ttl_s``）在 coordinator 只讓 barge-in 與讓位退回保守；「不開新輸出」由 Output Gate 與
 sink 二次接納負責，不依賴快照時效。S3 預設 ``ttl_s=None``（不過期）。
+設了 ``ttl_s`` 時，由 Host 的 tick 路徑在「確認後」以 ``publish(cause="ttl_refresh")`` 刷新（見 ``EchoPipelineHost._refresh_policy_if_due``）；
+沒有 tick 或確認失敗就不刷新，快照自然過期。
 """
 from __future__ import annotations
 
@@ -37,6 +39,7 @@ CAUSE_PARTICIPANTS = "participants"
 CAUSE_CHANNEL_MODE = "channel_mode"
 CAUSE_PLATFORM = "platform"
 CAUSE_INITIAL = "initial"
+CAUSE_TTL_REFRESH = "ttl_refresh"  # Host tick 確認後的期限刷新；內容不變、只換版重新起算 issued_at
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +112,14 @@ class HostPolicySource:
     def version(self) -> int:
         return self._snapshot.version
 
+    @property
+    def ttl_s(self) -> float | None:
+        return self._ttl_s
+
+    def age_s(self, now: float | None = None) -> float:
+        """目前快照的年齡（秒）；與 ``is_stale`` 同用 ``time.perf_counter`` 時基，``now`` 可注入供測試。"""
+        return (time.perf_counter() if now is None else now) - self._core.issued_at
+
     def add_publish_listener(self, listener: PublishListener) -> None:
         """登記發布監聽者：快照換入且鎖釋放後呼叫（同步、在發布者的執行緒上），須輕量；例外一律吞掉並記 log。"""
         self._publish_listeners.append(listener)
@@ -129,9 +140,17 @@ class HostPolicySource:
             )
 
     def publish(
-        self, *, platform: str | None = None, channel_mode: ChannelMode | None = None
+        self, *, platform: str | None = None, channel_mode: ChannelMode | None = None, cause: str | None = None
     ) -> PolicySnapshot:
-        """推送新版快照（參與者變動、Presence 或頻道模式變化時）；兩份快照同版、issued_at 重新起算。"""
+        """推送新版快照（參與者變動、Presence 或頻道模式變化時）；兩份快照同版、issued_at 重新起算。
+
+        ``cause`` 只接受 ``"ttl_refresh"``（Host tick 確認後的期限刷新，不得同時帶 platform／channel_mode）；
+        None 時依參數自動判定。其他值一律 ValueError。
+        """
+        if cause is not None and cause != CAUSE_TTL_REFRESH:
+            raise ValueError(f"publish 的 cause 只接受 {CAUSE_TTL_REFRESH!r}：{cause!r}")
+        if cause is not None and (platform is not None or channel_mode is not None):
+            raise ValueError("ttl_refresh 不得同時帶 platform 或 channel_mode")
         with self._lock:
             old = self._snapshot
             old_mode = self._core.channel_mode
@@ -147,7 +166,9 @@ class HostPolicySource:
             else:
                 fresh = replace(old, version=version, issued_at=time.perf_counter())
             self._snapshot = fresh
-            if channel_mode is not None:
+            if cause is not None:
+                pass  # ttl_refresh：呼叫端明示
+            elif channel_mode is not None:
                 cause = CAUSE_CHANNEL_MODE
             elif platform is not None and platform != old.platform:
                 cause = CAUSE_PLATFORM

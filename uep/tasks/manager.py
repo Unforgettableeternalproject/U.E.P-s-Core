@@ -1148,12 +1148,22 @@ class TaskManager:
 
     def request_cancel(self, run_id: str, reason: CancelReason | str) -> bool:
         """設定 Run 的取消旗標（SV-2）。冪等：已設過就不覆寫（回 False）；不檢查 worker_epoch（Supervisor 不是 worker）；
-        終態 Run 不動作（回 False）。新設定成功回 True。只寫旗標，不轉移任何狀態。"""
+        終態 Run 不動作（回 False）。新設定成功回 True。只寫旗標，不轉移任何狀態。
+
+        **升級**：現有旗標是 ``step_timeout``（只取消卡住的 Step，Run 不失敗）、新的原因是 deadline 類
+        （``run_deadline``／``task_deadline``）時，允許覆寫成 deadline 類並更新 ``cancel_requested_at``（grace 從升級時起算），
+        回 True；否則 ``step_timeout`` 旗標會把 deadline 永遠擋掉。已是 deadline 類的旗標不會被任何原因覆寫。"""
         cancel = CancelReason(reason)  # 不合法的原因碼拋 ValueError
         with self._tx() as (s, _pending):
             _task, run = self._lock_run(s, run_id)
-            if RunStatus(run.status) in TERMINAL_STATUSES or run.cancel_requested_at is not None:
+            if RunStatus(run.status) in TERMINAL_STATUSES:
                 return False
+            if run.cancel_requested_at is not None:
+                upgrade = run.cancel_reason == CancelReason.STEP_TIMEOUT.value and cancel in (
+                    CancelReason.RUN_DEADLINE, CancelReason.TASK_DEADLINE,
+                )
+                if not upgrade:
+                    return False
             run.cancel_requested_at = self._clock()
             run.cancel_reason = cancel.value
             self._bump(run)

@@ -119,13 +119,16 @@ class Supervisor:
     def _handle_deadline(self, run: RunRow, now: datetime, stats: SupervisorStats) -> bool:
         """設旗標，必要時 force；回傳是否已 force（Run 已終態，不再處理核准過期）。"""
         requested_at, reason = run.cancel_requested_at, run.cancel_reason
-        if requested_at is None:
+        if requested_at is None or reason == CancelReason.STEP_TIMEOUT.value:
+            # 沒有旗標，或旗標只是 step_timeout（不使 Run 失敗）：deadline 到期時設／升級成 deadline 類旗標，
+            # 否則 step_timeout 會把 deadline 永遠擋掉（request_cancel 允許 step_timeout -> deadline 類的升級）
             due_reason = self._deadline_reason(run, now)
-            if due_reason is None:
+            if due_reason is not None:
+                if self._tasks.request_cancel(run.run_id, due_reason):
+                    stats.cancel_requested += 1
+                requested_at, reason = now, due_reason.value  # 剛設／升級（或別人剛設）：以本輪時間起算 grace，不會在同一輪因 grace 而 force
+            elif requested_at is None:
                 return False
-            if self._tasks.request_cancel(run.run_id, due_reason):
-                stats.cancel_requested += 1
-            requested_at, reason = now, due_reason.value  # 剛設（或別人剛設）：以本輪時間起算 grace，不會在同一輪因 grace 而 force
         if reason not in _DEADLINE_REASONS:
             return False  # step_timeout 只取消 Step，Run 不因此失敗（Step 取消屬 F-4）
         beat = run.worker_heartbeat_at
@@ -140,6 +143,10 @@ class Supervisor:
             # force 輸給 worker：只有 Run 現在是 FAILED／CANCELLED 才收尾 Task；SUCCEEDED 不動；其他狀態是真的失敗，上拋計數
             current = self._tasks.get_run(run.run_id)
             if current.status not in _FAILED_LIKE and current.status != RunStatus.SUCCEEDED.value:
+                logger.warning(
+                    "force 遇到非法轉移，Run 現況：run=%s status=%s worker_epoch=%s cancel_reason=%s",
+                    run.run_id, current.status, getattr(current, "worker_epoch", None), getattr(current, "cancel_reason", None),
+                )
                 raise
             logger.debug("Run 已在別處轉成終態 %s，略過 force：%s", current.status, run.run_id)
             if current.status in _FAILED_LIKE:

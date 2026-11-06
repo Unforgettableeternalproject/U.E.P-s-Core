@@ -252,7 +252,7 @@ def test_waiting_approval_run_cannot_succeed_only_fail(session_factory):
 
 def test_crash_after_approval_consumed_does_not_repeat_the_side_effect(session_factory):
     """階段 1（消耗核准、action 轉 EXECUTING）已提交、executor 尚未呼叫就崩潰：新 worker 接手時 EXECUTING 轉 UNKNOWN，
-    resume 不重做（UNKNOWN 禁止盲目重試），Run 因未決 action 結束為 FAILED(unresolved_actions)（或交 resolve_unknown 查核）。"""
+    resume 不重做（UNKNOWN 禁止盲目重試，Manager 回 ActionBlocked），pending 項沒有執行 ⇒ Run 直接 FAILED(action_blocked)，由 resolve_unknown 查核。"""
     crash = CrashInjector()
     rig = DbRig(session_factory, list(PARK_ROUNDS), budget=LoopBudget(repeat_limit=99))
     rig.tm = make_tm(session_factory, rig.executor, crash=crash, tool_resolver=rig.registry)
@@ -271,7 +271,7 @@ def test_crash_after_approval_consumed_does_not_repeat_the_side_effect(session_f
     plan2 = rig.tm.resume_run(rig.run.run_id, stale_after=timedelta(0))  # 再換一個 worker
     assert plan2.unknown_action_ids == [action.action_id]
     out = resume(rig, new_loop(rig, epoch=plan2.run.worker_epoch), plan2.checkpoint or {}, {action.action_id: approval.approval_id})
-    assert (out.state, out.reason_code) == ("failed", "unresolved_actions")
+    assert (out.state, out.reason_code) == ("failed", "action_blocked")
     assert rig.executor.execution_count(action.action_id) == 0  # 沒有因為重放而執行
     assert rig.tm.get_action(action.action_id).status == ActionStatus.UNKNOWN.value
 

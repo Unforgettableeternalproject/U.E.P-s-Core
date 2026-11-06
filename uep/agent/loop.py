@@ -1014,14 +1014,14 @@ class AgentLoop:
     def _pending_stop(res: IntentResult) -> LoopReason | Literal["repark"] | None:
         """pending 項的結果 -> 下一步：None＝已執行（續跑）、``"repark"``＝再 park、``LoopReason``＝結束 Run 的原因碼。
 
-        | 結果 | 原因碼（現有代碼；括號內為建議改用的新代碼） |
+        | 結果 | 原因碼 |
         |---|---|
         | 缺 approval／approval 過期／Presence 不足（可重試） | 再 park（``approval_required``） |
         | 其他 ApprovalInvalid | ``approval_invalid`` |
         | 執行時工具版本已變 | ``tool_version_changed`` |
-        | screen／建立被拒（Gateway、PolicyViolation） | ``capability_revoked``（``intent_rejected``） |
-        | 參數 hash 不符 | ``checkpoint_incomplete``（``params_mismatch``） |
-        | TC-3／其他 ActionBlocked、建立時的基礎設施錯誤 | ``unresolved_actions``（``action_blocked``） |
+        | screen／建立被拒（Gateway、PolicyViolation） | ``intent_rejected`` |
+        | 參數 hash 不符 | ``params_mismatch`` |
+        | TC-3／其他 ActionBlocked、建立時的基礎設施錯誤 | ``action_blocked`` |
         | UNKNOWN（executor 例外、結果未明） | ``unresolved_actions`` |
         """
         if res.block_code == TOOL_VERSION_CHANGED:
@@ -1037,6 +1037,6 @@ class AgentLoop:
             return LoopReason.UNRESOLVED_ACTIONS
         if status == "rejected":
             if res.record.reason == "params_hash_mismatch":
-                return LoopReason.CHECKPOINT_INCOMPLETE
-            return LoopReason.CAPABILITY_REVOKED
-        return LoopReason.UNRESOLVED_ACTIONS  # blocked（TC-3 等）或建立時的基礎設施錯誤
+                return LoopReason.PARAMS_MISMATCH
+            return LoopReason.INTENT_REJECTED
+        return LoopReason.ACTION_BLOCKED  # blocked（TC-3 等）或建立時的基礎設施錯誤

@@ -254,7 +254,7 @@ def test_pending_blocked_by_tc3_ends_run_with_unresolved_actions():
     rig.tasks.actions["act_elsewhere"] = {"run_id": RUN, "step_id": "s", "tool": "write.s", "params": {}}
     rig.tasks.unknown.add("act_elsewhere")  # Run 內另有非唯讀的 UNKNOWN ⇒ TC-3 擋下
     out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
-    _assert_ended_without_waking_model(rig, out, "unresolved_actions")
+    _assert_ended_without_waking_model(rig, out, "action_blocked")
     assert rig.tasks.approvals["appr_ok"].consumed_by is None and ACTION not in rig.tasks.outcomes
 
 
@@ -263,7 +263,7 @@ def test_pending_params_hash_mismatch_ends_run_with_checkpoint_incomplete():
     rig.tasks.grant("appr_ok", ACTION)
     rig.tasks.actions[ACTION]["params"] = {"path": "不同的參數"}  # 已建 action 的參數與 checkpoint 還原的呼叫不一致
     out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
-    _assert_ended_without_waking_model(rig, out, "checkpoint_incomplete")
+    _assert_ended_without_waking_model(rig, out, "params_mismatch")
     assert rig.tasks.approvals["appr_ok"].consumed_by is None
 
 
@@ -280,7 +280,7 @@ def test_pending_presence_required_parks_again_without_consuming_approval():
     assert again.state == "completed" and rig.tasks.approvals["appr_ok"].consumed_by == ACTION
 
 
-def test_pending_rejected_by_screening_ends_run_with_capability_revoked():
+def test_pending_rejected_by_screening_ends_run_with_intent_rejected():
     rig, checkpoint = _parked()
     loop = _crash(rig, 2, rounds=[Round("不該到這裡")])
     core = loop._core
@@ -288,13 +288,13 @@ def test_pending_rejected_by_screening_ends_run_with_capability_revoked():
         IntentRecord(kw["ordinal"], kw["tool"], None, "rejected", "schema_invalid"), core._gateway.result_view("rejected"),
     )
     out = loop.resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent", approvals={})
-    _assert_ended_without_waking_model(rig, out, "capability_revoked")
+    _assert_ended_without_waking_model(rig, out, "intent_rejected")
 
 
 @pytest.mark.parametrize(("status", "reason"), [
-    ("rejected", "capability_revoked"),  # 建立被拒（PolicyViolation）
-    ("blocked", "unresolved_actions"),  # 建立被擋（ActionBlocked，如 task 已終態）
-    ("failed", "unresolved_actions"),  # 建立時的基礎設施錯誤
+    ("rejected", "intent_rejected"),  # 建立被拒（PolicyViolation）
+    ("blocked", "action_blocked"),  # 建立被擋（ActionBlocked，如 task 已終態）
+    ("failed", "action_blocked"),  # 建立時的基礎設施錯誤
 ])
 def test_pending_not_created_ends_run(status, reason):
     rig, checkpoint = _parked()
@@ -317,3 +317,32 @@ def test_pending_executed_but_failed_still_continues():
     out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
     assert out.state == "completed" and rig.last_runtime.requests != []
     assert rig.tasks.approvals["appr_ok"].consumed_by == ACTION
+
+
+# ---- _pending_stop 對照表：每一條路徑都有斷言 ----
+
+def _res(status, *, reason=None, action_id="act_1", **extra):
+    return IntentResult(IntentRecord(0, "post.ask", action_id, status, reason), {"status": status}, **extra)
+
+
+@pytest.mark.parametrize(("res", "expected"), [
+    (_res("blocked", reason="ActionBlocked", block_code="tool_version_changed"), "tool_version_changed"),
+    (_res("blocked", reason="ApprovalInvalid", approval_code="not_found"), "approval_invalid"),
+    (_res("blocked", reason="ApprovalInvalid", approval_code="consumed"), "approval_invalid"),
+    (_res("blocked", reason="ApprovalInvalid", approval_code="expired"), "repark"),
+    (_res("blocked", reason="ApprovalRequired", approval_required=True), "repark"),
+    (_res("blocked", reason="PresenceRequired"), "repark"),
+    (_res("ok"), None),
+    (_res("failed"), None),  # 已執行但工具失敗
+    (_res("unknown", reason="ConnectionError"), "unresolved_actions"),
+    (_res("rejected", reason="params_hash_mismatch"), "params_mismatch"),
+    (_res("rejected", reason="schema_invalid", action_id=None), "intent_rejected"),
+    (_res("rejected", reason="tool_unknown", action_id=None), "intent_rejected"),
+    (_res("blocked", reason="ActionBlocked"), "action_blocked"),
+    (_res("blocked", reason="action_blocked", action_id=None), "action_blocked"),
+    (_res("failed", reason="OperationalError", action_id=None), "action_blocked"),
+])
+def test_pending_stop_maps_every_outcome_to_one_code(res, expected):
+    from uep.agent.loop import AgentLoop
+
+    assert AgentLoop._pending_stop(res) == expected

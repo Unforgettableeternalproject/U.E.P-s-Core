@@ -81,6 +81,8 @@ class DecisionHub:
     def _dispatch(self, kind: str, spec: DecisionPointSpec, request: DecisionRequest) -> DecisionResult:
         started = time.perf_counter()
         result = self._engines[kind].decide(request)
+        if result.plan is not None and result.plan.policy is not None and "policy" not in spec.plan_sections:
+            raise ValueError(f"決策點 {kind} 不得帶 policy 區段（plan_sections 未宣告）")
         if self._observers:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             for observer in tuple(self._observers):

@@ -3,11 +3,15 @@
 - ``FakeTasks``：in-memory 的 TaskManager 子集（begin_step／complete_step／save_checkpoint／heartbeat／transition_run／
   create_action／execute_action）。對齊真實 TaskManager 的守衛（各自有 DB 測試對照，見 ``test_agent_loop_db.py``）：
   ``save_checkpoint`` 套用真實的 ``CHECKPOINT_KEYS`` 與 ``check_safe_value``；execute_action 以 action_id 冪等；需核准的工具
-  一律 ``ApprovalRequired``（沒有 approval_id 的執行路徑，核准後執行屬切片 E）；executor 例外 ⇒ action 持久化為 UNKNOWN，
+  沒有 approval_id 一律 ``ApprovalRequired``；帶 approval_id 時依 ``grant`` 登記的核准判定（見下）；executor 例外 ⇒ action 持久化為 UNKNOWN，
   同 id 重放回 ``ActionBlocked``；有 UNKNOWN／EXECUTING 時 ``transition_run(SUCCEEDED)`` 拋 ``IllegalTransition``；
   舊 epoch 的 ``transition_run`` 記 warning 後忽略。
   TC-3（D1b）：與真實 ``_check_single_executing`` 共用 ``executing_set_allowed``——同 Run 的 EXECUTING 集合要麼恰好一個
   serial、要麼全部 parallel_safe（``parallel_one_shot`` 視同 serial），另有非 internal_read 的 UNKNOWN 時一律 ``ActionBlocked``。
+  切片 E1：``grant(approval_id, action_id, state=...)`` 登記核准（``valid``／``consumed``／``expired``／``hash_mismatch``／
+  ``unauthorized_approver``…；沒登記的 id 即 ``not_found``；綁定的 action 與執行的不同 ⇒ ``hash_mismatch``），不合格拋
+  ``ApprovalInvalid(code)`` 且不消耗；合格則單次消耗（``consumed_by``）。``bump_version(tool)`` 模擬註冊表升版 ⇒
+  ``ActionBlocked(code=tool_version_changed)``。``park_run`` 記錄呼叫（舊 epoch 只記 warning）。fake 不建立任何核准（TG-7）。
   **fake 沒有**：``params_hash`` 驗證、presence／CC-7 檢查、跨執行緒的 Run 鎖（以 ``self.lock`` 序列化檢查與登記）。
 - ``ScriptedRuntime``：依「回合腳本」產生 RuntimeEvent 的 Runtime（遵守 D61 A 路徑：送出整批 tool_intent 後暫停，
   等 submit_tool_result 到齊才續跑下一回合）。
@@ -29,6 +33,7 @@ from uep.tasks.manager import (
     CHECKPOINT_KEYS,
     ActionBlocked,
     ActionOutcome,
+    ApprovalInvalid,
     ApprovalRequired,
     IllegalTransition,
     StaleWorkerEpoch,
@@ -100,6 +105,10 @@ class FakeTasks:
         self.executors: dict[str, Any] = {}  # tool -> 真正的 ToolExecutor（例如 decision.consult 的 executor）；沒設定就用 behaviors
         self.unknown: set[str] = set()  # executor 失聯而持久化為 UNKNOWN 的 action
         self.waiting_approval = False  # 真實 Run 在 ApprovalRequired 後為 WAITING_APPROVAL；有 action 成功進入執行才回 RUNNING
+        self.approvals: dict[str, FakeApproval] = {}  # approval_id -> 核准（只能由測試 grant，fake 不自建）
+        self.versions: dict[str, int] = {}  # tool -> 目前註冊表版本（預設取註冊表條目的 tool_version）
+        self.created_versions: dict[str, int] = {}  # action_id -> 建立時的 tool_version
+        self.park_calls: list[tuple[str, int]] = []
         self.executing: dict[str, str] = {}  # 進行中的 action_id -> concurrency（TC-3 守衛用）
         self.executions: list[tuple[str, str]] = []  # (action_id, tool)：真正執行副作用的紀錄
         self.fail_tools: set[str] = set()  # 這些工具的 action 以 FAILED 收尾（receipt succeeded=False）
@@ -151,13 +160,38 @@ class FakeTasks:
             self.run_status.append(to)
             self.log.append(f"transition:{to.value}")
 
+    def _version(self, tool: str) -> int:
+        return self.versions.get(tool, self.registry.entry(tool).spec.tool_version)
+
+    def bump_version(self, tool: str) -> None:
+        """模擬註冊表升版：既有 action 之後的 create／execute 都回 ``ActionBlocked(code=tool_version_changed)``。"""
+        self.versions[tool] = self._version(tool) + 1
+
+    def grant(self, approval_id: str, action_id: str, *, state: str = "valid") -> FakeApproval:
+        """登記一筆核准（模擬 Approval 通道已產生）；``state`` 非 valid 時模擬對應的不合格原因。"""
+        self.approvals[approval_id] = FakeApproval(action_id, state)
+        return self.approvals[approval_id]
+
+    def park_run(self, run_id: str, *, worker_epoch: int):
+        with self.lock:
+            self.park_calls.append((run_id, worker_epoch))
+            self.log.append("park")
+            if worker_epoch != self.epoch:
+                logger.warning("忽略舊 worker_epoch 的 park")
+            return SimpleNamespace(run_id=run_id, worker_epoch=self.epoch)
+
     def create_action(self, *, run_id, step_id, tool, params, worker_epoch, presence_bound=None, action_id=None):
         with self.lock:
             self._check(worker_epoch)
             assert action_id
+            if action_id in self.actions and self.created_versions[action_id] != self._version(tool):
+                raise ActionBlocked("tool_version_changed", code="tool_version_changed")
+            self.created_versions.setdefault(action_id, self._version(tool))
             self.actions.setdefault(action_id, {"run_id": run_id, "step_id": step_id, "tool": tool, "params": dict(params)})
 
-    def execute_action(self, action_id: str, params: Mapping[str, Any], *, worker_epoch: int) -> ActionOutcome:
+    def execute_action(
+        self, action_id: str, params: Mapping[str, Any], *, worker_epoch: int, approval_id: str | None = None,
+    ) -> ActionOutcome:
         with self.lock:
             self._check(worker_epoch)
             if action_id in self.outcomes:
@@ -165,6 +199,8 @@ class FakeTasks:
             if action_id in self.unknown:
                 raise ActionBlocked(f"action {action_id} 結果未明（UNKNOWN），不可重做")
             tool = self.actions[action_id]["tool"]
+            if self.created_versions[action_id] != self._version(tool):  # 真實 Manager：版本檢查早於 TC-3 與核准
+                raise ActionBlocked("tool_version_changed", code="tool_version_changed")
             blocked = next((
                 u for u in self.unknown
                 if u != action_id and self.registry.entry(self.actions[u]["tool"]).spec.side_effect_class != "internal_read"
@@ -176,8 +212,17 @@ class FakeTasks:
                 raise ActionBlocked(f"同一 Run 已有 EXECUTING 的 action，不可再進入執行（TC-3，{concurrency}）")
             # 與真實 Manager 同序：先 TC-3 檢查，再判斷核准（被 TC-3 擋下時核准不被消耗）
             if self.registry.entry(tool).spec.approval_level != "none":
-                self.waiting_approval = True
-                raise ApprovalRequired(action_id)  # 沒有 approval_id 的執行路徑（核准後執行屬切片 E）
+                self.waiting_approval = True  # 缺核准或核准不合格：Run 都進 WAITING_APPROVAL（真實 _to_waiting_approval）
+                if approval_id is None:
+                    raise ApprovalRequired(action_id)
+                approval = self.approvals.get(approval_id)
+                if approval is None:
+                    raise ApprovalInvalid("not_found")
+                if approval.state != "valid":
+                    raise ApprovalInvalid(approval.state)
+                if approval.action_id != action_id:
+                    raise ApprovalInvalid("hash_mismatch")  # 核准綁 params_hash：對錯 action
+                approval.state, approval.consumed_by = "consumed", action_id  # 單次消耗
             self.waiting_approval = False  # 真實 Manager：進入執行時 _back_to_running
             self.executing[action_id] = concurrency
         try:
@@ -213,6 +258,15 @@ class FakeTasks:
             )
             self.outcomes[action_id] = outcome
             return outcome
+
+
+@dataclass
+class FakeApproval:
+    """FakeTasks 的一筆核准：綁定的 action、狀態（valid／consumed／expired／hash_mismatch…）與消耗者。"""
+
+    action_id: str
+    state: str = "valid"
+    consumed_by: str | None = None
 
 
 @dataclass

@@ -134,7 +134,13 @@ class ParamsHashMismatch(TaskError):
 
 
 class ActionBlocked(TaskError):
-    """action 目前不可執行（UNKNOWN 待查核、EXECUTING 進行中、Run 非執行中、找不到 executor）。"""
+    """action 目前不可執行（UNKNOWN 待查核、EXECUTING 進行中、Run 非執行中、找不到 executor）。
+
+    需要機器可判讀的原因時帶 ``code``（目前只有 ``tool_version_changed``），比照 ``PolicyViolation``；多數情況為 None。"""
+
+    def __init__(self, message: str = "", *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class PresenceRequired(TaskError):
@@ -935,6 +941,28 @@ class TaskManager:
             self._set_run_status(s, pending, task, run, to, pause_reason)
             return run
 
+    def park_run(self, run_id: str, *, worker_epoch: int) -> RunRow:
+        """worker 等核准而 park 後釋放 Run：清掉 ``worker_heartbeat_at``，讓 ``resume_run`` 不必等心跳過期就能接手。
+
+        與 ``resume_run`` 的接手條件配對：``resume_run`` 只在心跳為 None 或已超過 ``stale_after`` 時允許接手，
+        心跳為 None 即可立即接手（不帶 ``stale_after`` 也不拋 ``ActiveWorker``）。park 前 worker 一直在送心跳，
+        沒有這一步，核准一到仍要空等 ``stale_after``。
+
+        不改 Run 狀態（WAITING_APPROVAL 由 ``execute_action`` 在缺核准時已設好）、不發 journal 事件。舊 ``worker_epoch``
+        照 ``transition_run`` 的慣例只記 warning、回傳 Run；Run 不是 WAITING_APPROVAL 時不動作、記 warning。
+        """
+        with self._tx() as (s, _pending):
+            _task, run = self._lock_run(s, run_id)
+            if worker_epoch != run.worker_epoch:
+                logger.warning("忽略舊 worker_epoch 的 park：run=%s epoch=%s", run_id, worker_epoch)
+                return run
+            if run.status != RunStatus.WAITING_APPROVAL.value:
+                logger.warning("Run 不是 WAITING_APPROVAL，不 park：run=%s status=%s", run_id, run.status)
+                return run
+            run.worker_heartbeat_at = None
+            self._bump(run)
+            return run
+
     def force_transition_run(
         self, run_id: str, to: RunStatus, *, reason: str, expected_version: int | None = None,
         pause_reason: PauseReason | None = None,
@@ -1132,7 +1160,7 @@ class TaskManager:
         if existing.run_id != run_id or existing.tool != tool or existing.side_effect_class != spec.side_effect_class:
             raise PolicyViolation("同 action_id 已屬於不同的 run／tool／side_effect_class，須建立新 action")
         if existing.tool_version != spec.tool_version:
-            raise ActionBlocked(f"{TOOL_VERSION_CHANGED}：{existing.tool} 已升版，須建立新 action")
+            raise ActionBlocked(f"{TOOL_VERSION_CHANGED}：{existing.tool} 已升版，須建立新 action", code=TOOL_VERSION_CHANGED)
         if existing.params_hash != digest:
             raise ParamsHashMismatch("同 action_id 的參數已變更，須建立新 action")
         if tightened and not existing.presence_bound:
@@ -1369,7 +1397,7 @@ class TaskManager:
                 raise ActionBlocked(f"run 狀態為 {run.status}，不可執行 action")
             if self._tool_resolver.resolve(action.tool).tool_version != action.tool_version:
                 # 註冊表升版後 fail-closed：須以新 action 與新 approval 重來，不自動沿用舊版
-                raise ActionBlocked(f"{TOOL_VERSION_CHANGED}：{action.tool} 已升版，須建立新 action")
+                raise ActionBlocked(f"{TOOL_VERSION_CHANGED}：{action.tool} 已升版，須建立新 action", code=TOOL_VERSION_CHANGED)
             executor = self._executors.get(action.executor)
             if executor is None:
                 raise ActionBlocked(f"找不到 executor：{action.executor}")

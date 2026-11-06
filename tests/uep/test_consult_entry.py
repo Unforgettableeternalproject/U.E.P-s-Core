@@ -57,3 +57,10 @@ def test_gateway_injects_and_rejects_model_supplied_injected_fields_and_placemen
         with pytest.raises(GatewayRejected) as exc:
             gateway.check_intent(CONSULT_TOOL, bad, cap, injected=INJECTED)
         assert exc.value.code == "invalid_tool_args"
+
+
+def test_llm_schema_has_no_placement_injected_fields():
+    # placement 目前不投出給模型，current_platform／available_executors 自然不在 LLM 面 schema 內。
+    # 若日後 placement 投出，這兩個欄位須進 INJECTED_CONSULT 才會被扣掉（catalog 屬工具層，這裡不改也不斷言）。
+    props = consult_input_schema()["properties"]
+    assert "current_platform" not in props and "available_executors" not in props

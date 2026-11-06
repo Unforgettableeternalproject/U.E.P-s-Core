@@ -78,10 +78,21 @@ def test_scope_is_frozen_intersect_snapshot_for_modalities(hub):
     assert ex.results.get("act_2")["advice"]["output"]["modalities"] == ["text"]
 
 
-def test_placement_always_escalates(hub):
+def test_placement_follows_q26_same_platform_rule(hub):
+    # Q26：同平台只換 executor 放行；跨平台 escalate；缺提議值 -> invalid（advice=∅＋保守預設）。
+    # current_platform／available_executors 屬注入值；placement 目前不在 LLM 面 schema（NOT_OFFERED），模型無法帶入
     ex = ConsultToolExecutor(hub)
     ex.execute(call(params("placement")))
-    assert ex.results.get("act_1")["escalate"]["needed"] is True
+    out = ex.results.get("act_1")
+    assert out["advice"] is None and out["escalate"]["needed"] is False and out["default"] == FAILSAFE_DEFAULTS["placement"]
+    same = {"target_platform": "desktop", "executor_ref": "exec.desktop", "current_platform": "desktop",
+            "available_executors": ["exec.desktop"]}
+    ex.execute(call(params("placement", ordinal=1, **same), "act_2"))
+    out = ex.results.get("act_2")
+    assert out["escalate"]["needed"] is False and out["advice"]["placement"]["executor_ref"] == "exec.desktop"
+    ex.execute(call(params("placement", ordinal=2, **{**same, "target_platform": "phone"}), "act_3"))
+    out = ex.results.get("act_3")
+    assert out["escalate"] == {"needed": True, "reason_code": "placement_review"} and out["advice"] is None
 
 
 class _Boom:

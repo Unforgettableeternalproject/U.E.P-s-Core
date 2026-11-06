@@ -87,9 +87,60 @@ def test_none_advice_passes() -> None:
     assert advice_in_scope("output_modality", None, {}, {}) is None  # 沒有建議就沒有越權（連缺鍵也通過）
 
 
-def test_placement_and_unknown_always_escalate() -> None:
-    assert advice_in_scope("placement", {"placement": {}}, _F, _F) == "scope_exceeded"
+def test_unknown_always_escalates() -> None:
     assert advice_in_scope("bogus", {"reply": {}}, _F, _F) == "scope_exceeded"
+
+
+_PF = {"capability_tags": {CONSULT_TAG}, "platforms": {"pc", "phone"}}
+_PS = {"capability_tags": {CONSULT_TAG}, "platforms": {"pc"}, "current_platform": "pc", "executors": {"exec.a", "exec.b"}}
+_PLACEMENT = {"target_platform": "pc", "executor_ref": "exec.a", "presence_intent": "stay"}
+
+
+def _placement(**over: Any) -> dict[str, Any]:
+    return {"placement": {**_PLACEMENT, **over}}
+
+
+def test_placement_same_platform_executor_passes() -> None:
+    assert advice_in_scope("placement", _placement(), _PF, _PS) is None
+    assert advice_in_scope("placement", _placement(presence_intent="none"), _PF, _PS) is None
+    placement = {k: v for k, v in _PLACEMENT.items() if k != "presence_intent"}  # 缺省視為 none
+    assert advice_in_scope("placement", {"placement": placement}, _PF, _PS) is None
+    assert advice_in_scope("placement", _placement(audience_scope_max=None), _PF, {**_PS, "executors": ["exec.a"]}) is None
+
+
+@pytest.mark.parametrize("over", [
+    {"target_platform": "phone"},  # 跨平台（不等於 current_platform）
+    {"target_platform": "tv"},
+    {"target_platform": None}, {"target_platform": 1},
+    {"executor_ref": "exec.zzz"}, {"executor_ref": ""}, {"executor_ref": None}, {"executor_ref": "Bad Ref"},
+    {"presence_intent": "request_move"}, {"presence_intent": "x"},
+    {"audience_scope_max": "public"},
+])
+def test_placement_out_of_scope_values_escalate(over: dict[str, Any]) -> None:
+    assert advice_in_scope("placement", _placement(**over), _PF, _PS) == "scope_exceeded"
+
+
+def test_placement_missing_or_bad_snapshot_keys_escalate() -> None:
+    for key in ("current_platform", "executors", "platforms", "capability_tags"):
+        snap = {k: v for k, v in _PS.items() if k != key}
+        assert advice_in_scope("placement", _placement(), _PF, snap) == "scope_exceeded", key
+    assert advice_in_scope("placement", _placement(), {"capability_tags": {CONSULT_TAG}}, _PS) == "scope_exceeded"  # 凍結缺 platforms
+    assert advice_in_scope("placement", _placement(), _PF, {**_PS, "current_platform": 1}) == "scope_exceeded"
+    assert advice_in_scope("placement", _placement(), _PF, {**_PS, "executors": "exec.a"}) == "scope_exceeded"
+    assert advice_in_scope("placement", _placement(), _PF, {**_PS, "executors": [1]}) == "scope_exceeded"
+    # current_platform 與 target 相同但已不在交集內（凍結或快照任一方收回）
+    assert advice_in_scope("placement", _placement(), {**_PF, "platforms": {"phone"}}, _PS) == "scope_exceeded"
+    assert advice_in_scope("placement", _placement(), _PF, {**_PS, "platforms": set()}) == "scope_exceeded"
+    # consult 標籤不在交集內仍先擋
+    assert advice_in_scope("placement", _placement(), {**_PF, "capability_tags": set()}, _PS) == "scope_exceeded"
+
+
+def test_placement_section_shape_and_non_mapping() -> None:
+    assert advice_in_scope("placement", {}, _PF, _PS) == "scope_exceeded"
+    assert advice_in_scope("placement", {"placement": None}, _PF, _PS) == "scope_exceeded"
+    assert advice_in_scope("placement", {"placement": {}}, _PF, _PS) == "scope_exceeded"
+    assert advice_in_scope("placement", {**_placement(), "reply": {"mode": "ask"}}, _PF, _PS) == "scope_exceeded"
+    assert advice_in_scope("placement", {"placement": {"platform": "desktop"}}, _PF, _PS) == "scope_exceeded"
 
 
 def test_section_must_match_exactly() -> None:

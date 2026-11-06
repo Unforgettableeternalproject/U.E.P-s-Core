@@ -19,7 +19,13 @@ from pathlib import Path
 
 import pytest
 
-from uep.decision import DecisionHub, DecisionPlan, DecisionPointSpec, DecisionRequest, DecisionResult
+from uep.decision import (
+    DecisionHub,
+    DecisionPlan,
+    DecisionPointSpec,
+    DecisionRequest,
+    DecisionResult,
+)
 from uep.decision.contracts import (
     DecisionEngineInfo,
     DecisionFollowup,
@@ -75,10 +81,10 @@ def test_policy_unknown_keys_ignored():
 # ---- engine 填值 ----
 
 def _facts(**over):
-    base = dict(
-        version=4, prev_version=3, platform="web", cause="channel_mode", ttl_s=None, es_version=4, core_version=4,
-        channel_mode="passive", prev_channel_mode="active", core_channel_mode="passive",
-    )
+    base = {
+        "version": 4, "prev_version": 3, "platform": "web", "cause": "channel_mode", "ttl_s": None, "es_version": 4, "core_version": 4,
+        "channel_mode": "passive", "prev_channel_mode": "active", "core_channel_mode": "passive",
+    }
     return {**base, **over}
 
 
@@ -165,9 +171,7 @@ def _violations(source: str, *, may_name_type: bool, may_read: bool) -> list[str
     for node in ast.walk(ast.parse(source)):
         line = getattr(node, "lineno", 0)
         if not may_name_type:
-            if isinstance(node, ast.Name) and node.id == "DecisionPolicy":
-                out.append(f"{line}: DecisionPolicy")
-            elif isinstance(node, ast.Attribute) and node.attr == "DecisionPolicy":
+            if isinstance(node, ast.Name) and node.id == "DecisionPolicy" or isinstance(node, ast.Attribute) and node.attr == "DecisionPolicy":
                 out.append(f"{line}: DecisionPolicy")
             elif isinstance(node, ast.alias) and node.name.split(".")[-1] == "DecisionPolicy":
                 out.append(f"{line}: import DecisionPolicy")

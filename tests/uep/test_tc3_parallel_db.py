@@ -325,9 +325,13 @@ class TrackingExecutor(FakeToolExecutor):
                 self.inflight -= 1
 
 
-@pytest.mark.parametrize("max_parallel", [1, 2])
-def test_agent_loop_inflight_matches_max_parallel_against_real_manager(session_factory, max_parallel):
-    """max_parallel=1（預設）完全序列（max_inflight == 1）；同一測試以 max_parallel=2 跑會得到 2，所以斷言有鑑別力。"""
+def test_agent_loop_default_max_parallel_1_is_serial_against_real_manager(session_factory):
+    """max_parallel=1（預設）完全序列（max_inflight == 1）。
+
+    並行一側（max_parallel=2）不在這裡以 sleep 重疊斷言（依賴時序），改由 Barrier 版的
+    ``test_agent_loop_max_parallel_2_runs_parallel_batch_against_real_manager`` 確定性證明。
+    """
+    max_parallel = 1
     registry = make_registry()
     executor = TrackingExecutor()
     tm = make_tm(session_factory, executor, tool_resolver=registry)

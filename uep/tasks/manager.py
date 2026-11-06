@@ -23,7 +23,7 @@ from typing import Any, Literal
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, aliased, sessionmaker
 
 from uep.adapters.tool import (
     ReceiptLookup,
@@ -57,6 +57,7 @@ from uep.tasks.states import (
     ActionStatus,
     ActivityKind,
     ActivityStatus,
+    CancelReason,
     InterruptPolicy,
     PauseReason,
     RunStatus,
@@ -216,6 +217,15 @@ class ActionOutcome:
     status: ActionStatus
     executed: bool  # 本次呼叫是否真的呼叫了 executor.execute
     receipt: ReceiptRow | None = None
+
+
+@dataclass(frozen=True)
+class CancelSignal:
+    """``heartbeat`` 回傳的取消旗標（SV-2）：Supervisor 已要求取消這個 Run。worker 收到後應自行收尾（run_deadline／
+    task_deadline ⇒ 取消 attempt 並以自己的 epoch 轉 FAILED；step_timeout ⇒ 只取消卡住的 Step）。"""
+
+    reason: str
+    requested_at: datetime
 
 
 @dataclass
@@ -968,7 +978,14 @@ class TaskManager:
         self, run_id: str, to: RunStatus, *, reason: str, expected_version: int | None = None,
         pause_reason: PauseReason | None = None,
     ) -> RunRow:
-        """Supervisor／Core 專用：不驗 worker_epoch 的 Run 轉移（仍走轉移表與 guard）。必須附原因並記 log。"""
+        """Supervisor／Core 專用：不驗 worker_epoch 的 Run 轉移（仍走轉移表與 guard）。必須附原因並記 log。
+
+        - **EXECUTING 的 action 於同一交易轉 UNKNOWN**（D62、T-11）：被強制的 worker 仍可能在執行 executor，結果未明，
+          不能留在 EXECUTING、也不能標成 FAILED；receipt 晚到仍可入庫（T-9），查核走 ``resolve_unknown``。
+          轉成終態時 ``run.ended`` 會帶 ``reason_code=unresolved_actions``（T-13）。
+        - **遞增 ``worker_epoch``**：被強制之後才醒來的慢 worker 用舊 epoch 寫 checkpoint、執行 action、轉移都會被
+          ``StaleWorkerEpoch`` 擋下（T-9）。
+        """
         if not reason or not _SAFE_STR.fullmatch(reason):
             raise PolicyViolation("force_transition_run 必須附上短碼 reason")
         with self._tx() as (s, pending):
@@ -978,6 +995,14 @@ class TaskManager:
             logger.warning(
                 "強制轉移 Run：run=%s %s -> %s reason=%s", run_id, run.status, to.value, reason
             )
+            self._check_transition("run", run, to, pause_reason)  # 不合法的轉移先拋，不留下 epoch／action 的半套變更
+            run.worker_epoch += 1
+            for action in s.scalars(
+                select(ActionIntentRow).where(
+                    ActionIntentRow.run_id == run_id, ActionIntentRow.status == ActionStatus.EXECUTING.value
+                ).order_by(ActionIntentRow.created_at).with_for_update().execution_options(populate_existing=True)
+            ):
+                self._set_action_status(s, pending, task, action, ActionStatus.UNKNOWN, "action.unknown")
             self._set_run_status(s, pending, task, run, to, pause_reason)
             return run
 
@@ -1102,12 +1127,84 @@ class TaskManager:
         if worker_epoch != run.worker_epoch:
             raise StaleWorkerEpoch(f"run {run.run_id} 目前 epoch={run.worker_epoch}，收到 {worker_epoch}")
 
-    def heartbeat(self, run_id: str, *, worker_epoch: int) -> None:
-        """worker 心跳；舊 epoch 拋 StaleWorkerEpoch（讓被取代的 worker 得知自己該停手）。"""
+    def heartbeat(self, run_id: str, *, worker_epoch: int) -> CancelSignal | None:
+        """worker 心跳；舊 epoch 拋 StaleWorkerEpoch（讓被取代的 worker 得知自己該停手）。
+
+        有取消旗標（``request_cancel``）時回傳 ``CancelSignal``，沒有則回 None（SV-2：Supervisor -> Agent Core 的通道
+        是這個 DB 旗標加心跳輪詢）。既有呼叫端可忽略回傳值。"""
         with self._tx() as (s, _pending):
             _task, run = self._lock_run(s, run_id)
             self._require_epoch(run, worker_epoch)
             run.worker_heartbeat_at = self._clock()
+            if run.cancel_requested_at is None:
+                return None
+            return CancelSignal(str(run.cancel_reason), run.cancel_requested_at)
+
+    @property
+    def heartbeat_stale_after(self) -> timedelta:
+        """心跳視為過期的門檻（T-12／``resume_run`` 的判準）；Supervisor 以此判斷 worker 是否已死。"""
+        return self._stale_after
+
+    # ---- Supervisor（SV-2）----
+
+    def request_cancel(self, run_id: str, reason: CancelReason | str) -> bool:
+        """設定 Run 的取消旗標（SV-2）。冪等：已設過就不覆寫（回 False）；不檢查 worker_epoch（Supervisor 不是 worker）；
+        終態 Run 不動作（回 False）。新設定成功回 True。只寫旗標，不轉移任何狀態。"""
+        cancel = CancelReason(reason)  # 不合法的原因碼拋 ValueError
+        with self._tx() as (s, _pending):
+            _task, run = self._lock_run(s, run_id)
+            if RunStatus(run.status) in TERMINAL_STATUSES or run.cancel_requested_at is not None:
+                return False
+            run.cancel_requested_at = self._clock()
+            run.cancel_reason = cancel.value
+            self._bump(run)
+            return True
+
+    def mark_approval_expired(self, run_id: str, expiry: datetime) -> bool:
+        """記下「已通知的 approval_expiry 值」（SV-2(5)，不是通知時間）：Run 為 WAITING_APPROVAL 且 ``expiry`` 與已存值不同
+        才設定並回 True；同一 expiry 只會成功一次，核准更新使 expiry 改變後可再設。其餘情況回 False，不改任何狀態。"""
+        with self._tx() as (s, _pending):
+            _task, run = self._lock_run(s, run_id)
+            if run.status != RunStatus.WAITING_APPROVAL.value or run.approval_expired_at == expiry:
+                return False
+            run.approval_expired_at = expiry
+            self._bump(run)
+            return True
+
+    def list_runs_due(self, now: datetime) -> list[RunRow]:
+        """Supervisor 要處理的 Run（其 Task 皆未終態），依建立時間排序：
+
+        1. 非終態、非 PAUSED，且 ``run_deadline`` 或 ``Task.deadline`` 已到；
+        2. 非終態且已設取消旗標（等待 worker 自行收尾，或判斷是否強制）；
+        3. 終態、帶 run_deadline／task_deadline 取消旗標，且 Task 沒有其他未終態 Run（需要收尾 Task）；
+        4. WAITING_APPROVAL 且 ``approval_expiry`` 已到、尚未對該 expiry 通知過。
+        """
+        done = [x.value for x in TERMINAL_STATUSES]
+        deadline_reasons = [CancelReason.RUN_DEADLINE.value, CancelReason.TASK_DEADLINE.value]
+        sibling = aliased(RunRow)
+        other_live = (
+            select(sibling.run_id).where(sibling.task_id == TaskRow.task_id, sibling.status.notin_(done)).exists()
+        )
+        due = (
+            ((RunRow.status.notin_(done + [RunStatus.PAUSED.value]))
+             & ((RunRow.run_deadline <= now) | (TaskRow.deadline <= now)))
+            | (RunRow.status.notin_(done) & RunRow.cancel_requested_at.is_not(None))
+            | (RunRow.status.in_(done) & RunRow.cancel_reason.in_(deadline_reasons) & ~other_live)
+            | ((RunRow.status == RunStatus.WAITING_APPROVAL.value) & (RunRow.approval_expiry <= now)
+               & (RunRow.approval_expired_at.is_(None) | (RunRow.approval_expired_at != RunRow.approval_expiry)))
+        )
+        with self._sf() as s:
+            stmt = (
+                select(RunRow).join(TaskRow, TaskRow.task_id == RunRow.task_id)
+                .where(TaskRow.status.notin_(done), due).order_by(RunRow.created_at)
+            )
+            return list(s.scalars(stmt))
+
+    def list_live_tasks(self) -> list[TaskRow]:
+        """所有未終態 Task（含尚無 Run 者），依建立時間排序；``pause_all`` 用。"""
+        done = [x.value for x in TERMINAL_STATUSES]
+        with self._sf() as s:
+            return list(s.scalars(select(TaskRow).where(TaskRow.status.notin_(done)).order_by(TaskRow.created_at)))
 
     # ---- Approval ----
 

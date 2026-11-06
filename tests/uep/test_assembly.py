@@ -456,7 +456,7 @@ def _agent_kwargs(session_factory, tmp_path, echo, publisher, bus, **over):
     base = kwargs(session_factory, tmp_path, bus=bus, publisher=publisher, echo=echo)
     base.update(
         adapter=echo.adapter, turn_generation_source=echo.generation_source, executors={},
-        tool_resolver=memory_registry(), tool_path="agent",
+        tool_resolver=memory_registry(), tool_path="agent", decision_log=False,
     )
     base.update(over)
     return base

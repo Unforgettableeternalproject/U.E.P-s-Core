@@ -154,6 +154,7 @@ def test_assembly_refuses_mismatched_echo_wiring(session_factory, tmp_path):
 
     def assemble(echo, **over):
         base = assembly_kwargs(session_factory, tmp_path, bus=bus, publisher=publisher, echo=echo)
+        base.setdefault("decision_log", False)
         base.update(over)
         return assemble_core(session_factory, **base)
 

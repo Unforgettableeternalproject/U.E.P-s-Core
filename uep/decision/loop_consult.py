@@ -48,7 +48,7 @@ ESC_SCOPE_EXCEEDED = "scope_exceeded"
 ESC_SNAPSHOT_INVALID = "snapshot_invalid"
 ESC_PLACEMENT_REVIEW = "placement_review"
 
-# 暫定值，待 Bernie 調：每 Run 的 consult 上限與連續無進展次數。consult 計入迴圈步數，兩個上限誰先到就照誰
+# 正式預設值（2026-11-06 裁決）：每 Run 的 consult 上限與連續無進展次數。consult 計入迴圈步數，兩個上限誰先到就照誰
 # （迴圈側使用，這裡只提供常數；正式值由 policy_ref 解析）。
 MAX_CONSULTS = 8
 NO_PROGRESS_N = 3

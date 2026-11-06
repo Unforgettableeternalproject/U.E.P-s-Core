@@ -128,10 +128,12 @@ class ToolGateway:
             return self.result_view("rejected")
         return self.result_view(self.rejection_status(exc), reason_code=exc.code, fields=exc.fields)
 
-    @staticmethod
-    def rejection_status(exc: GatewayRejected) -> ResultStatus:
+    def rejection_status(self, exc: GatewayRejected) -> ResultStatus:
         """§5.8：只有 ``tool_not_ready``（暫時性，工具之後可能恢復）回 ``blocked``；其餘驗證失敗
-        （capability_missing、tool_unknown、參數錯誤…）一律 ``rejected``。"""
+        （capability_missing、tool_unknown、參數錯誤…）一律 ``rejected``。沒給 registry 的 Gateway 不做 readiness 檢查，
+        一律 ``rejected``（與 ``rejection_view`` 的舊形狀一致）。"""
+        if self._registry is None:
+            return "rejected"
         return "blocked" if exc.code == TOOL_NOT_READY else "rejected"
 
     def result_view(

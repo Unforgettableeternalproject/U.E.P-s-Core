@@ -535,3 +535,37 @@ def test_precheck_without_readiness_or_entry_keeps_revocation():
         "tools": [t for t in base2(tags, prior)["tools"] if t["tool"] != "post.mod"],
     })
     assert (out2.state, out2.reason_code) == ("failed", "capability_revoked")
+
+
+def test_precheck_repark_with_superseded_epoch_stops_without_marking_parked():
+    """預檢再 park 時 park_run 發現 Run 已被別的 worker 接手 ⇒ stale，不 mark_parked。"""
+    rig, registry, _action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    entries_before = list(rig.store.parent_entries["ctx_parent"])
+    loop = _crash(rig, 2, rounds=[Round("不該到這裡")])
+    original = rig.tasks.park_run
+
+    def taken_over(run_id, *, worker_epoch):
+        rig.tasks.epoch = 9  # park 之前 Run 已被取代
+        return original(run_id, worker_epoch=worker_epoch)
+
+    rig.tasks.park_run = taken_over
+    out = loop.resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent", approvals=None)
+    assert out.state == "stale" and rig.last_runtime.requests == []
+    assert list(rig.store.parent_entries["ctx_parent"]) == entries_before  # 沒有新的 mark_parked
+
+
+def test_policy_excluded_and_warming_reparks_but_becomes_revoked_once_ready():
+    """釘住：工具同時被 policy 排除、模組又在 warming ⇒ 預檢只看得到 readiness，先再 park；
+    等模組 ready，readiness 不再能解釋它為何不在投影 ⇒ 下一次 resume 才是 capability_revoked。"""
+    rig, registry, _action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    base = projector_for(registry)
+    policy_excluded = lambda tags, prior: {"tools": [t for t in base(tags, prior)["tools"] if t["tool"] != "post.mod"]}
+    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    first = _resume(rig, checkpoint, None, projector=policy_excluded)
+    assert first.state == "awaiting_approval" and rig.tasks.run_status == []
+    registry.apply_module_event("module.ready", {"module_id": "mod:b", "revision": 2})
+    second = _resume(rig, _park_checkpoint(rig), None, epoch=3, projector=policy_excluded)
+    assert (second.state, second.reason_code) == ("failed", "capability_revoked")

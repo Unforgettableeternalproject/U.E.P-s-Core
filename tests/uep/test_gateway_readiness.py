@@ -149,6 +149,7 @@ def test_no_registry_keeps_the_old_path():
     assert gateway.check_intent("any.tool", {"a": 1}, {"tools": [{"tool": "any.tool"}]}) == {"a": 1}
     view = gateway.rejection_view(GatewayRejected(TOOL_NOT_READY))
     assert view == gateway.result_view("rejected")  # 舊形狀：不帶 reason_code
+    assert gateway.rejection_status(GatewayRejected(TOOL_NOT_READY)) == "rejected"  # 沒有 registry 一律 rejected
 
 
 def test_registry_without_readiness_is_not_checked():

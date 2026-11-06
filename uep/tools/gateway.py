@@ -122,11 +122,17 @@ class ToolGateway:
             raise GatewayRejected(TOOL_NOT_READY, f"工具尚未就緒（{state}）：{tool}")
 
     def rejection_view(self, exc: GatewayRejected) -> dict[str, Any]:
-        """``check_intent`` 失敗的回餵（D61 只加不改）：``status=rejected`` 加選填 ``reason_code``／``fields``。
+        """``check_intent`` 失敗的回餵（D61 只加不改）：``status`` 見 ``rejection_status``，加選填 ``reason_code``／``fields``。
         只有短碼與欄位路徑，沒有值、例外文字。沒給 registry 的 Gateway 回切片 A 的舊形狀（不帶新欄位）。"""
         if self._registry is None:
             return self.result_view("rejected")
-        return self.result_view("rejected", reason_code=exc.code, fields=exc.fields)
+        return self.result_view(self.rejection_status(exc), reason_code=exc.code, fields=exc.fields)
+
+    @staticmethod
+    def rejection_status(exc: GatewayRejected) -> ResultStatus:
+        """§5.8：只有 ``tool_not_ready``（暫時性，工具之後可能恢復）回 ``blocked``；其餘驗證失敗
+        （capability_missing、tool_unknown、參數錯誤…）一律 ``rejected``。"""
+        return "blocked" if exc.code == TOOL_NOT_READY else "rejected"
 
     def result_view(
         self, status: ResultStatus, *, items: Sequence[Mapping[str, Any]] = (), degraded: bool = False,

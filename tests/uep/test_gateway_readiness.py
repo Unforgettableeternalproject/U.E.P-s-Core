@@ -52,6 +52,7 @@ def test_tool_turned_not_ready_after_projection_is_rejected(state):
     assert exc.value.code == TOOL_NOT_READY == "tool_not_ready"
     view = gateway.rejection_view(exc.value)
     assert view["reason_code"] == "tool_not_ready" and "fields" not in view  # 不含值、不含欄位
+    assert view["status"] == "blocked"  # §5.8：tool_not_ready 是 blocked
 
 
 def test_not_ready_check_runs_before_argument_checks():
@@ -81,8 +82,10 @@ def test_not_ready_does_not_create_an_action():
     core = AgentCore(None, NoCreate(), ToolGateway(registry), worker_epoch=1)  # type: ignore[arg-type]
     record, view = core.run_intent(run_id="run_1", step_id="s", ordinal=0, capability_set=cap, tool="mod.plain", args={"path": "x"})
     assert record.action_id is None and view["reason_code"] == "tool_not_ready"
+    assert (record.status, view["status"]) == ("blocked", "blocked")
     screened = core.screen_intent(run_id="run_1", step_id="s", ordinal=1, capability_set=cap, tool="mod.plain", args={"path": "x"})
     assert screened.view["reason_code"] == "tool_not_ready" and screened.record.action_id is None
+    assert (screened.record.status, screened.view["status"]) == ("blocked", "blocked")
 
 
 def test_recovered_tool_passes_again():
@@ -185,4 +188,36 @@ def test_isolated_not_ready_rejection_is_fed_back_and_loop_continues():
     out = rig.run()
     assert out.state == "completed" and rig.tasks.actions == {}
     (fed,) = next(iter(rig.runtime.submitted.values()))
-    assert fed[1]["reason_code"] == "tool_not_ready" and fed[1]["status"] == "rejected"
+    assert fed[1]["reason_code"] == "tool_not_ready" and fed[1]["status"] == "blocked"  # §5.8
+
+
+# ---- 其他 GatewayRejected 的 code 仍是 rejected ----
+
+@pytest.mark.parametrize(("tool", "args", "cap_tools", "code"), [
+    ("mod.none", {"path": "x"}, [], "capability_missing"),
+    ("mod.none", "不是物件", [{"tool": "mod.none", "version": 1}], "args_not_mapping"),
+    ("mod.none", {}, [{"tool": "mod.none", "version": 1}], "invalid_tool_args"),  # 缺必填 path
+    ("mod.none", {"path": "x", "多餘": 1}, [{"tool": "mod.none", "version": 1}], "invalid_tool_args"),
+    ("mod.ghost", {"path": "x"}, [{"tool": "mod.ghost", "version": 1}], "tool_unknown"),
+])
+def test_other_gateway_rejections_stay_rejected(tool, args, cap_tools, code):
+    registry = build()
+    gateway = ToolGateway(registry)
+    with pytest.raises(GatewayRejected) as exc:
+        gateway.check_intent(tool, args, {"tools": cap_tools})
+    assert exc.value.code == code
+    assert gateway.rejection_status(exc.value) == "rejected" and gateway.rejection_view(exc.value)["status"] == "rejected"
+    core = AgentCore(None, SimpleNamespace(), gateway, worker_epoch=1)  # type: ignore[arg-type]
+    screened = core.screen_intent(run_id="run_1", step_id="s", ordinal=0, capability_set={"tools": cap_tools}, tool=tool, args=args)
+    assert screened.record.status == "rejected" and screened.view["status"] == "rejected" and screened.record.action_id is None
+
+
+def test_injected_param_missing_stays_rejected():
+    from uep.adapters.tool import ToolDescriptor
+
+    entry = make_entry("mod.inj", descriptor=ToolDescriptor("d", {"type": "object", "properties": {}}, injected_params=("venue",)))
+    registry = ToolRegistry.build([entry])
+    gateway = ToolGateway(registry)
+    with pytest.raises(GatewayRejected) as exc:
+        gateway.check_intent("mod.inj", {}, {"tools": [{"tool": "mod.inj", "version": 1}]})
+    assert exc.value.code == "injected_param_missing" and gateway.rejection_view(exc.value)["status"] == "rejected"

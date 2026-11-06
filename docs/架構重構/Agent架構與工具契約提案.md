@@ -617,7 +617,7 @@ route 預設能力表            ┐
 **步驟**：
 
 1. **批次**＝同一則模型訊息內、`args_complete=true` 的全部 `tool_intent`，依 `index` 排序。批次大小受 `max_batch`（Policy）限制；超出者以 `blocked(reason_code=deferred_batch_limit)` 回餵，不執行。
-2. **逐項前置**（每項獨立）：`capability_set` 檢查 → readiness（`tool_not_ready`）→ schema 驗證 → 正規化與 `params_hash`。任一失敗 ⇒ 該項立即 `rejected`／`blocked` 回餵，**不進入分組**，也**不影響其他項**。
+2. **逐項前置**（每項獨立）：`capability_set` 檢查 → readiness（`tool_not_ready`）→ schema 驗證 → 正規化與 `params_hash`。任一失敗 ⇒ 該項立即回餵（`tool_not_ready` ⇒ `blocked`，其餘驗證失敗 ⇒ `rejected`），**不進入分組**，也**不影響其他項**。
 3. **資格判定**：該項「可並行」⇔ `concurrency ∈ {parallel_safe, parallel_one_shot}` ∧ `approval_level == none` ∧ Presence 條件已滿足。其餘一律 `serial`。**資格由註冊表欄位與分類決定，不看工具名稱，也不看模型的 `side_effect_hint`**（TG-2）。
 4. **代入資源鍵**：以驗證後的 params 代入 `conflict_keys` 範本，得到該項的實際資源鍵集合 `K(i)`（例：`file:/home/x/a.txt`）。
 5. **貪婪分組（保序）**：依 `index` 掃描，維護「當前波（wave）」：
@@ -631,7 +631,8 @@ route 預設能力表            ┐
 
 | 情況 | 該項回填 | 對同批其他項 |
 |---|---|---|
-| 驗證失敗／`CAPABILITY_MISSING`／`tool_not_ready` | `rejected`／`blocked`＋`reason_code`（`fields` 不含值） | 無影響 |
+| 驗證失敗／`CAPABILITY_MISSING` | `rejected`＋`reason_code`（`fields` 不含值） | 無影響 |
+| `tool_not_ready` | `blocked`＋`reason_code`（§5.8；暫時性，仍計入無進展預算） | 無影響 |
 | 執行失敗（`FAILED`） | `failed` | **不取消**同波兄弟（彼此獨立）；後續波照常 |
 | 逾時 | 先 `executor.cancel`：`stopped` ⇒ `failed(reason_code=timeout)`；`isolated`／無回應 ⇒ action 轉 `UNKNOWN`，`unknown` | 同波兄弟照常；見下一列 |
 | 出現非 `internal_read` 的 `UNKNOWN` | `unknown` | **同批尚未開始的項**一律 `blocked(reason_code=unknown_unresolved)`（TC-3：未決副作用先解決）；已在執行者讓其完成 |

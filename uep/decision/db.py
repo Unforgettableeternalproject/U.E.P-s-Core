@@ -56,6 +56,10 @@ class DecisionLogRow(Base):
     participant_count: Mapped[int | None] = mapped_column(Integer)
     addressed_hint: Mapped[bool | None] = mapped_column(Boolean)
     utterance_refs: Mapped[list[str] | None] = mapped_column(JSONB)
+    sub_kind: Mapped[str | None] = mapped_column(String)  # 例如 loop.consult 的 sub_kind（migration 0014；舊列為 NULL）
+    trigger: Mapped[str | None] = mapped_column(String)  # initial／reeval／event／tick
+    namespace: Mapped[str | None] = mapped_column(String)  # 決策主體的 namespace ID
+    snapshot_version: Mapped[int | None] = mapped_column(Integer)  # 決策依據的 policy 快照版本
 
     __table_args__ = (
         CheckConstraint("role IN ('primary', 'shadow')", name="role"),
@@ -63,6 +67,7 @@ class DecisionLogRow(Base):
         Index("ix_decision_log_created_at", "created_at"),
         Index("ix_decision_log_request_id", "request_id"),
         Index("ix_decision_log_primary_decision_id", "primary_decision_id"),
+        Index("ix_decision_log_kind_sub_kind", "kind", "sub_kind"),
     )
 
 
@@ -79,12 +84,17 @@ class DbSink:
 
 def load_rows(
     session_factory: sessionmaker[Session], *, kind: str | None = None,
-    since: datetime | None = None, until: datetime | None = None,
+    since: datetime | None = None, until: datetime | None = None, sub_kind: str | None = None,
 ) -> list[dict[str, Any]]:
-    """讀 decision_log（依 kind 與時間範圍 [since, until) 篩選），回傳與 JSONL 同形的 dict 列。"""
+    """讀 decision_log（依 kind、sub_kind 與時間範圍 [since, until) 篩選），回傳與 JSONL 同形的 dict 列。
+
+    ``sub_kind`` 為 SQL 等值比對：舊列（該欄為 NULL）不算符合。
+    """
     stmt = select(DecisionLogRow).order_by(DecisionLogRow.created_at, DecisionLogRow.decision_id)
     if kind:
         stmt = stmt.where(DecisionLogRow.kind == kind)
+    if sub_kind:
+        stmt = stmt.where(DecisionLogRow.sub_kind == sub_kind)
     if since is not None:
         stmt = stmt.where(DecisionLogRow.created_at >= since)
     if until is not None:

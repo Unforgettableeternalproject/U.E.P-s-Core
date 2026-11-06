@@ -245,7 +245,7 @@ loop:
 |---|---|
 | CN-1 | `advice` **只能落在「凍結範圍 ∩ 當下快照」內**（凍結的能力標籤、scope、audience，再與當下政策快照取交集；凍結範圍內但快照已不允許者也算超出）。超出時中樞**只回 `escalate`**（`escalate.needed=true`），不回超範圍的 advice |
 | CN-2 | AgentLoop 在收到結果後**再驗一次**（縱深防禦），範圍同 CN-1（**凍結範圍 ∩ 當下快照**）：`advice` 若引用該交集外的標籤／工具／scope，一律當作 `escalate.needed` 處理並寫稽核。`placement` 類 advice 另須檢查 **`target_platform`**（必須屬交集內允許的平台，且為當下 Presence 可達）與 **`executor_ref`**（必須是註冊表中該平台變體的合法 executor 且 readiness 為 `ready`），任一不符即視為超出 |
-| CN-3 | `escalate.needed` ⇒ AgentLoop **結束本 Run**（以 `finalize` 收束，不再續跑工具），並**送出候選事件**（缺口類別＋`decision_id`）；該事件由決策中樞的 **`loop.reeval`** 處理，由它決定是否**發出新的 `LoopTrigger`**（新範圍，只經決策層的收窄／裁定；迴圈自己絕不擴大，AL-3） |
+| CN-3 | `escalate.needed` ⇒ AgentLoop **結束本 Run**（`FAILED`，`reason_code=escalated`；不走 `finalize`、不把 escalate 結果回饋模型、不在同一個 Run 內續跑工具；同批中 escalate 之後的項目不執行），先寫終態 checkpoint（`last_decision_id`、`escalate_gap`）再**送出候選事件**（缺口類別＋`decision_id`）；該事件由決策中樞的 **`loop.reeval`** 處理，由它決定是否**發出新的 `LoopTrigger`**（新範圍，只經決策層的收窄／裁定；迴圈自己絕不擴大，AL-3） |
 | CN-4 | consult **計入步數**（`max_steps`）與工具次數（`max_tool_calls`），並受 **`max_consults`** 限制（`max_tool_calls` 的子限，見 §4.4） |
 | CN-5 | consult 走**快速欄位**：中樞 `decide()` 預算 300 ms（只計 decide，不含 executor 開銷）；條目 `timeout_s=0.5` 為 executor 總時限，必須大於 decide 預算。**不觸發 `plan.refine`**（不重新精煉 DecisionPlan） |
 | CN-6 | consult 逾時 ⇒ 回 **`status=ok`＋`advice=∅`**（不是 failed），迴圈改用**決策中樞提案裡的 per-kind 預設表**（預設表歸決策層，類比 D80）。若 **Gateway 層真的失敗**（`failed`／`unknown` 視圖，例如 executor 例外、`tool_not_ready`、總時限 0.5 s 仍逾時），迴圈同樣**把它對映為 `advice=∅`** 並採同一張預設表；失敗仍計入步數與 `max_consults`。**不得因 consult 失敗而放寬任何範圍** |

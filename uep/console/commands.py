@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from uep.console.rig import CONSOLE_ACTOR, CONSOLE_SPEAKER, PRIVATE_SCOPE, ConsoleRuntime
 from uep.events.models import EventRow
+from uep.log import describe_levels, set_console_level, set_namespace_level
 from uep.state.coordinator import Axis
 from uep.turn.models import UtteranceFact
 
@@ -47,6 +48,7 @@ HELP_TEXT = """\
   /llm <文字>        (a) 隔離：直接呼叫 Think（真實 LLM），印切句與耗時（需 UEP_LLM_API_KEY）
   /tts <文字> [--engine vox|indextts2]   (a) 隔離：以 Core Speak adapter 合成並寫 wav，印首音延遲與總耗時
                      （需 GPU；未設 UEP_E2E_ALLOW_GPU=1 時提示並結束該指令）
+  /log [level <名稱空間> <等級> | console <等級>]   顯示或調整日誌等級（例：/log level uep.decision DEBUG）
   /check             (a) 子系統隔離群（尚未支援）
   /help              本說明
   /quit              結束"""
@@ -71,7 +73,7 @@ class Console:
         self.last_turn_id: str | None = None
         self._commands: dict[str, Callable[[str], None]] = {
             "say": self._say, "wav": self._wav, "cancel": self._cancel, "status": self._status,
-            "trace": self._trace, "mem": self._mem, "session": self._session, "mic": self._mic, "help": self._help, "stt": self._stt, "llm": self._llm, "tts": self._tts,
+            "trace": self._trace, "mem": self._mem, "session": self._session, "mic": self._mic, "help": self._help, "log": self._log, "stt": self._stt, "llm": self._llm, "tts": self._tts,
         }
 
     def execute(self, line: str) -> bool:
@@ -102,6 +104,24 @@ class Console:
 
     def _help(self, _arg: str) -> None:
         self.out(HELP_TEXT)
+
+    def _log(self, arg: str) -> None:
+        parts = arg.split()
+        if not parts:
+            self.out(describe_levels())
+            return
+        try:
+            if parts[0] == "level" and len(parts) == 3:
+                set_namespace_level(parts[1], parts[2])
+            elif parts[0] == "console" and len(parts) == 2:
+                set_console_level(parts[1])
+            else:
+                self.out("用法：/log [level <名稱空間> <等級> | console <等級>]")
+                return
+        except (ValueError, RuntimeError) as exc:
+            self.out(f"/log：{exc}")
+            return
+        self.out(describe_levels())
 
     def _say(self, text: str) -> None:
         if not text:

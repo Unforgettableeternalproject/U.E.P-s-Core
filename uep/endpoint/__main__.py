@@ -16,6 +16,7 @@ from uep.endpoint.auth import EndpointAuthError, load_secret_from_env
 from uep.endpoint.endpoint import CliEndpoint
 from uep.endpoint.protocol import CoreApiError
 from uep.endpoint.reconnect import ReconnectSupervisor, start_supervisor
+from uep.log import configure_logging
 
 
 def _out(text: str) -> None:
@@ -94,4 +95,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    configure_logging()
     raise SystemExit(main())

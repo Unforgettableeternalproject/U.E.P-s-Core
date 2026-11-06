@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 
 from uep.config import get_settings
+from uep.log import configure_logging
 from uep.stop.api import PATH_RECOVERY, PATH_RELEASE, PATH_STOP
 from uep.stop.service import MIN_TOKEN_BYTES
 
@@ -69,4 +70,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    configure_logging()
     sys.exit(main())

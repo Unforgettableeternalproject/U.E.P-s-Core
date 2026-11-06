@@ -16,6 +16,7 @@
 | 邊界測試 | `tests/uep/test_import_boundary.py` | 強制檢查 `uep` 不 import legacy | — | A7、D19 |
 | CC-1／持久層測試 | `tests/uep/` | `tests/uep/test_ids_and_config.py`、`tests/uep/test_envelope_and_bus.py`、`tests/uep/test_payload_policy.py` 不需 DB；`tests/uep/test_journal_db.py`、`tests/uep/test_journal_db_hardening.py` 需 `UEP_TEST_DATABASE_URL`，未設時 skip | CC-1 | V20 |
 | 設定 | `uep/config.py` | 自環境變數或 repo 根 `.env` 讀 `UEP_DATABASE_URL`、`UEP_TEST_DATABASE_URL` | — | A9、D10 |
+| 系統日誌 | `uep/log.py` | stdlib logging 集中設定（只在 console／endpoint／stop 進入點呼叫 `configure_logging`）：central formatter 自動標註 repo 相對路徑＋行號＋函式與子系統、KEY／TRACE 等級與 `UEP_LOG_DEPTH` 分層、contextvars 脈絡（`log_context`）、密鑰遮罩、檔案經 QueueListener、每行程一組檔案與選用 JSONL；決策日誌不在此 | — | — |
 | ID | `uep/ids.py` | `前綴_ULID` 產生與驗證 | — | D32 |
 | 持久層 | `uep/db/` | `uep/db/models_registry.py` 集中 import 所有 ORM models；SQLAlchemy engine／Base（PostgreSQL＋psycopg3）；alembic 環境與 migration 在 `uep/db/migrations/`，設定檔為根目錄 `alembic.ini` | — | A9、D10 |
 | Event | `uep/events/` | `uep/events/envelope.py`（UEPEvent、Gateway 重建）、`uep/events/registry.py`（事件類型註冊表）、`uep/events/bus.py`（自 legacy 複製、訂閱鍵 str）、`uep/events/journal.py`（journal＋可刪 blob）、`uep/events/outbox.py`、`uep/events/inbox.py`、`uep/events/publisher.py`（journal 先於投遞）、`uep/events/tailer.py`（JournalTailer：xmin 安全水位、交易區間游標，D41）、`uep/events/payload_hash.py`（per-install HMAC，D42） | CC-1 | V09、V20／D16、D22、D33 |

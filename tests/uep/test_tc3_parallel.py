@@ -95,7 +95,7 @@ def test_no_code_path_in_tasks_package_writes_action_concurrency():
     沒有任何屬性賦值（``x.concurrency = ...``）、沒有 update(...).values(concurrency=...)，更新 action 列只經
     ``_set_action_status``（status／version）與 approval_ref。"""
     root = Path(__file__).resolve().parents[2] / "uep" / "tasks"
-    for path in root.glob("*.py"):
+    for path in root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             targets = []

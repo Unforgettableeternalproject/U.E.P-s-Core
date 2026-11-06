@@ -2,15 +2,16 @@
 
 涵蓋：兩個 parallel_safe 同時 EXECUTING、serial 與其他互斥、parallel_safe 不與 serial 並存、非唯讀 UNKNOWN 阻擋、
 **條件 1**（兩個 serial 從兩個執行緒同時搶，恰好一個成功）、max_parallel=2 的 AgentLoop 並行批次、concurrency 建立後不可改、
-0012 升降級往返。離線對照在 ``test_tc3_parallel.py``。
+0012 升降級往返、concurrency 的 DB 觸發器、READ COMMITTED 前提、跨 Run／終態不計入 EXECUTING 集合。離線對照在 ``test_tc3_parallel.py``。
 """
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 from sqlalchemy import inspect, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 
 from tests.uep.acceptance_support import POLICY, SCOPE, make_tm
 from tests.uep.loop_support import Round, ScriptedRuntime, make_registry, projector_for
@@ -21,7 +22,7 @@ from uep.agent.core import stable_action_id
 from uep.agent.loop import AgentLoop
 from uep.fakes.loop_context import InMemoryLoopContextStore
 from uep.fakes.tool import FakeToolExecutor
-from uep.tasks.manager import ActionBlocked
+from uep.tasks.manager import ActionBlocked, TaskManager
 from uep.tasks.models import ActionIntentRow
 from uep.tasks.states import ActionStatus, RunStatus
 from uep.tools.gateway import ToolGateway
@@ -163,9 +164,21 @@ def test_non_read_unknown_blocks_even_parallel_safe(session_factory):
         mgr.execute_action(safe.action_id, {"n": "b"}, worker_epoch=run.worker_epoch)
 
 
-def test_two_serial_racing_from_two_threads_exactly_one_wins(session_factory):
+def test_two_serial_racing_from_two_threads_exactly_one_wins(session_factory, monkeypatch):
     """條件 1：移除部分唯一索引後，檢查與轉 EXECUTING 在同一交易、同一把 Run 鎖內；兩個 serial 同時進入時
-    恰好一個成功、另一個 ActionBlocked。贏家卡在 executor（維持 EXECUTING）直到輸家回報，結果與時序無關。"""
+    恰好一個成功、另一個 ActionBlocked。
+
+    鑑別原理：把 ``_check_single_executing`` 包一層，呼叫原函式（讀 EXECUTING 集合）後再睡 0.2 秒才放行。
+    有 Run 鎖時，先到者持鎖睡覺，後到者卡在 ``_lock_action``，等先到者提交後才檢查而被擋；
+    若拿掉 Run 鎖，兩邊都在睡覺前讀到「沒有 EXECUTING」，睡醒後都轉 EXECUTING，兩個都成功 => 本測試失敗。
+    贏家卡在 executor（維持 EXECUTING）直到輸家回報，結果與時序無關。"""
+    original = TaskManager._check_single_executing
+
+    def slow_check(s, action):
+        original(s, action)
+        time.sleep(0.2)
+
+    monkeypatch.setattr(TaskManager, "_check_single_executing", staticmethod(slow_check))
     executor, mgr, run, step = _setup(session_factory)
     a = make_action(mgr, run, step, "t.ser1", "a")
     b = make_action(mgr, run, step, "t.ser2", "b")
@@ -180,16 +193,15 @@ def test_two_serial_racing_from_two_threads_exactly_one_wins(session_factory):
             results.append(exc)
 
     threads = [threading.Thread(target=attempt, args=(a, "a")), threading.Thread(target=attempt, args=(b, "b"))]
-    for t in threads:
-        t.start()
-    deadline = threading.Event()
+    for th in threads:
+        th.start()
     for _ in range(WAIT_S * 20):  # 等輸家被擋（結果裡出現 ActionBlocked）
         if any(isinstance(r, ActionBlocked) for r in results):
             break
-        deadline.wait(0.05)
+        time.sleep(0.05)
     executor.gate.set()
-    for t in threads:
-        t.join(WAIT_S)
+    for th in threads:
+        th.join(WAIT_S)
     losers = [r for r in results if isinstance(r, Exception)]
     winners = [r for r in results if not isinstance(r, Exception)]
     assert len(winners) == 1 and len(losers) == 1 and isinstance(losers[0], ActionBlocked)
@@ -197,6 +209,32 @@ def test_two_serial_racing_from_two_threads_exactly_one_wins(session_factory):
     with session_factory() as s:
         statuses = sorted(s.scalars(select(ActionIntentRow.status).where(ActionIntentRow.run_id == run.run_id)))
     assert statuses == ["INTENDED", "SUCCEEDED"]
+
+
+def test_other_run_serial_executing_does_not_block(session_factory):
+    executor, mgr, run, step = _setup(session_factory)
+    executor.gate.set()
+    busy = make_action(mgr, run, step, "t.ser1", "a")
+    with session_factory.begin() as s:
+        s.get(ActionIntentRow, busy.action_id).status = "EXECUTING"
+    _task2, run2, step2 = running(mgr)
+    other = make_action(mgr, run2, step2, "t.ser2", "b")
+    assert mgr.execute_action(other.action_id, {"n": "b"}, worker_epoch=run2.worker_epoch).status is ActionStatus.SUCCEEDED
+
+
+def test_succeeded_row_does_not_count_as_executing(session_factory):
+    executor, mgr, run, step = _setup(session_factory)
+    executor.gate.set()
+    first = make_action(mgr, run, step, "t.ser1", "a")
+    second = make_action(mgr, run, step, "t.ser2", "b")
+    assert mgr.execute_action(first.action_id, {"n": "a"}, worker_epoch=run.worker_epoch).status is ActionStatus.SUCCEEDED
+    assert mgr.execute_action(second.action_id, {"n": "b"}, worker_epoch=run.worker_epoch).status is ActionStatus.SUCCEEDED
+
+
+def test_isolation_level_is_read_committed(engine):
+    """_check_single_executing 的併發安全依賴 READ COMMITTED（REPEATABLE READ 下鎖前快照會產生 phantom）。"""
+    with engine.connect() as conn:
+        assert conn.execute(text("SHOW transaction_isolation")).scalar_one() == "read committed"
 
 
 def test_concurrency_cannot_be_changed_after_create(session_factory):
@@ -215,11 +253,19 @@ def test_concurrency_cannot_be_changed_after_create(session_factory):
     assert mgr.get_action(safe.action_id).concurrency == "parallel_safe"
 
 
-def test_check_constraint_rejects_invalid_concurrency(session_factory):
+def test_db_trigger_rejects_any_concurrency_update(session_factory):
+    """條件 2 的 DB 層強制（0012 觸發器）：直接 UPDATE concurrency 一律失敗，其他欄位（status）照常可更新。"""
     _executor, mgr, run, step = _setup(session_factory)
     action = make_action(mgr, run, step, "t.ser1", "a")
-    with pytest.raises(IntegrityError), session_factory.begin() as s:
-        s.get(ActionIntentRow, action.action_id).concurrency = "parallel_everything"
+    for value in ("parallel_safe", "parallel_everything"):  # 合法的其他值，與非法值（觸發器或 check 約束擋下）
+        with pytest.raises(DBAPIError), session_factory.begin() as s:
+            s.execute(
+                text("UPDATE action_intents SET concurrency = :v WHERE action_id = :a"),
+                {"v": value, "a": action.action_id},
+            )
+    with session_factory.begin() as s:
+        s.get(ActionIntentRow, action.action_id).status = "FAILED"
+    assert mgr.get_action(action.action_id).concurrency == "serial"
 
 
 class BarrierExecutor(FakeToolExecutor):
@@ -251,23 +297,50 @@ def test_agent_loop_max_parallel_2_runs_parallel_batch_against_real_manager(sess
         rows = list(s.scalars(select(ActionIntentRow).where(ActionIntentRow.run_id == run.run_id)))
     assert len(rows) == 2 and {r.concurrency for r in rows} == {"parallel_safe"}
     assert all(r.status == ActionStatus.SUCCEEDED.value for r in rows)
+    step_ids = {r.step_id for r in rows}
+    assert len(step_ids) == 1  # 同一波的兩個 action 屬於同一個 Step（真實 Manager 的 step_id 是 new_id，不是 step_1）
+    (step_id,) = step_ids
     fed = next(iter(runtime.submitted.values()))
-    assert [aid for aid, _ in fed] == [stable_action_id(run.run_id, "step_1", 0), stable_action_id(run.run_id, "step_1", 1)]
+    assert [aid for aid, _ in fed] == [stable_action_id(run.run_id, step_id, 0), stable_action_id(run.run_id, step_id, 1)]
 
 
-def test_agent_loop_default_max_parallel_1_still_serial_against_real_manager(session_factory):
+class TrackingExecutor(FakeToolExecutor):
+    """記錄同時在 executor 裡的最大數量；睡一下讓並行的兩個必定重疊。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self.inflight = 0
+        self.max_inflight = 0
+
+    def execute(self, call):
+        with self._lock:
+            self.inflight += 1
+            self.max_inflight = max(self.max_inflight, self.inflight)
+        try:
+            time.sleep(0.15)
+            return super().execute(call)
+        finally:
+            with self._lock:
+                self.inflight -= 1
+
+
+@pytest.mark.parametrize("max_parallel", [1, 2])
+def test_agent_loop_inflight_matches_max_parallel_against_real_manager(session_factory, max_parallel):
+    """max_parallel=1（預設）完全序列（max_inflight == 1）；同一測試以 max_parallel=2 跑會得到 2，所以斷言有鑑別力。"""
     registry = make_registry()
-    executor = FakeToolExecutor()
+    executor = TrackingExecutor()
     tm = make_tm(session_factory, executor, tool_resolver=registry)
     task = tm.create_task(persona_id="uep", goal="查資料", owner_actor_id="owner", scope_ref=SCOPE, policy=POLICY)
     run = tm.start_run(task.task_id, persona_version=1, policy_version=1)
     runtime = ScriptedRuntime([Round("", (call("read.a", "1"), call("read.b", "2"))), Round("好")])
     loop = AgentLoop(
         runtime=runtime, tasks=tm, gateway=ToolGateway(registry), registry=registry, store=InMemoryLoopContextStore(),
-        projector=projector_for(registry), budget=LoopBudget(), worker_epoch=run.worker_epoch,
+        projector=projector_for(registry), budget=LoopBudget(max_parallel=max_parallel), worker_epoch=run.worker_epoch,
     )
     out = loop.run(trigger(), run.run_id, parent=PARENT, system_text="你是助理", trigger_text="幫我查")
     assert out.state == "completed"
+    assert executor.max_inflight == max_parallel
 
 
 # ---- migration 0012 往返（沿用 test_decision_log 的 alembic_cfg／engine 模式）----
@@ -296,3 +369,6 @@ def test_db_migration_0012_upgrade_downgrade_roundtrip(alembic_cfg, engine):
     assert column["nullable"] is False and "serial" in str(column["default"])
     checks = {c["name"] for c in inspect(engine).get_check_constraints("action_intents")}
     assert "ck_action_intents_concurrency" in checks
+    with engine.begin() as conn:
+        triggers = {r[0] for r in conn.execute(text("SELECT tgname FROM pg_trigger WHERE tgrelid = 'action_intents'::regclass"))}
+    assert "action_intents_concurrency_immutable" in triggers

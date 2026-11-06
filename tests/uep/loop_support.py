@@ -162,8 +162,6 @@ class FakeTasks:
             if action_id in self.unknown:
                 raise ActionBlocked(f"action {action_id} 結果未明（UNKNOWN），不可重做")
             tool = self.actions[action_id]["tool"]
-            if self.registry.entry(tool).spec.approval_level != "none":
-                raise ApprovalRequired(action_id)  # 沒有 approval_id 的執行路徑（核准後執行屬切片 E）
             blocked = next((
                 u for u in self.unknown
                 if u != action_id and self.registry.entry(self.actions[u]["tool"]).spec.side_effect_class != "internal_read"
@@ -173,6 +171,9 @@ class FakeTasks:
             concurrency = self.registry.entry(tool).concurrency
             if not executing_set_allowed(concurrency, list(self.executing.values())):
                 raise ActionBlocked(f"同一 Run 已有 EXECUTING 的 action，不可再進入執行（TC-3，{concurrency}）")
+            # 與真實 Manager 同序：先 TC-3 檢查，再判斷核准（被 TC-3 擋下時核准不被消耗）
+            if self.registry.entry(tool).spec.approval_level != "none":
+                raise ApprovalRequired(action_id)  # 沒有 approval_id 的執行路徑（核准後執行屬切片 E）
             self.executing[action_id] = concurrency
         try:
             return self._run_action(action_id, tool, params)

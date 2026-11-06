@@ -19,6 +19,8 @@ from uep.decision.memory_dream import (
     ON_INVALID_REASON,
     ON_TIMEOUT_REASON,
     MemoryDreamEngine,
+    decider_budget_s,
+    engine_budget_s,
     memory_dream_spec,
     register_memory_dream,
 )
@@ -297,6 +299,118 @@ def test_fallback_is_always_logged_and_resets_quiet_state():
     assert engine is not None
     assert [(r["outcome"], r["status"]) for r in sink.rows] == [
         ("wait", "ok"), ("wait", "invalid"), ("wait", "invalid"), ("wait", "ok")]
+
+
+# ---- 預算在 engine 內：fallback 進日誌、遲到結果丟棄 ----
+
+def _logged_wired(planner, budget_ms=50):
+    hub, _p, decider = _wired(planner, budget_ms=budget_ms)
+    sink = _Sink()
+    writer = DecisionLogWriter(sink, flush_interval=0.01)
+    writer.attach(hub)
+    seen = []
+    hub.add_observer(lambda *a: seen.append(a))
+    return hub, decider, writer, sink, seen
+
+
+def _blocked_planner():
+    planner = DreamPlanner(CFG)
+    gate, entered = threading.Event(), threading.Event()
+    real = planner.decide
+
+    def slow(s):
+        entered.set()
+        gate.wait(5)
+        return real(s)
+
+    planner.decide = slow  # type: ignore[method-assign]
+    return planner, gate, entered
+
+
+def test_engine_budget_is_strictly_below_decider_budget():
+    for ms in (50, 1000, 5000):
+        spec = memory_dream_spec(ms)
+        assert engine_budget_s(spec) == ms / 1000
+        assert engine_budget_s(spec) < decider_budget_s(spec)
+    assert engine_budget_s(memory_dream_spec(0)) is None and decider_budget_s(memory_dream_spec(0)) is None
+
+
+def test_stuck_planner_logs_timeout_fallback_and_drops_late_result():
+    planner, gate, entered = _blocked_planner()
+    hub, decider, writer, sink, seen = _logged_wired(planner)
+    engine = hub.engine(KIND_MEMORY_DREAM)
+    try:
+        d = decider(_snap())
+        assert entered.is_set() and (d.action, d.reason) == ("wait", ON_TIMEOUT_REASON)
+        assert writer.flush()
+        rows = [r for r in sink.rows if r["kind"] == KIND_MEMORY_DREAM]
+        assert [(r["outcome"], r["reason_code"], r["fallback"]) for r in rows] == [("wait", ON_TIMEOUT_REASON, True)]
+        assert len(seen) == 1
+        results = [a[1] for a in seen]
+        assert results[0].fallback and results[0].reason_code == ON_TIMEOUT_REASON
+        request_id = results[0].request_id
+        gate.set()
+        for _ in range(500):  # 等 guard 的 worker 跑完（遲到結果產生）
+            if not engine._guard.busy:
+                break
+            threading.Event().wait(0.01)
+        assert not engine._guard.busy
+        assert writer.flush()
+        assert len([r for r in sink.rows if r["kind"] == KIND_MEMORY_DREAM]) == 1  # 觀察者沒有再收到
+        assert len(seen) == 1
+        assert engine.take(request_id) is None  # 暫存裡也沒有
+    finally:
+        gate.set()
+        writer.close()
+
+
+def test_busy_fallback_is_logged():
+    planner, gate, _entered = _blocked_planner()
+    hub, decider, writer, sink, _seen = _logged_wired(planner)
+    try:
+        assert decider(_snap()).reason == ON_TIMEOUT_REASON
+        engine = hub.engine(KIND_MEMORY_DREAM)
+        res = hub.submit(KIND_MEMORY_DREAM, _req(_snap(), 9))  # 上一次還在跑：engine 內回 busy
+        assert (res.fallback, res.outcome, res.reason_code) == (True, "wait", ON_BUSY_REASON)
+        assert engine.take("t:9") is None
+        assert decider(_snap()).reason == ON_BUSY_REASON
+        assert writer.flush()
+        reasons = [r["reason_code"] for r in sink.rows if r["kind"] == KIND_MEMORY_DREAM]
+        assert reasons == [ON_TIMEOUT_REASON, ON_BUSY_REASON, ON_BUSY_REASON]
+    finally:
+        gate.set()
+        writer.close()
+
+
+def test_planner_exception_is_logged_as_error_fallback():
+    planner = DreamPlanner(CFG)
+
+    def boom(_s):
+        raise RuntimeError("secret detail")
+
+    planner.decide = boom  # type: ignore[method-assign]
+    _hub, decider, writer, sink, _seen = _logged_wired(planner, budget_ms=1000)
+    try:
+        d = decider(_snap())
+        assert (d.action, d.reason) == ("wait", ON_ERROR_REASON)
+        assert writer.flush()
+        rows = [r for r in sink.rows if r["kind"] == KIND_MEMORY_DREAM]
+        assert [(r["outcome"], r["reason_code"]) for r in rows] == [("wait", ON_ERROR_REASON)]
+        assert "secret detail" not in json.dumps(rows, default=str)
+    finally:
+        writer.close()
+
+
+def test_normal_path_through_engine_budget_is_unchanged():
+    planner = DreamPlanner(CFG)
+    _hub, decider, writer, sink, _seen = _logged_wired(planner, budget_ms=1000)
+    try:
+        assert decider(_snap()) == planner.decide(_snap())
+        assert writer.flush()
+        rows = [r for r in sink.rows if r["kind"] == KIND_MEMORY_DREAM]
+        assert [(r["outcome"], r["status"]) for r in rows] == [("run", "ok")]
+    finally:
+        writer.close()
 
 
 # ---- import 邊界 ----

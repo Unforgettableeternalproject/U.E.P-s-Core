@@ -11,8 +11,10 @@
   變窄時取消目前 attempt、以較窄的集合重開。模型或工具結果「要求」更大能力沒有任何通道（Gateway 以 capability_missing 拒絕）。
 - **預算**（AL-2）：步數／工具次數／token／牆鐘；耗盡先 finalize（``tools=[]`` 要求收束），仍吐 tool_intent 或關閉 finalize ⇒
   ``FAILED(budget_exhausted)``。無進展 ⇒ ``FAILED(no_progress)``，不再喚醒模型。
-- **park**：``ApprovalRequired`` ⇒ 同批其後項不執行、存 child 與 checkpoint、取消 attempt、回 ``awaiting_approval``。
-  ``park_run``（釋放 worker）、否決路徑屬切片 E；``resume`` 在這裡只做「重建＋補齊缺的工具結果＋續跑」。
+- **park**：``ApprovalRequired`` ⇒ 同批其後項不執行、存 child 與 checkpoint、取消 attempt、``park_run``（釋放 worker，
+  清心跳讓 ``resume_run`` 可立即接手）、回 ``awaiting_approval``。順序固定：checkpoint -> park_run -> mark_parked／回傳。
+  ``resume(approvals=...)`` 重建＋預檢能力與版本＋補齊缺的工具結果（pending 項帶呼叫端提供的 approval_id 經 Manager 執行）＋續跑；
+  重驗失敗（approval 無效、版本已變、能力撤銷）一律 ``FAILED``（WAITING_APPROVAL 不能轉 SUCCEEDED）。否決路徑（E2）尚未實作。
 - 不直接發話（AL-4）：最終文字放在 ``LoopOutcome.text``，由呼叫端經 Output Gate 交付；``deliver_result`` 回報是否已交付，
   merge-back 只在已交付時寫入 ``result``。
 - ``max_parallel`` 預設 1（序列，行為與並行度無關的部分不變）。D1b 起真實 TaskManager 的 TC-3 放寬為同 Run 內
@@ -60,7 +62,12 @@ from uep.agent.trigger import LoopTrigger
 from uep.decision.loop_consult import advice_in_scope
 from uep.ids import new_id
 from uep.models.port import ChatMessage
-from uep.tasks.manager import IllegalTransition, StaleWorkerEpoch
+from uep.tasks.manager import (
+    ACTION_UNRESOLVED,
+    TOOL_VERSION_CHANGED,
+    IllegalTransition,
+    StaleWorkerEpoch,
+)
 from uep.tasks.states import RunStatus
 from uep.tools.catalog.decision import CONSULT_TAG, CONSULT_TOOL, INJECTED_CONSULT
 from uep.tools.gateway import INVALID_TOOL_ARGS, ToolGateway, visible_tools
@@ -252,9 +259,17 @@ class AgentLoop:
         st.cap = self._offer(st, st.cap)
         return self._drive(st, resume_fill=None)
 
-    def resume(self, run_id: str, checkpoint: Mapping[str, Any], *, trigger: LoopTrigger, parent_id: str) -> LoopOutcome:
+    def resume(
+        self, run_id: str, checkpoint: Mapping[str, Any], *, trigger: LoopTrigger, parent_id: str,
+        approvals: Mapping[str, str] | None = None,
+    ) -> LoopOutcome:
         """核准後的續行（呼叫端已 ``resume_run`` 取得新 epoch 並建構本物件）。重建 child 並驗 hash（失敗 ⇒ FAILED(context_lost)），
-        能力＝凍結集合 ∩ 當下投影（只收窄，AL-3），補齊缺少的工具結果後以新 attempt 續跑。"""
+        能力＝凍結集合 ∩ 當下投影（只收窄，AL-3），補齊缺少的工具結果後以新 attempt 續跑。
+
+        ``approvals``：``action_id -> approval_id``，由呼叫端（Approval 通道的結果）提供，只是「宣稱的對應」：approval 與 action 的
+        params_hash／target／scope、過期、是否已消耗一律交給 Manager 判定，迴圈不預判也不放寬。預檢只看能力與版本（不看 approval）：
+        pending 工具不在凍結集合或當下投影 ⇒ ``FAILED(capability_revoked)``；投影版本與凍結版本不同 ⇒ ``FAILED(tool_version_changed)``；
+        兩者都不續跑、不消耗 approval。pending 項缺 approval 或 approval 已過期 ⇒ 再次 park；其他 approval 問題 ⇒ ``FAILED(approval_invalid)``。"""
         semantic = checkpoint.get("next_step_semantic")
         if isinstance(semantic, str) and semantic.startswith("end:"):
             return self._resume_terminal(run_id, semantic, checkpoint, trigger, parent_id)
@@ -278,14 +293,42 @@ class AgentLoop:
                                  str(checkpoint["child_context_ref"]), counters)
             return self._guarded(st, lambda: self._finish(st, "failed", LoopReason.CONTEXT_LOST))
         prior = visible & frozenset(frozen)
-        cap = self._narrow(self._projector(tags, prior), frozen, prior)
+        projected = self._projector(tags, prior)  # 保留原始投影（_narrow 之前）供版本預檢
+        cap = self._narrow(projected, frozen, prior)
         st = self._new_state(run_id, trigger, parent_id, cap, frozen, tags, messages, str(checkpoint["child_context_ref"]), counters)
         st.step_id = str(checkpoint["step_id"])
         st.frozen_modalities = frozenset(str(m) for m in checkpoint["frozen_modalities"])
         st.frozen_platforms = frozenset(str(m) for m in checkpoint["frozen_platforms"])
         st.cap = self._offer(st, st.cap)
         st.consumed = list(checkpoint.get("consumed_action_ids") or ())
-        return self._drive(st, resume_fill=frozenset(checkpoint.get("pending_approvals") or ()))
+        pending = frozenset(checkpoint.get("pending_approvals") or ())
+        revoked = self._precheck_pending(st, projected, pending)
+        if revoked is not None:
+            return self._guarded(st, lambda: self._finish(st, "failed", revoked))
+        return self._guarded(st, lambda: self._drive_inner(st, pending, approvals or {}))
+
+    def _precheck_pending(self, st: _State, projected: Mapping[str, Any], pending: frozenset[str]) -> LoopReason | None:
+        """resume 預檢（只看能力與版本，不看 approval）：尚缺 tool 訊息的 pending 工具必須在凍結集合與當下投影內，且投影版本＝凍結版本。
+        不通過回對應原因碼（呼叫端結束 Run、不消耗 approval）；通過回 None。Manager 的 tool_version 檢查保留作最後一道防線。"""
+        if not pending:
+            return None
+        assistant = next((m for m in reversed(st.transcript) if m.role == "assistant" and m.tool_calls), None)
+        if assistant is None:
+            return None
+        done = {m.tool_call_id for m in st.transcript if m.role == "tool"}
+        step_id = st.step_id or ""
+        current = {t["tool"]: int(t.get("version", 1)) for t in projected.get("tools", ())}
+        for ordinal, call in enumerate(assistant.tool_calls):
+            if call["id"] in done or stable_action_id(st.run_id, step_id, ordinal) not in pending:
+                continue
+            name = call["name"]
+            if name not in st.frozen_tools or name not in current:
+                logger.warning("resume 預檢：pending 工具 %s 不在凍結集合或當下投影，Run 改轉 FAILED：run=%s", name, st.run_id)
+                return LoopReason.CAPABILITY_REVOKED
+            if current[name] != st.frozen_tools[name]:
+                logger.warning("resume 預檢：pending 工具 %s 版本已變，Run 改轉 FAILED：run=%s", name, st.run_id)
+                return LoopReason.TOOL_VERSION_CHANGED
+        return None
 
     def _resume_terminal(
         self, run_id: str, semantic: str, checkpoint: Mapping[str, Any], trigger: LoopTrigger, parent_id: str,
@@ -415,7 +458,7 @@ class AgentLoop:
             return LoopOutcome("stale", st.run_id, steps=st.counters.steps, tool_calls=st.counters.tool_calls)
 
     def _drive(self, st: _State, resume_fill: frozenset[str] | None) -> LoopOutcome:
-        return self._guarded(st, lambda: self._drive_inner(st, resume_fill))
+        return self._guarded(st, lambda: self._drive_inner(st, resume_fill, {}))
 
     def _finalize_stop(self, st: _State, outcome: LoopOutcome) -> LoopOutcome:
         if st.attempt_id:
@@ -492,9 +535,9 @@ class AgentLoop:
 
     # ───────────────────────── 內部：主迴圈 ─────────────────────────
 
-    def _drive_inner(self, st: _State, resume_fill: frozenset[str] | None) -> LoopOutcome:
+    def _drive_inner(self, st: _State, resume_fill: frozenset[str] | None, approvals: Mapping[str, str]) -> LoopOutcome:
         if resume_fill is not None:
-            parked = self._fill_missing(st, resume_fill)
+            parked = self._fill_missing(st, resume_fill, approvals)
             if parked is not None:
                 return parked
         while True:
@@ -513,7 +556,7 @@ class AgentLoop:
             st.transcript.append(ChatMessage("assistant", end.text))
             return self._finish(st, "completed", None, end.text)
         if end.kind == "park":
-            mark_parked(self._store, run_id=st.run_id, parent_id=st.parent_id)
+            self._park(st)
             return LoopOutcome(
                 "awaiting_approval", st.run_id, LoopReason.APPROVAL_REQUIRED, steps=st.counters.steps,
                 tool_calls=st.counters.tool_calls, pending_action_ids=end.pending,
@@ -532,6 +575,14 @@ class AgentLoop:
                 return self._finish(st, "failed", LoopReason.FINALIZE_FAILED)
             return self._finish(st, "failed", LoopReason.BUDGET_EXHAUSTED, detail=end.dim)
         return self._finish(st, "failed", LoopReason(end.reason or LoopReason.NO_PROGRESS))
+
+    def _park(self, st: _State) -> None:
+        """park 出口（checkpoint 已寫入之後）：``park_run`` 釋放 worker，再 mark_parked。回傳的 Run 若已不是本 epoch
+        （park 之前已被接手），拋 ``StaleWorkerEpoch`` 交給 ``_guarded``，不再標記 parked。"""
+        run = self._tasks.park_run(st.run_id, worker_epoch=self._epoch)
+        if run.worker_epoch != self._epoch:
+            raise StaleWorkerEpoch(f"run {st.run_id} 在 park 時已被接手")
+        mark_parked(self._store, run_id=st.run_id, parent_id=st.parent_id)
 
     def _escalate(self, st: _State, end: _End) -> LoopOutcome:
         """CN-3：結束本 Run（``FAILED(escalated)``，不回饋模型、不在同一個 Run 續做），並送出候選事件。"""
@@ -884,10 +935,19 @@ class AgentLoop:
 
     # ───────────────────────── 內部：resume 補齊 ─────────────────────────
 
-    def _fill_missing(self, st: _State, pending: frozenset[str]) -> LoopOutcome | None:
+    def _fill_missing(
+        self, st: _State, pending: frozenset[str], approvals: Mapping[str, str] | None = None,
+    ) -> LoopOutcome | None:
         """為最後一則 assistant 訊息中缺少 tool 訊息的呼叫補上結果：已核准的 pending 項經完整流程執行（冪等，
-        不重做已有 receipt 者）；凍結集合外 ⇒ blocked(tool_not_in_snapshot)；其餘同批後續項 ⇒ blocked(deferred_by_approval_wait)。
-        pending 項仍缺核准 ⇒ 再次 park（回 awaiting_approval）。"""
+        不重做已有 receipt 者）；pending 項在凍結集合外 ⇒ ``FAILED(capability_revoked)``；非 pending 的後續項在凍結集合外 ⇒
+        blocked(tool_not_in_snapshot)，其餘 ⇒ blocked(deferred_by_approval_wait)。
+        pending 項仍缺核准、或其 approval 已過期 ⇒ 再次 park（回 awaiting_approval，Run 維持 WAITING_APPROVAL）；
+        approval 有其他問題（不存在、已消耗、hash／target／scope 不符…）⇒ ``FAILED(approval_invalid)``；執行時工具版本已變 ⇒
+        ``FAILED(tool_version_changed)``。重驗失敗一律結束 Run：WAITING_APPROVAL 不能轉 SUCCEEDED。
+
+        **pending 最多一個**：需核准的工具是屏障（§6.4），批次裡第一個 ``approval_required`` 之後的項目全部 deferred，
+        所以 ``pending`` 至多一個 action，pending 項的終局（再 park／結束 Run）不會漏掉其他 pending。pending 項的各種
+        結果與原因碼見 ``_resume_pending``／``_pending_stop``。"""
         assistant = next((m for m in reversed(st.transcript) if m.role == "assistant" and m.tool_calls), None)
         if assistant is None:
             return None
@@ -898,30 +958,99 @@ class AgentLoop:
             if call["id"] in done:
                 continue
             action_id = stable_action_id(st.run_id, step_id, ordinal)
-            if call["name"] not in allowed:
+            if action_id in pending and call["name"] not in allowed:
+                # pending 項的能力已被撤銷或收窄（預檢理應已攔下，這裡是保險）：Run 此時仍是 WAITING_APPROVAL
+                # （這個 action 還沒執行，Run 尚未回 RUNNING），該狀態不能轉 SUCCEEDED（states.py），繼續跑只會在收尾
+                # 被拒並誤判成 unresolved_actions ⇒ 直接結束 Run。只限 pending 項：非 pending 的後續項是在 pending 項
+                # 執行（Run 已回 RUNNING、副作用可能已發生）之後才處理，被收窄時照舊回 blocked(tool_not_in_snapshot)
+                logger.warning("resume：pending 工具 %s 不在當下可見集合，Run 改轉 FAILED(capability_revoked)：run=%s", call["name"], st.run_id)
+                return self._finish(st, "failed", LoopReason.CAPABILITY_REVOKED)
+            elif call["name"] not in allowed:
                 view = self._blocked(TOOL_NOT_IN_SNAPSHOT)
             elif action_id in pending:
-                screened = self._core.screen_intent(
-                    run_id=st.run_id, step_id=step_id, ordinal=ordinal, capability_set=st.cap, tool=call["name"], args=call["args"],
-                )
-                if isinstance(screened, IntentResult):
-                    view = screened.view
-                else:
-                    res = self._core.create_screened(screened) or self._core.execute_screened(screened)
-                    if res.approval_required:
-                        self._checkpoint(st, f"await_approval:{action_id}", [action_id])
-                        mark_parked(self._store, run_id=st.run_id, parent_id=st.parent_id)
-                        return LoopOutcome(
-                            "awaiting_approval", st.run_id, LoopReason.APPROVAL_REQUIRED, steps=st.counters.steps,
-                            tool_calls=st.counters.tool_calls, pending_action_ids=(action_id,),
-                        )
-                    st.counters.tool_calls += 1
-                    if res.view.get("status") == "unknown":
-                        st.unresolved = True
-                    if res.record.action_id:
-                        st.consumed.append(res.record.action_id)
-                    view = res.view
+                outcome = self._resume_pending(st, ordinal, call, action_id, step_id, approvals or {})
+                if isinstance(outcome, LoopOutcome):
+                    return outcome
+                view = outcome
             else:
                 view = self._blocked(DEFERRED_BY_APPROVAL_WAIT)
             st.transcript.append(ChatMessage("tool", result_text(view), tool_call_id=call["id"]))
         return None
+
+    def _resume_pending(
+        self, st: _State, ordinal: int, call: Mapping[str, Any], action_id: str, step_id: str, approvals: Mapping[str, str],
+    ) -> LoopOutcome | Mapping[str, Any]:
+        """resume 時處理一個 pending 項：已執行（成功或失敗，有 receipt）⇒ 回 tool 視圖讓迴圈續跑；其餘一律不續跑，回終局。
+
+        不變量：**pending 最多一個**。需核准的工具是屏障（§6.4）：批次裡第一個 ``approval_required`` 之後的項目全部 deferred，
+        所以 checkpoint 的 ``pending_approvals`` 只會有那一個 action；因此這裡的終局（再 park／結束 Run）不會漏掉其他 pending。
+
+        沒有真的執行的結果（screen 被拒、建立被拒、參數 hash 不符、Presence 不足、TC-3 被擋、UNKNOWN）若放行續跑，Run 仍是
+        WAITING_APPROVAL，白喚醒一次模型，最後還會被補成 ``unresolved_actions``；所以直接結束 Run（原因碼見 ``_pending_stop``），
+        可重試的 ``PresenceRequired`` 與缺／過期核准一樣再次 park；不可重試的（階段 1.5，action 已 FAILED、核准已消耗）視為已執行且失敗。"""
+        screened = self._core.screen_intent(
+            run_id=st.run_id, step_id=step_id, ordinal=ordinal, capability_set=st.cap, tool=call["name"], args=call["args"],
+        )
+        if isinstance(screened, IntentResult):
+            res = screened
+        else:
+            res = self._core.create_screened(screened) or self._core.execute_screened(
+                screened, approval_id=approvals.get(action_id),
+            )
+        if res.record.reason == "PresenceRequired" and res.retryable is False:
+            # 階段 1.5 被擋（不可重試）：action 已是終態 FAILED、核准已消耗、Run 已回 RUNNING ⇒ 等同「已執行且失敗」，
+            # 回 failed 視圖續跑（與工具失敗一致），不再 park（再 park 會讓已消耗核准的 action 永遠等不到下一份核准）
+            st.counters.tool_calls += 1
+            st.consumed.append(action_id)
+            return self._gateway.result_view("failed")
+        stop = self._pending_stop(res)
+        if stop is None:  # 已執行（成功或失敗）：沿用既有計數續跑
+            st.counters.tool_calls += 1
+            st.consumed.append(action_id)
+            return res.view
+        if stop == "repark":
+            self._checkpoint(st, f"await_approval:{action_id}", [action_id])
+            self._park(st)
+            return LoopOutcome(
+                "awaiting_approval", st.run_id, LoopReason.APPROVAL_REQUIRED, steps=st.counters.steps,
+                tool_calls=st.counters.tool_calls, pending_action_ids=(action_id,),
+            )
+        logger.warning(
+            "resume：pending 項沒有執行，Run 改轉 FAILED(%s)：action=%s status=%s reason=%s",
+            stop.value, action_id, res.view.get("status"), res.record.reason,
+        )
+        return self._finish(st, "failed", stop)
+
+    @staticmethod
+    def _pending_stop(res: IntentResult) -> LoopReason | Literal["repark"] | None:
+        """pending 項的結果 -> 下一步：None＝已執行（續跑）、``"repark"``＝再 park、``LoopReason``＝結束 Run 的原因碼。
+
+        | 結果 | 原因碼 |
+        |---|---|
+        | 缺 approval／approval 過期／Presence 不足（可重試） | 再 park（``approval_required``） |
+        | 其他 ApprovalInvalid | ``approval_invalid`` |
+        | 執行時工具版本已變 | ``tool_version_changed`` |
+        | screen／建立被拒（Gateway、PolicyViolation） | ``intent_rejected`` |
+        | 參數 hash 不符 | ``params_mismatch`` |
+        | action 本身 UNKNOWN／EXECUTING（``block_code=action_unresolved``） | ``unresolved_actions`` |
+        | TC-3／其他 ActionBlocked、建立時的基礎設施錯誤 | ``action_blocked`` |
+        | UNKNOWN（executor 例外、結果未明） | ``unresolved_actions`` |
+        """
+        if res.block_code == TOOL_VERSION_CHANGED:
+            return LoopReason.TOOL_VERSION_CHANGED
+        if res.block_code == ACTION_UNRESOLVED:  # action 本身 UNKNOWN／EXECUTING：副作用可能已發生，不是單純被擋
+            return LoopReason.UNRESOLVED_ACTIONS
+        if res.approval_code is not None:
+            return "repark" if res.approval_code == "expired" else LoopReason.APPROVAL_INVALID
+        if res.approval_required or res.record.reason == "PresenceRequired":
+            return "repark"
+        status = res.view.get("status")
+        if res.record.action_id and status in ("ok", "failed"):
+            return None
+        if status == "unknown":
+            return LoopReason.UNRESOLVED_ACTIONS
+        if status == "rejected":
+            if res.record.reason == "params_hash_mismatch":
+                return LoopReason.PARAMS_MISMATCH
+            return LoopReason.INTENT_REJECTED
+        return LoopReason.ACTION_BLOCKED  # blocked（TC-3 等）或建立時的基礎設施錯誤

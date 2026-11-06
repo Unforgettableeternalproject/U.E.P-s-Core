@@ -91,6 +91,10 @@ class IntentResult:
     record: IntentRecord
     view: Mapping[str, Any]
     approval_required: bool = False
+    # 以下兩個欄位只在 resume 帶 approval 執行時才可能有值（加性、預設 None，legacy 輸出不變）
+    approval_code: str | None = None  # ``ApprovalInvalid.code``（not_found／consumed／expired／hash_mismatch…）
+    block_code: str | None = None  # ``ActionBlocked.code``（目前只有 ``tool_version_changed``）
+    retryable: bool | None = None  # ``PresenceRequired.retryable``：False ⇒ 階段 1.5 被擋，action 已 FAILED、核准已消耗
 
 
 class AgentCore:
@@ -256,17 +260,23 @@ class AgentCore:
         except (PolicyViolation, ParamsHashMismatch) as exc:
             code = getattr(exc, "code", None) or type(exc).__name__
             return self._status_result(item, "rejected", code, created=False)
-        except ActionBlocked:
-            return self._status_result(item, "blocked", "action_blocked", created=False)
+        except ActionBlocked as exc:
+            result = self._status_result(item, "blocked", "action_blocked", created=False)
+            return IntentResult(result.record, result.view, block_code=exc.code)
         except Exception as exc:  # noqa: BLE001  基礎設施錯誤：沒有建出 action
             logger.error("create_action 失敗：tool=%s error=%s", item.tool, type(exc).__name__)
             return self._status_result(item, "failed", type(exc).__name__, created=False)
         return None
 
-    def execute_screened(self, item: ScreenedIntent) -> IntentResult:
-        """執行已建立的 action。``ApprovalRequired`` 以 ``approval_required=True`` 回報（呼叫端 park），不自行建立或消耗 approval。"""
+    def execute_screened(self, item: ScreenedIntent, *, approval_id: str | None = None) -> IntentResult:
+        """執行已建立的 action。``ApprovalRequired`` 以 ``approval_required=True`` 回報（呼叫端 park），不自行建立或消耗 approval。
+
+        ``approval_id`` 是呼叫端（resume）提供的既有核准；是否與 action 的 params_hash／target／scope 吻合一律由
+        Manager 判定，這裡原樣轉交，不預判。``ApprovalInvalid`` 的 code 與「工具版本已變」放在 ``IntentResult`` 的
+        ``approval_code``／``block_code``。沒給 ``approval_id`` 時呼叫形式與先前完全相同。"""
+        extra = {} if approval_id is None else {"approval_id": approval_id}
         try:
-            outcome = self._tasks.execute_action(item.action_id, item.args, worker_epoch=self._worker_epoch)
+            outcome = self._tasks.execute_action(item.action_id, item.args, worker_epoch=self._worker_epoch, **extra)
         except StaleWorkerEpoch:
             raise
         except ParamsHashMismatch:
@@ -274,8 +284,15 @@ class AgentCore:
         except ApprovalRequired:
             result = self._status_result(item, "blocked", "ApprovalRequired")
             return IntentResult(result.record, result.view, approval_required=True)
-        except (ActionBlocked, PresenceRequired, ApprovalInvalid) as exc:
-            return self._status_result(item, "blocked", type(exc).__name__)
+        except ApprovalInvalid as exc:
+            result = self._status_result(item, "blocked", type(exc).__name__)
+            return IntentResult(result.record, result.view, approval_code=exc.code)
+        except ActionBlocked as exc:
+            result = self._status_result(item, "blocked", type(exc).__name__)
+            return IntentResult(result.record, result.view, block_code=exc.code)
+        except PresenceRequired as exc:
+            result = self._status_result(item, "blocked", type(exc).__name__)
+            return IntentResult(result.record, result.view, retryable=exc.retryable)
         except Exception as exc:  # noqa: BLE001  executor 例外：Manager 已把 action 標 UNKNOWN
             logger.error("execute_action 失敗：action=%s error=%s", item.action_id, type(exc).__name__)
             return self._status_result(item, "unknown", type(exc).__name__)

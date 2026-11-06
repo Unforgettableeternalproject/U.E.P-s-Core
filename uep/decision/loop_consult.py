@@ -268,13 +268,20 @@ def advice_in_scope(
 ) -> str | None:
     """CN-2 迴圈側再驗：advice 是否落在「凍結 ∩ 當下快照」內；回傳缺口碼，通過回 None。純函式。
 
-    語意與迴圈原本的 ``_recheck_escalation`` 完全相同（中樞已回 escalate 的分支仍由迴圈處理）：
-    advice 為 None 通過；placement、未知 sub_kind、區段不是剛好 ``ADVICE_SECTION`` 那一段 -> scope_exceeded；
-    output_modality 的 modalities 必須 ⊆ frozen["modalities"] ∩ snapshot["modalities"]（缺鍵視為空集合）。
-    不檢查 capability_tags（CN-2 契約有列，迴圈現況未納入，待裁決）。引擎的事前檢查（CN-1）是另一層，不走這裡。
+    advice 為 None 通過（沒有建議就沒有越權；中樞已回 escalate 的分支由迴圈先處理，不走這裡）。其餘依序檢查：
+    consult 標籤（``CONSULT_TAG``）必須在 frozen["capability_tags"] ∩ snapshot["capability_tags"] 內，任一方缺
+    ``capability_tags`` 鍵一律 fail-closed -> scope_exceeded；placement、未知 sub_kind、區段不是剛好
+    ``ADVICE_SECTION`` 那一段 -> scope_exceeded；output_modality 的 modalities 必須 ⊆ frozen["modalities"] ∩
+    snapshot["modalities"]（缺鍵視為空集合）。
+    目前 advice 的種類都不直接引用標籤，所以只驗 consult 標籤本身；之後 advice 若帶標籤／工具欄位，也須落在同一個
+    交集內。引擎的事前檢查（CN-1）是另一層，不走這裡。
     """
     if advice is None:
         return None
+    if "capability_tags" not in frozen or "capability_tags" not in snapshot:  # 缺鍵 fail-closed
+        return ESC_SCOPE_EXCEEDED
+    if CONSULT_TAG not in frozenset(frozen["capability_tags"]) & frozenset(snapshot["capability_tags"]):
+        return ESC_SCOPE_EXCEEDED
     section = ADVICE_SECTION.get(sub_kind)
     if sub_kind == "placement" or section is None or set(advice) != {section}:
         return ESC_SCOPE_EXCEEDED

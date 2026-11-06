@@ -35,7 +35,7 @@ from uep.decision.loop_consult import (
 from uep.tasks.states import RunStatus
 from uep.tools.catalog.decision import CONSULT_TAG, CONSULT_TOOL, consult_entry
 from uep.tools.executors.decision import ConsultResults, ConsultToolExecutor
-from uep.tools.gateway import ToolGateway
+from uep.tools.gateway import ToolGateway, visible_tools
 
 CTAGS = TAGS | {CONSULT_TAG}
 
@@ -251,6 +251,59 @@ def test_loop_rechecks_advice_outside_scope_and_treats_it_as_escalate():
     out = rig.run()
     assert (out.state, out.reason_code) == ("failed", "escalated") and rig.escalations[0].gap_code == "scope_exceeded"
     assert len(rig.runtime.rounds) == 1
+
+
+class _NarrowAfterConsult:
+    """包住 executor：consult 跑完後，投影器不再給 consult 標籤（執行期間能力被收窄）。"""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.narrowed = False
+
+    def execute(self, call_):
+        res = self.inner.execute(call_)
+        self.narrowed = True
+        return res
+
+
+def _narrowing_rig(rounds, **kw):
+    base = projector_for(make_registry(consult_entry()))
+    holder: dict = {}
+    rig = CRig(rounds, projector=lambda tags, prior: base(TAGS if holder["gate"].narrowed else CTAGS, prior), **kw)
+    holder["gate"] = rig.tasks.executors[CONSULT_TOOL] = _NarrowAfterConsult(rig.spy)
+    return rig
+
+
+def test_capability_narrowed_during_consult_escalates_on_recheck(monkeypatch):
+    rig = _narrowing_rig([Round("", (consult(goal_satisfied=True),)), Round("不該到這裡")])
+    out = rig.run()
+    assert (out.state, out.reason_code) == ("failed", "escalated") and rig.escalations[0].gap_code == "scope_exceeded"
+    assert len(rig.runtime.rounds) == 1
+
+    # 證明檢查有效：改回只看 st.cap 的 _snapshot_tags（舊行為）時，同一情境不會 escalate
+    monkeypatch.setattr(AgentLoop, "_projection_tags", lambda self, st: self._snapshot_tags(st))
+    old = _narrowing_rig([Round("", (consult(goal_satisfied=True),)), Round("完成")])
+    out = old.run()
+    assert out.state == "completed" and old.escalations == []
+
+
+def test_consult_removed_by_budget_is_not_a_capability_narrowing(monkeypatch):
+    def rounds():
+        return [Round("", (consult("speak", user_present=True, result_ready=True),)), Round("完成")]
+
+    rig = CRig(rounds(), budget=LoopBudget(max_consults=1, repeat_limit=99))
+    out = rig.run()
+    assert out.state == "completed" and rig.escalations == [] and len(rig.spy.params) == 1
+    assert CONSULT_TOOL not in rig.runtime.round_caps[-1]  # 預算讓 _offer 拿掉了 consult，但能力沒有收窄
+
+    # 反面：若再驗改用經過 _offer 的投影，這個預算移除會被誤判成收窄而 escalate
+    def via_offer(self, st):
+        prior = visible_tools(st.cap)
+        return self._cap_tags(self._offer(st, self._narrow(self._projector(st.frozen_tags, prior), st.frozen_tools, prior)))
+
+    monkeypatch.setattr(AgentLoop, "_projection_tags", via_offer)
+    wrong = CRig(rounds(), budget=LoopBudget(max_consults=1, repeat_limit=99))
+    assert wrong.run().reason_code == "escalated"
 
 
 def test_consult_result_never_widens_capability_set():

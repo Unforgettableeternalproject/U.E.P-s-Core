@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.uep.loop_support import Round, projector_for
+from tests.uep.loop_support import TAGS, Round, projector_for
 from tests.uep.test_agent_loop import (
     RUN,
     Rig,
@@ -334,6 +334,7 @@ def _res(status, *, reason=None, action_id="act_1", **extra):
     (_res("blocked", reason="ApprovalRequired", approval_required=True), "repark"),
     (_res("blocked", reason="PresenceRequired"), "repark"),
     (_res("blocked", reason="PresenceRequired", retryable=True), "repark"),
+    (_res("blocked", reason="tool_not_ready", action_id=None), "repark"),
     (_res("ok"), None),
     (_res("failed"), None),  # 已執行但工具失敗
     (_res("unknown", reason="ConnectionError"), "unresolved_actions"),
@@ -386,3 +387,36 @@ def test_pending_action_already_unknown_ends_run_with_unresolved_actions():
     out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
     _assert_ended_without_waking_model(rig, out, "unresolved_actions")
     assert rig.tasks.approvals["appr_ok"].consumed_by is None
+
+
+def test_pending_tool_not_ready_parks_again_and_a_later_resume_completes():
+    """resume 時 pending 的工具被 Gateway 以 tool_not_ready 擋下（模組暖機中）：未建 action、核准未消耗 ⇒ 再 park，
+    不讓 Run 失敗；模組轉 ready 後同一份核准可以完成。（用過期的投影模擬「預檢之後才轉非 ready」；
+    投影本身已排除非 ready 工具時，預檢會先以 capability_revoked 攔下。）"""
+    from tests.uep.test_tool_registry import _POST, make_entry
+    from uep.tools.registry import ToolRegistry
+
+    registry = ToolRegistry.build([
+        make_entry("read.lone"), make_entry("post.mod", spec=dict(_POST), requires=("mod:b",)),
+    ], known_modules=["mod:b"])
+    cap = projector_for(registry)(TAGS, None)
+    stale = lambda tags, prior: cap
+    rig = Rig([Round("先查再發", (call("read.lone", "1"), call("post.mod", "2"))), Round("全部完成")],
+              registry=registry, projector=stale, budget=LoopBudget(repeat_limit=99))
+    assert rig.run().state == "awaiting_approval"
+    action = stable_action_id(RUN, "step_1", 1)
+    checkpoint = _park_checkpoint(rig)
+    rig.tasks.grant("appr_ok", action)
+    assert registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    parks_before = len(rig.tasks.park_calls)
+
+    out = _resume(rig, checkpoint, {action: "appr_ok"}, projector=stale)
+    assert (out.state, out.reason_code, out.pending_action_ids) == ("awaiting_approval", "approval_required", (action,))
+    assert len(rig.tasks.park_calls) == parks_before + 1 and rig.last_runtime.requests == []
+    assert rig.tasks.approvals["appr_ok"].consumed_by is None and action not in rig.tasks.outcomes
+    assert rig.tasks.run_status == []  # 沒有失敗
+
+    assert registry.apply_module_event("module.ready", {"module_id": "mod:b", "revision": 2})
+    done = _resume(rig, _park_checkpoint(rig), {action: "appr_ok"}, epoch=3, projector=stale)
+    assert done.state == "completed" and rig.tasks.approvals["appr_ok"].consumed_by == action
+    assert [t for _, t in rig.tasks.executions] == ["read.lone", "post.mod"]

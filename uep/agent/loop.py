@@ -70,7 +70,12 @@ from uep.tasks.manager import (
 )
 from uep.tasks.states import RunStatus
 from uep.tools.catalog.decision import CONSULT_TAG, CONSULT_TOOL, INJECTED_CONSULT
-from uep.tools.gateway import INVALID_TOOL_ARGS, ToolGateway, visible_tools
+from uep.tools.gateway import (
+    INVALID_TOOL_ARGS,
+    TOOL_NOT_READY,
+    ToolGateway,
+    visible_tools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1045,7 +1050,7 @@ class AgentLoop:
 
         | 結果 | 原因碼 |
         |---|---|
-        | 缺 approval／approval 過期／Presence 不足（可重試） | 再 park（``approval_required``） |
+        | 缺 approval／approval 過期／Presence 不足（可重試）／``tool_not_ready``（Gateway 擋下，未建 action） | 再 park（``approval_required``） |
         | 其他 ApprovalInvalid | ``approval_invalid`` |
         | 執行時工具版本已變 | ``tool_version_changed`` |
         | screen／建立被拒（Gateway、PolicyViolation） | ``intent_rejected`` |
@@ -1060,8 +1065,8 @@ class AgentLoop:
             return LoopReason.UNRESOLVED_ACTIONS
         if res.approval_code is not None:
             return "repark" if res.approval_code == "expired" else LoopReason.APPROVAL_INVALID
-        if res.approval_required or res.record.reason == "PresenceRequired":
-            return "repark"
+        if res.approval_required or res.record.reason in ("PresenceRequired", TOOL_NOT_READY):
+            return "repark"  # 暫時性（Presence／模組暖機）：核准沒被消耗，恢復後同一份核准可再用
         status = res.view.get("status")
         if res.record.action_id and status in ("ok", "failed"):
             return None

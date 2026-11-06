@@ -17,7 +17,6 @@ import ast
 import json
 from pathlib import Path
 
-import pytest
 
 from uep.decision import (
     DecisionHub,
@@ -36,6 +35,7 @@ from uep.decision.contracts import (
     plan_from_dict,
     plan_to_dict,
 )
+from uep.decision.hub import REASON_PLAN_SECTION_REJECTED
 from uep.decision.policy_publish import (
     KIND_CHANNEL_MODE,
     KIND_POLICY_SNAPSHOT,
@@ -127,11 +127,21 @@ class _PolicyEngine:
         )
 
 
-def test_non_whitelisted_kind_with_policy_is_rejected():
+def test_non_whitelisted_kind_with_policy_is_stripped_to_fallback():
     hub = DecisionHub()
-    hub.register(DecisionPointSpec(kind="other.kind", mode="sync", outcomes=("o",)), _PolicyEngine())
-    with pytest.raises(ValueError, match="policy"):
-        hub.decide("other.kind", DecisionRequest(request_id="r", kind="other.kind"))
+    seen = []
+    hub.add_observer(lambda req, res, spec, ms: seen.append(res))
+    hub.register(
+        DecisionPointSpec(kind="other.kind", mode="sync", outcomes=("o",), on_invalid_reason="bad_section"),
+        _PolicyEngine(),
+    )
+    result = hub.decide("other.kind", DecisionRequest(request_id="r", kind="other.kind"))  # 不拋例外
+    assert result.fallback and result.reason_code == "bad_section" and result.outcome == "o"
+    assert result.plan.policy is None
+    assert seen == [result]  # 觀察者看得到這筆 fallback
+    hub.register(DecisionPointSpec(kind="bare.kind", mode="sync", outcomes=("o",)), _PolicyEngine())
+    bare = hub.decide("bare.kind", DecisionRequest(request_id="r", kind="bare.kind"))
+    assert bare.fallback and bare.reason_code == REASON_PLAN_SECTION_REJECTED and bare.plan.policy is None
     hub.register(
         DecisionPointSpec(kind="ok.kind", mode="sync", outcomes=("o",), plan_sections=("policy",)), _PolicyEngine()
     )

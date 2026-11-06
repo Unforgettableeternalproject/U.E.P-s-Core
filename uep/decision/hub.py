@@ -8,12 +8,16 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Protocol
 
 from uep.decision.contracts import DecisionRequest, DecisionResult
 from uep.decision.registry import DecisionPointRegistry, DecisionPointSpec
 
 logger = logging.getLogger("uep.decision.hub")
+
+# spec 未設 on_invalid_reason 時，非白名單區段被剝除的預設 reason_code
+REASON_PLAN_SECTION_REJECTED = "plan_section_rejected"
 
 # 觀察者：decide 成功後以（request, result, spec, elapsed_ms）呼叫；必須非阻塞（如只丟進佇列），例外一律吞掉
 DecisionObserver = Callable[[DecisionRequest, DecisionResult, DecisionPointSpec, int], None]
@@ -82,7 +86,12 @@ class DecisionHub:
         started = time.perf_counter()
         result = self._engines[kind].decide(request)
         if result.plan is not None and result.plan.policy is not None and "policy" not in spec.plan_sections:
-            raise ValueError(f"決策點 {kind} 不得帶 policy 區段（plan_sections 未宣告）")
+            # 中樞原則：失敗回 fallback、不拋例外；剝除違規區段並照常通知觀察者（只記 kind 與 engine id，不記內容）
+            logger.warning("決策點 %s 的 engine %s 帶了未宣告的 policy 區段，已剝除", kind, result.engine.id)
+            result = replace(
+                result, plan=replace(result.plan, policy=None), fallback=True,
+                reason_code=spec.on_invalid_reason or REASON_PLAN_SECTION_REJECTED,
+            )
         if self._observers:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             for observer in tuple(self._observers):

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -42,10 +43,12 @@ class Clock:
 
 
 class Env:
-    def __init__(self, session_factory, *, run_deadline=None, task_deadline=None, approval_expiry=None) -> None:
+    def __init__(
+        self, session_factory, *, run_deadline=None, task_deadline=None, approval_expiry=None, executor=None,
+    ) -> None:
         self.sf = session_factory
         self.clock = Clock()
-        self.executor = StubExecutor()
+        self.executor = executor or StubExecutor()
         self.mgr = make_manager(session_factory, self.executor, clock=self.clock, heartbeat_stale_after=timedelta(seconds=60))
         self.task = self.mgr.create_task(
             persona_id="uep", goal="整理報告", owner_actor_id="owner", scope_ref=SCOPE, policy=POLICY, deadline=task_deadline,
@@ -171,6 +174,60 @@ def test_force_increments_worker_epoch_so_a_slow_worker_is_fenced_off(session_fa
     with pytest.raises(StaleWorkerEpoch):
         env.mgr.execute_action(action.action_id, {"n": 1}, worker_epoch=env.epoch)
     assert env.executor.calls == []
+
+
+class GatedExecutor(StubExecutor):
+    """execute 卡在 gate 上，讓 action 停在 EXECUTING（worker 在階段 2 呼叫 executor）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.gate = threading.Event()
+
+    def execute(self, call):
+        self.entered.set()
+        assert self.gate.wait(10), "gate 逾時"
+        return super().execute(call)
+
+
+def test_force_while_the_worker_is_in_phase_2_keeps_the_late_receipt_and_leaves_the_action_unknown(session_factory):
+    """T-9：force 當下 worker 還在 executor 裡。force 之後 worker 醒來進階段 3：舊 epoch 的 receipt 只入庫、不推進狀態
+    （``_finish_execution`` 的 epoch 不符分支回 ``ActionOutcome(UNKNOWN, executed=True, stored receipt)``，不拋 StaleWorkerEpoch）；
+    之後 ``resolve_unknown`` 依已驗證 receipt 把 action 推進到 SUCCEEDED。"""
+    from uep.tasks.models import ReceiptRow
+
+    executor = GatedExecutor()
+    env = Env(session_factory, executor=executor)
+    step = env.mgr.begin_step(env.run.run_id, "work", worker_epoch=env.epoch)
+    action = add_action(env.mgr, env.run, step, {"n": 1})
+    result: dict = {}
+
+    def worker():
+        try:
+            result["outcome"] = env.mgr.execute_action(action.action_id, {"n": 1}, worker_epoch=env.epoch)
+        except BaseException as exc:  # noqa: BLE001  由下方斷言檢查
+            result["error"] = exc
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert executor.entered.wait(10)
+    assert env.mgr.get_action(action.action_id).status == ActionStatus.EXECUTING.value
+    env.mgr.force_transition_run(env.run.run_id, RunStatus.FAILED, reason="run_deadline")
+    assert env.mgr.get_action(action.action_id).status == ActionStatus.UNKNOWN.value
+    assert env.run_row().worker_epoch == env.epoch + 1
+
+    executor.gate.set()
+    thread.join(10)
+    assert "error" not in result  # 階段 3 不拋 StaleWorkerEpoch
+    outcome = result["outcome"]
+    assert outcome.status is ActionStatus.UNKNOWN and outcome.receipt is not None
+    with session_factory() as s:
+        receipt = s.scalar(select(ReceiptRow).where(ReceiptRow.action_id == action.action_id))
+    assert receipt is not None and receipt.worker_epoch == env.epoch  # 舊 epoch 的證據入庫
+    assert env.mgr.get_action(action.action_id).status == ActionStatus.UNKNOWN.value  # 狀態不被舊 epoch 推進
+    resolved = env.mgr.resolve_unknown(action.action_id)
+    assert resolved.status is ActionStatus.SUCCEEDED
+    assert executor.calls.count(action.action_id) == 1  # 副作用只發生一次
 
 
 # ---- request_cancel ----

@@ -23,6 +23,7 @@ class LoopReason(StrEnum):
     UNRESOLVED_ACTIONS = "unresolved_actions"
     EMPTY_RESULT = "empty_result"
     APPROVAL_REQUIRED = "approval_required"
+    CAPABILITY_REVOKED = "capability_revoked"
     SNAPSHOT_MISSING = "snapshot_missing"
     STREAM_ENDED = "runtime_stream_ended"
     FINALIZE_TOOL_INTENT = "finalize_tool_intent"

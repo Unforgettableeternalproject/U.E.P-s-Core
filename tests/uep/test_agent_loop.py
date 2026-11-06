@@ -487,18 +487,22 @@ def test_resume_never_widens_and_drops_tools_missing_from_snapshot():
     rig = _park_rig()
     rig.run()
     checkpoint = _park_checkpoint(rig)
-    checkpoint["pending_approvals"] = []  # 核准路徑屬 E：這裡只驗證集合收窄與補齊
+    checkpoint["pending_approvals"] = []
     base = projector_for(rig.registry)
 
     def wide(tags, prior):
         # 當下投影「更寬」（忽略 prior、給全部標籤）；post.ask 已不在當下投影
         return {"tools": [t for t in base(TAGS, None)["tools"] if t["tool"] != "post.ask"]}
 
-    out = _crash(rig, rounds=[Round("完成")], projector=wide).resume(
+    # 同批的 post.ask 已不在當下可見集合：Run 仍是 WAITING_APPROVAL（不能 SUCCEEDED），所以直接 FAILED(capability_revoked)，
+    # 不是 blocked 後續跑（那樣收尾會被拒並誤判成 unresolved_actions）；模型 0 次呼叫、不新增副作用
+    out = _crash(rig, rounds=[Round("不該到這裡")], projector=wide).resume(
         RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent",
     )
-    assert out.state == "completed" and [t for _, t in rig.tasks.executions] == ["read.lone"]
-    assert "post.ask" not in rig.last_runtime.round_caps[0]
+    assert (out.state, out.reason_code) == ("failed", "capability_revoked")
+    assert rig.last_runtime.requests == []
+    assert [t for _, t in rig.tasks.executions] == ["read.lone"] and rig.tasks.run_status == [RunStatus.FAILED]
+    assert rig.tasks.checkpoints[-1]["next_step_semantic"] == "end:capability_revoked"
 
 
 def test_narrowed_set_survives_park_and_resume():
@@ -519,6 +523,7 @@ def test_narrowed_set_survives_park_and_resume():
     checkpoint = _park_checkpoint(rig)
     assert "read.b" not in checkpoint["visible_tools"] and "read.b" in checkpoint["frozen_tools"]
     checkpoint["pending_approvals"] = []  # 讓 resume 一路補齊後真的起新 attempt
+    rig.tasks.waiting_approval = False  # 本測試只驗收窄；視為核准已讓 Run 回 RUNNING（否則 WAITING_APPROVAL 不能 SUCCEEDED）
     out = _crash(rig, rounds=[Round("完成")], projector=base).resume(  # 當下投影「又變寬」
         RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent",
     )

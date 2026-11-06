@@ -99,6 +99,7 @@ class FakeTasks:
         self.contents: dict[str, str] = {}
         self.executors: dict[str, Any] = {}  # tool -> 真正的 ToolExecutor（例如 decision.consult 的 executor）；沒設定就用 behaviors
         self.unknown: set[str] = set()  # executor 失聯而持久化為 UNKNOWN 的 action
+        self.waiting_approval = False  # 真實 Run 在 ApprovalRequired 後為 WAITING_APPROVAL；有 action 成功進入執行才回 RUNNING
         self.executing: dict[str, str] = {}  # 進行中的 action_id -> concurrency（TC-3 守衛用）
         self.executions: list[tuple[str, str]] = []  # (action_id, tool)：真正執行副作用的紀錄
         self.fail_tools: set[str] = set()  # 這些工具的 action 以 FAILED 收尾（receipt succeeded=False）
@@ -143,6 +144,8 @@ class FakeTasks:
             if worker_epoch != self.epoch:
                 logger.warning("忽略舊 worker_epoch 的 Run 轉移")  # 與真實 transition_run 相同：只記錄、不拋例外
                 return
+            if to is RunStatus.SUCCEEDED and self.waiting_approval:
+                raise IllegalTransition("Run 為 WAITING_APPROVAL，不可轉 SUCCEEDED（states.py）")
             if to is RunStatus.SUCCEEDED and self.unknown:
                 raise IllegalTransition("仍有結果未明的 action，不可轉 SUCCEEDED")
             self.run_status.append(to)
@@ -173,7 +176,9 @@ class FakeTasks:
                 raise ActionBlocked(f"同一 Run 已有 EXECUTING 的 action，不可再進入執行（TC-3，{concurrency}）")
             # 與真實 Manager 同序：先 TC-3 檢查，再判斷核准（被 TC-3 擋下時核准不被消耗）
             if self.registry.entry(tool).spec.approval_level != "none":
+                self.waiting_approval = True
                 raise ApprovalRequired(action_id)  # 沒有 approval_id 的執行路徑（核准後執行屬切片 E）
+            self.waiting_approval = False  # 真實 Manager：進入執行時 _back_to_running
             self.executing[action_id] = concurrency
         try:
             return self._run_action(action_id, tool, params)

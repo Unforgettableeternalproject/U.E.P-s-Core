@@ -886,7 +886,7 @@ class AgentLoop:
 
     def _fill_missing(self, st: _State, pending: frozenset[str]) -> LoopOutcome | None:
         """為最後一則 assistant 訊息中缺少 tool 訊息的呼叫補上結果：已核准的 pending 項經完整流程執行（冪等，
-        不重做已有 receipt 者）；凍結集合外 ⇒ blocked(tool_not_in_snapshot)；其餘同批後續項 ⇒ blocked(deferred_by_approval_wait)。
+        不重做已有 receipt 者）；凍結集合外 ⇒ ``FAILED(capability_revoked)``；其餘同批後續項 ⇒ blocked(deferred_by_approval_wait)。
         pending 項仍缺核准 ⇒ 再次 park（回 awaiting_approval）。"""
         assistant = next((m for m in reversed(st.transcript) if m.role == "assistant" and m.tool_calls), None)
         if assistant is None:
@@ -899,7 +899,10 @@ class AgentLoop:
                 continue
             action_id = stable_action_id(st.run_id, step_id, ordinal)
             if call["name"] not in allowed:
-                view = self._blocked(TOOL_NOT_IN_SNAPSHOT)
+                # 能力已被撤銷或收窄到不含此工具：Run 此時仍是 WAITING_APPROVAL（尚未有任何 action 執行而回 RUNNING），
+                # 該狀態不能轉 SUCCEEDED（states.py），繼續跑只會在收尾被拒並誤判成 unresolved_actions ⇒ 直接結束 Run
+                logger.warning("resume：工具 %s 不在當下可見集合，Run 改轉 FAILED(capability_revoked)：run=%s", call["name"], st.run_id)
+                return self._finish(st, "failed", LoopReason.CAPABILITY_REVOKED)
             elif action_id in pending:
                 screened = self._core.screen_intent(
                     run_id=st.run_id, step_id=step_id, ordinal=ordinal, capability_set=st.cap, tool=call["name"], args=call["args"],

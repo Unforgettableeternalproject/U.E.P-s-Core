@@ -348,6 +348,7 @@ def test_replay_and_resume_keep_the_same_decision_id_without_recomputing():
                            side_effect_class="internal_read", idempotency="native"))
     assert fresh.results.get(action)["decision_id"] == decision_id
     checkpoint["pending_approvals"] = []
+    rig.tasks.waiting_approval = False  # 本測試只驗 consult 重放；視為核准已讓 Run 回 RUNNING
     loop = rig.new_loop(runtime=type(rig.runtime)([Round("完成")]), worker_epoch=2, consults=fresh.results)
     out = loop.resume(RUN, checkpoint, trigger=trigger(tags=CTAGS), parent_id="ctx_parent")
     assert out.state == "completed" and rig.consult_messages()[0].content == before

@@ -253,6 +253,53 @@ def test_request_cancel_is_idempotent_and_ignores_terminal_runs(session_factory)
     assert env2.run_row().cancel_requested_at is None
 
 
+def test_step_timeout_flag_is_upgraded_to_a_deadline_reason(session_factory):
+    env = Env(session_factory, run_deadline=T0 + timedelta(seconds=10))
+    assert env.mgr.request_cancel(env.run.run_id, "step_timeout") is True
+    first = env.run_row().cancel_requested_at
+    env.sup.tick(env.clock.now)  # run_deadline 未到：維持 step_timeout
+    assert env.run_row().cancel_reason == "step_timeout"
+    stats = env.sup.tick(env.clock.advance(11))  # run_deadline 到期：升級，grace 從升級時起算，心跳新鮮 => 不 force
+    row = env.run_row()
+    assert (stats.cancel_requested, stats.forced) == (1, 0)
+    assert row.cancel_reason == "run_deadline" and row.cancel_requested_at > first
+    signal = env.mgr.heartbeat(env.run.run_id, worker_epoch=env.epoch)
+    assert signal == CancelSignal("run_deadline", row.cancel_requested_at)
+    final = env.sup.tick(env.clock.advance(31))
+    assert (final.forced, final.tasks_failed) == (1, 1)
+
+
+def test_request_cancel_only_upgrades_step_timeout_to_a_deadline_reason(session_factory):
+    env = Env(session_factory)
+    assert env.mgr.request_cancel(env.run.run_id, "step_timeout") is True
+    assert env.mgr.request_cancel(env.run.run_id, "step_timeout") is False  # 同為 step_timeout：不覆寫
+    assert env.mgr.request_cancel(env.run.run_id, "task_deadline") is True  # 升級
+    stamp = env.run_row().cancel_requested_at
+    env.clock.advance(10)
+    for reason in ("step_timeout", "run_deadline", "task_deadline"):  # deadline 類旗標不被任何原因覆寫
+        assert env.mgr.request_cancel(env.run.run_id, reason) is False
+    row = env.run_row()
+    assert row.cancel_reason == "task_deadline" and row.cancel_requested_at == stamp
+
+
+def test_illegal_force_rolls_back_epoch_and_action_changes(session_factory):
+    """非法轉移（Run 已 SUCCEEDED）：force 拋 IllegalTransition，同交易內的 epoch 遞增與 EXECUTING -> UNKNOWN 一併回滾。"""
+    from uep.tasks.manager import IllegalTransition
+
+    env = Env(session_factory)
+    step = env.mgr.begin_step(env.run.run_id, "work", worker_epoch=env.epoch)
+    action = add_action(env.mgr, env.run, step, {"n": 1})
+    env.mgr.transition_run(env.run.run_id, RunStatus.SUCCEEDED, worker_epoch=env.epoch)
+    with session_factory.begin() as s:  # 製造「Run 已成功卻仍有 EXECUTING action」
+        s.execute(update(ActionIntentRow).where(ActionIntentRow.action_id == action.action_id).values(status="EXECUTING"))
+    epoch = env.run_row().worker_epoch
+    with pytest.raises(IllegalTransition):
+        env.mgr.force_transition_run(env.run.run_id, RunStatus.FAILED, reason="run_deadline")
+    assert env.run_row().worker_epoch == epoch
+    assert env.mgr.get_action(action.action_id).status == ActionStatus.EXECUTING.value
+    assert env.events("action.unknown") == []
+
+
 def test_request_cancel_does_not_check_worker_epoch_and_changes_no_status(session_factory):
     env = Env(session_factory)
     env.mgr.resume_run(env.run.run_id, stale_after=timedelta(0))  # epoch 已被取代

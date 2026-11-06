@@ -61,8 +61,12 @@ class FakeManager:
     def request_cancel(self, run_id, reason):
         self._maybe_fail("request_cancel")
         run = self.runs[run_id]
-        if run.status in ("FAILED", "SUCCEEDED", "CANCELLED") or run.cancel_requested_at is not None:
+        if run.status in ("FAILED", "SUCCEEDED", "CANCELLED"):
             return False
+        if run.cancel_requested_at is not None and not (
+            run.cancel_reason == "step_timeout" and reason.value in ("run_deadline", "task_deadline")
+        ):
+            return False  # 與真實 Manager 一致：只有 step_timeout -> deadline 類可以升級覆寫
         run.cancel_requested_at, run.cancel_reason = self.now, reason.value
         self.calls.append(("request_cancel", run_id, reason.value))
         return True
@@ -199,6 +203,32 @@ def test_step_timeout_flag_never_fails_the_run():
     run = manager.add(beat=T0 - timedelta(hours=1))  # 心跳早就過期也不 force：step_timeout 只取消 Step
     run.cancel_requested_at, run.cancel_reason = T0 - timedelta(hours=1), "step_timeout"
     assert sup.tick(T0).forced == 0 and manager.runs["run_1"].status == "RUNNING"
+
+
+def test_step_timeout_flag_is_upgraded_when_the_run_deadline_arrives():
+    """step_timeout 旗標不能把 deadline 擋掉：run_deadline 到期時升級成 deadline 類旗標，並照 deadline 流程處理。"""
+    manager, sup, _ = make()
+    run = manager.add(run_deadline=T0 + timedelta(seconds=10), beat=T0)
+    run.cancel_requested_at, run.cancel_reason = T0 - timedelta(seconds=5), "step_timeout"
+    early = sup.tick(T0)  # run_deadline 還沒到：維持 step_timeout，不 force
+    assert (early.cancel_requested, early.forced) == (0, 0) and manager.runs["run_1"].cancel_reason == "step_timeout"
+    manager.runs["run_1"].worker_heartbeat_at = T0 + timedelta(seconds=11)
+    upgraded = sup.tick(at(manager, 11))
+    assert upgraded.cancel_requested == 1 and upgraded.forced == 0  # 升級那一輪起算 grace，心跳新鮮 => 不 force
+    row = manager.runs["run_1"]
+    assert row.cancel_reason == "run_deadline" and row.cancel_requested_at == T0 + timedelta(seconds=11)
+    manager.runs["run_1"].worker_heartbeat_at = T0 + timedelta(seconds=41)
+    final = sup.tick(at(manager, 42))  # 升級後超過 grace
+    assert (final.forced, final.tasks_failed) == (1, 1) and ("force", "run_1", "FAILED", "run_deadline") in manager.calls
+
+
+def test_deadline_flag_is_never_overwritten_by_another_reason():
+    manager, sup, _ = make()
+    run = manager.add(run_deadline=T0 - timedelta(seconds=1), task_deadline=T0 - timedelta(seconds=1), beat=T0)
+    run.cancel_requested_at, run.cancel_reason = T0 - timedelta(seconds=5), "task_deadline"
+    stats = sup.tick(T0)
+    assert stats.cancel_requested == 0 and "request_cancel" not in names(manager)  # 兩個 deadline 都到期，仍不覆寫
+    assert manager.runs["run_1"].cancel_reason == "task_deadline"
 
 
 def test_paused_run_is_not_cancelled_by_deadline():

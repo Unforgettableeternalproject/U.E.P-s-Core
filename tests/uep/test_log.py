@@ -167,6 +167,10 @@ def test_context_injected_nested_and_not_leaked_across_threads(capture):
         ("Authorization: Bearer abc.def-123", "Authorization: Bearer ***"),
         ('{"secret": "hunter2"}', '{"secret": "***"}'),
         ("max_tokens=100 tokens: 5", "max_tokens=100 tokens: 5"),
+        ("access_token=a1 refresh_token=b2", "access_token=*** refresh_token=***"),
+        ("UEP_STOP_TOKEN=zz client_secret=yy db_password=xx", "UEP_STOP_TOKEN=*** client_secret=*** db_password=***"),
+        ("ACCESS_TOKEN=Up", "ACCESS_TOKEN=***"),
+        ("tokens_used=3 max_tokens=100", "tokens_used=3 max_tokens=100"),
     ],
 )
 def test_redact(raw, expected):

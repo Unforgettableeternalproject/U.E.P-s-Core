@@ -182,7 +182,7 @@ def current_context() -> dict[str, Any]:
 
 # ---- 遮罩 ----
 
-_REDACT_KV = re.compile(r"""(?i)\b(api[_-]?key|token|secret|password)\b(\s*=\s*|["']\s*:\s*)(["']?)[^\s,;&"')\]}]+""")
+_REDACT_KV = re.compile(r"""(?i)\b([\w-]*?(?:api[_-]?key|token|secret|password))\b(\s*=\s*|["']\s*:\s*)(["']?)[^\s,;&"')\]}]+""")
 _REDACT_BEARER = re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]{4,}")
 
 

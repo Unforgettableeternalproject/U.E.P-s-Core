@@ -32,6 +32,14 @@ class PauseReason(StrEnum):
     CORE_SHUTDOWN = "core_shutdown"
 
 
+class CancelReason(StrEnum):
+    """Run 取消旗標的原因（SV-2）：只有 run_deadline／task_deadline 使 Run 失敗；step_timeout 只取消卡住的 Step。"""
+
+    RUN_DEADLINE = "run_deadline"
+    TASK_DEADLINE = "task_deadline"
+    STEP_TIMEOUT = "step_timeout"
+
+
 class InterruptPolicy(StrEnum):
     INTERRUPTIBLE = "interruptible"
     CHECKPOINT_ONLY = "checkpoint_only"

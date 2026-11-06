@@ -98,6 +98,7 @@ class FakeTasks:
         self.steps: list[SimpleNamespace] = []
         self.checkpoints: list[dict[str, Any]] = []
         self.heartbeats = 0
+        self.cancel_signal = None  # 測試可設成 CancelSignal（SV-2）；AgentLoop 目前忽略回傳值（F-4 才讀）
         self.log: list[str] = []  # 寫入類操作的順序（checkpoint／transition），驗證耐久順序用
         self.stale_on_heartbeat = False
         self.run_status: list[RunStatus] = []
@@ -146,12 +147,13 @@ class FakeTasks:
             self.checkpoints.append(dict(checkpoint))
             self.log.append("checkpoint")
 
-    def heartbeat(self, run_id: str, *, worker_epoch: int) -> None:
+    def heartbeat(self, run_id: str, *, worker_epoch: int):
         with self.lock:
             if self.stale_on_heartbeat:
                 raise StaleWorkerEpoch("heartbeat")
             self._check(worker_epoch)
             self.heartbeats += 1
+            return self.cancel_signal  # 與真實 Manager 對齊：Supervisor 設了取消旗標時回傳 CancelSignal，否則 None
 
     def transition_run(self, run_id: str, to: RunStatus, *, worker_epoch: int, **_: Any):
         with self.lock:

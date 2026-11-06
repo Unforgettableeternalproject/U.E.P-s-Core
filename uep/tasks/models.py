@@ -29,6 +29,7 @@ from uep.tasks.states import (
     ActionStatus,
     ActivityKind,
     ActivityStatus,
+    CancelReason,
     InterruptPolicy,
     PauseReason,
     RunStatus,
@@ -116,6 +117,9 @@ class RunRow(Base):
         CheckConstraint(
             "(status = 'PAUSED') = (pause_reason IS NOT NULL)", name="pause_reason_iff_paused"
         ),
+        CheckConstraint(
+            "cancel_reason IS NULL OR " + in_list("cancel_reason", CancelReason), name="cancel_reason"
+        ),
         Index("ix_runs_task_id", "task_id"),
         # 每個 Task 同時至多一個未終態 Run
         Index(
@@ -135,6 +139,10 @@ class RunRow(Base):
     approval_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     worker_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Supervisor（SV-2，0013）：取消旗標與「已通知的 approval_expiry 值」（不是通知時間）
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(String)
+    approval_expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     checkpoint_ref: Mapped[str | None] = mapped_column(String)
     # §6.4 內容；只存 ID／引用，不存私人原文或不可序列化物件
     checkpoint: Mapped[dict | None] = mapped_column(JSONB)

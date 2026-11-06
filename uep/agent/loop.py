@@ -57,7 +57,7 @@ from uep.agent.scheduler import (
     plan_waves,
 )
 from uep.agent.trigger import LoopTrigger
-from uep.decision.loop_consult import ADVICE_SECTION
+from uep.decision.loop_consult import advice_in_scope
 from uep.ids import new_id
 from uep.models.port import ChatMessage
 from uep.tasks.manager import IllegalTransition, StaleWorkerEpoch
@@ -398,16 +398,10 @@ class AgentLoop:
         if advice is None:
             return None
         sub_kind = str(info.get("sub_kind", ""))
-        section = ADVICE_SECTION.get(sub_kind)
-        if sub_kind == "placement" or section is None or set(advice) != {section}:
-            logger.warning("consult 的 advice 形狀不合：sub_kind=%s", sub_kind)
-            return "scope_exceeded"
-        if sub_kind == "output_modality":
-            allowed = st.frozen_modalities & self._scope_now()["modalities"]
-            if not set((advice.get("output") or {}).get("modalities") or ()) <= allowed:
-                logger.warning("consult 的 advice 超出凍結範圍 ∩ 快照，改當 escalate 處理（稽核）")
-                return "scope_exceeded"
-        return None
+        gap = advice_in_scope(sub_kind, advice, {"modalities": st.frozen_modalities}, self._scope_now())
+        if gap is not None:
+            logger.warning("consult 的 advice 形狀不合或超出凍結範圍 ∩ 快照，改當 escalate 處理（稽核）：sub_kind=%s", sub_kind)
+        return gap
 
     def _guarded(self, st: _State, action: Callable[[], LoopOutcome]) -> LoopOutcome:
         try:

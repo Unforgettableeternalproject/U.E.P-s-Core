@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -260,6 +260,29 @@ def _effective_scope(frozen: Any, snapshot: Any, required: tuple[str, ...]) -> d
                 return None
         scope[key] = frozenset(a) & frozenset(b)
     return scope
+
+
+def advice_in_scope(
+    sub_kind: str, advice: Mapping[str, Any] | None,
+    frozen: Mapping[str, Collection[str]], snapshot: Mapping[str, Collection[str]],
+) -> str | None:
+    """CN-2 迴圈側再驗：advice 是否落在「凍結 ∩ 當下快照」內；回傳缺口碼，通過回 None。純函式。
+
+    語意與迴圈原本的 ``_recheck_escalation`` 完全相同（中樞已回 escalate 的分支仍由迴圈處理）：
+    advice 為 None 通過；placement、未知 sub_kind、區段不是剛好 ``ADVICE_SECTION`` 那一段 -> scope_exceeded；
+    output_modality 的 modalities 必須 ⊆ frozen["modalities"] ∩ snapshot["modalities"]（缺鍵視為空集合）。
+    不檢查 capability_tags（CN-2 契約有列，迴圈現況未納入，待裁決）。引擎的事前檢查（CN-1）是另一層，不走這裡。
+    """
+    if advice is None:
+        return None
+    section = ADVICE_SECTION.get(sub_kind)
+    if sub_kind == "placement" or section is None or set(advice) != {section}:
+        return ESC_SCOPE_EXCEEDED
+    if sub_kind == "output_modality":
+        allowed = frozenset(frozen.get("modalities", ())) & frozenset(snapshot.get("modalities", ()))
+        if not set((advice.get("output") or {}).get("modalities") or ()) <= allowed:
+            return ESC_SCOPE_EXCEEDED
+    return None
 
 
 # ---- 規則（每個回傳 advice 區段與決定值；只用 facts 內的英文欄位）----

@@ -66,6 +66,7 @@ from uep.tasks.manager import (
     ACTION_UNRESOLVED,
     TOOL_VERSION_CHANGED,
     IllegalTransition,
+    PolicyViolation,
     StaleWorkerEpoch,
 )
 from uep.tasks.states import RunStatus
@@ -307,14 +308,26 @@ class AgentLoop:
         st.cap = self._offer(st, st.cap)
         st.consumed = list(checkpoint.get("consumed_action_ids") or ())
         pending = frozenset(checkpoint.get("pending_approvals") or ())
-        revoked = self._precheck_pending(st, projected, pending)
-        if revoked is not None:
-            return self._guarded(st, lambda: self._finish(st, "failed", revoked))
+        verdict = self._precheck_pending(st, projected, pending)
+        if isinstance(verdict, LoopReason):
+            return self._guarded(st, lambda: self._finish(st, "failed", verdict))
+        if verdict is not None:  # (action_id,)：pending 工具暫時非 ready ⇒ 再 park，不丟掉核准
+            return self._guarded(st, lambda: self._repark(st, verdict[0], write_checkpoint=False))
         return self._guarded(st, lambda: self._drive_inner(st, pending, approvals or {}))
 
-    def _precheck_pending(self, st: _State, projected: Mapping[str, Any], pending: frozenset[str]) -> LoopReason | None:
-        """resume 預檢（只看能力與版本，不看 approval）：尚缺 tool 訊息的 pending 工具必須在凍結集合與當下投影內，且投影版本＝凍結版本。
-        不通過回對應原因碼（呼叫端結束 Run、不消耗 approval）；通過回 None。Manager 的 tool_version 檢查保留作最後一道防線。"""
+    def _precheck_pending(
+        self, st: _State, projected: Mapping[str, Any], pending: frozenset[str],
+    ) -> LoopReason | tuple[str] | None:
+        """resume 預檢（只看能力、readiness 與版本，不看 approval），對尚缺 tool 訊息的 pending 工具依序判斷：
+
+        1. 不在凍結集合 ⇒ ``capability_revoked``。
+        2. 在凍結集合、但不在當下投影：registry 有 ``readiness`` 與該條目，且 ``readiness != "ready"``（warming／unavailable，
+           含 coordinator 不認得的模組，RA-15）⇒ **再 park**（回 ``(action_id,)``；暫時性，核准沒被消耗，不丟掉人類的核准）；
+           沒有 ``readiness``、沒有條目、或 readiness 是 ready 卻仍不在投影（scope／平台／policy 收窄）⇒ ``capability_revoked``。
+        3. 在投影內但版本不同 ⇒ ``tool_version_changed``。
+
+        只判斷 readiness，不放寬能力（AL-3）：再 park 不改寫 checkpoint（``visible_tools`` 保持原樣），下一次 resume 仍從頭跑完整預檢。
+        不通過回原因碼（呼叫端結束 Run、不消耗 approval）；通過回 None。Manager 的 tool_version 檢查保留作最後一道防線。"""
         if not pending:
             return None
         assistant = next((m for m in reversed(st.transcript) if m.role == "assistant" and m.tool_calls), None)
@@ -327,13 +340,40 @@ class AgentLoop:
             if call["id"] in done or stable_action_id(st.run_id, step_id, ordinal) not in pending:
                 continue
             name = call["name"]
-            if name not in st.frozen_tools or name not in current:
-                logger.warning("resume 預檢：pending 工具 %s 不在凍結集合或當下投影，Run 改轉 FAILED：run=%s", name, st.run_id)
+            if name not in st.frozen_tools:
+                logger.warning("resume 預檢：pending 工具 %s 不在凍結集合，Run 改轉 FAILED：run=%s", name, st.run_id)
+                return LoopReason.CAPABILITY_REVOKED
+            if name not in current:
+                if self._temporarily_not_ready(name):
+                    logger.warning("resume 預檢：pending 工具 %s 暫時非 ready，再 park（不消耗核准）：run=%s", name, st.run_id)
+                    return (stable_action_id(st.run_id, step_id, ordinal),)
+                logger.warning("resume 預檢：pending 工具 %s 不在當下投影，Run 改轉 FAILED：run=%s", name, st.run_id)
                 return LoopReason.CAPABILITY_REVOKED
             if current[name] != st.frozen_tools[name]:
                 logger.warning("resume 預檢：pending 工具 %s 版本已變，Run 改轉 FAILED：run=%s", name, st.run_id)
                 return LoopReason.TOOL_VERSION_CHANGED
         return None
+
+    def _temporarily_not_ready(self, tool: str) -> bool:
+        """registry 有 ``readiness`` 與該條目、且 readiness 不是 ready。其餘（沒有 readiness、沒有條目）一律 False（fail-closed）。"""
+        readiness = getattr(self._registry, "readiness", None)
+        if not callable(readiness):
+            return False
+        try:
+            return readiness(tool) != "ready"
+        except PolicyViolation:
+            return False
+
+    def _repark(self, st: _State, action_id: str, *, write_checkpoint: bool = True) -> LoopOutcome:
+        """再次 park：checkpoint -> park_run -> 回 ``awaiting_approval``。``write_checkpoint=False`` 用於預檢（transcript 與
+        pending 都沒變，既有 checkpoint 已是正確的 park 狀態；重寫會把暫時被投影排除的工具從 ``visible_tools`` 永久移掉）。"""
+        if write_checkpoint:
+            self._checkpoint(st, f"await_approval:{action_id}", [action_id])
+        self._park(st)
+        return LoopOutcome(
+            "awaiting_approval", st.run_id, LoopReason.APPROVAL_REQUIRED, steps=st.counters.steps,
+            tool_calls=st.counters.tool_calls, pending_action_ids=(action_id,),
+        )
 
     def _resume_terminal(
         self, run_id: str, semantic: str, checkpoint: Mapping[str, Any], trigger: LoopTrigger, parent_id: str,
@@ -1032,12 +1072,7 @@ class AgentLoop:
             st.consumed.append(action_id)
             return res.view
         if stop == "repark":
-            self._checkpoint(st, f"await_approval:{action_id}", [action_id])
-            self._park(st)
-            return LoopOutcome(
-                "awaiting_approval", st.run_id, LoopReason.APPROVAL_REQUIRED, steps=st.counters.steps,
-                tool_calls=st.counters.tool_calls, pending_action_ids=(action_id,),
-            )
+            return self._repark(st, action_id)
         logger.warning(
             "resume：pending 項沒有執行，Run 改轉 FAILED(%s)：action=%s status=%s reason=%s",
             stop.value, action_id, res.view.get("status"), res.record.reason,

@@ -32,6 +32,7 @@ ARGS_NOT_MAPPING = "args_not_mapping"
 INVALID_TOOL_ARGS = "invalid_tool_args"
 TOOL_UNKNOWN = "tool_unknown"
 INJECTED_PARAM_MISSING = "injected_param_missing"  # Core 組裝錯誤：宣告了 injected_params 卻沒提供值
+TOOL_NOT_READY = "tool_not_ready"  # §5.8：已投出的工具在執行前轉為非 ready（warming／unavailable）
 
 
 class GatewayRejected(Exception):
@@ -78,12 +79,13 @@ class ToolGateway:
     ) -> dict[str, Any]:
         """通過回傳**驗證並注入後**的參數（新 dict）；不通過拋 ``GatewayRejected``（此時不得建 action）。
 
-        順序（SA-3）：capability -> 參數為物件 -> 以有效 schema 驗證（``invalid_tool_args``）-> 注入 Core 提供的值。
+        順序（SA-3）：capability -> readiness（``tool_not_ready``，§5.8；只在 registry 有 ``readiness`` 時）-> 參數為物件 -> 以有效 schema 驗證（``invalid_tool_args``）-> 注入 Core 提供的值。
         ``injected_params`` 不在 LLM 面 schema 內，LLM 若提供就是一般多餘欄位（同樣回 ``invalid_tool_args`` 與
         ``/<unknown>``，不洩漏哪些欄位是注入的）。回傳值是深複本，呼叫端改它不會影響模型原始的 args。注入發生在 ``params_hash`` 計算之前，
         所以呼叫端必須用回傳值建 action（核准所見＝實際執行）。``injected`` 是 Core 持有的值（``venue`` 等）。"""
         if tool not in visible_tools(capability_set):
             raise GatewayRejected(CAPABILITY_MISSING, f"工具不在可見集合：{tool}")
+        self._check_ready(tool)
         if not isinstance(args, Mapping):
             raise GatewayRejected(ARGS_NOT_MAPPING, "參數必須是物件")
         if self._registry is None:
@@ -105,12 +107,34 @@ class ToolGateway:
             values[name] = provided[name]
         return values
 
+    def _check_ready(self, tool: str) -> None:
+        """§5.8 執行前再檢查：投出之後 readiness 可能已轉為 warming／unavailable ⇒ 拒絕、不建 action。
+        沒有 registry、或 registry 沒有 ``readiness``（例如 ``StaticToolRegistry``）時不檢查（舊路徑不變）；
+        工具未註冊交給後面的 ``tool_unknown`` 處理。``readiness`` 是純記憶體查詢（不做 I/O）。"""
+        readiness = getattr(self._registry, "readiness", None)
+        if not callable(readiness):
+            return
+        try:
+            state = readiness(tool)
+        except PolicyViolation:
+            return
+        if state != "ready":
+            raise GatewayRejected(TOOL_NOT_READY, f"工具尚未就緒（{state}）：{tool}")
+
     def rejection_view(self, exc: GatewayRejected) -> dict[str, Any]:
-        """``check_intent`` 失敗的回餵（D61 只加不改）：``status=rejected`` 加選填 ``reason_code``／``fields``。
+        """``check_intent`` 失敗的回餵（D61 只加不改）：``status`` 見 ``rejection_status``，加選填 ``reason_code``／``fields``。
         只有短碼與欄位路徑，沒有值、例外文字。沒給 registry 的 Gateway 回切片 A 的舊形狀（不帶新欄位）。"""
         if self._registry is None:
             return self.result_view("rejected")
-        return self.result_view("rejected", reason_code=exc.code, fields=exc.fields)
+        return self.result_view(self.rejection_status(exc), reason_code=exc.code, fields=exc.fields)
+
+    def rejection_status(self, exc: GatewayRejected) -> ResultStatus:
+        """§5.8：只有 ``tool_not_ready``（暫時性，工具之後可能恢復）回 ``blocked``；其餘驗證失敗
+        （capability_missing、tool_unknown、參數錯誤…）一律 ``rejected``。沒給 registry 的 Gateway 不做 readiness 檢查，
+        一律 ``rejected``（與 ``rejection_view`` 的舊形狀一致）。"""
+        if self._registry is None:
+            return "rejected"
+        return "blocked" if exc.code == TOOL_NOT_READY else "rejected"
 
     def result_view(
         self, status: ResultStatus, *, items: Sequence[Mapping[str, Any]] = (), degraded: bool = False,

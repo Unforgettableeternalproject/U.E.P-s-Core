@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.uep.loop_support import Round, projector_for
+from tests.uep.loop_support import TAGS, Round, projector_for
 from tests.uep.test_agent_loop import (
     RUN,
     Rig,
@@ -334,6 +334,7 @@ def _res(status, *, reason=None, action_id="act_1", **extra):
     (_res("blocked", reason="ApprovalRequired", approval_required=True), "repark"),
     (_res("blocked", reason="PresenceRequired"), "repark"),
     (_res("blocked", reason="PresenceRequired", retryable=True), "repark"),
+    (_res("blocked", reason="tool_not_ready", action_id=None), "repark"),
     (_res("ok"), None),
     (_res("failed"), None),  # 已執行但工具失敗
     (_res("unknown", reason="ConnectionError"), "unresolved_actions"),
@@ -386,3 +387,185 @@ def test_pending_action_already_unknown_ends_run_with_unresolved_actions():
     out = _resume(rig, checkpoint, {ACTION: "appr_ok"})
     _assert_ended_without_waking_model(rig, out, "unresolved_actions")
     assert rig.tasks.approvals["appr_ok"].consumed_by is None
+
+
+def test_pending_tool_not_ready_parks_again_and_a_later_resume_completes():
+    """resume 時 pending 的工具被 Gateway 以 tool_not_ready 擋下（模組暖機中）：未建 action、核准未消耗 ⇒ 再 park，
+    不讓 Run 失敗；模組轉 ready 後同一份核准可以完成。（用過期的投影模擬「預檢之後才轉非 ready」；
+    投影本身已排除非 ready 工具時，預檢會先以 capability_revoked 攔下。）"""
+    from tests.uep.test_tool_registry import _POST, make_entry
+    from uep.tools.registry import ToolRegistry
+
+    registry = ToolRegistry.build([
+        make_entry("read.lone"), make_entry("post.mod", spec=dict(_POST), requires=("mod:b",)),
+    ], known_modules=["mod:b"])
+    cap = projector_for(registry)(TAGS, None)
+    stale = lambda tags, prior: cap
+    rig = Rig([Round("先查再發", (call("read.lone", "1"), call("post.mod", "2"))), Round("全部完成")],
+              registry=registry, projector=stale, budget=LoopBudget(repeat_limit=99))
+    assert rig.run().state == "awaiting_approval"
+    action = stable_action_id(RUN, "step_1", 1)
+    checkpoint = _park_checkpoint(rig)
+    rig.tasks.grant("appr_ok", action)
+    assert registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    parks_before = len(rig.tasks.park_calls)
+
+    out = _resume(rig, checkpoint, {action: "appr_ok"}, projector=stale)
+    assert (out.state, out.reason_code, out.pending_action_ids) == ("awaiting_approval", "approval_required", (action,))
+    assert len(rig.tasks.park_calls) == parks_before + 1 and rig.last_runtime.requests == []
+    assert rig.tasks.approvals["appr_ok"].consumed_by is None and action not in rig.tasks.outcomes
+    assert rig.tasks.run_status == []  # 沒有失敗
+
+    assert registry.apply_module_event("module.ready", {"module_id": "mod:b", "revision": 2})
+    done = _resume(rig, _park_checkpoint(rig), {action: "appr_ok"}, epoch=3, projector=stale)
+    assert done.state == "completed" and rig.tasks.approvals["appr_ok"].consumed_by == action
+    assert [t for _, t in rig.tasks.executions] == ["read.lone", "post.mod"]
+
+
+# ---- 預檢：暫時非 ready ⇒ 再 park（真實投影），真的撤銷 ⇒ capability_revoked ----
+
+def _module_rig(known=("mod:b",)):
+    from tests.uep.test_tool_registry import _POST, make_entry
+    from uep.tools.registry import ToolRegistry
+
+    entries = [make_entry("read.lone"), make_entry("post.mod", spec=dict(_POST), requires=("mod:b",))]
+    registry = ToolRegistry.build(entries, known_modules=known)
+    rig = Rig([Round("先查再發", (call("read.lone", "1"), call("post.mod", "2"))), Round("全部完成")],
+              registry=registry, budget=LoopBudget(repeat_limit=99))  # 真實投影：projector_for(registry)
+    assert rig.run().state == "awaiting_approval"
+    return rig, registry, stable_action_id(RUN, "step_1", 1)
+
+
+@pytest.mark.parametrize("state", ["warming", "unavailable"])
+def test_precheck_reparks_while_module_is_not_ready_and_completes_after_it_recovers(state):
+    rig, registry, action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    rig.tasks.grant("appr_ok", action)
+    assert registry.apply_module_event(f"module.{state}", {"module_id": "mod:b", "revision": 1})
+    assert "post.mod" not in {t["tool"] for t in projector_for(registry)(TAGS, None)["tools"]}  # 真實投影已排除它
+    parks = len(rig.tasks.park_calls)
+
+    out = _resume(rig, checkpoint, {action: "appr_ok"})
+    assert (out.state, out.reason_code, out.pending_action_ids) == ("awaiting_approval", "approval_required", (action,))
+    assert len(rig.tasks.park_calls) == parks + 1 and rig.last_runtime.requests == []
+    assert rig.tasks.approvals["appr_ok"].consumed_by is None and rig.tasks.run_status == []
+    # AL-3：再 park 不改寫 checkpoint，被暫時排除的工具仍在 visible_tools，下一次 resume 重新跑完整預檢
+    assert _park_checkpoint(rig) == checkpoint
+
+    assert registry.apply_module_event("module.ready", {"module_id": "mod:b", "revision": 2})
+    done = _resume(rig, _park_checkpoint(rig), {action: "appr_ok"}, epoch=3)
+    assert done.state == "completed" and rig.tasks.approvals["appr_ok"].consumed_by == action
+    assert [t for _, t in rig.tasks.executions] == ["read.lone", "post.mod"]
+
+
+def test_precheck_reparks_again_each_time_it_is_still_not_ready():
+    rig, registry, _action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    for epoch in (2, 3, 4):
+        assert _resume(rig, checkpoint, None, epoch=epoch).state == "awaiting_approval"
+    assert len(rig.tasks.park_calls) == 4 and rig.tasks.run_status == []
+
+
+def test_precheck_unknown_module_is_readiness_not_revocation():
+    """coordinator 不認得該模組（RA-15：readiness 恆為 unavailable）屬 readiness，不是撤銷 ⇒ 再 park。"""
+    from tests.uep.test_tool_registry import _POST, make_entry
+    from uep.tools.registry import ToolRegistry
+
+    rig, _registry, action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    rig.tasks.grant("appr_ok", action)
+    restarted = ToolRegistry.build(
+        [make_entry("read.lone"), make_entry("post.mod", spec=dict(_POST), requires=("mod:b",))], known_modules=[],
+    )
+    assert restarted.readiness("post.mod") == "unavailable"
+    out = _resume(rig, checkpoint, {action: "appr_ok"}, registry=restarted, projector=projector_for(restarted))
+    assert out.state == "awaiting_approval" and rig.tasks.approvals["appr_ok"].consumed_by is None
+
+
+def test_precheck_ready_but_not_projected_is_still_capability_revoked():
+    rig, registry, _action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    base = projector_for(registry)
+    narrowed = lambda tags, prior: {"tools": [t for t in base(tags, prior)["tools"] if t["tool"] != "post.mod"]}
+    assert registry.readiness("post.mod") == "ready"  # scope／平台／policy 收窄，不是 readiness
+    out = _resume(rig, checkpoint, None, projector=narrowed)
+    assert (out.state, out.reason_code) == ("failed", "capability_revoked")
+
+
+def test_precheck_not_in_frozen_set_is_capability_revoked():
+    rig, registry, _action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    checkpoint["frozen_tools"] = {k: v for k, v in checkpoint["frozen_tools"].items() if k != "post.mod"}
+    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})  # 即使同時非 ready 也是撤銷
+    out = _resume(rig, checkpoint, None)
+    assert (out.state, out.reason_code) == ("failed", "capability_revoked")
+
+
+def test_precheck_without_readiness_or_entry_keeps_revocation():
+    """registry 沒有 readiness 方法、或沒有該條目 ⇒ 不當成暫時非 ready，行為不變。"""
+    rig, registry, _action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    base = projector_for(registry)
+    gone = lambda tags, prior: {"tools": [t for t in base(tags, prior)["tools"] if t["tool"] != "post.mod"]}
+
+    class NoReadiness:
+        def __getattr__(self, name):
+            if name == "readiness":
+                raise AttributeError(name)
+            return getattr(registry, name)
+
+    out = _resume(rig, checkpoint, None, registry=NoReadiness(), projector=gone)
+    assert (out.state, out.reason_code) == ("failed", "capability_revoked")
+
+    rig2, registry2, _a = _module_rig()
+    cp2 = _park_checkpoint(rig2)
+
+    class NoEntry:
+        def __getattr__(self, name):
+            return getattr(registry2, name)
+
+        def readiness(self, tool):
+            from uep.tasks.manager import PolicyViolation
+
+            raise PolicyViolation("沒有這個條目")
+
+    base2 = projector_for(registry2)
+    out2 = _resume(rig2, cp2, None, registry=NoEntry(), projector=lambda tags, prior: {
+        "tools": [t for t in base2(tags, prior)["tools"] if t["tool"] != "post.mod"],
+    })
+    assert (out2.state, out2.reason_code) == ("failed", "capability_revoked")
+
+
+def test_precheck_repark_with_superseded_epoch_stops_without_marking_parked():
+    """預檢再 park 時 park_run 發現 Run 已被別的 worker 接手 ⇒ stale，不 mark_parked。"""
+    rig, registry, _action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    entries_before = list(rig.store.parent_entries["ctx_parent"])
+    loop = _crash(rig, 2, rounds=[Round("不該到這裡")])
+    original = rig.tasks.park_run
+
+    def taken_over(run_id, *, worker_epoch):
+        rig.tasks.epoch = 9  # park 之前 Run 已被取代
+        return original(run_id, worker_epoch=worker_epoch)
+
+    rig.tasks.park_run = taken_over
+    out = loop.resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent", approvals=None)
+    assert out.state == "stale" and rig.last_runtime.requests == []
+    assert list(rig.store.parent_entries["ctx_parent"]) == entries_before  # 沒有新的 mark_parked
+
+
+def test_policy_excluded_and_warming_reparks_but_becomes_revoked_once_ready():
+    """釘住：工具同時被 policy 排除、模組又在 warming ⇒ 預檢只看得到 readiness，先再 park；
+    等模組 ready，readiness 不再能解釋它為何不在投影 ⇒ 下一次 resume 才是 capability_revoked。"""
+    rig, registry, _action = _module_rig()
+    checkpoint = _park_checkpoint(rig)
+    base = projector_for(registry)
+    policy_excluded = lambda tags, prior: {"tools": [t for t in base(tags, prior)["tools"] if t["tool"] != "post.mod"]}
+    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    first = _resume(rig, checkpoint, None, projector=policy_excluded)
+    assert first.state == "awaiting_approval" and rig.tasks.run_status == []
+    registry.apply_module_event("module.ready", {"module_id": "mod:b", "revision": 2})
+    second = _resume(rig, _park_checkpoint(rig), None, epoch=3, projector=policy_excluded)
+    assert (second.state, second.reason_code) == ("failed", "capability_revoked")

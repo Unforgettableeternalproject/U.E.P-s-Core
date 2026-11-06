@@ -185,7 +185,7 @@ class AgentCore:
             args = self._gateway.check_intent(tool, args, capability_set, injected=injected)
         except GatewayRejected as exc:
             deliver(action_id, self._gateway.rejection_view(exc))
-            return IntentRecord(ordinal, tool, None, "rejected", exc.code)
+            return IntentRecord(ordinal, tool, None, self._gateway.rejection_status(exc), exc.code)
 
         try:
             self._tasks.create_action(
@@ -244,7 +244,8 @@ class AgentCore:
             )
         except GatewayRejected as exc:
             return IntentResult(
-                IntentRecord(ordinal, tool, None, "rejected", exc.code), self._gateway.rejection_view(exc),
+                IntentRecord(ordinal, tool, None, self._gateway.rejection_status(exc), exc.code),
+                self._gateway.rejection_view(exc),
             )
         return ScreenedIntent(run_id, step_id, ordinal, tool, checked, action_id)
 

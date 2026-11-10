@@ -49,6 +49,7 @@ from uep.tools.registry import (
 )
 
 GOLDEN = Path(__file__).parent / "fixtures" / "think_tools_golden.json"
+LEGACY_TOOLS = ("force_remember", "deep_recall", "member_recall")  # 黃金檔涵蓋的舊曝光；E3 新增的 about-me 另有測試
 ACCESS_SRC = Path(access.__file__)
 
 _OBJ: dict[str, Any] = {
@@ -94,7 +95,7 @@ def _golden_text() -> str:
 
 
 def test_golden_registry_derivation_is_byte_identical():
-    derived = json.dumps(memory_registry().llm_definitions(), ensure_ascii=False, indent=2) + "\n"
+    derived = json.dumps(memory_registry().llm_definitions(LEGACY_TOOLS), ensure_ascii=False, indent=2) + "\n"
     assert derived.encode("utf-8") == _golden_text().encode("utf-8")
 
 
@@ -138,6 +139,9 @@ def test_access_py_has_no_schema_literal():
 def test_tool_classes_are_derived_from_registry():
     assert dict(access.TOOL_CLASSES) == memory_registry().tool_classes() == {
         "force_remember": "reversible_local", "deep_recall": "internal_read", "member_recall": "internal_read",
+        # E3：「關於我」寫入類（DQ-16 暫定同級 reversible_local，無核准）
+        "retract_about_me": "reversible_local", "opt_out_about_me": "reversible_local",
+        "correct_about_me": "reversible_local",
     }
     with pytest.raises(TypeError):
         access.TOOL_CLASSES["x"] = "internal_read"  # type: ignore[index]

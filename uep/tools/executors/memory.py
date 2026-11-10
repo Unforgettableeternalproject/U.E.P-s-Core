@@ -24,7 +24,13 @@ from uep.adapters.tool import ReceiptLookup, ToolCall, ToolReceipt, ToolResponse
 from uep.ids import new_id
 from uep.memory.access import MEMBER_RECALL, TOOL_CLASSES
 from uep.memory.protocol import MemoryPort
-from uep.stream.contracts.memory_tools import DEFAULT_TOOL_MAX_CHARS
+from uep.stream.contracts.memory_tools import (
+    ABOUT_BAD_REF,
+    ABOUT_ME_TOOLS,
+    ABOUT_NO_REF,
+    DEFAULT_TOOL_MAX_CHARS,
+    OPT_OUT_ABOUT_ME,
+)
 from uep.tools.outcomes import TurnOutcomeCache
 
 logger = logging.getLogger("uep.tools.executors.memory")
@@ -115,6 +121,22 @@ class MemoryToolExecutor:
             return _denied(name)  # PD-13：Gate 目前允許的 audience 已收窄，不依注入當下的舊值放行
         session_id = params.get("segment_id")
         call_context: dict[str, Any] | None = None
+        if name in ABOUT_ME_TOOLS:
+            guild_id = params.get("guild_id")
+            if not isinstance(guild_id, str) or not guild_id:
+                return _denied(name)
+            call_context = {"guild_id": guild_id}
+            if name != OPT_OUT_ABOUT_ME:
+                ref = args.get("ref")
+                if isinstance(ref, bool) or not isinstance(ref, int):
+                    return {"success": False, "result": ABOUT_BAD_REF, "code": "failed"}
+                projection_id = self.cache.about_ref(ref)  # 回合內 member_recall 查本人時登記的編號
+                if projection_id is None:
+                    return {
+                        "success": False, "code": "failed",
+                        "result": ABOUT_BAD_REF if self.cache.has_about_refs() else ABOUT_NO_REF,
+                    }
+                call_context["projection_id"] = projection_id
         if name == MEMBER_RECALL:
             guild_id = params.get("guild_id")
             if not isinstance(guild_id, str) or not guild_id:
@@ -139,10 +161,17 @@ class MemoryToolExecutor:
     def _finish(self, name: str, outcome: dict[str, Any]) -> dict[str, Any]:
         outcome = dict(outcome)
         ids = outcome.pop("shared_ids", None)
+        about_refs = outcome.pop("about_refs", None)
         text = str(outcome.get("result", ""))
+        visible = text  # 旁證編號只認完整的行；被截斷的半行不登記
         if len(text) > self._max_chars:
             outcome["result"] = text[: self._max_chars] + "…"
+            visible = "\n".join(text[: self._max_chars].split("\n")[:-1])
             ids = None  # 結果被截斷：模型看到的投影不保證對得上 id，寧缺勿濫
+        if name == MEMBER_RECALL and isinstance(about_refs, Mapping) and outcome.get("success"):
+            self.cache.put_about_refs({
+                int(n): str(pid) for n, pid in about_refs.items() if f"〔旁證{n}〕" in visible
+            })
         if name == MEMBER_RECALL and ids and outcome.get("success"):
             outcome["shared_ids"] = list(dict.fromkeys(ids))  # 去重保序；由 stage 併回 turn context
         return outcome

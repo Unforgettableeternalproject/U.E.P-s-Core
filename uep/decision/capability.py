@@ -24,7 +24,7 @@ ROUTE_DIRECT_CHAT = "direct_chat"
 # 預設表（D4-4 a：最小集合起步）。擴充必須是「改程式碼＋測試＋審核」，與標籤閉集同規格。
 # 表內標籤是否屬於工具層閉集，由組裝層（PR3）以 CAPABILITY_CEILING 驗證，未知標籤 = 啟動失敗。
 ROUTE_DEFAULT_CAPABILITIES: Mapping[str, frozenset[str]] = MappingProxyType({
-    "direct_chat": frozenset({"memory.read"}),
+    "direct_chat": frozenset({"memory.read", "memory.write"}),  # E3：寫入類（force_remember／about-me）經四階段、無核准
     "agent_loop": frozenset({"memory.read", CONSULT_TAG}),
     "task_request": frozenset(),
     "ignore": frozenset(),

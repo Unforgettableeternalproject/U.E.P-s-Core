@@ -373,15 +373,17 @@ def test_render_adds_additional_properties_false_and_nothing_else(registry):
     """render 新路徑的差異只有 additionalProperties:false；舊路徑黃金檔仍是 S-A 的位元組（見 test_tool_registry）。"""
     reg = memory_registry()
     cs = reg.project({"memory.read", "memory.write"}, ProjectionContext(available_context=frozenset({GUILD_ROSTER_CONTEXT})))
-    rendered = {t["function"]["name"]: t for t in render_tools(cs)}
+    all_rendered = {t["function"]["name"]: t for t in render_tools(cs)}
     golden = {d["function"]["name"]: d for d in json.loads(GOLDEN.read_text(encoding="utf-8"))}
-    assert set(rendered) == set(golden)
+    assert set(golden) < set(all_rendered)  # E3：另有 about-me 三工具（golden 不涵蓋）
+    assert set(all_rendered) - set(golden) == {"retract_about_me", "opt_out_about_me", "correct_about_me"}
+    rendered = {name: all_rendered[name] for name in golden}
     for name, tool in rendered.items():
         expected = json.loads(json.dumps(golden[name]))
         expected["function"]["parameters"]["additionalProperties"] = False
         assert tool == expected, name
     # 舊路徑沒被動到
-    legacy = json.dumps(reg.llm_definitions(), ensure_ascii=False, indent=2) + "\n"
+    legacy = json.dumps(reg.llm_definitions(list(golden)), ensure_ascii=False, indent=2) + "\n"
     assert legacy.encode("utf-8") == GOLDEN.read_text(encoding="utf-8").encode("utf-8")
     assert "additionalProperties" not in legacy
 

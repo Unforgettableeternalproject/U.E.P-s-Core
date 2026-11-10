@@ -7,8 +7,9 @@
 子系統，見 test_import_boundary）；``tests/uep/test_tool_registry.py`` 有漂移測試與子系統現值對照。
 ``member_recall`` 的 schema 取自共用契約 ``uep.stream.contracts.memory_tools``（adapter 也引用同一份）。
 
-分類沿用 D79 的現況：沒有核准（approval_level=none）、不可中斷、並行資格不宣告（預設 serial）；
-切片 C 改走 ActionIntent 時再依實際執行路徑調整並升版。
+分類沿用 D79 的現況：沒有核准（approval_level=none）、不可中斷、並行資格不宣告（預設 serial）。
+切片 E3：寫入類（``force_remember``、「關於我」三工具）走完整四階段（create_action -> approve -> execute_action ->
+receipt），``approval_level=none``——使用者明確要求就直接執行，只補 ActionIntent／receipt 與稽核；分類欄未改，不升版。
 """
 from __future__ import annotations
 
@@ -127,7 +128,31 @@ def memory_entries() -> list[ToolEntry]:
             scope=ToolScope(requires_context=frozenset({GUILD_ROSTER_CONTEXT})),
             output_schema=MEMORY_OUTPUT_SCHEMA,
         ),
+        *(_about_me_entry(name) for name in _contract.ABOUT_ME_TOOLS),
     ]
+
+
+def _about_me_entry(name: str) -> ToolEntry:
+    """「關於我」寫入類工具（切片 E3；DQ-16）。schema 取自共用契約。
+
+    分類全部是 ``reversible_local``、無核准（Bernie 裁決：使用者明確要求就直接執行，只補 ActionIntent／receipt 與稽核）：
+    opt_out／retract 依 DQ-16 暫定；``correct_about_me`` DQ-16 稱不可逆，但 ``memory.write`` 的能力上限就是
+    ``reversible_local``，升到 ``external_effect`` 會被 TaskManager 強制核准，與裁決衝突，所以暫列同級（G1 定案時再議）。
+    身分與場域由 Core 注入（PD-12）；沒有 guild 脈絡就不投出（對象是場域共享記憶裡關於說話者的旁證）。"""
+    declaration = _contract.ABOUT_ME_SCHEMAS[name]
+    return ToolEntry(
+        name=name,
+        spec=ToolSpec(
+            executor=MEMORY_EXECUTOR, side_effect_class="reversible_local", idempotency="none",
+            presence_bound=False, tool_version=1, capability="memory.write",
+        ),
+        descriptor=ToolDescriptor(
+            description=declaration["description"], input_schema=declaration["parameters"],
+            injected_params=INJECTED_IDENTITY + INJECTED_GUILD,
+        ),
+        scope=ToolScope(requires_context=frozenset({GUILD_ROSTER_CONTEXT})),
+        output_schema=MEMORY_OUTPUT_SCHEMA,
+    )
 
 
 @functools.lru_cache(maxsize=1)

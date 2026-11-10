@@ -79,75 +79,23 @@ MEMBER_RECALL_SCHEMA = _tools.MEMBER_RECALL_SCHEMA
 """member_recall 不在 echo_memory 的 TOOL_DECLARATIONS 裡；schema 與字數上限取自共用契約
 （``contracts.memory_tools``，與 Core Access Layer 同一份，N5 去重）。預設不開（DEFAULT_TOOLS 不含它），
 由宿主在 ECHO_STREAM_MEMORY_TOOLS 加上。"""
-RETRACT_ABOUT_ME = "retract_about_me"
-OPT_OUT_ABOUT_ME = "opt_out_about_me"
-CORRECT_ABOUT_ME = "correct_about_me"
-ABOUT_ME_TOOLS = (RETRACT_ABOUT_ME, OPT_OUT_ABOUT_ME, CORRECT_ABOUT_ME)
+RETRACT_ABOUT_ME = _tools.RETRACT_ABOUT_ME
+OPT_OUT_ABOUT_ME = _tools.OPT_OUT_ABOUT_ME
+CORRECT_ABOUT_ME = _tools.CORRECT_ABOUT_ME
+ABOUT_ME_TOOLS = _tools.ABOUT_ME_TOOLS
 """「關於我」自助工具：對象永遠是說話的人本人（actor 由宿主經 context 傳入，參數不得帶 uid）。
-全部預設不開（DEFAULT_TOOLS 不含），要在 ECHO_STREAM_MEMORY_TOOLS 明列才曝光。"""
-ABOUT_ME_REF_DESCRIPTION = (
-    "要處理的旁證編號 N（member_recall 結果中「〔旁證N〕」那行的數字）。"
-    "只能指定你本人那次查詢（查詢對象是目前說話的人）結果裡的旁證；查別人的結果沒有可用編號。"
-)
-RETRACT_ABOUT_ME_SCHEMA = {
-    "name": RETRACT_ABOUT_ME,
-    "description": (
-        "當使用者明確要求撤回「別人說的關於他自己」的某一條旁證時呼叫（例如「那句別人說我的話，"
-        "請不要再提」）。ref 填 member_recall 結果裡該行的旁證編號。只影響之後的檢索，"
-        "不會改寫既有回覆。使用者沒有明確要求就不要呼叫。"
-        "Call only when the user explicitly asks to retract one statement others made about them."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {"ref": {"type": "integer", "description": ABOUT_ME_REF_DESCRIPTION}},
-        "required": ["ref"],
-    },
-}
-OPT_OUT_ABOUT_ME_SCHEMA = {
-    "name": OPT_OUT_ABOUT_ME,
-    "description": (
-        "當使用者明確要求「不要再在伺服器裡被提起／被查詢」，或要求恢復時呼叫。"
-        "enabled=true 為退出（之後其他人查詢時，關於他的旁證與「最近在玩」那行都不再出現），"
-        "false 為恢復。只影響之後的檢索。使用者沒有明確要求就不要呼叫。"
-        "Call only on an explicit request to opt out of (or back into) being surfaced to others."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "enabled": {"type": "boolean", "description": "true 退出；false 恢復。"},
-        },
-        "required": ["enabled"],
-    },
-}
-CORRECT_ABOUT_ME_SCHEMA = {
-    "name": CORRECT_ABOUT_ME,
-    "description": (
-        "當使用者明確指出「別人說我的某條旁證不對」並說出正確說法時呼叫：該條旁證立即被遮蔽，"
-        "並把使用者的更正存下。ref 填旁證編號，correction_text 用使用者自己的話寫出更正內容。"
-        "只影響之後的檢索。使用者沒有明確更正就不要呼叫。"
-        "Call only when the user explicitly says a statement others made about them is wrong."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "ref": {"type": "integer", "description": ABOUT_ME_REF_DESCRIPTION},
-            "correction_text": {"type": "string", "description": "使用者提供的更正內容。"},
-        },
-        "required": ["ref", "correction_text"],
-    },
-}
-ABOUT_ME_SCHEMAS = {
-    RETRACT_ABOUT_ME: RETRACT_ABOUT_ME_SCHEMA,
-    OPT_OUT_ABOUT_ME: OPT_OUT_ABOUT_ME_SCHEMA,
-    CORRECT_ABOUT_ME: CORRECT_ABOUT_ME_SCHEMA,
-}
-ABOUT_UNSUPPORTED = "目前記憶引擎不支援這個操作。"
-ABOUT_NO_CONTEXT = "目前無法確認你的身分或所在場域，無法處理。"
-ABOUT_NO_REF = "目前無法指定對象，請先查詢相關內容再試。"
-ABOUT_BAD_REF = "找不到這個編號對應的內容，請先查詢相關內容再試。"
-ABOUT_REASON_TEXT = {
-    "already_hidden": "這條內容先前已經處理過了。",
-}
+全部預設不開（DEFAULT_TOOLS 不含），要在 ECHO_STREAM_MEMORY_TOOLS 明列才曝光。
+名稱、schema 與結果文字取自共用契約（``contracts.memory_tools``，與 Core Access Layer 同一份，N5 去重）。"""
+ABOUT_ME_REF_DESCRIPTION = _tools.ABOUT_ME_REF_DESCRIPTION
+RETRACT_ABOUT_ME_SCHEMA = _tools.RETRACT_ABOUT_ME_SCHEMA
+OPT_OUT_ABOUT_ME_SCHEMA = _tools.OPT_OUT_ABOUT_ME_SCHEMA
+CORRECT_ABOUT_ME_SCHEMA = _tools.CORRECT_ABOUT_ME_SCHEMA
+ABOUT_ME_SCHEMAS = _tools.ABOUT_ME_SCHEMAS
+ABOUT_UNSUPPORTED = _tools.ABOUT_UNSUPPORTED
+ABOUT_NO_CONTEXT = _tools.ABOUT_NO_CONTEXT
+ABOUT_NO_REF = _tools.ABOUT_NO_REF
+ABOUT_BAD_REF = _tools.ABOUT_BAD_REF
+ABOUT_REASON_TEXT = _tools.ABOUT_REASON_TEXT
 MEMBER_NOT_FOUND = "無法確認是哪位成員。"
 MEMBER_NAME_MAX_CHARS = _tools.MEMBER_LABEL_MAX_CHARS
 ASSESS_MODES = ("llm", "heuristic", "off")
@@ -886,26 +834,8 @@ class EchoMemoryAdapter:
 
     @staticmethod
     def _about_me_text(name: str, res: dict[str, Any] | None) -> str:
-        """引擎結果 -> 給 LLM 的文字：分辨不支援／被拒絕（帶 reason）／成功。"""
-        if res is None:
-            return ABOUT_UNSUPPORTED
-        reason = str(res.get("reason") or "")
-        if not res.get("ok"):
-            return f"被拒絕或失敗（原因：{reason or '未註明'}），沒有任何變更。"
-        if name == CORRECT_ABOUT_ME and res.get("correction_stored") is False:
-            # 優先於 already_hidden：遮蔽已生效但內容沒存，必須請使用者重送
-            return ("那條旁證已遮蔽，但更正內容未保存，需要請使用者重送一次更正；"
-                    "只影響之後的檢索。")
-        if reason in ABOUT_REASON_TEXT:
-            return ABOUT_REASON_TEXT[reason]
-        if name == OPT_OUT_ABOUT_ME:
-            if res.get("enabled"):
-                return ("已設定退出：之後其他人查詢時，關於使用者的內容（含「最近在玩」）"
-                        "都不會再出現；只影響之後的檢索。")
-            return "已恢復：之後的檢索可再包含關於使用者的內容。"
-        if name == CORRECT_ABOUT_ME:
-            return "那條旁證已遮蔽，使用者的更正已保存；只影響之後的檢索。"
-        return "已撤回那條旁證；只影響之後的檢索。"
+        """引擎結果 -> 給 LLM 的文字（邏輯在共用契約，Core Access Layer 同用）。"""
+        return _tools.about_me_text(name, res)
 
     async def _about_call(self, method: str, *args: Any, **kwargs: Any) -> dict[str, Any] | None:
         """呼叫 scope engine 的同步方法（寫入路徑，丟 thread）。

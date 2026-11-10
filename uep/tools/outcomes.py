@@ -25,6 +25,7 @@ class TurnOutcomeCache:
         self._outcomes: dict[str, dict[str, dict[str, Any]]] = {}
         self._receipts: dict[str, dict[str, Any]] = {}  # turn -> {action_id: receipt}
         self._turn_of: dict[str, str] = {}
+        self._about_refs: dict[str, dict[int, str]] = {}  # turn -> 旁證編號 -> projection_id（「關於我」工具的 ref 來源）
 
     @contextmanager
     def turn_scope(self, turn_id: str) -> Iterator[None]:
@@ -66,9 +67,25 @@ class TurnOutcomeCache:
             turn = self._turn_of.get(action_id)
             return self._receipts.get(turn, {}).get(action_id) if turn is not None else None
 
+    def put_about_refs(self, refs: dict[int, str]) -> None:
+        """登記本回合 LLM 看得到的旁證編號（整份覆蓋；編號每次查詢都從 1 起，不合併舊份）。"""
+        turn = self._current()
+        with self._lock:
+            self._about_refs[turn] = dict(refs)
+
+    def has_about_refs(self) -> bool:
+        with self._lock:
+            return bool(self._about_refs.get(self._current()))
+
+    def about_ref(self, ref: int) -> str | None:
+        """本回合登記的旁證編號對應的 projection_id；沒登記回 None。"""
+        with self._lock:
+            return self._about_refs.get(self._current(), {}).get(ref)
+
     def discard_turn(self, turn_id: str) -> None:
         """回合結束：整批清除該回合的結果與 receipt 查核表。"""
         with self._lock:
+            self._about_refs.pop(turn_id, None)
             ids = set(self._outcomes.pop(turn_id, {})) | set(self._receipts.pop(turn_id, {}))
             for action_id in ids:
                 self._turn_of.pop(action_id, None)

@@ -59,7 +59,7 @@ def _all_cases():
 
 def test_route_table_initial_content_d4_4():
     assert dict(ROUTE_DEFAULT_CAPABILITIES) == {
-        "direct_chat": frozenset({"memory.read"}),
+        "direct_chat": frozenset({"memory.read", "memory.write"}),  # E3：寫入類經四階段、無核准
         "agent_loop": frozenset({"memory.read", CONSULT_TAG}),  # D4-4 a：最小集合
         "task_request": frozenset(),
         "ignore": frozenset(),
@@ -77,13 +77,13 @@ def test_route_table_covers_all_routes_in_proposer():
 
 def test_route_base_unknown_route_is_none():
     assert route_base("nope") is None and route_base(None) is None and route_base(3) is None  # type: ignore[arg-type]
-    assert route_base("direct_chat") == frozenset({"memory.read"})
+    assert route_base("direct_chat") == frozenset({"memory.read", "memory.write"})
 
 
 def test_direct_chat_result_equals_host_constant():
-    """direct_chat 在寬鬆快照下算出 {memory.read}，與 host.py 寫死的常數一致（PR3 才改讀表）。"""
+    """direct_chat 在寬鬆快照下算出 {memory.read, memory.write}，與 host.py 讀表的常數一致（E3 加入 memory.write）。"""
     r = narrow_capability(route_base("direct_chat"), None, KNOWN, KNOWN, route="direct_chat")
-    assert r.tags == frozenset({"memory.read"}) and r.reason is None and r.route == "direct_chat"
+    assert r.tags == frozenset({"memory.read", "memory.write"}) and r.reason is None and r.route == "direct_chat"
 
 
 # ---- 窮舉不變量 ----

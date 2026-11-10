@@ -30,6 +30,14 @@ class UepSettings(BaseSettings):
     )
 
     database_url: SecretStr | None = Field(default=None, validation_alias="UEP_DATABASE_URL")
+    # Supervisor（切片 F-3 接線；SYS §2.7、D67）：預設開啟。無 Task 時 tick／pause_all 為空操作，legacy 工具路徑行為不變
+    supervisor_enabled: bool = Field(default=True, validation_alias="UEP_SUPERVISOR_ENABLED")
+    supervisor_interval_s: float = Field(default=30.0, gt=0, validation_alias="UEP_SUPERVISOR_INTERVAL_S")
+    supervisor_shutdown_grace_s: float = Field(default=10.0, ge=0, validation_alias="UEP_SUPERVISOR_SHUTDOWN_GRACE_S")
+    supervisor_deadline_grace_s: float = Field(default=30.0, gt=0, validation_alias="UEP_SUPERVISOR_DEADLINE_GRACE_S")
+    supervisor_cancel_timeout_s: float = Field(default=5.0, gt=0, validation_alias="UEP_SUPERVISOR_CANCEL_TIMEOUT_S")
+    # 回合 Task 孤兒掃描門檻（秒）：必須大於 TURN_MAX_DURATION（600 秒），組裝時驗證
+    supervisor_orphan_older_than_s: float = Field(default=1800.0, gt=0, validation_alias="UEP_SUPERVISOR_ORPHAN_OLDER_THAN_S")
     # 工具路徑分流（切片 C）：legacy＝舊衍生路徑（預設，位元組不變）；agent＝註冊表 ``project``＋ActionIntent 的曝光
     tool_path: Literal["legacy", "agent"] = Field(default="legacy", validation_alias="UEP_TOOL_PATH")
     # 平台脈絡 shadow（平台宣告注入端 R0 第 3、4 步）：預設關閉；開啟時每個簽出的 turn 多一次唯讀 Presence SELECT（鎖外）

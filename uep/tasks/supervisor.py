@@ -1,4 +1,4 @@
-"""Supervisor（SYS 契約 §2.7、SV-1～SV-4；切片 F-3，**元件，尚未接線**）：週期性監督 Run 的 deadline、核准過期與孤兒回合。
+"""Supervisor（SYS 契約 §2.7、SV-1～SV-4；切片 F-3，已由組裝層接線，見 ``assemble_core``）：週期性監督 Run 的 deadline、核准過期與孤兒回合。
 
 形式仿 ``PresenceMaintenance``：可手動 ``tick(now)``（測試不需要真時間），所有轉移都走 ``TaskManager`` 公開方法（SV-4），
 單一 Run／Task 失敗只記 log 並計數，下個 tick 重試。
@@ -15,14 +15,17 @@
   不自動轉失敗（SA-8）。
 - **孤兒掃描**：每個 tick 呼叫 ``sweep_orphan_turn_tasks(older_than)``。
 - **SV-1 ``pause_all``**：對未終態 Task 呼叫 ``pause_task``；UNKNOWN 的 Task／Run 無 PAUSED 邊，略過並記 warning；單一失敗不影響其餘；
-  不寫 ``task.cancelled``／``task.failed``。**這次不等 ``shutdown_grace``**（等 EXECUTING action 的 receipt 屬關機接線，
-  不在元件範圍，所以也沒有保留該參數）。
+  不寫 ``task.cancelled``／``task.failed``。``pause_all`` 本身不等待；``shutdown()`` 在其後等 EXECUTING action 的 receipt，
+  總時間不超過 ``shutdown_grace``（SV-1(3)）。
+- **接線**：``SupervisorLoop`` 以背景執行緒定期 ``tick``（仿 ``PresenceMaintenance``）；``CoreAssembly.shutdown`` 在關閉入口之前呼叫 ``shutdown()``。
 
-不含：接上 shutdown／維護迴圈、AgentLoop 讀旗標後自行轉 FAILED（F-4）、step_timeout 的 Step 取消、SV-5 多程序領導權、重試政策、通知通道。
+不含：module.* 訂閱、AgentLoop 讀旗標後自行轉 FAILED（F-4）、step_timeout 的 Step 取消、SV-5 多程序領導權、重試政策、通知通道。
 """
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -35,6 +38,9 @@ from uep.tasks.states import TERMINAL_STATUSES, CancelReason, PauseReason, RunSt
 logger = logging.getLogger(__name__)
 
 DEFAULT_DEADLINE_GRACE = timedelta(seconds=30)
+DEFAULT_SHUTDOWN_GRACE = timedelta(seconds=10)  # SV-1(3)：關機暫停後等 EXECUTING receipt 的總上限（含 pause_all 本身）
+DEFAULT_SUPERVISOR_INTERVAL = 30.0  # 背景 tick 間隔（秒）
+_RECEIPT_POLL_S = 0.1
 DEFAULT_ORPHAN_OLDER_THAN = TURN_MAX_DURATION * 3  # 必須大於 TURN_MAX_DURATION
 _DEADLINE_REASONS = frozenset({CancelReason.RUN_DEADLINE.value, CancelReason.TASK_DEADLINE.value})
 _FAILED_LIKE = frozenset({RunStatus.FAILED.value, RunStatus.CANCELLED.value})
@@ -60,6 +66,7 @@ class Supervisor:
         tasks: TaskManager,
         *,
         deadline_grace: timedelta = DEFAULT_DEADLINE_GRACE,
+        shutdown_grace: timedelta = DEFAULT_SHUTDOWN_GRACE,
         older_than: timedelta = DEFAULT_ORPHAN_OLDER_THAN,
         clock: Callable[[], datetime] | None = None,
         notify: Callable[[str, str], None] | None = None,
@@ -67,13 +74,19 @@ class Supervisor:
     ) -> None:
         if deadline_grace <= timedelta(0):
             raise ValueError("deadline_grace 必須 > 0")
+        if shutdown_grace < timedelta(0):
+            raise ValueError("shutdown_grace 必須 >= 0")
         if older_than <= TURN_MAX_DURATION:
             raise ValueError(f"older_than 必須大於 TURN_MAX_DURATION（{TURN_MAX_DURATION}）")
         self._tasks = tasks
         self._grace = deadline_grace
+        self._shutdown_grace = shutdown_grace
         self._older_than = older_than
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._notify = notify or (lambda _run_id, _key: None)
+        # None＝沒有通知通道：核准過期不處理也不標記（否則會在沒人收到通知的情況下被當成已通知），只記一次 warning
+        self._notify = notify
+        self._warned_no_notify: set[tuple[str, int]] = set()
+        self._closing = False  # shutdown 開始後 tick 不再做任何事（尤其不 force）
         # D69：``ActionCanceller.prepare``。force 前呼叫它取 EXECUTING 快照，force 後執行回傳的函式對 interruptible action
         # 呼叫 executor.cancel（action_id -> 結果，僅用於統計與 log）；None＝不取消（維持 F-3 行為）。
         # 注意：這是 fallback（worker 卡住或旗標沒被讀到）；旗標路徑的 cancel 由 Agent Core 負責
@@ -89,12 +102,16 @@ class Supervisor:
         deadline 的 force 規則：心跳新鮮時，在 ``deadline_grace`` 內不 force；超過 grace 就 force，並以 epoch 遞增圍堵慢 worker。"""
         at = now or self._clock()
         stats = SupervisorStats()
+        if self._closing:
+            return stats
         try:
             due = self._tasks.list_runs_due(at)
         except Exception:  # noqa: BLE001  單一步驟失敗不外洩
             self._fail(stats, "查詢到期的 Run 失敗，下個 tick 重試")
             due = []
         for run in due:
+            if self._closing:
+                break
             try:
                 self._handle_run(run, at, stats)
             except Exception:  # noqa: BLE001
@@ -142,6 +159,8 @@ class Supervisor:
         worker_gone = beat is None or now - beat >= stale_after  # T-12：心跳新鮮 ⇒ worker 還活著，絕不 force
         if not (worker_gone or now - requested_at > self._grace):
             return False
+        if self._closing:
+            return False  # 關機開始：Run 已（或即將）PAUSED(core_shutdown)，不 force
         cancel_run = self._snapshot_in_flight(run.run_id)  # 先取 EXECUTING 快照；cancel 在 force 之後才呼叫，絕不延後 force／epoch 圍堵
         try:
             self._tasks.force_transition_run(run.run_id, RunStatus.FAILED, reason=str(reason))
@@ -210,6 +229,12 @@ class Supervisor:
             return
         if run.approval_expired_at == expiry:
             return  # 同一 expiry 已通知並標記過
+        if self._notify is None:
+            token = (run.run_id, int(expiry.timestamp()))
+            if token not in self._warned_no_notify:
+                self._warned_no_notify.add(token)
+                logger.warning("核准已過期但未接通知通道，略過且不標記已通知：run=%s expiry=%s", run.run_id, expiry.isoformat())
+            return
         key = approval_expired_key(run.run_id, expiry)
         try:
             self._notify(run.run_id, key)
@@ -249,6 +274,88 @@ class Supervisor:
                 self.failures += 1
                 logger.exception("暫停 Task 失敗：%s", task.task_id)
         return paused
+
+
+    def shutdown(self, reason: PauseReason = PauseReason.CORE_SHUTDOWN) -> list[str]:
+        """SV-1：同步 ``pause_all``，再等仍有 EXECUTING action 的 Run 收到 receipt；整體不超過 ``shutdown_grace``。
+
+        逾時不再等（該 action 保持 EXECUTING，重啟後 ``resume_run`` 轉 UNKNOWN 查核，T-11）。永不拋例外（關機不可被它擋住）。"""
+        self._closing = True
+        deadline = time.monotonic() + self._shutdown_grace.total_seconds()
+        try:
+            paused = self.pause_all(reason)
+        except Exception:
+            self.failures += 1
+            logger.exception("關機暫停失敗")
+            return []
+        try:
+            self._wait_receipts(deadline)
+        except Exception:
+            self.failures += 1
+            logger.exception("等待 EXECUTING action 的 receipt 失敗，繼續關機")
+        return paused
+
+    def _wait_receipts(self, deadline: float) -> None:
+        run_ids = [r.run_id for r in self._tasks.list_resumable_runs()]
+        while True:
+            pending = [rid for rid in run_ids if self._tasks.list_executing_actions(rid)]
+            if not pending:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning("shutdown_grace 逾時，仍有 EXECUTING action 的 Run：%s", ", ".join(pending))
+                return
+            run_ids = pending
+            time.sleep(min(_RECEIPT_POLL_S, remaining))
+
+
+class SupervisorLoop:
+    """Supervisor 的背景 tick 執行緒（仿 ``PresenceMaintenance``）：每 ``interval`` 秒 ``supervisor.tick()``，例外隔離、不殺執行緒。
+
+    ``tick()`` 可手動呼叫；等待函式可注入（預設 ``Event.wait``，回 True 表示被要求停止）。"""
+
+    def __init__(
+        self, supervisor: Supervisor, *, interval: float = DEFAULT_SUPERVISOR_INTERVAL,
+        wait: Callable[[float], bool] | None = None,
+    ) -> None:
+        if interval <= 0:
+            raise ValueError("interval 必須 > 0")
+        self._supervisor = supervisor
+        self._interval = interval
+        self._stop = threading.Event()
+        self._wait = wait if wait is not None else self._stop.wait
+        self._thread: threading.Thread | None = None
+        self.ticks = 0
+        self.failures = 0
+
+    def tick(self) -> None:
+        try:
+            self._supervisor.tick()
+        except Exception:
+            self.failures += 1
+            logger.exception("Supervisor tick 失敗，下個 tick 重試")
+        self.ticks += 1
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="UepSupervisor")
+        self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                logger.error("Supervisor 執行緒未能正常結束")
+                return  # 保留參照：start() 見到還活著的執行緒就不再開第二條 tick
+        self._thread = None
+
+    def _run(self) -> None:
+        while not self._wait(self._interval):
+            self.tick()
 
 
 def approval_expired_key(run_id: str, expiry: datetime) -> str:

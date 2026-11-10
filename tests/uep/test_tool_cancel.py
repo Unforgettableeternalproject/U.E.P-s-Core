@@ -282,3 +282,29 @@ def test_supervisor_force_cancels_executing_interruptible_action_and_leaves_it_u
     # cancel 不改 action 狀態：force 照舊把 EXECUTING 轉 UNKNOWN，交 resolve_unknown 查核（T-3）
     assert env.mgr.get_action(act.action_id).status == "UNKNOWN"
     assert env.mgr.list_executing_actions(env.run.run_id) == []
+
+
+def test_stuck_cancel_does_not_keep_the_process_alive():
+    """M2：卡住的 executor.cancel 跑在 daemon 執行緒；行程必須能在 cancel 還卡著時正常結束。"""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent("""
+        import threading
+        from types import SimpleNamespace
+        from uep.fakes.tool import FakeToolExecutor
+        from uep.fakes.tool_spec import FakeToolSpecResolver
+        from uep.tools.cancel import ActionCanceller
+
+        fake = FakeToolExecutor()
+        fake.cancel = lambda action_id: threading.Event().wait(600)  # 永遠卡住
+        resolver = FakeToolSpecResolver(**{"t.run": {"executor": "fake", "interruptible": "interruptible"}})
+        act = SimpleNamespace(action_id="a1", executor="fake", tool="t.run")
+        tasks = SimpleNamespace(list_executing_actions=lambda run_id: [act])
+        out = ActionCanceller(tasks, {"fake": fake}, resolver, timeout_s=0.3).cancel_run_actions("run_1")
+        assert out == {"a1": "isolated"}, out
+        print("done")
+    """)
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60, check=False)
+    assert proc.returncode == 0 and "done" in proc.stdout, proc.stderr

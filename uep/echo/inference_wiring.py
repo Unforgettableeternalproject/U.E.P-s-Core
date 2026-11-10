@@ -83,6 +83,8 @@ class InferenceConfig:
     tts_language: str | None = None
     stt_mode: str = "multichannel"
     stt_language: str | None = None
+    stt_job_timeout_s: float | None = 4.0  # multichannel 單 job 逾時（秒）；None 或 0＝停用
+    stt_job_timeout_per_audio_s: float = 0.5  # 每秒音訊追加的逾時額度（秒）
     llm_provider: str | None = None
     llm_model: str | None = None
     system_prompt: str = ""
@@ -133,6 +135,8 @@ class InferenceConfig:
             tts_warmup=settings.infer_tts_warmup, tts_lora_scale=settings.infer_tts_lora_scale,
             tts_speed=settings.infer_tts_speed, tts_language=settings.infer_tts_language,
             stt_mode=settings.infer_stt_mode, stt_language=settings.infer_stt_language,
+            stt_job_timeout_s=settings.stt_job_timeout_s or None,
+            stt_job_timeout_per_audio_s=settings.stt_job_timeout_per_audio_s,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
             system_prompt=settings.infer_system_prompt, think=settings.think_config(),
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
@@ -465,6 +469,10 @@ def build_inference_wiring(
     if cfg.stt_repo is not None:
         _warn_stt_repo_ignored(cfg.stt_repo)
     input_kwargs: dict[str, Any] = {"backend": stt_backend, "language": cfg.stt_language}
+    if cfg.stt_mode == "multichannel":
+        # 逾時 None／0＝停用；單聲道 SttInputStage 沒有轉錄池，不傳
+        input_kwargs["job_timeout_s"] = cfg.stt_job_timeout_s or None
+        input_kwargs["job_timeout_per_audio_s"] = cfg.stt_job_timeout_per_audio_s
     input_kwargs.update(extra.get("input", {}))
     input_stage = InputCls(**input_kwargs)
 

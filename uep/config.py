@@ -131,6 +131,10 @@ class UepSettings(BaseSettings):
     infer_tts_language: str | None = Field(default=None, validation_alias="UEP_INFER_TTS_LANGUAGE")
     infer_stt_mode: str = Field(default="multichannel", validation_alias="UEP_INFER_STT_MODE")
     infer_stt_language: str | None = Field(default=None, validation_alias="UEP_INFER_STT_LANGUAGE")
+    # STT 單 job 牆鐘逾時（multichannel）：實際上限 = UEP_STT_JOB_TIMEOUT_S + UEP_STT_JOB_TIMEOUT_PER_AUDIO_S × 音訊秒數；
+    # 預設 4.0／0.5（bot 實測值）。UEP_STT_JOB_TIMEOUT_S 設 0 代表停用（不丟棄卡住的 job）
+    stt_job_timeout_s: float = Field(default=4.0, ge=0, validation_alias="UEP_STT_JOB_TIMEOUT_S")
+    stt_job_timeout_per_audio_s: float = Field(default=0.5, ge=0, validation_alias="UEP_STT_JOB_TIMEOUT_PER_AUDIO_S")
     infer_llm_provider: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_PROVIDER")
     infer_llm_model: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_MODEL")
     infer_system_prompt: str = Field(default="", validation_alias="UEP_INFER_SYSTEM_PROMPT")

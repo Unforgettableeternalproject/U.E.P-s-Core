@@ -538,3 +538,62 @@ def test_非_vox_引擎不取建議值(monkeypatch):
 
     w = build()
     assert w.think.split_policy == SplitPolicy()
+
+
+# ---- STT 單 job 逾時 ----
+
+def test_stt_job_逾時_預設_4_與_0點5_並接到_multichannel_engine(monkeypatch):
+    monkeypatch.delenv("UEP_STT_JOB_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("UEP_STT_JOB_TIMEOUT_PER_AUDIO_S", raising=False)
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert (cfg.stt_job_timeout_s, cfg.stt_job_timeout_per_audio_s) == (4.0, 0.5)
+    engine = build(cfg=_ix(stt_mode="multichannel")).input_stage.engine
+    assert (engine.job_timeout_s, engine.job_timeout_per_audio_s) == (4.0, 0.5)
+
+
+def test_stt_job_逾時_環境變數覆寫_0_停用(monkeypatch):
+    monkeypatch.setenv("UEP_STT_JOB_TIMEOUT_S", "2.5")
+    monkeypatch.setenv("UEP_STT_JOB_TIMEOUT_PER_AUDIO_S", "0.25")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert (cfg.stt_job_timeout_s, cfg.stt_job_timeout_per_audio_s) == (2.5, 0.25)
+    monkeypatch.setenv("UEP_STT_JOB_TIMEOUT_S", "0")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.stt_job_timeout_s is None
+    assert build(cfg=_ix(stt_mode="multichannel", stt_job_timeout_s=None)).input_stage.engine.job_timeout_s is None
+
+
+def test_stt_job_逾時_卡住的_job_被丟棄_佇列不被堵住():
+    import threading
+    import time
+
+    from uep.stream.audio.multichannel import TranscriberPool
+
+    class StuckBackend:
+        def __init__(self):
+            self.release = threading.Event()
+
+        def transcribe(self, pcm, sample_rate):
+            if pcm[:2] == b"\x01\x00":
+                self.release.wait(5.0)  # 假的卡死解碼
+            return type("R", (), {"text": "ok", "confidence": 1.0})()
+
+    async def go():
+        cfg = _ix(stt_mode="multichannel", stt_job_timeout_s=0.1, stt_job_timeout_per_audio_s=0.0)
+        engine = build(cfg=cfg).input_stage.engine  # 經 wiring 取得實際傳入的逾時設定
+        backend = StuckBackend()
+        pool = TranscriberPool(
+            backend, job_timeout_s=engine.job_timeout_s, job_timeout_per_audio_s=engine.job_timeout_per_audio_s,
+        )
+        try:
+            stuck = asyncio.ensure_future(pool.run("A", b"\x01\x00" * 100, 16_000))
+            nxt = asyncio.ensure_future(pool.run("B", b"\x02\x00" * 100, 16_000))
+            t0 = time.perf_counter()
+            second = await asyncio.wait_for(nxt, 2.0)
+            assert second.timed_out is False and second.result.text == "ok"
+            assert time.perf_counter() - t0 < 1.0
+            assert (await stuck).timed_out is True and pool.timeouts == 1
+        finally:
+            backend.release.set()
+            await asyncio.sleep(0.05)
+
+    run(go())

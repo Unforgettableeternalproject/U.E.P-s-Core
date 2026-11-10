@@ -1,7 +1,7 @@
 """決策插槽的預設實作設定（P3接入方案 §4、S5）。
 
 數值逐項沿用 bot 現行 ``echo_decision.config``（預設值即 bot 的預設）；欄位名稱也沿用，方便對照。
-刻意沒有搬的欄位（narrative、tentative probe、session、authority）見方案 §5.2。
+刻意沒有搬的欄位（tentative probe、session、authority）見方案 §5.2。
 全部為不可變 dataclass：改設定請用 ``dataclasses.replace`` 組出新的 ``DecisionConfig``。
 """
 from __future__ import annotations
@@ -17,6 +17,15 @@ class AggregatorConfig:
     min_text_length: int = 2  # 去空白後文字 < 此值 -> 丟棄
     active_merge_gap_ms: int = 250  # 主動模式的 merge_gap
     active_max_wait_ms: int = 250  # 主動模式的 max_wait
+    # 敘述中保持聆聽（僅主動模式；bot echo_decision/config.py:40-45）：同一人連續發言串（段間停頓 <= narrative_gap_s）
+    # 累積語音達 narrative_min_speech_s 或段數達 narrative_min_segments，就整串合併成一個 turn，
+    # 等說話者安靜 narrative_end_s 才交出（喚醒詞命中不等）
+    narrative_enabled: bool = True  # config.py:40
+    narrative_gap_s: float = 2.0  # config.py:41 段間停頓 <= 此值視為同一串（turn_buffer.py:350 的比較為 <=）
+    narrative_min_speech_s: float = 6.0  # config.py:42 發言串累積語音 >= 此值 -> 敘述中
+    narrative_min_segments: int = 2  # config.py:43 發言串段數 >= 此值 -> 敘述中
+    narrative_end_s: float = 2.5  # config.py:44 敘述中：安靜達此秒數才算講完
+    narrative_max_duration_s: float = 120.0  # config.py:45 敘述中單一 turn 長度上限（超過先交出）
 
 
 @dataclass(frozen=True)

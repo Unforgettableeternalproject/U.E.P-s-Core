@@ -933,8 +933,26 @@ class TurnOrchestrator:
             facts.generation_ok and self.registrar is not None and live.cancel_reason not in REJECTION_REASONS
         ):
             self.registrar.register(ticket)
+        self._notify_reply_to_aggregator(live, final_status)
         self._notify_outcome(live, final_status, final_reason, facts)
         return kind
+
+    def _notify_reply_to_aggregator(self, live: _Live, status: str) -> None:
+        """回覆結果回饋 aggregator（選用 ``note_replied``／``forget_replied``）：回覆完成之後的發言重新起算發言串；
+        作廢／失敗（對方沒聽到）不算回覆過。"""
+        if status == "completed":
+            hook = getattr(self._aggregator, "note_replied", None)
+        elif status in ("cancelled", "voided", "failed"):
+            hook = getattr(self._aggregator, "forget_replied", None)
+        else:
+            return
+        if not callable(hook):
+            return
+        for speaker in live.speakers or (live.ticket.speaker_ref,):
+            try:
+                hook(speaker)
+            except Exception:
+                logger.exception("aggregator 回覆回饋失敗")
 
     def _notify_outcome(self, live: _Live, status: str, reason: str | None, facts: TurnEndFacts) -> None:
         """回合結果回饋給 proposer（選用 ``OutcomeObserver``）：Q-1 的插話冷卻讀 ``barge_in``。"""

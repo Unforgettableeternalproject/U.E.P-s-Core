@@ -163,6 +163,8 @@ class UepSettings(BaseSettings):
     llm_prompt_cache_key: str | None = Field(default=None, validation_alias="UEP_LLM_PROMPT_CACHE_KEY")
     # Host 啟動時預熱 prompt cache（_startup：speak -> think -> prewarm -> 輸入）；預熱用的 effort 即 UEP_LLM_REASONING_EFFORT
     llm_prewarm: bool = Field(default=True, validation_alias="UEP_LLM_PREWARM")
+    # 工具呼叫前的墊話模式：model_then_fixed（bot 驗證過的預設）／model／fixed／off
+    think_filler_mode: str = Field(default="model_then_fixed", validation_alias="UEP_THINK_FILLER_MODE")
     llm_output_guard: bool | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_GUARD")
     llm_output_blocklist_extra: str | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_BLOCKLIST_EXTRA")
     # 舊名（相容讀取）

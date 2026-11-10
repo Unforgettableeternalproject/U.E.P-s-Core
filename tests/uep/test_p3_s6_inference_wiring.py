@@ -611,3 +611,17 @@ def test_host_kwargs_帶_prewarm_prompt_預設開啟_可關(monkeypatch):
     assert InferenceConfig.from_settings(UepSettings(_env_file=None)).prewarm is False
     monkeypatch.delenv("UEP_LLM_PREWARM")
     assert InferenceConfig.from_settings(UepSettings(_env_file=None)).prewarm is True
+
+
+# ---- 工具呼叫墊話模式 ----
+
+def test_tool_lead_in_預設_model_then_fixed_可由環境變數覆寫(monkeypatch):
+    monkeypatch.delenv("UEP_THINK_FILLER_MODE", raising=False)
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.tool_lead_in == "model_then_fixed"
+    assert build(cfg=_ix(stt_mode="single")).think.tool_lead_in == "model_then_fixed"
+    monkeypatch.setenv("UEP_THINK_FILLER_MODE", "off")
+    assert InferenceConfig.from_settings(UepSettings(_env_file=None)).tool_lead_in == "off"
+    assert build(cfg=_ix(stt_mode="single", tool_lead_in="off")).think.tool_lead_in == "off"
+    with pytest.raises(InferenceWiringError, match="tool_lead_in"):
+        _ix(tool_lead_in="bogus")

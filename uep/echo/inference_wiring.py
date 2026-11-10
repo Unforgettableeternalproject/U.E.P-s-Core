@@ -88,6 +88,7 @@ class InferenceConfig:
     llm_provider: str | None = None
     llm_model: str | None = None
     system_prompt: str = ""
+    tool_lead_in: str = "model_then_fixed"  # 工具呼叫墊話模式（UEP_THINK_FILLER_MODE）
     prewarm: bool = True  # Host 啟動時以 system_prompt 預熱 LLM prompt cache（host_kwargs 帶 prewarm_prompt）
     think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
     tts_engine: str = "vox"
@@ -106,6 +107,10 @@ class InferenceConfig:
             raise InferenceWiringError(f"stt_mode 必須是 {STT_MODES} 之一：{self.stt_mode!r}")
         if self.tts_engine not in TTS_ENGINES:
             raise InferenceWiringError(f"tts_engine 必須是 {TTS_ENGINES} 之一：{self.tts_engine!r}")
+        from uep.stream.adapters.think_llm import TOOL_LEAD_IN_MODES
+
+        if self.tool_lead_in not in TOOL_LEAD_IN_MODES:
+            raise InferenceWiringError(f"tool_lead_in 必須是 {TOOL_LEAD_IN_MODES} 之一：{self.tool_lead_in!r}")
         if self.speak_prepare_timeout_s is None:
             object.__setattr__(self, "speak_prepare_timeout_s", SPEAK_PREPARE_TIMEOUT_DEFAULTS[self.tts_engine])
         for name in ("speak_prepare_timeout_s", "think_prepare_timeout_s", "input_prepare_timeout_s"):
@@ -140,6 +145,7 @@ class InferenceConfig:
             stt_job_timeout_per_audio_s=settings.stt_job_timeout_per_audio_s,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
             system_prompt=settings.infer_system_prompt, think=settings.think_config(), prewarm=settings.llm_prewarm,
+            tool_lead_in=settings.think_filler_mode,
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
             think_prepare_timeout_s=settings.infer_think_prepare_timeout_s,
             input_prepare_timeout_s=settings.infer_input_prepare_timeout_s,
@@ -484,7 +490,9 @@ def build_inference_wiring(
     from uep.stream.adapters.think_llm import LLMThinkStage
 
     llm = think_backend if think_backend is not None else (think_backend_factory or default_think_backend)(cfg)
-    think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt, "config": cfg.think}
+    think_kwargs: dict[str, Any] = {
+        "system_prompt": cfg.system_prompt, "config": cfg.think, "tool_lead_in": cfg.tool_lead_in,
+    }
     think_kwargs.update(extra.get("think", {}))
     recommended = _vox_recommended_split_policy(cfg, speak)
     if recommended is not None:

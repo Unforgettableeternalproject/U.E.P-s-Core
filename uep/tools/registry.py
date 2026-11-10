@@ -472,6 +472,20 @@ class ToolRegistry:
         其餘工具維持預設 ``ready``。純記憶體查詢，不做 I/O。"""
         return self._readiness_in(self.entry(tool), self._module_view[1])
 
+    def enabled_tags(self) -> frozenset[str]:
+        """政策快照用的 capability 標籤集合（DL-4 D4-3；PR4）：已註冊、未停用（enabled）、readiness 非 ``unavailable`` 的
+        工具所屬標籤，限 ``CAPABILITY_CEILING`` 閉集。``warming`` 算入（它在投影裡是 pending，等轉 ready 才可呼叫；
+        只有 ``unavailable`` 的工具不貢獻標籤）。純記憶體、唯讀，不做 I/O。
+
+        注意：目前註冊的工具標籤都會出現在這裡，所以對決策層的 route 預設表而言**短期等同不收窄**（ADR D4-3 b／§7 風險段）；
+        實際限制只來自預設表與 hint。真正的快照收窄要等政策服務提供額外限制，不可把本方法當成授權依據。"""
+        states = self._module_view[1]
+        return frozenset(
+            entry.spec.capability for entry in self._entries.values()
+            if not entry.disabled and entry.spec.capability in CAPABILITY_CEILING
+            and self._readiness_in(entry, states) != "unavailable"
+        )
+
     def _readiness_in(self, entry: ToolEntry, states: Mapping[str, tuple[int, int, Readiness]]) -> Readiness:
         result: Readiness = "ready"
         for module in entry.requires:

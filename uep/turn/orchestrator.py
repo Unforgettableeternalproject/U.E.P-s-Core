@@ -225,6 +225,9 @@ class TurnOrchestrator:
         # route=agent_loop 的掛點（切片 D1）：只有 UEP_TOOL_PATH=agent 的組裝層會綁定；None（預設）時 route 不被消費，
         # agent_loop 與 direct_chat 行為完全相同（legacy）
         self._loop_entry: Callable[[CoreTicket, Proposal], object] | None = None
+        # 已被 AgentLoop 認領的 turn（入口回傳非 None）：宿主不得再為它啟動 direct_chat 回覆（避免雙重回覆）。
+        # 認領在呼叫入口「之前」登記（Run 的 worker 可能在入口返回前就結束 turn），失敗時撤銷
+        self._loop_claims: OrderedDict[str, None] = OrderedDict()
 
     # ---- turn.reply engine 的委派屬性（重設 _proposer 等仍立即生效，如包裝前）----
 
@@ -569,11 +572,37 @@ class TurnOrchestrator:
         """route=agent_loop 且已綁定入口時交給 Agent 層（Run 之後脫離 turn 獨立存活，§4.6）；入口失敗不影響 turn。"""
         if self._loop_entry is None or proposal.route != "agent_loop":
             return
+        with self._lock:
+            self._loop_claims[ticket.turn_id] = None
+            while len(self._loop_claims) > 1024:
+                self._loop_claims.popitem(last=False)
+        claimed = False
         try:
-            self._loop_entry(ticket, proposal)
-        except Exception:  # Agent 層的失敗不得讓 turn 簽發失敗
-            self.metrics["turn.loop_entry_failed"] += 1
-            logger.exception("agent_loop 入口失敗：turn=%s", ticket.turn_id)
+            claimed = self._loop_entry(ticket, proposal) is not None
+        except Exception as exc:  # Agent 層的失敗不得讓 turn 簽發失敗；未認領 -> 回合照 direct_chat 處理
+            if getattr(exc, "loop_refused", False):
+                # 入口明確拒絕（並發上限、投影為空等）：不是故障，回合退回 direct_chat
+                self.metrics["turn.loop_entry_refused"] += 1
+                logger.warning("agent_loop 入口拒絕，改走 direct_chat：turn=%s reason=%s", ticket.turn_id, exc)
+            else:
+                self.metrics["turn.loop_entry_failed"] += 1
+                logger.exception("agent_loop 入口失敗：turn=%s", ticket.turn_id)
+        if claimed:
+            self.metrics["turn.loop_claimed"] += 1
+        else:
+            with self._lock:
+                self._loop_claims.pop(ticket.turn_id, None)
+
+    def is_ended(self, turn_id: str) -> bool:
+        """turn 已結束（或根本不是 live）。AgentLoop worker 用它判斷要不要繼續（公開方法，不讀私有屬性）。"""
+        with self._lock:
+            live = self._live.get(turn_id)
+            return live is None or live.ended
+
+    def loop_claimed(self, turn_id: str) -> bool:
+        """這個 turn 是否已由 AgentLoop 認領（入口啟動成功）。宿主據此不再送 ES 生成回覆；交付只經 Run 的 ``deliver_result``。"""
+        with self._lock:
+            return turn_id in self._loop_claims
 
     def on_think_started(self, turn_id: str) -> bool:
         """ES 真的開始 think（``_on_think_start``，入佇列後呼叫）：提議在這裡才算被採用，回饋 proposer。

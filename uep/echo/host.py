@@ -58,6 +58,7 @@ from uep.echo.config import EchoOutputConfig
 from uep.echo.endpoint import DeferredCoreApi, EchoEndpoint, StopNotice
 from uep.echo.loop import EsLoop
 from uep.echo.memory import GuildRoster, make_memory_resolver
+from uep.echo.loop_text import LoopTextStore
 from uep.echo.metrics import Metrics
 from uep.echo.platform_context import PlatformShadow
 from uep.echo.outcomes import facts_from_outcome
@@ -223,6 +224,11 @@ class EchoPipelineHost:
         )
         if endpoint is None:
             self.endpoint.set_on_stop(self._on_endpoint_stop)
+        # agent_loop 回合的對外文字暫存；端點在 Gate 放行後的 send 依 content_ref 解析並渲染（DL-4 PR4）
+        self.loop_text = LoopTextStore()
+        set_resolver = getattr(self.endpoint, "set_text_resolver", None)
+        if callable(set_resolver):
+            set_resolver(self.loop_text.get)
         # primary：呼叫端明確傳入就以呼叫端為準；None 才依 DecisionConfig.proposer_id 經 registry 組裝
         if proposer is None:
             proposer = create_proposer(self._decision.proposer_id, config=self._decision)
@@ -615,6 +621,11 @@ class EchoPipelineHost:
             ticket = item.ticket
             fact = item.fact or fallback
             if ticket is None or fact is None:
+                continue
+            claimed = getattr(self.orchestrator, "loop_claimed", None)  # 舊式替身 orchestrator 沒有認領機制：視為未認領
+            if callable(claimed) and claimed(ticket.turn_id):
+                # route=agent_loop 已由 AgentLoop 認領：不送 ES 生成（避免雙重回覆），交付與 turn 終結都由 Run 的 worker 負責
+                self.metrics.inc("echo.loop_claimed_skip_es")
                 continue
             try:
                 self._es.call_soon(self._start_turn, ticket, fact)

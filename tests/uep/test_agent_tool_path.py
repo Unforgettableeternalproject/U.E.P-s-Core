@@ -348,7 +348,7 @@ def _tool_context_keys(path, guild):
     stub = types.SimpleNamespace(
         _session=types.SimpleNamespace(guild_id=guild), roster=GuildRoster(), output=EchoOutputConfig(),
         _make_sink=lambda *a: None, _on_think_start=lambda *a: None, _on_generation_done=lambda *a: None,
-        _tool_path=path,
+        _tool_path=path, _voice_retrieve_timeout_s=None,
     )
     stub._agent_tool_path = types.MethodType(EchoPipelineHost._agent_tool_path, stub)
     ticket = types.SimpleNamespace(

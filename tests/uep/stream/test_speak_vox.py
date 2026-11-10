@@ -416,12 +416,26 @@ _HAPPY = SpeechStyle(emotion={"happy": 1.0}, intensity=0.8, style="happy")
 _EXCITED = SpeechStyle(emotion={"happy": 0.7, "surprised": 0.3}, intensity=0.3, style="excited")
 
 
-async def test_情緒_預設對照表全_neutral_開關開了也不帶參數():
-    plain, enabled = FakeVoxBackend(chunks_per_call=1), FakeVoxBackend(chunks_per_call=1)
-    await _collect(VoxSpeakStage(backend=plain), ["你好。"], style=_HAPPY)
-    await _collect(VoxSpeakStage(backend=enabled, emotion_enabled=True), ["你好。"], style=_HAPPY)
-    assert plain.calls == enabled.calls
-    assert "emotion" not in enabled.calls[0] and "intensity" not in enabled.calls[0]
+async def test_情緒_開關預設關閉_呼叫形狀與未接情緒時一致():
+    backend = FakeVoxBackend(chunks_per_call=1)
+    stage = VoxSpeakStage(backend=backend)
+    assert stage.emotion_enabled is False
+    await _collect(stage, ["你好。"], style=_HAPPY)
+    await _collect(stage, ["興奮。"], style=_EXCITED)
+    assert all(set(c) == {"text", "lang", "speed"} for c in backend.calls)
+
+
+async def test_情緒_預設表帶出定案值():
+    """Bernie 11/11 裁決：八維一對一沿用 intensity；複合降維；tsundere／neutral 不帶。"""
+    backend = FakeVoxBackend(chunks_per_call=1)
+    stage = VoxSpeakStage(backend=backend, emotion_enabled=True)
+    await _collect(stage, ["一。"], style=_HAPPY)  # 八維：happy、沿用 0.8
+    await _collect(stage, ["二。"], style=_EXCITED)  # 複合：happy、0.8
+    await _collect(stage, ["三。"], style=SpeechStyle(emotion={"angry": 0.6, "calm": 0.4}, intensity=0.5, style="stern"))
+    await _collect(stage, ["四。"], style=SpeechStyle(emotion={"happy": 0.5, "calm": 0.5}, intensity=0.5, style="tsundere"))
+    await _collect(stage, ["五。"], style=SpeechStyle(emotion={"sad": 0.7}, intensity=0.5, style="wistful"))
+    got = [(c.get("emotion"), c.get("intensity")) for c in backend.calls]
+    assert got == [("happy", 0.8), ("happy", 0.8), ("angry", 0.3), (None, None), ("melancholic", 0.5)]
 
 
 async def test_情緒_開關關閉時即使對照表非預設也不帶參數():

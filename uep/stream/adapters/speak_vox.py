@@ -67,15 +67,19 @@ VOX_EMOTION_LABELS: tuple[str, ...] = (*EMOTION_DIMENSIONS, NEUTRAL_EMOTION)
 
 DEFAULT_VOX_EMOTION_MAP: dict[str, tuple[str, float | None]] = {
     # SpeechStyle.style（preset 名；空字串時改用主導維度名）→ (Vox 情緒標籤, intensity)
-    # intensity 為 None＝沿用 SpeechStyle.intensity。對照表尚待 Bernie 裁決，
-    # 預設全部指向 neutral（不帶情緒）；定案後以 UEP_INFER_VOX_EMOTION_MAP 覆寫並開啟開關。
-    **{name: (NEUTRAL_EMOTION, None) for name in EMOTION_DIMENSIONS},
-    **{
-        name: (NEUTRAL_EMOTION, None)
-        for name in ("excited", "gentle", "stern", "wistful", "flustered", "tsundere", "anticipated")
-    },
+    # intensity 為 None＝沿用 SpeechStyle.intensity。Bernie 11/11 裁決；
+    # real-mode 驗證後再開（開關 UEP_INFER_VOX_EMOTION_ENABLED 預設關）。
+    **{name: (name, None) for name in EMOTION_DIMENSIONS},
+    "excited": ("happy", 0.8),
+    "gentle": ("calm", 0.4),
+    "stern": ("angry", 0.3),
+    "wistful": ("melancholic", None),
+    "flustered": ("surprised", None),
+    "anticipated": ("happy", 0.4),
+    "tsundere": (NEUTRAL_EMOTION, None),
+    NEUTRAL_EMOTION: (NEUTRAL_EMOTION, None),
 }
-"""SpeechStyle → Vox 情緒對照表預設值（全 neutral）。"""
+"""SpeechStyle → Vox 情緒對照表預設值（Bernie 11/11 裁決）；開關關閉時不生效。"""
 
 
 def normalize_emotion_map(

@@ -127,7 +127,7 @@ class InferenceConfig:
     vox_segment_silence_ms: float | None = None  # 整輪最後一句／硬切處尾端靜音；None＝adapter 預設 15ms
     vox_terminal_pause_ms: float | None = None  # 句號／問號／驚嘆號切開處的停頓；None＝沿用 segment_silence_ms
     vox_secondary_pause_ms: float | None = None  # 逗號切開處的停頓；None＝沿用 segment_silence_ms
-    vox_emotion_enabled: bool = False  # VOX 情緒開關（UEP_INFER_VOX_EMOTION_ENABLED）；關＝不傳 emotion／intensity
+    vox_emotion_enabled: bool = False  # VOX 情緒開關（UEP_INFER_VOX_EMOTION_ENABLED）（Bernie 11/11 裁決；real-mode 驗證後再開）；關＝不傳 emotion／intensity
     vox_emotion_map: Mapping[str, Any] | None = None  # SpeechStyle → Vox 情緒對照表覆寫；None＝預設全 neutral
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
     think_prepare_timeout_s: float = 8.0

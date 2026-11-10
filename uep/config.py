@@ -128,7 +128,7 @@ class UepSettings(BaseSettings):
     infer_vox_segment_silence_ms: float | None = Field(default=None, ge=0, validation_alias="UEP_INFER_VOX_SEGMENT_SILENCE_MS")
     infer_vox_terminal_pause_ms: float | None = Field(default=None, ge=0, validation_alias="UEP_INFER_VOX_TERMINAL_PAUSE_MS")
     infer_vox_secondary_pause_ms: float | None = Field(default=None, ge=0, validation_alias="UEP_INFER_VOX_SECONDARY_PAUSE_MS")
-    # VOX 情緒：開關預設關；對照表為 JSON 物件字串（SpeechStyle 名 → 標籤或 {"emotion","intensity"}），疊在預設全 neutral 表上
+    # VOX 情緒：開關預設關（Bernie 11/11 裁決；real-mode 驗證後再開）；對照表為 JSON 物件字串（SpeechStyle 名 → 標籤或 {"emotion","intensity"}），疊在已定案的預設表上
     infer_vox_emotion_enabled: bool = Field(default=False, validation_alias="UEP_INFER_VOX_EMOTION_ENABLED")
     infer_vox_emotion_map: str | None = Field(default=None, validation_alias="UEP_INFER_VOX_EMOTION_MAP")
     infer_tts_device: str = Field(default="cuda", validation_alias="UEP_INFER_TTS_DEVICE")

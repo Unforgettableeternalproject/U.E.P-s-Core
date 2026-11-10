@@ -1,13 +1,16 @@
-"""DL-1b：Host 注入決策中樞並以 shadow 組裝 RuleProposer（不需資料庫）。"""
+"""DL-1b：Host 注入決策中樞，預設 primary=rules.default、shadow=respond.minimal，UEP_DECISION_* 組態（不需資料庫）。"""
 from __future__ import annotations
 
 import dataclasses
 import threading
 import time
 
+import pytest
+
+from uep.config import UepSettings
 from uep.decision import DecisionHub
 from uep.echo.host import EchoPipelineHost
-from uep.turn.decision_config import DecisionConfig
+from uep.turn.decision_config import DecisionConfig, decision_config_from_settings
 from uep.turn.models import (
     Proposal,
     ReplyMode,
@@ -66,10 +69,11 @@ def test_host_uses_external_hub():
         host.orchestrator.close()
 
 
-def test_default_shadow_is_rules_default():
+def test_default_primary_is_rules_default_and_shadow_is_respond_minimal():
     host = _host()
     try:
-        assert _shadow_ids(host) == [RuleProposer.proposer_id]
+        assert isinstance(host.orchestrator.proposer, RuleProposer)
+        assert _shadow_ids(host) == [RespondProposer.proposer_id]
     finally:
         host.orchestrator.close()
 
@@ -97,7 +101,7 @@ def test_empty_config_disables_shadow():
 
 
 def test_same_id_as_primary_not_duplicated():
-    host = _host(proposer=RuleProposer())
+    host = _host(proposer=RespondProposer())
     try:
         assert _shadow_ids(host) == []
     finally:
@@ -107,6 +111,73 @@ def test_same_id_as_primary_not_duplicated():
         assert _shadow_ids(host) == ["rules.default"]
     finally:
         host.orchestrator.close()
+
+
+def _settings(**kw) -> UepSettings:
+    return UepSettings(_env_file=None, **kw)  # type: ignore[call-arg]
+
+
+def test_settings_unset_keeps_defaults():
+    cfg = decision_config_from_settings(_settings())
+    assert cfg.proposer_id == "rules.default" and cfg.shadow_proposer_ids == ("respond.minimal",)
+
+
+def test_env_selects_primary_and_shadows(monkeypatch):
+    monkeypatch.setenv("UEP_DECISION_PROPOSER", "respond.minimal")
+    monkeypatch.setenv("UEP_DECISION_SHADOW_PROPOSERS", "rules.default, respond.minimal, rules.default")
+    cfg = decision_config_from_settings(_settings())
+    assert cfg.proposer_id == "respond.minimal"
+    assert cfg.shadow_proposer_ids == ("rules.default",)  # 去重並剔除與 primary 相同者
+    host = _host(decision=cfg)
+    try:
+        assert isinstance(host.orchestrator.proposer, RespondProposer)
+        assert _shadow_ids(host) == ["rules.default"]
+    finally:
+        host.orchestrator.close()
+
+
+def test_env_empty_shadow_disables_shadow(monkeypatch):
+    monkeypatch.setenv("UEP_DECISION_SHADOW_PROPOSERS", "")
+    assert decision_config_from_settings(_settings()).shadow_proposer_ids == ()
+
+
+@pytest.mark.parametrize("name", ["UEP_DECISION_PROPOSER", "UEP_DECISION_SHADOW_PROPOSERS"])
+def test_env_unknown_id_fails_fast(monkeypatch, name):
+    monkeypatch.setenv(name, "nope.nothing")
+    with pytest.raises(ValueError, match="nope.nothing"):
+        decision_config_from_settings(_settings())
+
+
+def test_host_without_decision_reads_env(monkeypatch):
+    monkeypatch.setenv("UEP_DECISION_PROPOSER", "respond.minimal")
+    from uep.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        host = _host()
+        try:
+            assert isinstance(host.orchestrator.proposer, RespondProposer)
+            assert _shadow_ids(host) == []
+        finally:
+            host.orchestrator.close()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_explicit_proposer_wins_over_env(monkeypatch):
+    monkeypatch.setenv("UEP_DECISION_PROPOSER", "respond.minimal")
+    from uep.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        mine = RuleProposer()
+        host = _host(proposer=mine)
+        try:
+            assert host.orchestrator.proposer is mine
+        finally:
+            host.orchestrator.close()
+    finally:
+        get_settings.cache_clear()
 
 
 def _orch(proposer, shadows=()):

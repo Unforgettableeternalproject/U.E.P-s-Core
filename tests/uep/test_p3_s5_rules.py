@@ -24,6 +24,7 @@ from uep.turn.decision_config import (
     GateConfig,
     GroupEngagementConfig,
     ModeConfig,
+    SoloEngagementConfig,
 )
 from uep.turn.engagement import (
     ChannelMode,
@@ -500,6 +501,38 @@ def test_engagement_meaningfulness_filter(text, meaningful):
     assert monitor(Clock()).is_meaningful(text) is meaningful
 
 
+@pytest.mark.parametrize("text", ["哈囉", "你好", "早安", "謝謝", "晚安"])
+def test_cjk_greeting_is_meaningful_and_responds_in_private_chat(text):
+    """CJK 最小長度門檻為 2：兩字問候語在私聊要 respond（不再被當作過短）。"""
+    assert monitor(Clock()).is_meaningful(text) is True
+    p, _ = joined(1)
+    proposal = p.propose(cand(text))
+    assert (proposal.reply_mode, proposal.reason_code) == (ReplyMode.RESPOND, "active")
+
+
+@pytest.mark.parametrize("text", ["好的", "嗯嗯", "對啊", "是喔", "好喔", "喔喔", "對對", "是的", "沒錯", "了解", "知道",
+                                  "OK", "Okay"])
+def test_two_char_acknowledgement_is_pass_in_private_chat(text):
+    assert monitor(Clock()).is_meaningful(text) is False
+    p, _ = joined(1)
+    proposal = p.propose(cand(text))
+    assert (proposal.reply_mode, proposal.reason_code) == (ReplyMode.PASS, "not_meaningful")
+
+
+@pytest.mark.parametrize("text", ["嗯", "好", "啊"])
+def test_single_char_filler_stays_pass_in_private_chat(text):
+    p, _ = joined(1)
+    proposal = p.propose(cand(text))
+    assert (proposal.reply_mode, proposal.reason_code) == (ReplyMode.PASS, "not_meaningful")
+
+
+def test_english_min_length_is_unchanged_and_cjk_threshold_comes_from_config():
+    assert monitor(Clock()).is_meaningful("hi") is False  # 英文仍用 meaningfulness_min_length（3）
+    assert monitor(Clock()).is_meaningful("hey") is True
+    strict = EngagementMonitor(EngagementConfig(solo=SoloEngagementConfig(meaningfulness_min_length_cjk=3)), Clock())
+    assert strict.is_meaningful("你好") is False and strict.is_meaningful("你好嗎") is True
+
+
 # ---------------------------------------------------------------------------
 # RuleProposer：reply_mode 對照（bot trigger -> Core Proposal）
 # ---------------------------------------------------------------------------
@@ -945,3 +978,12 @@ def test_pass_marker_filter(sentences, spoken, passed):
     flt = PassMarkerFilter()
     assert [flt.feed(s) for s in sentences] == spoken
     assert flt.passed is passed
+
+
+@pytest.mark.parametrize("text", ["Please summarise the meeting notes", "請幫我整理會議紀錄"])
+def test_unknown_headcount_is_treated_as_private_chat_and_explicit_request_responds(text):
+    """人數未知（None）比照私聊（1:1）：明確請求不得被吞（en-edge-01／zh-edge-01）。"""
+    p = RuleProposer(rules_cfg(), clock=Clock())
+    proposal = p.propose(cand(text, count=None))
+    assert (proposal.reply_mode, proposal.reason_code) == (ReplyMode.RESPOND, "active")
+    assert p.channel_mode is ChannelMode.ACTIVE

@@ -153,8 +153,13 @@ class RuleProposer:
 
     def propose(self, candidate: TurnCandidate) -> Proposal:
         with self._lock:
-            if candidate.participant_count is not None and candidate.participant_count != self._users:
-                self._users = candidate.participant_count
+            # 人數未知（None）一律當私聊（1:1）判斷（fail-open）：宿主已回報過人數就沿用，否則視為 1，
+            # 避免 users=0 把頻道判成被動、吞掉明確請求
+            count = candidate.participant_count
+            if count is None and self._users < 1:
+                count = 1
+            if count is not None and count != self._users:
+                self._users = count
                 self._coupling.set_user_count(self._users)
             mode = self._refresh()
             speaker = candidate.speakers[0] if candidate.speakers else ""

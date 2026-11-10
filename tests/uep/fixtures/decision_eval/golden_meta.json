@@ -1,8 +1,8 @@
 {
   "kind": "characterization",
   "note": "現況行為快照，非人工真值，不可用於訓練",
-  "generated_at": "2026-11-05T18:41:19+00:00",
-  "commit": "498dd0248cc5fa950eca954fe7e459feb2ea19de",
+  "generated_at": "2026-11-10T09:25:40+00:00",
+  "commit": "1e4bd36f9147cdabdff0528e572060c0c65b1dd9",
   "proposers": {
     "rules.default": "s5-bot-port",
     "respond.minimal": "s3-respond"

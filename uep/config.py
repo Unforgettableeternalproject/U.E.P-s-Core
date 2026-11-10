@@ -32,6 +32,10 @@ class UepSettings(BaseSettings):
     database_url: SecretStr | None = Field(default=None, validation_alias="UEP_DATABASE_URL")
     # 工具路徑分流（切片 C）：legacy＝舊衍生路徑（預設，位元組不變）；agent＝註冊表 ``project``＋ActionIntent 的曝光
     tool_path: Literal["legacy", "agent"] = Field(default="legacy", validation_alias="UEP_TOOL_PATH")
+    # 決策中樞 proposer 選擇（DL-1b）：primary 的 proposer_id（未設＝rules.default）；shadow 清單以逗號分隔
+    # （未設＝respond.minimal，設為空字串＝關閉 shadow）。未註冊的 id 於 Host 組裝時 fail-fast
+    decision_proposer: str | None = Field(default=None, validation_alias="UEP_DECISION_PROPOSER")
+    decision_shadow_proposers: str | None = Field(default=None, validation_alias="UEP_DECISION_SHADOW_PROPOSERS")
     test_database_url: SecretStr | None = Field(default=None, validation_alias="UEP_TEST_DATABASE_URL")
     # Host 本機 epoch 檔（D26，DB 外）；未設定時用使用者資料目錄的預設位置
     host_epoch_file: Path | None = Field(default=None, validation_alias="UEP_HOST_EPOCH_FILE")

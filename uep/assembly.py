@@ -16,7 +16,8 @@
    它失敗（例如 Host epoch 檔落後 DB）時其後任何元件都不啟動。
 2. Bus 啟動、Runtime 軸 STARTING、Presence 初始投影、presence_bound Task 補暫停（reconcile）。
 3. 維護迴圈（``maintenance_interval`` 不為 None 時）：定期 ``presence.expire_due()`` 與 ``bridge.reconcile()``，
-   讓到期與橋接失敗不依賴外部觸發而補上（T-23）。
+   讓到期與橋接失敗不依賴外部觸發而補上（T-23）。Supervisor 迴圈（同條件）隨後啟動，定期 deadline／核准過期／孤兒回合掃描
+   （D67；``UEP_SUPERVISOR_ENABLED`` 預設開）。``shutdown`` 在關閉入口之前同步 ``supervisor.shutdown()``（SV-1）。
 4. 其後才啟動 relay（``relay_starters``，例如 outbox relay）與全域停止本機 API。
 5. Runtime 軸 READY。
 
@@ -30,7 +31,7 @@ import os
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from secrets import token_bytes
 from typing import TYPE_CHECKING, Any
 
@@ -91,6 +92,8 @@ from uep.tasks.presence_bridge import (
     PresenceTaskBridge,
 )
 from uep.tasks.states import RunStatus
+from uep.tasks.supervisor import Supervisor, SupervisorLoop
+from uep.tools.cancel import ActionCanceller
 from uep.tools.catalog.memory import MEMORY_EXECUTOR
 
 if TYPE_CHECKING:  # 組裝層不得硬依賴 uep.stream：只有 uep/echo/host 會 import 它
@@ -179,6 +182,8 @@ class CoreAssembly:
     memory: MemoryHost | None = None  # P3-M：可選；啟動於 presence／Bus／維護迴圈之後、relay 之前
     echo: EchoPipelineHost | None = None  # P3 S3：可選；啟動於 memory 之後（ES 需要 MemoryPort）、relay 之前
     decision_log: DecisionLogWriter | None = None  # 決策日誌寫入器（有 echo 且啟用時才有）；於 echo／memory 停止後才關閉
+    supervisor: Supervisor | None = None  # D67：停用（UEP_SUPERVISOR_ENABLED=0）時為 None
+    supervisor_loop: SupervisorLoop | None = None  # 僅在維護迴圈啟用（maintenance_interval 不為 None）時建立
 
     def start(self) -> None:
         """依上述順序啟動；冪等。失敗時關閉已綁定的入口（stop API、endpoint socket）、訂閱與 Bus 後上拋。"""
@@ -209,6 +214,9 @@ class CoreAssembly:
         if self.maintenance is not None:
             self.maintenance.start()
             self.start_log.append("maintenance.start")
+        if self.supervisor_loop is not None:
+            self.supervisor_loop.start()
+            self.start_log.append("supervisor.start")
         if self.memory is not None:
             self.memory.start()  # 記憶 Host 在 Presence／Bus 之後（事件才有地方落）；ES Host（S3）將在它之後
             self.start_log.append("memory.start")
@@ -267,6 +275,15 @@ class CoreAssembly:
                 self.state.set_runtime(RuntimeState.STOPPING)
         except Exception:
             logger.exception("Runtime 軸寫入 STOPPING 失敗")
+        if self.supervisor_loop is not None:
+            self.supervisor_loop.stop()  # 先停 tick，避免與關機暫停競爭
+        if self.supervisor is not None and self.started:
+            # SV-1：在 bus.stop() 之前同步暫停所有未終態 Task／Run（PAUSED(core_shutdown)），不依賴事件被訂閱
+            try:
+                self.supervisor.shutdown()
+            except Exception:
+                logger.exception("Supervisor 關機暫停失敗")
+            self.start_log.append("supervisor.shutdown")
         self._close_inputs()
         self.started = False
 
@@ -436,6 +453,7 @@ def assemble_core(
     model_port: Any | None = None,
     loop_entry: Callable[[Any, Any], object] | None = None,
     decision_log: bool | None = None,
+    supervisor: bool | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -450,6 +468,9 @@ def assemble_core(
     ``decision_log``：None 依 ``UEP_DECISION_LOG``（預設啟用）；False 停用；True 啟用（覆寫 env 的停用）。僅在有 ``echo``
     且啟用時，用本函式的 ``session_factory`` 建 DB sink 與寫入器並掛到 ``echo.decision_hub``（連同政策發布記錄）；
     於所有驗證之後才建立，任何 ``AssemblyError`` 都不會留下寫入器，關閉由 ``CoreAssembly.shutdown`` 負責。
+    ``supervisor``：None 依 ``UEP_SUPERVISOR_ENABLED``（預設啟用）；False 不建立。建立時以 ``ActionCanceller.prepare`` 作為
+    ``cancel_actions``；間隔、``shutdown_grace``、``deadline_grace``、cancel 逾時取自設定（``UEP_SUPERVISOR_*``）。
+    背景 tick 迴圈與維護迴圈同條件（``maintenance_interval`` 不為 None）；關機暫停則不論是否有迴圈都會執行。
     ``strict`` 為 True 時，缺少（或過短的）``UEP_PAYLOAD_HASH_KEY`` 直接拒絕組裝；預設只告警。
     ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
@@ -565,6 +586,19 @@ def assemble_core(
         if maintenance_interval is not None else None
     )
 
+    supervisor_obj: Supervisor | None = None
+    supervisor_loop: SupervisorLoop | None = None
+    settings = get_settings()
+    if settings.supervisor_enabled if supervisor is None else supervisor:
+        canceller = ActionCanceller(tasks, executors, tool_resolver, timeout_s=settings.supervisor_cancel_timeout_s)
+        supervisor_obj = Supervisor(
+            tasks, deadline_grace=timedelta(seconds=settings.supervisor_deadline_grace_s),
+            shutdown_grace=timedelta(seconds=settings.supervisor_shutdown_grace_s),
+            cancel_actions=canceller.prepare, **clock_kw,
+        )
+        if maintenance_interval is not None:
+            supervisor_loop = SupervisorLoop(supervisor_obj, interval=settings.supervisor_interval_s)
+
     for event_type in _PRESENCE_PROJECTED + ("core.component_health_changed",):
         bus.subscribe(event_type, state.project_event)
     api = LocalStopServer(stop, port=stop_api_port) if stop_api_port is not None else None
@@ -593,5 +627,5 @@ def assemble_core(
         delivery=delivery, tasks=tasks, state=state, stop=stop, bridge=bridge, maintenance=maintenance,
         stop_api=api,
         endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory, echo=echo,
-        decision_log=writer,
+        decision_log=writer, supervisor=supervisor_obj, supervisor_loop=supervisor_loop,
     )

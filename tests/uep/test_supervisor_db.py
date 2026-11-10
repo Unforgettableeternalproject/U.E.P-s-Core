@@ -384,8 +384,7 @@ def test_pause_all_pauses_running_and_waiting_input_and_skips_unknown(session_fa
         assert mgr.get_run(run_id).status == RunStatus.PAUSED.value and mgr.get_run(run_id).pause_reason == "core_shutdown"
     assert mgr.get_task(unknown.task_id).status == RunStatus.UNKNOWN.value  # 略過
     assert env.events("task.failed") == [] and env.events("task.cancelled") == []
-    # 注意：repo 尚未實作 SYS 契約 SA-7 的 paused_from（暫停前狀態），所以這裡只能斷言 PAUSED(core_shutdown)；
-    # resume_run 目前一律回 RUNNING，不是暫停前的 WAITING_INPUT——契約與實作的落差，待裁決。
+    # paused_from 與 resume_run 回暫停前狀態的斷言見 test_supervisor_wiring.py（VC-SV-1 驗收）。
 
 
 # ---- migration 0013 往返 ----

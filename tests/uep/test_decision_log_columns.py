@@ -38,7 +38,7 @@ def _row_for(**request_kw) -> dict:
 
 
 def test_new_columns_are_appended_to_log_columns():
-    assert COLUMNS[-4:] == NEW_COLUMNS
+    assert COLUMNS[-5:-1] == NEW_COLUMNS
 
 
 def test_primary_row_fills_new_columns():
@@ -100,7 +100,7 @@ def test_shadow_row_new_columns_stay_none():
 def _legacy_rows() -> list[dict]:
     """沒有新四欄鍵的舊式列（舊 JSONL／舊 DB 版本輸出形狀）。"""
     now = datetime(2026, 11, 1, tzinfo=UTC)
-    base = dict.fromkeys(COLUMNS[:-4])
+    base = dict.fromkeys(COLUMNS[:-5])
     primary = {**base, "decision_id": "dec_p", "kind": KIND_TURN_REPLY, "created_at": now, "role": "primary",
                "outcome": "respond", "reason_code": "r", "status": "ok", "elapsed_ms": 4, "fallback": False}
     shadow = {**base, "decision_id": "dec_s", "kind": KIND_TURN_REPLY, "created_at": now + timedelta(seconds=1),
@@ -156,7 +156,7 @@ def test_migration_0014_revision_chain():
     assert rev is not None and rev.down_revision == "0013_run_supervisor_flags"
     assert callable(rev.module.upgrade) and callable(rev.module.downgrade)
     assert script.get_revision("0015_action_retry_of").down_revision == "0014_decision_log_columns"
-    assert script.get_heads() == ["0017_paused_from"]
+    assert script.get_heads() == ["0018_decision_log_platform_ctx"]
 
 
 def test_orm_model_has_new_columns_and_index():
@@ -219,6 +219,81 @@ def test_db_sink_roundtrip_new_columns_and_sub_kind_filter(engine, session_facto
         assert load_rows(session_factory, sub_kind="nope") == []
         # 不帶 sub_kind：舊列照常回傳，replay 輸出不受影響
         assert analyze(list(rows.values()))["total_rows"] == 3
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM decision_log"))
+
+
+# ---- migration 0018：platform_context_version ----
+
+def test_platform_context_version_is_last_nullable_column():
+    import uep.db.models_registry  # noqa: F401
+    from uep.db.base import Base
+
+    assert COLUMNS[-1] == "platform_context_version"
+    col = Base.metadata.tables["decision_log"].columns["platform_context_version"]
+    assert col.nullable and col.type.python_type is int
+    assert not any("platform_context_version" in {c.name for c in ix.columns}
+                   for ix in Base.metadata.tables["decision_log"].indexes)
+
+
+def test_primary_row_platform_context_version_from_facts():
+    assert _row_for(facts={"platform_context_version": 7})["platform_context_version"] == 7
+    assert _row_for(facts={"platform_context_version": 0})["platform_context_version"] == 0
+
+
+def test_primary_row_platform_context_version_null_when_absent_or_invalid():
+    assert _row_for()["platform_context_version"] is None
+    for bad in (True, "3", 1.5, None):
+        assert _row_for(facts={"platform_context_version": bad})["platform_context_version"] is None
+
+
+def test_no_production_decision_point_supplies_platform_context_version():
+    """第 5 步前行為零變化：uep/ 內只有日誌／表定義讀寫此欄，沒有決策點把它放進 facts。"""
+    from pathlib import Path
+
+    import uep
+
+    allowed = {"log.py", "db.py", "platform_context.py", "0018_decision_log_platform_context_version.py"}
+    offenders = [
+        str(p) for p in Path(uep.__file__).parent.rglob("*.py")
+        if p.name not in allowed and "platform_context_version" in p.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
+
+
+def test_db_migration_0018_roundtrip_and_sink(alembic_cfg, engine, session_factory):
+    from alembic import command
+    from sqlalchemy import inspect, text
+
+    from uep.decision.db import DbSink, load_rows
+
+    def columns():
+        return {c["name"]: c for c in inspect(engine).get_columns("decision_log")}
+
+    assert columns()["platform_context_version"]["nullable"]
+    try:
+        command.downgrade(alembic_cfg, "0017_paused_from")
+        assert "platform_context_version" not in columns()
+        command.upgrade(alembic_cfg, "head")
+        assert "platform_context_version" in columns()
+        command.downgrade(alembic_cfg, "0017_paused_from")
+    finally:
+        command.upgrade(alembic_cfg, "head")
+    assert "platform_context_version" in columns()
+
+    def row(did, **extra):
+        r = dict.fromkeys(COLUMNS)
+        r.update(decision_id=did, kind="loop.consult", created_at=datetime.now(UTC), role="primary", status="ok", **extra)
+        return r
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM decision_log"))
+    try:
+        DbSink(session_factory).write([row("dec_v", platform_context_version=5), row("dec_n")])
+        rows = {r["decision_id"]: r for r in load_rows(session_factory, kind="loop.consult")}
+        assert rows["dec_v"]["platform_context_version"] == 5
+        assert rows["dec_n"]["platform_context_version"] is None
     finally:
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM decision_log"))

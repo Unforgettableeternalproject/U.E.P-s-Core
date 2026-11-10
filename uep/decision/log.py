@@ -32,7 +32,7 @@ COLUMNS: tuple[str, ...] = (
     "decision_id", "request_id", "kind", "created_at", "role", "primary_decision_id",
     "engine", "proposer_id", "version", "outcome", "reason_code", "confidence", "elapsed_ms",
     "status", "agree", "fallback", "candidate_id", "participant_count", "addressed_hint", "utterance_refs",
-    "sub_kind", "trigger", "namespace", "snapshot_version",
+    "sub_kind", "trigger", "namespace", "snapshot_version", "platform_context_version",
 )
 
 # 新增四欄只收 ID／列舉類的安全字元短字串，原文般的內容一律記 None（不存原文原則）
@@ -96,6 +96,8 @@ def primary_row(
         sub_kind=_safe_token(request.facts.get("sub_kind")), trigger=_safe_token(request.trigger),
         namespace=_safe_token(request.subject.get("namespace")),
         snapshot_version=_safe_version(request.snapshot_versions.get("policy")),
+        # 選用：決策點尚未帶入時為 None（第 5 步才由 production 決策點提供）
+        platform_context_version=_safe_version(request.facts.get("platform_context_version")),
     )
     return row
 

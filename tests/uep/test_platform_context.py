@@ -383,8 +383,11 @@ def _importers(module: str) -> set[str]:
 def test_platform_context_is_read_only_by_shadow_wiring():
     # 平台脈絡目前只被 shadow 使用：消費點（projection／loop_consult／proactive／bridge）不得 import
     assert _importers("uep.echo.platform_context") == {"assembly.py", "echo/host.py"}
-    # 除 shadow 外，只有相容層邊界（SessionContext 建構、HostPolicySource）可 import 舊值正規化
-    assert _importers("uep.contracts.platform") == {"echo/platform_context.py", "echo/policy.py", "turn/models.py"}
+    # 除 shadow 外，只有相容層邊界（SessionContext 建構、HostPolicySource）可 import 舊值正規化；
+    # presence/gate.py 是 E3 Output Gate 前置檢查的唯一能力型別消費者
+    assert _importers("uep.contracts.platform") == {
+        "echo/platform_context.py", "echo/policy.py", "presence/gate.py", "turn/models.py",
+    }
 
 
 def test_consumers_do_not_reference_platform_context_names():

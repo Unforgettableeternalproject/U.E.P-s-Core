@@ -591,7 +591,8 @@ def assemble_core(
     )
     gate = OutputGate(
         session_factory, presence, turn_generation_source=turn_generation_source,
-        presence_audience=presence_audience, publisher=publisher, **clock_kw,
+        presence_audience=presence_audience, publisher=publisher,
+        require_interaction=get_settings().gate_require_interaction, **clock_kw,
     )
     delivery = DeliveryManager(session_factory, adapter, gate=gate)
     state = StateCoordinator(

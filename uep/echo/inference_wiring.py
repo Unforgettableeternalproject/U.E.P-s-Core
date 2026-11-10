@@ -87,6 +87,7 @@ class InferenceConfig:
     llm_model: str | None = None
     system_prompt: str = ""
     think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
+    compress: Any = None  # CompressConfig（長對話壓縮，由 UepSettings.compress_config() 解析）；None＝停用，沿用 history_limit 截斷
     tts_engine: str = "indextts2"
     vox_config: Mapping[str, Any] | None = None  # 原樣轉給 VoxBackend(config)；None＝不傳
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
@@ -135,6 +136,7 @@ class InferenceConfig:
             stt_mode=settings.infer_stt_mode, stt_language=settings.infer_stt_language,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
             system_prompt=settings.infer_system_prompt, think=settings.think_config(),
+            compress=settings.compress_config(),
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
             think_prepare_timeout_s=settings.infer_think_prepare_timeout_s,
             input_prepare_timeout_s=settings.infer_input_prepare_timeout_s,
@@ -318,6 +320,19 @@ def default_think_backend(cfg: InferenceConfig) -> Any:
     return build_backend(provider, session_repo=str(repo) if repo is not None else None, config=cfg.think, **overrides)
 
 
+def _build_compress_backend(cfg: InferenceConfig) -> Any:
+    """長對話壓縮用的 openai backend；未啟用、缺金鑰或建立失敗時回 None（降級為 history_limit 截斷）。"""
+    if cfg.compress is None or not cfg.compress.enabled or cfg.think is None:
+        return None
+    from uep.stream.adapters.think_compress import build_compress_backend
+
+    try:
+        return build_compress_backend(cfg.compress, cfg.think)
+    except Exception as exc:  # noqa: BLE001 - 缺金鑰等：不擋 Think 啟動
+        logger.warning("長對話壓縮停用：%s（改用 history_limit 截斷）", type(exc).__name__)
+        return None
+
+
 class _VoxUnavailableStage:
     """VOX adapter 無法使用時的佔位 speak stage：``prepare`` 明確失敗，由 _SpeakGuard 降級（標 not ready、之後無聲）。"""
 
@@ -474,6 +489,10 @@ def build_inference_wiring(
     llm = think_backend if think_backend is not None else (think_backend_factory or default_think_backend)(cfg)
     think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt, "config": cfg.think}
     think_kwargs.update(extra.get("think", {}))
+    compress_backend = _build_compress_backend(cfg)
+    if compress_backend is not None:
+        think_kwargs.setdefault("compress", cfg.compress)
+        think_kwargs.setdefault("compress_backend", compress_backend)
     recommended = _vox_recommended_split_policy(cfg, speak)
     if recommended is not None:
         think_kwargs.setdefault("split_policy", recommended)

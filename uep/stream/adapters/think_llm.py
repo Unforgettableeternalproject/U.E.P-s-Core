@@ -18,10 +18,11 @@ SessionControl 的 ``AbstractBackend`` 天然符合，測試可以注入假物�
 
 ## Phase 2 的範圍
 
-只接 LLM 串流。對話歷史用最樸素的 list，**Phase 4 才換成
-ContextManager 的四層壓縮**——半套的壓縮比沒有壓縮更難除錯。
+只接 LLM 串流。對話歷史是 ``list[dict]``；給了 ``compress`` 設定與 ``compress_backend`` 時，
+歷史改由 ContextManager 的四層壓縮管理（60／80／92% 與 413 緊急截斷，見 ``think_compress.py``），
+沒給就維持 ``history_limit`` 的階梯式截斷。
 
-⚠️ 屆時要注意壓縮的競態陷阱：絕不能「先清空原始內容再等 LLM 回摘要」
+壓縮在背景跑、完成後原子替換歷史，不阻塞回合；絕不「先清空原始內容再等 LLM 回摘要」
 （Claude Code #40352、Codex #13946 都踩過，API 失敗時原始對話被永久吞掉）。
 
 ## 工具呼叫（Phase 4b C 段）
@@ -71,6 +72,7 @@ from ..tracer import (
     LatencyTracer,
 )
 from .output_guard import OutputGuard
+from .think_compress import CompressConfig, HistoryCompressor, is_context_overflow
 from .think_config import ThinkConfig
 
 logger = logging.getLogger(__name__)
@@ -384,6 +386,8 @@ class LLMThinkStage:
         output_guard: OutputGuard | None = None,
         prompt_cache_key: str | None = None,
         config: ThinkConfig | None = None,
+        compress: CompressConfig | None = None,
+        compress_backend: Any = None,
     ) -> None:
         if tool_lead_in not in TOOL_LEAD_IN_MODES:
             raise ValueError(
@@ -408,8 +412,18 @@ class LLMThinkStage:
         self.split_policy = split_policy or SplitPolicy()
         self.tracer = tracer
         self.history_limit = history_limit
-        """保留幾則歷史訊息。**佔位方案**——Phase 4 換成 ContextManager
-        的四層漸進式壓縮後就不需要粗暴截斷。"""
+        """保留幾則歷史訊息。只在**沒有啟用壓縮**時作為視窗上限；啟用壓縮
+        （``compress`` 且有 ``compress_backend``）後歷史整段送出，由 ContextManager 依用量壓縮，
+        此值僅用來界定各索引表的大小。"""
+        self._compressor: HistoryCompressor | None = (
+            HistoryCompressor(compress_backend, compress, system_text=self._system_instruction)
+            if compress is not None and compress.enabled and compress_backend is not None
+            else None
+        )
+        """長對話壓縮（ContextManager 轉接）；``None`` = 停用，走 ``history_limit`` 截斷。"""
+        self._compress_task: asyncio.Future | None = None
+        self._compress_blocked_until = 0.0
+        """壓縮失敗／無效後的退避截止時間（``time.monotonic()``）。"""
         self.history_trim_to = (
             max(1, min(history_trim_to, history_limit))
             if history_trim_to is not None
@@ -594,6 +608,9 @@ class LLMThinkStage:
         if self._scope_owner is not None:
             raise RuntimeError("stream 進行中不可 reset_context（呼叫端須先確保 think 閒置）")
         self._context_epoch += 1
+        self._compress_blocked_until = 0.0
+        if self._compressor is not None:
+            self._compressor.reset()
         self.last_tool_calls = []
         self.profile = ""
         self.history[:] = list(history) if history is not None else []
@@ -793,6 +810,11 @@ class LLMThinkStage:
         ``aclose``；沒有才關 ``_async_client``。同步 ``_client`` 不關——記憶 adapter 的
         llm_fn 在 executor 執行緒共用它，關了會弄壞仍在跑的 dream。
         """
+        task = self._compress_task
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await task
         backend = self._backend
         close = getattr(backend, "aclose", None)
         if not callable(close):
@@ -917,6 +939,8 @@ class LLMThinkStage:
         spoke = False
         rounds = 0
         system = self._system_instruction()
+        tail_start = len(messages) - 1  # 本輪使用者訊息的起點；413 重建時歷史部分換新、此後原樣保留
+        overflow_retried = False
 
         while True:
             kwargs: dict[str, Any] = {}
@@ -926,22 +950,33 @@ class LLMThinkStage:
             calls: list[Any] = []
             round_text: list[str] = []
 
-            async for piece in _preemptible(
-                self.backend.stream_query(
-                    messages, system_instruction=system, **kwargs, **self._cache_kwargs()
-                ),
-                token,
-            ):
-                if _is_tool_call(piece):
-                    calls.append(piece)
-                    continue
-                if first:
-                    if self.tracer is not None:
-                        self.tracer.mark(turn_id, MARK_THINK_FIRST_TOKEN)
-                    first = False
-                spoke = True
-                round_text.append(piece)
-                yield piece
+            try:
+                async for piece in _preemptible(
+                    self.backend.stream_query(
+                        messages, system_instruction=system, **kwargs, **self._cache_kwargs()
+                    ),
+                    token,
+                ):
+                    if _is_tool_call(piece):
+                        calls.append(piece)
+                        continue
+                    if first:
+                        if self.tracer is not None:
+                            self.tracer.mark(turn_id, MARK_THINK_FIRST_TOKEN)
+                        first = False
+                    spoke = True
+                    round_text.append(piece)
+                    yield piece
+            except Exception as exc:  # 只攔 context 過長，其餘原樣拋出
+                # 第四層：413 / context_length_exceeded 且還沒吐過任何字 → 緊急截斷歷史後重送一次
+                if overflow_retried or spoke or not is_context_overflow(exc) or not self._emergency_compress():
+                    raise
+                overflow_retried = True
+                logger.warning("LLM 回報 context 過長（%s），已緊急截斷歷史並重送", type(exc).__name__)
+                window = to_messages(self._history_window())
+                messages = window + messages[tail_start:]
+                tail_start = len(window)
+                continue
 
             self._note_request(
                 "turn", system, "tools" in kwargs, self._peek_usage(), messages
@@ -1149,6 +1184,8 @@ class LLMThinkStage:
         （history 目前只存 user/assistant 純文字，工具往返不進歷史，無 tool 配對問題）。
         """
         history = self.history
+        if self._compressor is not None:
+            return list(history)  # 啟用壓縮：歷史由 ContextManager 依用量管理，不再截斷
         n = len(history)
         limit = self.history_limit
         step = limit - self.history_trim_to
@@ -1250,6 +1287,60 @@ class LLMThinkStage:
                 k: v for k, v in self._user_by_turn.items() if id(v) in alive
             }
         self._pending_user_text = ""
+        self._schedule_compress()
+
+    # --- 長對話壓縮 ---
+
+    def _schedule_compress(self) -> None:
+        """歷史增長後排一次背景壓縮：已在跑、退避中、或用量明顯未達 60% 就不排。不阻塞回合。"""
+        comp = self._compressor
+        if comp is None or (self._compress_task is not None and not self._compress_task.done()):
+            return
+        if time.monotonic() < self._compress_blocked_until or not comp.might_need(self.history):
+            return
+        epoch = self._context_epoch
+        self._compress_task = asyncio.ensure_future(self._compress_in_background(epoch))
+
+    async def _compress_in_background(self, epoch: int) -> None:
+        comp = self._compressor
+        if comp is None:
+            return
+        try:
+            outcome = await comp.compress(self.history, is_stale=lambda: epoch != self._context_epoch)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # 旁路：失敗不該影響對話，歷史保持原樣
+            logger.warning("歷史壓縮失敗，保留原歷史", exc_info=True)
+            self._compress_blocked_until = time.monotonic() + comp.config.failure_backoff_seconds
+            return
+        if outcome is None:
+            return
+        if outcome.changed:
+            logger.info(
+                "歷史壓縮完成：tier=%s，約 %d → %d tokens", outcome.tier, outcome.tokens_before, outcome.tokens_after
+            )
+        else:
+            # 第一層對純文字沒東西可清（不打 LLM），只需短暫略過；第二層起沒壓成才是失敗／冷卻中，退避較久
+            wait = comp.config.failure_backoff_seconds if outcome.tier >= 2 else comp.config.cooldown_seconds
+            self._compress_blocked_until = time.monotonic() + wait
+
+    async def wait_compress(self) -> None:
+        """等背景壓縮結束（宿主關閉前、測試用）；沒有進行中的壓縮就立刻返回。"""
+        task = self._compress_task
+        if task is not None and not task.done():
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(task)
+
+    def _emergency_compress(self) -> bool:
+        """413 的第四層：同步截斷歷史。回傳歷史是否真的縮短（沒有壓縮器或沒東西可砍回 False）。"""
+        comp = self._compressor
+        if comp is None:
+            return False
+        try:
+            return comp.emergency(self.history)
+        except Exception:
+            logger.warning("緊急壓縮失敗", exc_info=True)
+            return False
 
     async def settle(self, turn_id: str, spoken_text: str, generated_text: str = "") -> bool:
         """commit 之後任意時間，依 turn_id 改寫該輪的 assistant 歷史項。

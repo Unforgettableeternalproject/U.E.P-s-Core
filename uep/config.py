@@ -11,6 +11,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
+    from uep.stream.adapters.think_compress import CompressConfig
     from uep.stream.adapters.think_config import ThinkConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -159,6 +160,10 @@ class UepSettings(BaseSettings):
     llm_prompt_cache_key: str | None = Field(default=None, validation_alias="UEP_LLM_PROMPT_CACHE_KEY")
     llm_output_guard: bool | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_GUARD")
     llm_output_blocklist_extra: str | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_BLOCKLIST_EXTRA")
+    # 長對話壓縮（ContextManager 四層壓縮）：壓縮走 openai 後端，None＝採 CompressConfig 預設
+    llm_compress: bool | None = Field(default=None, validation_alias="UEP_LLM_COMPRESS")
+    llm_compress_model: str | None = Field(default=None, validation_alias="UEP_LLM_COMPRESS_MODEL")
+    llm_context_window: int | None = Field(default=None, validation_alias="UEP_LLM_CONTEXT_WINDOW")
     # 舊名（相容讀取）
     legacy_llm_provider: str | None = Field(default=None, validation_alias="ECHO_STREAM_LLM_PROVIDER")
     legacy_llm_model: str | None = Field(default=None, validation_alias="ECHO_STREAM_LLM_MODEL")
@@ -209,6 +214,18 @@ class UepSettings(BaseSettings):
             prompt_cache_key=(cache_key or "").strip() or None,
             output_guard_enabled=True if guard is None else bool(guard),
             output_blocklist_extra=tuple(p.strip() for p in re.split(r"[,，、]", extra_raw or "") if p.strip()),
+        )
+
+    def compress_config(self) -> CompressConfig:
+        """解析成長對話壓縮的 CompressConfig：``UEP_LLM_COMPRESS*``／``UEP_LLM_CONTEXT_WINDOW`` → 預設。"""
+        from uep.stream.adapters.think_compress import CompressConfig
+
+        defaults = CompressConfig()
+        return CompressConfig(
+            enabled=defaults.enabled if self.llm_compress is None else self.llm_compress,
+            model=(self.llm_compress_model or "").strip() or defaults.model,
+            context_window=self.llm_context_window if self.llm_context_window and self.llm_context_window > 0
+            else defaults.context_window,
         )
 
 

@@ -82,7 +82,7 @@ from uep.turn.aggregator import (
     TurnAggregator,
 )
 from uep.turn.context import ContextRegistrar
-from uep.turn.decision_config import DecisionConfig
+from uep.turn.decision_config import DecisionConfig, decision_config_from_settings
 from uep.turn.engagement import ChannelMode
 from uep.turn.generations import TurnGenerations
 from uep.turn.models import (
@@ -203,7 +203,8 @@ class EchoPipelineHost:
         self._input_stage = input_stage
         self.tracer = tracer or LatencyTracer()
         self.generations = generations or TurnGenerations()
-        self._decision = decision or DecisionConfig()
+        # 未傳 decision：依 UEP_DECISION_* 疊上 proposer 選擇（DL-1b）；明確傳入的 DecisionConfig／proposer／shadow_proposers 優先
+        self._decision = decision if decision is not None else decision_config_from_settings()
         self.policy = policy_source or HostPolicySource(
             session.platform, listener=self._decision.listener,
             barge_in_channel_modes=frozenset(ChannelMode(m) for m in self._decision.barge_in_channel_modes),
@@ -220,6 +221,9 @@ class EchoPipelineHost:
         )
         if endpoint is None:
             self.endpoint.set_on_stop(self._on_endpoint_stop)
+        # primary：呼叫端明確傳入就以呼叫端為準；None 才依 DecisionConfig.proposer_id 經 registry 組裝
+        if proposer is None:
+            proposer = create_proposer(self._decision.proposer_id, config=self._decision)
         wake = getattr(proposer, "wake", None)
         # shadow：呼叫端明確傳入（含空序列）就以呼叫端為準；None 才依 DecisionConfig.shadow_proposer_ids 自動組裝
         if shadow_proposers is None:

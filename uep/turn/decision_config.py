@@ -118,6 +118,39 @@ class DecisionConfig:
     barge_in_cooldown_s: float = 8.0
     # 宿主驅動 ``Orchestrator.tick`` 的間隔（秒）；bot 的 tick 建議 200-500ms
     tick_interval_s: float = 0.25
-    # DL-1b：Host 自動組裝的 shadow proposer（``proposer_id``，經 registry 建立）；與主 proposer 同 id 者略過，空 tuple 關閉。
-    # 呼叫端明確傳入 shadow_proposers 時以呼叫端為準，不看此欄位
-    shadow_proposer_ids: tuple[str, ...] = ("rules.default",)
+    # DL-1b：Host 自動組裝的 primary proposer（``proposer_id``，經 registry 建立）；預設 ``rules.default``。
+    # 呼叫端明確傳入 ``proposer=`` 時以呼叫端為準，不看此欄位
+    proposer_id: str = "rules.default"
+    # DL-1b：Host 自動組裝的 shadow proposer（同上經 registry 建立）；預設以 ``respond.minimal`` 記錄舊行為作對照。
+    # 與 primary 同 id 者略過，空 tuple 關閉。呼叫端明確傳入 shadow_proposers 時以呼叫端為準，不看此欄位
+    shadow_proposer_ids: tuple[str, ...] = ("respond.minimal",)
+
+
+def decision_config_from_settings(settings: object | None = None, base: DecisionConfig | None = None) -> DecisionConfig:
+    """依 ``UEP_DECISION_PROPOSER``／``UEP_DECISION_SHADOW_PROPOSERS`` 疊上 proposer 選擇（其餘欄位沿用 ``base``）。
+
+    未設定的變數不覆寫預設；shadow 清單以逗號分隔，設為空字串代表關閉 shadow。
+    未註冊的 id 直接拋 ``ValueError``（啟動時 fail-fast，不靜默退回預設）；shadow 清單去重並剔除與 primary 相同者。
+    """
+    from dataclasses import replace
+
+    from uep.config import get_settings
+    from uep.turn.registry import PROPOSERS
+
+    cfg = base or DecisionConfig()
+    st = settings if settings is not None else get_settings()
+    primary = (getattr(st, "decision_proposer", None) or "").strip() or cfg.proposer_id
+    raw_shadow = getattr(st, "decision_shadow_proposers", None)
+    if raw_shadow is None:
+        shadows = cfg.shadow_proposer_ids
+    else:
+        shadows = tuple(p.strip() for p in raw_shadow.split(",") if p.strip())
+    known = PROPOSERS.ids()
+    unknown = [pid for pid in (primary, *shadows) if pid not in known]
+    if unknown:
+        raise ValueError(
+            f"UEP_DECISION_PROPOSER／UEP_DECISION_SHADOW_PROPOSERS 含未註冊的 proposer_id：{', '.join(unknown)}"
+            f"（可用：{', '.join(known)}）"
+        )
+    shadows = tuple(pid for pid in dict.fromkeys(shadows) if pid != primary)
+    return replace(cfg, proposer_id=primary, shadow_proposer_ids=shadows)

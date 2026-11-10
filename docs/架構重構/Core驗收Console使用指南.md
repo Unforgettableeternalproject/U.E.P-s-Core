@@ -132,6 +132,44 @@ REPL：`/log` 看目前等級；`/log level <名稱空間> <等級>` 即時調�
 - 讀音：`/say` 讓她回覆含「謝謝、試著、模糊、混淆、捨不得」的句子，或 `/tts` 直接合成這些詞。
 - 第一輪延遲：重啟後的第一句與之後幾句的 TTFA 差距（暖機是否完整）。
 
+### 3.1 agent 回合測試（UEP_TOOL_PATH=agent）
+
+驗「真模型驅動 agent 管線能工作」：模型經 `PydanticAIModelPort`（openai 後端，模型與 dialect 取 `UEP_LLM_*`，預設 `gpt-6-luna`／chat）叫工具，Core 執行並回傳，最後只回覆一次。不需要 GPU（STT／TTS 維持 fake）。
+
+**環境變數**（PowerShell，在 Core repo 根目錄）：
+
+```powershell
+$env:UEP_TOOL_PATH = "agent"            # 必須；改走 AgentThinkStage + ModelPort
+$env:UEP_AGENT_LOOP_ENTRY = "1"         # 要測 /loop（route=agent_loop）才需要；只測一般對話可不設
+$env:UEP_LLM_API_KEY = "<金鑰>"         # 或寫在 Core .env
+# 可選：UEP_LLM_MODEL（預設 gpt-6-luna）、UEP_LLM_API（chat｜responses，預設 chat）
+& $py -m uep.console --think real                 # 記憶為行程內 fake（結束即消失）
+& $py -m uep.console --think real --memory real   # 記憶用真實 EM（CPU 即可；資料根見 1.2，建議指新目錄）
+```
+
+`UEP_TOOL_PATH=agent` 搭配 fake Think（沒有 `--think real`）會直接拒絕啟動；缺金鑰也會在啟動時報錯，不會等到第一句話。
+
+**可用的工具**（以現行註冊表 `memory_registry()` 為準，沒有時間或網路類工具）：
+
+| 工具 | 能力 | 在 Console 可見性 |
+|---|---|---|
+| `deep_recall` | memory.read（唯讀） | 一般對話與 `/loop` 都可見 |
+| `force_remember` | memory.write（可還原，無需核准） | 只在一般對話可見（`agent_loop` 路徑只開放唯讀能力） |
+| `member_recall`、`retract_about_me`、`opt_out_about_me` | 場域（guild）成員記憶 | Console 沒有 guild，不曝光 |
+
+**步驟與預期**：
+
+| 步驟 | 輸入 | 預期 |
+|---|---|---|
+| G1 一般對話 | `你好，介紹一下你自己` | `turn ...：turn.completed`，印一則「回應：…」；沒有 Run／工具資訊 |
+| G2 寫入（`--memory real` 較有意義） | `請記住我養了一隻叫小橘的貓` | 模型呼叫 `force_remember`，回應確認；`/mem` 可見新 episode |
+| G3 agent_loop 查詢 | `/loop 幫我查一下我的寵物叫什麼名字` | 印 `回應：…` 一則（**只回覆一次**）、`Run run_…：SUCCEEDED（Task SUCCEEDED）`、`工具呼叫：deep_recall[SUCCEEDED]`（可多次） |
+| G4 一次性 | 接著送一般句子 | 回到 G1 的形狀（`/loop` 只影響下一句） |
+
+`/loop <文字>` 把下一個 respond 的提議改成 `route=agent_loop`（Console 專用，規則 proposer 本身不會產出這個 route）。沒設 `UEP_AGENT_LOOP_ENTRY=1` 時會提示並退回一般回覆。失敗時使用者只會看到固定系統訊息「這次處理失敗了，沒有產生回覆。」，不是模型編的答案；`/status` 的 Host 指標與 `/trace` 可輔助看哪一輪失敗。
+
+**核准（Risky 工具）**：現行註冊表沒有任何工具需要核准（全部 `approval_level=none`），所以 G1–G4 不會遇到核准。Console **尚未提供核准指令**：若之後註冊了需核准的工具，agent_loop 會把 Run 停在 `WAITING_APPROVAL`（`awaiting_approval`，回合不會有回覆），Console 目前無法放行或否決，要等 Approval 通道接上 Console 才能測。
+
 ## 4. 目前限制
 
 - A6 多人定址：console 沒有多人輸入入口，只有 pytest 覆蓋，待平台 Adapter。

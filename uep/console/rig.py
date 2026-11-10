@@ -122,6 +122,9 @@ class ConsoleRuntime:
     submissions: list[tuple[Any, Any]] = field(default_factory=list)
     player: Any = None
     decision_log: DecisionLogWriter | None = None  # DL-3：決策日誌寫入器（停用時為 None）
+    tool_path: str = "legacy"  # 組裝的工具路徑（agent 時才有 loop_switch 與 model_port）
+    loop_switch: Any = None  # agent 路徑：``/loop`` 的一次性 route 開關（None＝非 agent 路徑）
+    model_port: Any = None  # agent 路徑：驅動 AgentThinkStage 與 AgentLoop 的 ModelPort
 
     def close(self) -> None:
         try:
@@ -139,6 +142,7 @@ def build_fake_runtime(
     input_stage: Any | None = None, memory_factory: Callable[..., Any] | None = None,
     memory_root: Path | None = None, warmups: dict[str, float] | None = None, player: Any | None = None,
     host_kwargs: dict[str, Any] | None = None, assemble_kwargs: dict[str, Any] | None = None,
+    loop_switch: Any | None = None, model_port: Any | None = None,
 ) -> ConsoleRuntime:
     """fake speak 驅動的 Core：文字 → Coordinator → AdmittingSink → wav。
 
@@ -146,7 +150,8 @@ def build_fake_runtime(
     real 模式另可給 ``input_stage``（真實 STT，音訊經 ``host.feed``）與 ``memory_factory(publisher, identity)``
     （真實記憶 Host，經 Access Layer 注入 Host）；``player`` 給定時 sink 同步本機播放（``--play``）。
     ``host_kwargs``／``assemble_kwargs`` 覆寫 Host／``assemble_core`` 的建構參數（例如 agent 工具路徑的 ``tool_path``、
-    ``model_port``、``agent_loop_entry``；預設不傳，行為不變）。
+    ``model_port``、``agent_loop_entry``；預設不傳，行為不變）。``loop_switch`` 給定時（agent 路徑）安裝 ``/loop`` 的
+    route 開關；``model_port`` 只記錄在 runtime 上供指令層顯示。
     """
     session_dir = Path(session_dir)
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -194,6 +199,10 @@ def build_fake_runtime(
         **{"input_stage": input_stage, "memory": memory_host.access if memory_host is not None else None,
            **(host_kwargs or {})},
     )
+    if loop_switch is not None:
+        from uep.console.agent_rig import install_loop_route
+
+        install_loop_route(host, loop_switch)
     core = assemble_core(
         session_factory, **{
             "bus": bus, "publisher": publisher, "control": InProcessControlChannel(), "adapter": host.adapter,
@@ -207,7 +216,8 @@ def build_fake_runtime(
     runtime = ConsoleRuntime(
         "fake" if think_factory is None else "real", core, host, session_factory, think, speak, tracer, session_dir,
         input_stage=input_stage, memory_host=memory_host, memory_root=memory_root, warmups=warmups, player=player,
-        decision_log=core.decision_log,
+        decision_log=core.decision_log, tool_path=(host_kwargs or {}).get("tool_path", "legacy"),
+        loop_switch=loop_switch, model_port=model_port,
     )
     if input_stage is not None:
         runtime.seq = TEXT_SEQ_BASE  # 與 Host 內部 STT utterance 的 seq 錯開，文字與語音混用時不碰撞
@@ -290,7 +300,7 @@ GPU_REQUIRED_MESSAGE = "真實 STT／TTS／記憶 embedding 需要 GPU：請確�
 def build_runtime(
     mode: str, session_factory: sessionmaker[Session], session_dir: Path, *, think: str | None = None,
     tts: str | None = None, stt: str | None = None, memory: str | None = None, play: bool = False,
-    env: dict[str, str] | None = None, **kwargs: Any,
+    env: dict[str, str] | None = None, tool_path: str | None = None, **kwargs: Any,
 ) -> ConsoleRuntime:
     """``fake``：全 fake（A0）。``real``：Think、Speak（TTS）、STT、記憶全真實（A1–A5）。
 
@@ -298,6 +308,10 @@ def build_runtime(
     fake 模式配 ``--think real`` 即「Think 真實、其餘 fake」，``--mode real --tts fake`` 即「TTS fake、其餘真實」。
     真實 STT／TTS（記憶 embedding 預設 CPU，設成非 cpu 才算）需 GPU 守門（``UEP_E2E_ALLOW_GPU=1``），未設即拒絕、不載任何模型。
     ``play`` 把 TTS 音訊同步送本機播放裝置（需 sounddevice）。
+
+    ``tool_path``（預設取設定 ``UEP_TOOL_PATH``）為 ``agent`` 時：Think 必須是 real，Think 改以真實 ``ModelPort``
+    （``kwargs["model_port"]`` 可注入，測試用 FakePort；否則由 ``ThinkConfig`` 建 PydanticAI 埠）組 ``AgentThinkStage``，
+    並依 ``UEP_AGENT_LOOP_ENTRY`` 啟用 ``route=agent_loop`` 入口；``/loop`` 可把下一句導向該 route。
     """
     if mode not in MODES:
         raise ConsoleError(f"未知的模式：{mode}（可用：{', '.join(MODES)}）")
@@ -314,9 +328,18 @@ def build_runtime(
     chosen_memory = memory or default
     if chosen_memory not in MEMORY_CHOICES:
         raise ConsoleError(f"未知的 memory：{chosen_memory}（可用：{', '.join(MEMORY_CHOICES)}）")
+    from uep.config import get_settings
     from uep.console.real_rig import gpu_allowed
 
-    factory = real_think_factory() if chosen == "real" else None  # 缺金鑰先於 GPU 守門報錯（不需 GPU 的問題先講）
+    path = tool_path or get_settings().tool_path
+    if path not in ("legacy", "agent"):
+        raise ConsoleError(f"未知的 tool_path：{path}（可用：legacy、agent）")
+    if path == "agent":
+        if chosen != "real":
+            raise ConsoleError("UEP_TOOL_PATH=agent 需要真實 Think：請加 --think real（或 --mode real）")
+        factory = _agent_setup(kwargs, chosen_memory)
+    else:
+        factory = real_think_factory() if chosen == "real" else None  # 缺金鑰先於 GPU 守門報錯（不需 GPU 的問題先講）
     if ("real" in (chosen_tts, chosen_stt) or (chosen_memory == "real" and _memory_on_gpu())) and not gpu_allowed(env):
         raise ConsoleError(GPU_REQUIRED_MESSAGE)
     warmups: dict[str, float] = kwargs.pop("warmups", None) or {}
@@ -343,6 +366,40 @@ def build_runtime(
                 settings, root, identity, publisher=publisher, session_factory=session_factory, warmups=warmups,
             )
     return build_fake_runtime(session_factory, session_dir, think_factory=factory, warmups=warmups, **kwargs)
+
+
+def _agent_setup(kwargs: dict[str, Any], memory: str) -> Callable[[LatencyTracer], Any]:
+    """agent 工具路徑的組裝參數（就地寫入 ``kwargs``）並回傳 Think 工廠；缺金鑰拋 ``ConsoleError``。"""
+    from uep.config import get_settings
+    from uep.console.agent_rig import (
+        ConsoleFakeMemory,
+        LoopRouteSwitch,
+        agent_think_factory,
+        build_model_port,
+    )
+    from uep.stream.adapters.think_config import ThinkConfigError
+    from uep.tools.catalog.memory import memory_registry
+
+    settings = get_settings()
+    config = settings.think_config()
+    port = kwargs.pop("model_port", None)
+    if port is None:
+        try:
+            port = build_model_port(config)
+        except ThinkConfigError as exc:
+            raise ConsoleError(str(exc)) from exc
+    host_kwargs = dict(kwargs.pop("host_kwargs", None) or {})
+    host_kwargs["tool_path"] = "agent"
+    if memory != "real":  # real 記憶由 memory_factory 的 access 注入 Host；fake 記憶給一個行程內 MemoryPort
+        host_kwargs["memory"] = ConsoleFakeMemory()
+    assemble_kwargs = dict(kwargs.pop("assemble_kwargs", None) or {})
+    # agent 路徑的 executor 只有記憶工具（由組裝層併入）；resolver 必須是記憶註冊表（fake 工具集不在 agent 路徑）
+    assemble_kwargs.update(executors={}, tool_resolver=memory_registry(), tool_path="agent", model_port=port)
+    loop_entry = kwargs.pop("agent_loop_entry", None)  # None＝依 UEP_AGENT_LOOP_ENTRY（由 assemble_core 讀設定）
+    if loop_entry is not None:
+        assemble_kwargs["agent_loop_entry"] = loop_entry
+    kwargs.update(host_kwargs=host_kwargs, assemble_kwargs=assemble_kwargs, loop_switch=LoopRouteSwitch(), model_port=port)
+    return agent_think_factory(port, settings, config)
 
 
 def _memory_on_gpu() -> bool:

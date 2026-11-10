@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from secrets import token_hex
 
-from uep.contracts.presence import AuthorizationTuple
+from uep.contracts.presence import AuthorizationTuple, PresenceLocation
 from uep.decision.contracts import DecisionRequest
 from uep.decision.hub import DecisionHub
 from uep.decision.turn_interject import TurnInterjectEngine, turn_interject_spec
@@ -113,6 +113,20 @@ RETRACT_REASONS = REJECTION_REASONS | frozenset({"presence_lost", "global_stop",
 _SAFE_REF = re.compile(r"[A-Za-z0-9_:.\-]{1,128}")
 _SAFE_LANGUAGE = re.compile(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8}){0,3}")
 UNKNOWN_SPEAKER = "unknown:invalid"
+INVALID_SOURCE_LOCATION = "invalid"  # _sanitize 對無效 source_location 的標記：視為不一致（不是缺失）
+
+
+def no_presence_request(fact: UtteranceFact) -> bool | None:
+    """缺席端輸入是否為到場／移轉請求的辨識 hook（確定性純函式，不經 LLM）。
+
+    只可依明確指令或介面操作判斷；這次不實作仲裁、回條或移轉，固定回 None（未判斷）。
+    ``TurnOrchestrator(presence_request_hook=...)`` 可替換，回傳值只寫進 shadow 紀錄的 ``presence_request``。
+    """
+    return None
+
+
+REASON_ABSENT_PLATFORM_INPUT = "absent_platform_input"
+REASON_SOURCE_LOCATION_MISSING = "source_location_missing"
 _TERMINAL_RETRIES = 1
 
 
@@ -172,8 +186,15 @@ class TurnOrchestrator:
         clock: Callable[[], datetime] = _utcnow,
         registrar: ContextRegistrar | None = None,
         run_id: str | None = None,
+        host_location: str | None = None,
+        require_source_location: bool = False,
+        presence_request_hook: Callable[[UtteranceFact], bool | None] = no_presence_request,
     ) -> None:
         self._publisher = publisher
+        # V18：本機 Host 持有的 location（比對對象）；None = 未提供，不做來源比對（獨立測試用）
+        self._host_location = host_location
+        self.require_source_location = require_source_location
+        self._presence_request_hook = presence_request_hook
         # 此次宿主執行的識別：進冪等鍵，避免重啟後 session 內 seq 從頭來而撞鍵（外部傳入的 seq 也在同一命名空間）
         self.run_id = run_id or token_hex(4)
         self.metrics: Counter[str] = Counter()
@@ -349,6 +370,12 @@ class TurnOrchestrator:
         utterance 還在 aggregator 等待合併時回 ``reason_code="buffered"``（ticket=None）。
         """
         fact = self._sanitize(fact)
+        absent = self._absent_input_reason(fact)
+        if absent is not None:
+            # V18：缺席端輸入在 _listener_yield／aggregator 之前丟棄，proposer 與 buffer 都看不到文字；
+            # 連 input.utterance_final（含原文 blob）都不寫，只留不含原文的 shadow 紀錄
+            self._record_absent_input(ctx, fact, absent)
+            return IntakeResult(None, absent, None, fact=dataclasses.replace(fact, text=""))
         ident = self._identity.resolve_platform(fact.speaker_ref) if self._identity is not None else GUEST
         actor_id = ident.actor_id or UNVERIFIED_ACTOR
         payload: dict[str, object] = {"speaker_ref": fact.speaker_ref, "len": len(fact.text)}
@@ -445,6 +472,66 @@ class TurnOrchestrator:
         except Exception:
             logger.exception("ListenerAware 判斷失敗")
             return None
+
+    def _absent_input_reason(self, fact: UtteranceFact) -> str | None:
+        """缺席端輸入判定（只看位置）：Host 不持有 Lease、或 source_location 與 Host location 不一致。
+
+        缺失（None）維持現狀放行並計數；``require_source_location`` 開啟後缺失即否決。
+        優先序：presence_inactive 先於來源比對（她在主機時任何輸入都不開 turn）。
+        """
+        try:
+            auth = self._auth_provider()
+        except Exception:
+            logger.exception("auth_provider 失敗，fail-closed")
+            return "presence_inactive"
+        if auth is None:
+            return "presence_inactive"
+        source = fact.source_location
+        if source is None:
+            self.metrics["intake.source_location_missing"] += 1
+            return REASON_SOURCE_LOCATION_MISSING if self.require_source_location else None
+        if self._host_location is not None and str(source) != self._host_location:
+            return REASON_ABSENT_PLATFORM_INPUT
+        return None
+
+    def _record_absent_input(self, ctx: SessionContext, fact: UtteranceFact, reason: str) -> None:
+        """寫缺席端輸入的 shadow 紀錄（turn.skipped）：來源、說話者／actor、is_owner、長度；不保存原文。
+
+        is_owner：身分映射命中 owner 為 "true"、查不到為 "false"；沒有身分映射無法判定時為 "unknown"（不猜）。
+        """
+        self.metrics["intake.absent_input"] += 1
+        self.metrics[f"intake.absent_input.{reason}"] += 1
+        ident = self._identity.resolve_platform(fact.speaker_ref) if self._identity is not None else None
+        is_owner = "unknown" if ident is None else ("false" if ident.guest else "true")
+        actor_id = (ident.actor_id if ident is not None else None) or ctx.profile_actor_id or UNVERIFIED_ACTOR
+        ref = f"es:{self.run_id}:{ctx.session_ref}:{fact.seq}"
+        try:
+            presence_request = self._presence_request_hook(fact)
+        except Exception:
+            logger.exception("presence_request hook 失敗，記為未判斷")
+            presence_request = None
+        # actor_verified：只看平台認證 ID。身分映射命中且輸入帶有 ingress 以已驗證 endpoint 簽發的 source_endpoint_id 才算；
+        # speaker_ref 在 ingress 簽發落地前是不受信字串，資訊不足一律 False，不比對顯示名稱
+        actor_verified = bool(ident is not None and ident.actor_id is not None and fact.source_endpoint_id is not None)
+        payload: dict[str, object] = {
+            "reason_code": reason, "reply_mode": ReplyMode.PASS.value, "proposal_ref": ref, "utterance_ref": ref,
+            "speaker_ref": fact.speaker_ref, "actor_id": actor_id, "is_owner": is_owner,
+            "source_location": str(fact.source_location) if fact.source_location is not None else "missing",
+            "len": len(fact.text), "presence_request": presence_request, "actor_verified": actor_verified,
+        }
+        if fact.source_endpoint_id is not None:
+            payload["source_endpoint_id"] = fact.source_endpoint_id
+        draft = EventDraft(
+            event_type="turn.skipped", conversation_id=ctx.conversation_id, segment_id=ctx.segment_id,
+            idempotency_key=f"turn_skipped:{self.run_id}:{ctx.session_ref}:{fact.seq}", payload=payload,
+        )
+        trusted = TrustedContext(
+            source=SOURCE_TURN, actor_id=ACTOR_TURN, scope_ref=ctx.event_scope, persona_id=self._persona
+        )
+        try:
+            self._publisher.publish(draft, trusted)
+        except Exception:
+            logger.exception("缺席端輸入 shadow 紀錄寫入失敗")
 
     def _decide_turn(self, ctx: SessionContext, turn: AggregatedTurn) -> IntakeResult:
         intake = turn.last.payload
@@ -611,9 +698,21 @@ class TurnOrchestrator:
         if language is not None and (not isinstance(language, str) or not _SAFE_LANGUAGE.fullmatch(language)):
             self.metrics["intake.invalid_language"] += 1
             language = None
-        if speaker is fact.speaker_ref and language is fact.language:
+        source, endpoint = fact.source_location, fact.source_endpoint_id
+        if source is not None and not isinstance(source, PresenceLocation):
+            try:
+                source = PresenceLocation(source)
+            except ValueError:
+                self.metrics["intake.invalid_source_location"] += 1
+                source = INVALID_SOURCE_LOCATION  # type: ignore[assignment]  # 視為不一致，不當成缺失
+        if endpoint is not None and (not isinstance(endpoint, str) or not _SAFE_REF.fullmatch(endpoint)):
+            endpoint = None
+        if (speaker is fact.speaker_ref and language is fact.language and source is fact.source_location
+                and endpoint is fact.source_endpoint_id):
             return fact
-        return dataclasses.replace(fact, speaker_ref=speaker, language=language)
+        return dataclasses.replace(
+            fact, speaker_ref=speaker, language=language, source_location=source, source_endpoint_id=endpoint
+        )
 
     def _propose(self, candidate: TurnCandidate) -> Proposal:
         """向決策中樞請求 ``turn.reply``；預算、busy／逾時／例外／驗證失敗的 D80 預設與 shadow 都在中樞內處理。"""

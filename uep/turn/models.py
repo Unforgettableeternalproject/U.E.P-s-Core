@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from uep.contracts.platform import normalize_platform
-from uep.contracts.presence import AuthorizationTuple
+from uep.contracts.presence import AuthorizationTuple, PresenceLocation
 
 
 class ReplyMode(StrEnum):
@@ -53,6 +53,10 @@ class UtteranceFact:
     confidence: float | None = None
     duration_ms: int | None = None
     legacy_ref: str | None = None  # 輸入端原 turn id（ES 的 uuid 前 12 碼），不當主鍵
+    # V18：這句輸入實際從哪個場域進來（不是說話者身分，也不是 session.platform）。None = 來源未宣告（現狀放行並計數）。
+    # 只能由行程內的簽入點填入（Host 輸入 stage、Console）；外部 adapter 的值由 Core ingress 以已驗證 endpoint 簽發，不得從 wire 反序列化
+    source_location: PresenceLocation | None = None
+    source_endpoint_id: str | None = None  # 選填，對應 §10.2 endpoint 粒度；目前只記錄、不比對
 
 
 @dataclass(frozen=True)

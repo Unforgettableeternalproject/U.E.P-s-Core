@@ -407,6 +407,20 @@ def _check_tool_path_consistency(tool_path: str, echo: EchoPipelineHost | None) 
         )
 
 
+def check_source_location_policy(input_locations: Collection[str], require_source_location: bool) -> None:
+    """V18 fail-closed 守門：註冊任何非 desktop 的輸入 adapter 而 ``UEP_REQUIRE_SOURCE_LOCATION`` 未開，拒絕組裝。
+
+    觸發條件：``input_locations`` 含 ``desktop`` 以外的值（P4 的 Discord／Website adapter 接上時）。
+    目前 repo 沒有外部 adapter 註冊點；assemble_core 以 ``input_locations`` 參數呼叫本檢查，adapter 註冊點出現時沿用。
+    """
+    external = sorted({str(loc) for loc in input_locations} - {"desktop"})
+    if external and not require_source_location:
+        raise AssemblyError(
+            f"註冊了非 desktop 輸入 adapter（{', '.join(external)}）時必須開啟 UEP_REQUIRE_SOURCE_LOCATION=true"
+            "（缺席端輸入 fail-closed）；否則缺 source_location 的缺席端輸入會被放行"
+        )
+
+
 def _prepare_agent_tools(echo: EchoPipelineHost | None, model_port: Any | None) -> tuple[Any, Any]:
     """``UEP_TOOL_PATH=agent`` 的前提檢查與記憶工具 executor；任何一項不成立都拒絕組裝，不退回 legacy。"""
     from uep.agent.runtime import ModelPortBackend
@@ -478,6 +492,8 @@ def assemble_core(
     supervisor: bool | None = None,
     supervisor_interval: float | None = None,
     platform_shadow: bool | None = None,
+    require_source_location: bool | None = None,
+    input_locations: Collection[str] = ("desktop",),
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -497,12 +513,16 @@ def assemble_core(
     ``supervisor_interval`` 為背景 tick 間隔秒數，與 ``maintenance_interval`` 各自獨立：None 取 ``UEP_SUPERVISOR_INTERVAL_S``，
     0 不建立迴圈（由外部排程）；關機暫停則不論是否有迴圈都會執行。孤兒掃描的 ``older_than`` 取 ``UEP_SUPERVISOR_ORPHAN_OLDER_THAN_S``，
     必須大於 ``TURN_MAX_DURATION``，否則 ``AssemblyError``。
+    ``require_source_location``（None 依 ``UEP_REQUIRE_SOURCE_LOCATION``，預設 false）：缺 source_location 的輸入即否決；
+    ``input_locations`` 為已註冊輸入 adapter 的場域，含非 desktop 而開關未開即 ``AssemblyError``（V18）。
     ``strict`` 為 True 時，缺少（或過短的）``UEP_PAYLOAD_HASH_KEY`` 直接拒絕組裝；預設只告警。
     ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
     ``UEP_ENDPOINT_SECRETS``）為空仍不起 socket（沒有可驗證的端點身分就不開口）。
     """
     _probe_payload_hash_key(strict)
+    require_source = get_settings().require_source_location if require_source_location is None else require_source_location
+    check_source_location_policy(input_locations, require_source)
     validate_route_capabilities()  # 表內有未知標籤 = 啟動失敗（DL-4 PR3）
     missing = [
         name for name, value in (
@@ -597,6 +617,8 @@ def assemble_core(
             delivery=delivery, gate=gate,
             presence_audience=None if presence_audience is ALLOW_ALL else presence_audience,
         ))
+    if echo is not None and hasattr(echo, "set_require_source_location"):
+        echo.set_require_source_location(require_source)
     shadow_on = get_settings().platform_shadow if platform_shadow is None else platform_shadow
     if shadow_on and echo is not None and hasattr(echo, "bind_platform_shadow"):
         # 平台脈絡 shadow（UEP_PLATFORM_SHADOW，預設關）：只記錄與比對，不改任何消費點的輸入；Presence 走唯讀 peek

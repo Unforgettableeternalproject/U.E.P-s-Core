@@ -33,6 +33,29 @@ _ACK_WORDS = frozenset({
     "ok", "okay", "okey", "kk",
 })
 _CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
+_TRAILING_PUNCT_RE = re.compile(r"[\s。．.，,！!～~…、]+$")
+_SENTENCE_SPLIT_RE = re.compile(r"[。！!\n]+")
+# 她的句子以這些收尾 = 在徵詢／等對方回應
+_SOLICIT_ENDINGS = ("嗎", "呢", "吧", "如何", "怎麼樣")
+# 句中出現這些正反問／徵詢句型也算在等回應
+_SOLICIT_PHRASES = ("好不好", "對不對", "是不是", "要不要", "可不可以", "行不行", "你覺得")
+
+
+def is_acknowledgement(text: str) -> bool:
+    """單字附和：純語氣詞（嗯）或純應答詞（好的、ok）；感嘆詞與一般短句不算。"""
+    text = _TRAILING_PUNCT_RE.sub("", text.strip())
+    return bool(text) and (text in _FILLER_WORDS or text.lower() in _ACK_WORDS)
+
+
+def awaits_response(reply_text: str) -> bool:
+    """她的上一句是否在等對方回應：最後一句含問號，或以徵詢語氣詞收尾。只用確定性規則。"""
+    parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(reply_text or "") if p.strip()]
+    if not parts:
+        return False
+    last = parts[-1]
+    if "?" in last or "？" in last:
+        return True
+    return any(w in last for w in _SOLICIT_PHRASES) or _TRAILING_PUNCT_RE.sub("", last).endswith(_SOLICIT_ENDINGS)
 
 
 class ChannelMode(StrEnum):

@@ -174,6 +174,9 @@ class TranscriptEntry(BaseModel):
     # 處理資訊
     processing_time: float = 0.0            # 辨識耗時（秒）
     model_name: Optional[str] = None        # 使用的模型
+    # Whisper 解碼品質（保留段落中最差的值；後端拿不到時為 None）
+    avg_logprob: Optional[float] = None
+    compression_ratio: Optional[float] = None
 
     # 元資料
     metadata: Dict[str, Any] = Field(default_factory=dict)

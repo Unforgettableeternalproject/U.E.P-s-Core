@@ -8,7 +8,7 @@ whisper:
   backend: "faster-whisper"              # ✅ faster-whisper / transformers
   model_size: "large-v3-turbo"            # ✅ 推薦 large-v3-turbo (1.5GB, 快速, 高品質)
                                          #    可選: base (141MB, 快但品質差), large-v3 (3GB, 最高品質但慢)
-  compute_type: "int8"                   # ✅ int8 (推薦, VRAM 低) / float16 / float32 (CPU 自動降級)
+  compute_type: "int8_float16"           # ✅ int8_float16 (預設, 與 bot 一致) / int8 / float16 / float32 (CPU 自動降級)
   device: "auto"                         # ✅ auto / cuda / cpu
   num_workers: 1                         # ✅ CTranslate2 並行 worker 數
   download_root: null                    # ✅ 模型下載目錄（null = HF 快取預設）
@@ -34,8 +34,18 @@ recognition:
   max_new_tokens: 128                    # ⚠️ 僅 transformers 後端生效
   task: "transcribe"                     # ✅ transcribe / translate
   language: null                         # ✅ null = 自動偵測, "zh" / "en" 等 (ISO 639-1)
-  no_speech_threshold: 0.4               # ✅ 無語音判定閾值（兩後端皆生效）
-  compression_ratio_threshold: 1.35      # ✅ 壓縮比閾值（兩後端皆生效）
+  no_speech_threshold: 0.6               # ✅ 無語音判定閾值（兩後端皆生效；預設與 bot 一致）
+  compression_ratio_threshold: 2.4       # ✅ 壓縮比閾值（兩後端皆生效；預設與 bot 一致）
+  # 以下僅 faster-whisper 後端生效，預設值 = Echo-Stream DiscordSttProfile
+  condition_on_previous_text: false      # ✅ 不把前文當 prompt，避免幻聽連鎖
+  repetition_penalty: 1.0                # ✅
+  temperature: [0.0, 0.2]                # ✅ 溫度回退收斂成兩階（預設六階會重解碼到 1.0，延遲高且品質沒變好）
+  vad_parameters:                        # ✅ 覆寫 faster-whisper VAD 參數（未列的鍵用內建值）
+    speech_pad_ms: 200
+    threshold: 0.5
+  hotwords_max: 30                       # ✅ 熱詞上限，超過截斷
+  hotwords: ["UEP", "U.E.P", "小U"]      # ✅ 只放人名與喚醒詞；詞表整串被念出會被 hotword_leak 擋下
+  initial_prompt: ""                     # ✅ 預設空——Whisper 不適合一般用途 prompt（易外洩）
   # beam_size: 5                         # ✅ 可選，預設 5
   # best_of: 5                           # ✅ 可選，預設 5
 
@@ -129,6 +139,24 @@ multi_channel:
   # Timeout 設定
   drain_timeout_s: 5.0                     # stop() 時等佇列排空的上限
   direct_transcribe_timeout_s: 10.0        # transcribe_segment() 同步阻塞上限
+
+# ─── 逐段過濾（faster-whisper 後端；預設值 = Echo-Stream DiscordSttProfile）──
+segment_filter:
+  min_rms: 0.005                         # ✅ 整段 RMS 低於此值不送模型（約 -46 dBFS）
+  max_no_speech_prob: 0.7                # ✅ 逐段 no_speech_prob 上限
+  min_avg_logprob: -1.2                  # ✅ 逐段 avg_logprob 下限
+  max_compression_ratio: 2.4             # ✅ 逐段壓縮比上限
+  min_text_chars: 1                      # ✅ 合併後正規化字數下限
+  filter_credits: true                   # ✅ 字幕／歌曲署名格式
+  clean_garbage: true                    # ✅ 標點亂碼正規化
+  filter_hallucination: true             # ✅ 整段幻覺黑名單（謝謝觀看、請訂閱…）
+  filter_outro: true                     # ✅ 結尾套語：短段 + avg_logprob <= 門檻 + 精確套語
+  outro_max_logprob: -0.6
+  outro_max_duration_s: 1.5
+  english_guard: false                   # ✅ 過度英文化防線（預設關）
+  english_guard_max_words: 2
+  english_guard_max_conf: 0.5
+  english_guard_max_rms: 0.02
 
 # ─── 後處理 ───────────────────────────────────────────────
 post_processing:

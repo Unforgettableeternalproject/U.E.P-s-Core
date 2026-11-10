@@ -553,6 +553,8 @@ class MultiChannelSTTEngine:
             speaker_name=speaker_name,
             start_ts=now,
             end_ts=now + duration,
+            avg_logprob=result.get("avg_logprob"),
+            compression_ratio=result.get("compression_ratio"),
         )
 
         # 加入 aggregator（如果有 active session）

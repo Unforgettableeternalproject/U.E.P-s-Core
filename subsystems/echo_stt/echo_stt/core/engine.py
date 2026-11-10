@@ -26,6 +26,14 @@ import torch
 import pyaudio
 
 from echo_stt.core.config import load_config, get
+from echo_stt.pipeline.segment_filter import (
+    SegmentFilterConfig,
+    clean_whisper_garbage,
+    english_guard_reason,
+    filter_segments,
+    is_hallucination,
+    normalize_text,
+)
 from echo_stt.core.schemas import (
     STTInput, STTOutput, STTModuleData, ActivationMode, SpeakerInfo,
 )
@@ -88,9 +96,20 @@ class STTEngine:
 
         # faster-whisper 設定
         self._fw_model_size: str = get("whisper.model_size", "base", config=self.config)
-        self._fw_compute_type: str = get("whisper.compute_type", "float16", config=self.config)
+        self._fw_compute_type: str = get("whisper.compute_type", "int8_float16", config=self.config)
         self._fw_num_workers: int = get("whisper.num_workers", 1, config=self.config)
         self._fw_download_root: Optional[str] = get("whisper.download_root", None, config=self.config)
+
+        # 逐段過濾與解碼參數（預設值 = Echo-Stream／bot 的 DEFAULT_STT_SETTINGS）
+        self._seg_filter = SegmentFilterConfig.from_mapping(
+            get("segment_filter", {}, config=self.config)
+        )
+        self._hotwords_max: int = int(get("recognition.hotwords_max", 30, config=self.config))
+        self._hotwords: tuple = ()
+        self.set_hotwords(get("recognition.hotwords", [], config=self.config))
+        self._initial_prompt: str = get("recognition.initial_prompt", "", config=self.config) or ""
+        # 被過濾的累計計數（原因 → 段數），給診斷與測試用
+        self.filter_stats: Dict[str, int] = {}
 
         # transformers fallback 設定
         self.whisper_model_id: str = get("whisper.model_id", "openai/whisper-base", config=self.config)
@@ -366,49 +385,94 @@ class STTEngine:
         # Audit fix: 從 config 讀取 VAD 參數，不再硬編碼
         vad_min_speech_ms = int(get("vad.min_speech_duration", 0.3, config=self.config) * 1000)
         vad_min_silence_ms = int(get("continuous.silence_threshold", 1.5, config=self.config) * 1000)
+        flt = self._seg_filter
 
-        segments_iter, info = self._fw_model.transcribe(
-            audio_float,
+        # 低能量門檻：整段 RMS 太低直接視為靜音，不送模型（Whisper 對靜音最愛幻聽）
+        rms = float(np.sqrt(np.mean(np.square(audio_float)))) if audio_float.size else 0.0
+        if rms < flt.min_rms:
+            logger.debug("[STT] 丟棄 low_energy rms=%.5f<%s", rms, flt.min_rms)
+            self.filter_stats["low_energy"] = self.filter_stats.get("low_energy", 0) + 1
+            return {
+                "text": "", "confidence": 0.0, "language": None,
+                "language_probability": None, "segments": [],
+            }
+
+        vad_parameters = dict(
+            min_speech_duration_ms=vad_min_speech_ms,
+            min_silence_duration_ms=min(vad_min_silence_ms, 500),
+            speech_pad_ms=200,
+            threshold=0.5,
+        )
+        vad_parameters.update(get("recognition.vad_parameters", {}, config=self.config) or {})
+        kwargs: Dict[str, Any] = dict(
             task=self._recognition_task,
             language=language,
             beam_size=get("recognition.beam_size", 5, config=self.config),
             best_of=get("recognition.best_of", 5, config=self.config),
-            compression_ratio_threshold=get("recognition.compression_ratio_threshold", 1.35, config=self.config),
-            no_speech_threshold=get("recognition.no_speech_threshold", 0.4, config=self.config),
-            vad_filter=True,
-            vad_parameters=dict(
-                min_speech_duration_ms=vad_min_speech_ms,
-                min_silence_duration_ms=min(vad_min_silence_ms, 500),
+            compression_ratio_threshold=get("recognition.compression_ratio_threshold", 2.4, config=self.config),
+            no_speech_threshold=get("recognition.no_speech_threshold", 0.6, config=self.config),
+            condition_on_previous_text=bool(
+                get("recognition.condition_on_previous_text", False, config=self.config)
             ),
+            repetition_penalty=float(get("recognition.repetition_penalty", 1.0, config=self.config)),
+            temperature=list(get("recognition.temperature", [0.0, 0.2], config=self.config)),
+            vad_filter=True,
+            vad_parameters=vad_parameters,
         )
+        if self._initial_prompt:
+            kwargs["initial_prompt"] = self._initial_prompt
+        if self._hotwords:
+            kwargs["hotwords"] = ", ".join(self._hotwords)
 
-        # 消費 generator，收集所有 segments
-        segments: List[Dict[str, Any]] = []
-        texts: List[str] = []
-        total_logprob = 0.0
-        total_segments = 0
+        segments_iter, info = self._fw_model.transcribe(audio_float, **kwargs)
 
-        for seg in segments_iter:
-            texts.append(seg.text.strip())
-            segments.append({
+        # 逐段過濾：字幕署名、prompt／hotword 洩漏、低品質段、結尾套語
+        kept = filter_segments(
+            list(segments_iter), flt,
+            prompt=self._initial_prompt, hotwords=self._hotwords, stats=self.filter_stats,
+        )
+        segments: List[Dict[str, Any]] = [
+            {
                 "start": seg.start,
                 "end": seg.end,
                 "text": seg.text.strip(),
                 "avg_logprob": seg.avg_logprob,
                 "no_speech_prob": seg.no_speech_prob,
-            })
-            total_logprob += seg.avg_logprob
-            total_segments += 1
+                "compression_ratio": seg.compression_ratio,
+            }
+            for seg in kept
+        ]
+        empty = {
+            "text": "", "confidence": 0.0,
+            "language": info.language if info else None,
+            "language_probability": info.language_probability if info else None,
+            "segments": [],
+        }
+        if not kept:
+            return empty
 
-        full_text = " ".join(texts).strip()
+        full_text = " ".join(seg["text"] for seg in segments).strip()
+        if flt.clean_garbage:
+            full_text = clean_whisper_garbage(full_text)
+        if len(normalize_text(full_text)) < flt.min_text_chars:
+            return empty
+        if flt.filter_hallucination:
+            reason = is_hallucination(full_text)
+            if reason:
+                logger.info("[STT] 整段命中幻覺黑名單 %s: %r", reason, full_text)
+                self.filter_stats["hallucination"] = self.filter_stats.get("hallucination", 0) + 1
+                return empty
 
         # 真實信心度：基於 avg_logprob
-        if total_segments > 0:
-            avg_logprob = total_logprob / total_segments
-            # logprob 通常在 -1.0 ~ 0.0 範圍，映射到 0~1
-            confidence = max(0.0, min(1.0, 1.0 + avg_logprob))
-        else:
-            confidence = 0.0
+        mean_logprob = sum(seg["avg_logprob"] for seg in segments) / len(segments)
+        # logprob 通常在 -1.0 ~ 0.0 範圍，映射到 0~1
+        confidence = max(0.0, min(1.0, 1.0 + mean_logprob))
+        if flt.english_guard and english_guard_reason(
+            full_text, confidence, rms, flt.english_guard_max_words,
+            flt.english_guard_max_conf, flt.english_guard_max_rms,
+        ):
+            self.filter_stats["english_guard"] = self.filter_stats.get("english_guard", 0) + 1
+            return empty
 
         return {
             "text": full_text,
@@ -416,7 +480,28 @@ class STTEngine:
             "language": info.language if info else None,
             "language_probability": info.language_probability if info else None,
             "segments": segments,
+            # 保留段落中最差的解碼品質（avg_logprob 取最小、compression_ratio 取最大）
+            "avg_logprob": min(seg["avg_logprob"] for seg in segments),
+            "compression_ratio": max(seg["compression_ratio"] for seg in segments),
         }
+
+    def set_hotwords(self, words) -> None:
+        """替換熱詞：去空白、不分大小寫去重、超過 hotwords_max 截斷。空清單 = 不傳熱詞。"""
+        merged: List[str] = []
+        seen = set()
+        for w in words or ():
+            w = str(w).strip()
+            if w and w.casefold() not in seen:
+                seen.add(w.casefold())
+                merged.append(w)
+        limit = int(getattr(self, "_hotwords_max", 0) or 0)
+        if limit and len(merged) > limit:
+            logger.warning(
+                "[STT] 詞表共 %d 個詞，超過 hotwords_max=%d，截斷最後 %d 個",
+                len(merged), limit, len(merged) - limit,
+            )
+            merged = merged[:limit]
+        self._hotwords = tuple(merged)
 
     def _transcribe_transformers(
         self, audio_float: np.ndarray, language: Optional[str] = None,
@@ -427,7 +512,7 @@ class STTEngine:
             "num_beams": 1,
             "condition_on_prev_tokens": False,
             "compression_ratio_threshold": get("recognition.compression_ratio_threshold", 1.35, config=self.config),
-            "temperature": (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+            "temperature": (0.0, 0.2),
             "logprob_threshold": -1.0,
             "no_speech_threshold": get("recognition.no_speech_threshold", 0.4, config=self.config),
             "return_timestamps": True,

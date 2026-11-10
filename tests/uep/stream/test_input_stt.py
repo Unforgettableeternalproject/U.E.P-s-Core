@@ -415,3 +415,21 @@ async def test_discard_後殘餘不會在_source_結束時_flush():
 
     assert utterances == []
     assert backend.received == []
+
+
+def test_echo_backend_把_avg_logprob_與壓縮比帶進結果():
+    """echo_stt 的 TranscriptEntry 帶的解碼品質要傳到 TranscriptionResult（結尾套語過濾在 echo_stt 內依此判斷）。"""
+    from types import SimpleNamespace
+
+    from uep.stream.adapters.input_stt import EchoSttBackend
+
+    entry = SimpleNamespace(
+        text="你好", language="zh", confidence=0.8, avg_logprob=-0.2, compression_ratio=1.1
+    )
+    backend = EchoSttBackend.__new__(EchoSttBackend)
+    backend._language = None
+    backend._engine = SimpleNamespace(transcribe_segment=lambda *a, **k: entry)
+    result = backend.transcribe(b"\x01\x00" * 1600, SR)
+    assert result is not None
+    assert result.avg_logprob == -0.2
+    assert result.compression_ratio == 1.1

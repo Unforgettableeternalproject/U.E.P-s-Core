@@ -149,6 +149,8 @@ class STTWorker:
             start_ts=segment.start_timestamp,
             end_ts=segment.end_timestamp,
             processing_time=round(processing_time, 3),
+            avg_logprob=result.get("avg_logprob"),
+            compression_ratio=result.get("compression_ratio"),
         )
 
     @property

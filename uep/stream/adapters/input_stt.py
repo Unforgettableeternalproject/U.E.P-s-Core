@@ -441,6 +441,8 @@ class _EchoSttBackend:
             text=entry.text,
             language=entry.language,
             confidence=entry.confidence,
+            avg_logprob=entry.avg_logprob,
+            compression_ratio=entry.compression_ratio,
         )
 
     def close(self) -> None:

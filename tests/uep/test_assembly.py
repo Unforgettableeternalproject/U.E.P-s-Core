@@ -552,3 +552,20 @@ def test_tool_path_must_match_between_assembly_and_host(session_factory, tmp_pat
             session_factory, tmp_path, _agent_echo(session_factory, publisher, host_tool_path="legacy"),
             publisher, bus, tool_path="legacy",
         ))
+
+
+# ---- DL-4 PR3：route 預設表的標籤必須屬於 CAPABILITY_CEILING ----
+
+def test_route_table_validates_against_ceiling():
+    from uep.assembly import validate_route_capabilities
+
+    validate_route_capabilities()  # 現行表全在閉集內（含 decision.consult）
+
+
+def test_unknown_route_table_tag_fails_startup(monkeypatch, session_factory, tmp_path):
+    from uep import assembly
+
+    bad = {**assembly.ROUTE_DEFAULT_CAPABILITIES, "direct_chat": frozenset({"memory.read", "bogus.tag"})}
+    monkeypatch.setattr(assembly, "ROUTE_DEFAULT_CAPABILITIES", bad)
+    with pytest.raises(ValueError, match="bogus.tag"):
+        assemble_core(session_factory, **kwargs(session_factory, tmp_path))

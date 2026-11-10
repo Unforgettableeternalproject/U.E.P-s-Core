@@ -52,6 +52,7 @@ from uep.stream.coordinator import TurnCoordinator
 from uep.stream.tracer import LatencyTracer
 
 from uep.contracts.presence import AcquireResult, GateDecision
+from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES, ROUTE_DIRECT_CHAT
 from uep.decision.hub import DecisionHub
 from uep.echo.config import EchoOutputConfig
 from uep.echo.endpoint import DeferredCoreApi, EchoEndpoint, StopNotice
@@ -845,8 +846,9 @@ class EchoPipelineHost:
             if _tool_name(d) in TOOL_CLASSES and registry.entry(_tool_name(d)).scope.requires_context <= available
         ]
 
-    # direct_chat 回合只曝光唯讀記憶工具（Q-E）：能力標籤固定為 memory.read，force_remember（memory.write）不在其內
-    _DIRECT_CHAT_CAPABILITY_TAGS = frozenset({"memory.read"})
+    # direct_chat 回合只曝光唯讀記憶工具（Q-E）：標籤取自決策層 route 預設表（目前為 memory.read），
+    # force_remember（memory.write）不在其內；表內標籤是否合法由組裝層以 CAPABILITY_CEILING 驗證
+    _DIRECT_CHAT_CAPABILITY_TAGS = frozenset(ROUTE_DEFAULT_CAPABILITIES[ROUTE_DIRECT_CHAT])
 
     def _refresh_tools_agent(self) -> None:
         """``UEP_TOOL_PATH=agent``：曝光 = 註冊表對 direct_chat 標籤的 ``project``，經 ``render_tools`` 渲染（D60）。

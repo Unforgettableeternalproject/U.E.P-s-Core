@@ -156,7 +156,7 @@ narrow_capability(base, hint, snapshot_tags, known) -> NarrowResult(tags, droppe
 |---|---|---|---|
 | PR1 | `DecisionCapability`＋序列化＋`Proposal.capability_hint`＋雙向轉換＋`plan_sections` 白名單 | 無 | 舊 plan／舊 `decision_log` 往返不變；`None` vs `()` 區分；hint 為單一字串、非字串元素 -> 區段無效；P0 outcome／reason_code 與包裝前一致 |
 | PR2 | route 表（資料）＋`narrow_capability` 純函式＋決策日誌計數 | PR1 | 屬性測試：`tags ⊆ base`、`tags ⊆ snapshot`、hint 不能新增；表外標籤丟棄並計數；空交集 -> 降級；未知 route／goal；`decision.consult` 恆保留與「只剩 consult 視為空」；單調（refine 不放寬） |
-| PR3 | 組裝：以 `CAPABILITY_CEILING` 驗證表；`capability_tags_for` 接上純函式；`host.py` 常數改讀表 | PR2＋工具層切片 B／D | 表內未知標籤 -> 啟動失敗；`direct_chat` 結果等同 `{memory.read}`；快照缺失 fail-closed；空 tags 不產生 `LoopTrigger`（對照 `agent_wiring.py:81`） |
+| PR3 | **決策層部分 done**（組裝期 `validate_route_capabilities` 以 `CAPABILITY_CEILING` 驗證表、`host.py` 常數改讀 route 表 `direct_chat`）；`capability_tags_for`／LoopEntry 接線改由工具層 PR4（房內 #113）。原列：組裝：以 `CAPABILITY_CEILING` 驗證表；`capability_tags_for` 接上純函式；`host.py` 常數改讀表 | PR2＋工具層切片 B／D | 表內未知標籤 -> 啟動失敗；`direct_chat` 結果等同 `{memory.read}`；快照缺失 fail-closed；空 tags 不產生 `LoopTrigger`（對照 `agent_wiring.py:81`） |
 | PR4（工具層） | goal 表＋`capability_lookup`（S-H）；snapshot 標籤來源（D4-3） | D4-3 裁決 | `lookup` 例外／空／未知 goal_code -> `capability_empty`（既有 `proactive.py:754` 測試擴充） |
 | 邊界測試 | import 邊界、`plan_sections` 與 AL-3／CN-2 反例 | PR2、PR3 | 決策層不 import 工具層（沿用 `test_import_boundary.py`）；AL-3 反例：後續投影不比凍結寬；consult 在 hint 收窄後仍可用；shadow 重播：同輸入同輸出 |
 

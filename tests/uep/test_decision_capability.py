@@ -342,21 +342,40 @@ def test_decision_layer_does_not_import_tools_layer():
         assert not bad, f"{path.name} 不得 import 工具層：{sorted(bad)}"
 
 
-_NARROW_SYMBOLS = {"narrow_capability", "ROUTE_DEFAULT_CAPABILITIES", "route_base", "record_narrow", "NarrowResult"}
+# 收窄相關符號：到 PR4（工具層接線）前 production 不得引用（capability.py 本體除外）
+_NARROW_SYMBOLS = {"narrow_capability", "route_base", "record_narrow", "NarrowResult"}
+# route 表：PR3 起只有組裝驗證與 Host 可以引用
+_ROUTE_TABLE_SYMBOLS = {"ROUTE_DEFAULT_CAPABILITIES"}
+_ROUTE_TABLE_CONSUMERS = {"assembly.py", "echo/host.py"}
 
 
-def test_narrow_has_no_production_consumer_until_assembly():
-    """PR3（組裝）之前，uep/ 內除 capability.py 本體外沒有人引用 narrow／route 表，production 行為與 develop 相同。"""
+def _symbol_hits(skip: set[str], symbols: set[str]) -> list[str]:
     problems: list[str] = []
     for path in sorted(_UEP.rglob("*.py")):
         rel = path.relative_to(_UEP).as_posix()
-        if rel == "decision/capability.py":
+        if rel in skip:
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
-            if name in _NARROW_SYMBOLS or (isinstance(node, ast.ImportFrom) and node.module == "uep.decision.capability"):
+            if name in symbols or (
+                isinstance(node, ast.ImportFrom) and node.module == "uep.decision.capability"
+                and {a.name for a in node.names} & symbols
+            ):
                 problems.append(f"{rel}:{getattr(node, 'lineno', 0)}")
-    assert problems == [], problems
+    return problems
+
+
+def test_narrow_has_no_production_consumer_until_pr4():
+    """narrow_capability 等收窄符號在 PR4 接線前沒有 production 消費者；route 表的消費不算在內（見下一個測試）。"""
+    assert _symbol_hits({"decision/capability.py"}, _NARROW_SYMBOLS) == []
+
+
+def test_route_table_consumers_are_only_assembly_and_host():
+    """PR3：route 表只有組裝驗證（assembly.py）與 Host（echo/host.py）可以引用，其他地方維持禁止；兩個合法消費者確實存在。"""
+    assert _symbol_hits({"decision/capability.py", *_ROUTE_TABLE_CONSUMERS}, _ROUTE_TABLE_SYMBOLS) == []
+    every = {p.relative_to(_UEP).as_posix() for p in _UEP.rglob("*.py")}
+    for rel in _ROUTE_TABLE_CONSUMERS:
+        assert _symbol_hits(every - {rel}, _ROUTE_TABLE_SYMBOLS), f"{rel} 應引用 route 表"
 
 
 _CAPABILITY_NAMES = {"capability_hint", "DecisionCapability", "capability"}

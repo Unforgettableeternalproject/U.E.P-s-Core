@@ -36,6 +36,10 @@ class UepSettings(BaseSettings):
     # （未設＝respond.minimal，設為空字串＝關閉 shadow）。未註冊的 id 於 Host 組裝時 fail-fast
     decision_proposer: str | None = Field(default=None, validation_alias="UEP_DECISION_PROPOSER")
     decision_shadow_proposers: str | None = Field(default=None, validation_alias="UEP_DECISION_SHADOW_PROPOSERS")
+    # laya.shadow（決策模型 shadow proposer）的模型設定；只有把 laya.shadow 放進 shadow 清單才會用到
+    laya_model: str | None = Field(default=None, validation_alias="UEP_LAYA_MODEL")
+    laya_revision: str | None = Field(default=None, validation_alias="UEP_LAYA_REVISION")
+    laya_device: str | None = Field(default=None, validation_alias="UEP_LAYA_DEVICE")
     test_database_url: SecretStr | None = Field(default=None, validation_alias="UEP_TEST_DATABASE_URL")
     # Host 本機 epoch 檔（D26，DB 外）；未設定時用使用者資料目錄的預設位置
     host_epoch_file: Path | None = Field(default=None, validation_alias="UEP_HOST_EPOCH_FILE")

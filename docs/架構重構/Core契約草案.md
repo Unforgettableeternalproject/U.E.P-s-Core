@@ -529,6 +529,7 @@ Lease TTL 30 秒、心跳 5 秒僅為 **調校起點**（提案 §11.4），不�
 | P-10 | presence-bound 任務於離場時須到安全 checkpoint 暫停；已提交且不可中斷的外部動作先完成或查核，不假裝取消成功 | INV-02、V22 |
 | P-11 | 已交接的移轉被使用者取消視為新移轉，不得撿回舊 Lease | 提案 §12.3 |
 | P-12 | 降級只減少同一位置的能力，不產生第二個 Presence；服務告警不得冒充她在該平台互動 | 提案 §17.1 |
+| M-8 | **端點連線不是 Presence**：平台連線、heartbeat、使用者在線狀態（含 Discord 綠點）與 monitor 面的任何事實，都不得用於 `current_platform`、`presence_active_platforms`、`source_location` 或 `user_present`；Presence 只由 Presence Manager 寫入，Lease 只由主機裁決後核發。見 [平台端點契約](平台端點契約.md) M-8、EC-3 | 提案 §10.3、INV-04 |
 
 ### 4.8 驗證案例
 

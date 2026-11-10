@@ -135,6 +135,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | DL-5 | 現有英文 NLP 收編為特徵層 | C／2 | done（95c81a0：`nlp.legacy` shadow proposer，英文限定；不含 MT，中文待 Q6=C 兩條路 shadow） | — | — | `uep/echo/nlp_wiring.py`、`tests/uep/test_nlp_wiring.py`、[決策中樞架構提案 §5.2.1](../架構重構/決策中樞架構提案.md) |
 | DL-6 | Proactive 評估／仲裁 規則版＋shadow | C／2 | DL-6a 契約＋規則 engine＋shadow 日誌 done（`uep/decision/proactive.py`）；DL-6b 對接 S-H planned | — | — | [Proactive決策契約草案](../架構重構/Proactive決策契約草案.md) |
 | DL-PF | 平台宣告注入端（SYS 增補 PD-18；R0 第 1～4 步） | C／2 | 第 1～4 步 done（型別＋映射表、`PlatformContextProvider`、shadow 記錄、差異比對；零行為變化）；第 5 步起（啟用 `ProjectionContext.platform`、注入 loop_consult）planned，動工條件：Q26 讀取平台快照前必須先有 migration 0018 把 `platform_context_version` 寫進 `decision_log`（不能事後稽核的自決不得上線；0018 動工前先在房內講）；0018 已落地（`decision_log.platform_context_version`），第 5 步剩 DQ-1／DQ-3 裁決；shadow 由 `UEP_PLATFORM_SHADOW` 控制、預設關閉；`ToolRegistry.executors_for` 歸工具層 PR4 前後；DQ-1／DQ-3 待 Bernie | — | — | [平台宣告注入端契約草案](../架構重構/平台宣告注入端契約草案.md)、`uep/contracts/platform.py`、`uep/echo/platform_context.py`、`tests/uep/test_platform_context.py` |
+| DL-EP | 平台端點契約（監控 vs 互動；SYS 增補 PD-19～PD-21） | C／2 | E0 契約定稿、E1 純資料型別、E2 `monitor_platforms` shadow（隨 `UEP_PLATFORM_SHADOW`）done（零行為變化）；E3 Gate 前置（開關另行裁決）、E5 監控通道、E6 仲裁器接 Presence Manager（行為變更）、E7 分級投影 planned | — | — | [平台端點契約](../架構重構/平台端點契約.md)、`uep/contracts/platform.py`、`uep/echo/platform_context.py`、`tests/uep/test_platform_capabilities.py`、`tests/uep/test_platform_context.py` |
 
 T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細節待敏卡展開後補。
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -19,6 +19,7 @@ from uep.contracts.platform import (
     ExecutorDescriptor,
     PlatformContext,
     PlatformId,
+    is_safe_ref,
     platform_from_presence_location,
     platform_from_session,
 )
@@ -57,6 +58,7 @@ class ProductionInputs:
     placement_current_platform: str | None = None
     placement_available_executors: tuple[str, ...] = ()
     proactive_current_platform: str | None = None
+    monitor_platforms: frozenset[str] = frozenset()
 
 
 def diff_against_production(ctx: PlatformContext, production: ProductionInputs | None = None) -> tuple[str, ...]:
@@ -73,6 +75,8 @@ def diff_against_production(ctx: PlatformContext, production: ProductionInputs |
         diffs.append("placement.available_executors")
     if ctx.current_platform != prod.proactive_current_platform:
         diffs.append("proactive.current_platform")
+    if ctx.monitor_platforms != prod.monitor_platforms:
+        diffs.append("monitor_platforms")
     return tuple(diffs)
 
 
@@ -86,6 +90,7 @@ class PlatformContextProvider:
         *,
         registry_revision: Callable[[], int] | None = None,
         declaration_revision: Callable[[], int] | None = None,
+        monitor_platforms: Callable[[], Iterable[PlatformId]] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._presence = presence
@@ -93,6 +98,7 @@ class PlatformContextProvider:
         self._fallback = CoarseExecutorSource()
         self._registry_revision = registry_revision or (lambda: 0)
         self._declaration_revision = declaration_revision or (lambda: 0)
+        self._monitor_platforms = monitor_platforms or frozenset
         self._clock = clock or (lambda: datetime.now(UTC))
         self._lock = threading.Lock()
         self._version = 0
@@ -125,12 +131,21 @@ class PlatformContextProvider:
             descriptors = self._fallback.executors_for(platform)
         return tuple(sorted({d.executor_ref for d in descriptors if d.platform == platform}))
 
+    def _read_monitor_platforms(self) -> frozenset[PlatformId]:
+        """監控面在線的平台（EC-3：與 Presence 完全獨立）；來源失敗或內容不合法一律以空集合／丟棄處理，不影響快照。"""
+        try:
+            return frozenset(ref for ref in self._monitor_platforms() if is_safe_ref(ref))
+        except Exception:
+            logger.warning("platform_context：讀取 monitor_platforms 失敗，以空集合計", exc_info=True)
+            return frozenset()
+
     def snapshot(self, session_platform: str | None = None) -> PlatformContext:
         status, platform, generation, row_version = self._read_presence()
         refs = self._executor_refs(platform)
         registry_rev = self._safe_int(self._registry_revision)
         declaration_rev = self._safe_int(self._declaration_revision)
-        key = (generation, row_version, status, platform, refs, registry_rev, declaration_rev)
+        monitors = self._read_monitor_platforms()
+        key = (generation, row_version, status, platform, refs, registry_rev, declaration_rev, monitors)
         with self._lock:
             if key != self._last_key:
                 self._version += 1
@@ -141,7 +156,7 @@ class PlatformContextProvider:
             presence_status=status, current_platform=platform,
             presence_active_platforms=frozenset({platform}) if platform is not None else frozenset(),
             session_platform=platform_from_session(session_platform), available_executors=refs,
-            registry_revision=registry_rev, declaration_revision=declaration_rev,
+            registry_revision=registry_rev, declaration_revision=declaration_rev, monitor_platforms=monitors,
         )
 
     @staticmethod

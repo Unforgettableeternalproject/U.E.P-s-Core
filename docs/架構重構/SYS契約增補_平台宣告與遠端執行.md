@@ -313,6 +313,12 @@ DISCONNECTED ──────────────────────�
 6. 實作註記：Presence 以新增的 `PresenceManager.peek()` 讀取，它是無鎖的唯讀 SELECT，不處理過期，只供平台快照與 shadow 使用。shadow 由 `UEP_PLATFORM_SHADOW`（預設關閉）控制。DQ-8 因 `decision_log` 沒有 payload 欄位，改以 log 加 metrics 記錄 `platform_context_version`；若要落進決策表，需要新的 migration，編號從 0018 起，動工前先在房內講。Q26 讀取平台快照之前必須先有 0018，不能事後稽核的自決不得上線。
 7. 目前狀態：第 1～4 步（型別、provider、shadow 記錄、差異比對）已落地且零行為變化；啟用 `ProjectionContext.platform` 與注入 loop_consult 尚未開工。
 
+**PD-19**（能力面分離；對應 [平台端點契約](平台端點契約.md) §2，EC-1～EC-6）：一個平台連線的 `monitor`（非本人的狀態顯示／缺席端輸入）與 `interaction`（她本人的文字、語音、avatar、前景桌面工具）是**兩種能力面**，分開宣告、分開核准（核准清單仍只由艾斯維爾改，PD-17）、分開撤銷；未宣告＝無該能力。`PlatformDeclaration.online` 保留，只表示連線，不代表任何能力面成立。宣告含未知 facet 或空 monitor facets 一律拒收（fail-closed）；`audience_cap_claimed` 只可收窄實際上限（PD-15）。monitor 能力不產生任何 LLM 工具、不取得 Lease 或授權六元組。
+
+**PD-20**（缺席輸入通道；對應 [平台端點契約](平台端點契約.md) §4，M-2／M-3／M-10）：經 monitor 面入站的內容只能是 `AbsentInboundItem`（原文走可刪 blob 引用，只帶 ref／長度），一律算缺席端輸入（V18），不產生 `UtteranceFact`、不開 turn、不作 `source_location`／Presence 依據。平台端只認證 actor 並**原樣轉發到核心**，不判斷意圖或授權；到場請求的意圖由核心判斷（可用模型，不開她的 turn、不載入人格輸出、原文不落地）。monitor 出站（狀態、回條）走獨立 `MonitorFrame`／固定模板，不經 Output Gate、不用她的口吻。
+
+**PD-21**（授權來源；對應 [平台端點契約](平台端點契約.md) §4.4、§4.5，M-10／M-11）：到場／移轉請求的授權**只看已認證 actor 身分與優先序**——actor 必須是平台認證過的 ID（命名空間綁定同 PD-15 b），經 `platform_links` 設定檔映射得出 `is_owner`；不比對顯示名稱，不採信訊息文字自稱。**模型輸出（含核心的意圖判斷）不能產生或提升授權**（提案 §18.3），只決定歸類。第一階段只受理 owner 的 `PresenceRequest`；非 owner 只能留言或收中性回條。`PresenceRequest` 僅是提交主機裁決的請求，Presence 的寫入仍只有 Presence Manager（INV-04）。
+
 ---
 
 ## 5. 遠端 executor 協定

@@ -387,11 +387,18 @@ class Recorder:
 
 
 def test_default_aggregator_is_pass_through_and_no_tick_thread_runs(rig):
-    r = rig()
+    r = rig(host_kwargs={"proposer": create_proposer("respond.minimal")})
     assert r.host._tick_thread is None and not r.host.needs_tick
     result = r.say("你好")
     assert result.ticket is not None and result.reason_code == "issued"
 
+
+def test_default_proposer_is_rules_and_starts_tick_thread(rig):
+    """Host 不指定 proposer 時走預設 rules.default；它是 TickingProposer（插話），所以預設啟動 tick 執行緒。"""
+    r = rig(host_kwargs={"proposer": None})
+    assert isinstance(r.host.orchestrator.proposer, RuleProposer)
+    assert r.host.needs_tick
+    assert r.host._tick_thread is not None and r.host._tick_thread.is_alive()
 
 def test_buffered_aggregator_merges_segments_and_tick_completes_the_turn(rig):
     rec = Recorder()

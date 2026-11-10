@@ -472,6 +472,19 @@ def test_interaction_axis_thinking_then_idle_via_core_turn_proposer(rig, session
     assert r.core.state.current(Axis.INTERACTION).state == "IDLE"
 
 
+def test_default_rules_proposer_private_explicit_request_runs_to_terminal(rig):
+    """端到端：Host 不指定 proposer（預設 rules.default），私聊（在場 1 人）的明確請求取得 ticket 並走到終態。"""
+    roster = GuildRoster({"123": {"actor_a": "111"}})
+    session = make_session(audience_scope="scope_group_g123", guild_id="123", platform="discord")
+    r = rig(session=session, host_kwargs={"roster": roster, "proposer": None}, presence_audience=lambda: "scope_group_g123")
+    r.host.participant_joined(SPEAKER)
+    assert roster.present_uids("123") == ["111"]
+    result = r.say("請幫我整理會議紀錄")
+    assert result.proposal.proposer_id == "rules.default"
+    assert result.ticket is not None and result.proposal.reply_mode.value == "respond"
+    kinds = r.wait_terminal(result.ticket.turn_id)
+    assert kinds[-1] == "turn.completed"
+
 # ---- shutdown 與 Lease ----
 
 def test_shutdown_cancels_live_turn_without_generation_bump_and_keeps_lease(rig):

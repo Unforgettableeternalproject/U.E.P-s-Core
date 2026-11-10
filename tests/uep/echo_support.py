@@ -12,10 +12,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from uep.stream.contracts.turn import VoiceEvent, VoiceState
-from uep.stream.tracer import LatencyTracer
-from uep.fakes.stream.audio import FakeAudioSink
-from uep.fakes.stream.stages import FakeSpeakStage, FakeThinkStage
 from sqlalchemy import select
 
 from uep.assembly import CoreAssembly, assemble_core
@@ -24,13 +20,18 @@ from uep.echo.host import EchoPipelineHost
 from uep.events.bus import EventBus
 from uep.events.models import EventRow
 from uep.events.publisher import EventPublisher
+from uep.fakes.stream.audio import FakeAudioSink
+from uep.fakes.stream.stages import FakeSpeakStage, FakeThinkStage
 from uep.fakes.tool import FakeToolExecutor
 from uep.fakes.tool_spec import FakeToolSpecResolver
 from uep.ids import new_id
 from uep.memory.identity import IdentityDirectory
 from uep.output.models import DeliveryRow, OutputIntentRow
 from uep.presence.epoch import HostEpochStore
+from uep.stream.contracts.turn import VoiceEvent, VoiceState
+from uep.stream.tracer import LatencyTracer
 from uep.turn.models import IntakeResult, SessionContext, UtteranceFact
+from uep.turn.proposer import RespondProposer
 
 PRIVATE = "scope_private_owner"
 SPEAKER = "discord:111"
@@ -173,10 +174,14 @@ def build_rig(
         inner_sinks.append(sink)
         return sink
 
+    # 管線測試預設釘 respond.minimal：測的是 ticket／終態／cancel／journal 機制，不依賴規則 proposer 的回覆判斷；
+    # 要走 Host 預設（rules.default）就明確傳 host_kwargs={"proposer": None}
+    host_kw = dict(host_kwargs or {})
+    host_kw.setdefault("proposer", RespondProposer())
     host = EchoPipelineHost(
         publisher=publisher, think=think, speak=speak, sink_factory=sink_factory or default_sink_factory,
         session=session or make_session(), identity=make_identity(), memory=memory, tracer=tracer,
-        endpoint_kwargs={"tick_interval": 0.05}, **(host_kwargs or {}),
+        endpoint_kwargs={"tick_interval": 0.05}, **host_kw,
     )
     assemble_kw = dict(assemble_over or {})
     assemble_kw.setdefault("decision_log", False)  # 預設不接決策日誌；要測時明確傳 decision_log=None／True

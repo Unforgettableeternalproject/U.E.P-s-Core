@@ -163,7 +163,7 @@ class TurnEndFacts:
 
 @dataclass(frozen=True)
 class TurnOutcomeFacts:
-    """回報給 proposer 的回合結果（選用的 ``OutcomeObserver``）。不含文字內容。"""
+    """回報給 proposer 的回合結果（選用的 ``OutcomeObserver``）。除 ``reply_text`` 外不含文字內容。"""
 
     turn_id: str
     candidate_id: str  # 對應 TurnCandidate.candidate_id（interjection 為 tick:<n>）
@@ -175,3 +175,5 @@ class TurnOutcomeFacts:
     generation_ok: bool = False
     barge_in: bool = False
     started: bool = True  # ES 真的開始 think 過（False = 從未開始生成就結束：dropped_busy、void、讓位）
+    # 她這一輪實際說出口的文字（行程內專用，不進日誌）；空字串 = 拿不到。供「單字附和」判斷她上一句是否在等回應
+    reply_text: str = field(repr=False, default="")

@@ -31,6 +31,8 @@ from uep.turn.engagement import (
     EngagementMonitor,
     ModeController,
     ObservedTurn,
+    awaits_response,
+    is_acknowledgement,
 )
 from uep.turn.models import Proposal, ReplyMode, TurnCandidate, TurnOutcomeFacts
 from uep.turn.proposer import Interjection
@@ -72,6 +74,7 @@ class RuleProposer:
         self._users = 0
         self._responding: set[str] = set()
         self._pre_windows: dict[str, float | None] = {}
+        self._awaiting: dict[str, bool] = {}  # speaker_ref -> 她上一句是否在等這個人回應
         self._pending: dict[str, _Topic] = {}  # candidate_id -> 待結算話題項
         self._barge_cooldown_until: float | None = None
         self._inflight_until: float | None = None  # 已提出、尚未被採用（開始 think）的插話
@@ -110,6 +113,7 @@ class RuleProposer:
             self._engagement.consume_buffer()
             self._responding.clear()
             self._pre_windows.clear()
+            self._awaiting.clear()
             self._pending.clear()
             self._barge_cooldown_until = None
             self._inflight_until = None
@@ -128,6 +132,7 @@ class RuleProposer:
             self._context.restore(speaker_ref, None)
             self._responding.discard(speaker_ref)
             self._pre_windows.pop(speaker_ref, None)
+            self._awaiting.pop(speaker_ref, None)
 
     @property
     def coupling_value(self) -> float:
@@ -171,6 +176,9 @@ class RuleProposer:
         # Step 1：上下文窗口（含「回覆生成中」）。被動模式下剛被回覆的人接著說的話不一定還是對人設說的：
         # 喚醒詞命中就照一般被叫到走，否則 trigger 標成 context_passive
         in_context = self._context.is_in_context(speaker) or speaker in self._responding
+        # 單字附和（「嗯」）只在她上一句等回應時才算有效回覆；拿不到上一句視為沒有前文，照一般流程（多半 pass）
+        if in_context and is_acknowledgement(text) and not self._awaiting.get(speaker, False):
+            in_context = False
         if in_context:
             passive_ctx = mode is ChannelMode.PASSIVE
             wake = self.wake.detect(text) if passive_ctx else None
@@ -284,7 +292,7 @@ class RuleProposer:
             if facts.status == "dropped_busy":
                 self._settle(topic, None)
             elif facts.status == "completed" and facts.generation_ok or facts.barge_in:
-                self._responded(facts.speakers)
+                self._responded(facts.speakers, facts.reply_text)
                 self._settle(topic, True)
             elif facts.status == "skipped" and facts.end_reason == "pass":
                 self._passed(facts.speakers)
@@ -293,9 +301,11 @@ class RuleProposer:
                 self._failed(facts.speakers)
                 self._settle(topic, None)
 
-    def _responded(self, speakers: tuple[str, ...]) -> None:
+    def _responded(self, speakers: tuple[str, ...], reply_text: str = "") -> None:
+        awaiting = awaits_response(reply_text)
         for uid in speakers:
             if uid:
+                self._awaiting[uid] = awaiting
                 self._context.on_bot_responded(uid)
                 self._responding.discard(uid)
                 self._pre_windows.pop(uid, None)

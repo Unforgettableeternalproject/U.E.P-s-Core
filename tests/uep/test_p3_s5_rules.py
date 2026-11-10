@@ -987,3 +987,81 @@ def test_unknown_headcount_is_treated_as_private_chat_and_explicit_request_respo
     proposal = p.propose(cand(text, count=None))
     assert (proposal.reply_mode, proposal.reason_code) == (ReplyMode.RESPOND, "active")
     assert p.channel_mode is ChannelMode.ACTIVE
+
+
+# ---------------------------------------------------------------------------
+# 單字附和（「嗯」）依上下文判斷：她上一句在等回應才算有效回覆
+# ---------------------------------------------------------------------------
+
+
+def reply_with_text(p: RuleProposer, c: TurnCandidate, text: str) -> None:
+    """模擬：這一輪被採用並完成，她說了 ``text``。"""
+    started(p, c)
+    p.on_turn_outcome(TurnOutcomeFacts(
+        turn_id="t", candidate_id=c.candidate_id, speakers=c.speakers, reply_mode="respond", reason_code="called",
+        status="completed", generation_ok=True, reply_text=text,
+    ))
+
+
+@pytest.mark.parametrize("users, expect_reason", [(1, "context"), (3, "context_passive")])
+@pytest.mark.parametrize("prev", ["你今天過得好嗎？", "要不要我幫你查一下", "這樣你覺得可以嗎"])
+def test_ack_after_her_question_is_a_valid_reply(users, expect_reason, prev):
+    p, _ = joined(users)
+    first = cand("小諾 你好", "u1", n=1)
+    p.propose(first)
+    reply_with_text(p, first, prev)
+    proposal = p.propose(cand("嗯", "u1", n=2))
+    assert (proposal.reply_mode, proposal.reason_code) == (ReplyMode.RESPOND, expect_reason)
+
+
+@pytest.mark.parametrize("users", [1, 3])
+@pytest.mark.parametrize("ack", ["嗯", "嗯嗯", "好的", "ok"])
+def test_ack_after_her_statement_is_pass(users, ack):
+    p, _ = joined(users)
+    first = cand("小諾 你好", "u1", n=1)
+    p.propose(first)
+    reply_with_text(p, first, "今天天氣很好，我剛整理完資料。")
+    assert p.propose(cand(ack, "u1", n=2)).reply_mode is ReplyMode.PASS
+
+
+@pytest.mark.parametrize("users", [1, 3])
+def test_ack_after_reply_with_unknown_text_is_pass(users):
+    p, _ = joined(users)
+    first = cand("小諾 你好", "u1", n=1)
+    p.propose(first)
+    reply_with_text(p, first, "")  # 拿不到上一句 = 沒有前文
+    assert p.propose(cand("嗯", "u1", n=2)).reply_mode is ReplyMode.PASS
+
+
+@pytest.mark.parametrize("users", [1, 3])
+def test_cold_start_ack_is_pass(users):
+    p, _ = joined(users)
+    assert p.propose(cand("嗯", "u1")).reply_mode is ReplyMode.PASS
+
+
+def test_ack_context_is_per_speaker_and_does_not_widen_to_short_sentences():
+    p, _ = joined(3)
+    first = cand("小諾 你好", "u1", n=1)
+    p.propose(first)
+    reply_with_text(p, first, "你想聊什麼？")
+    assert p.propose(cand("嗯", "u2", n=1)).reply_mode is ReplyMode.PASS  # 別人的附和不算
+    # 非附和的短句仍照原本的上下文窗口回應
+    assert p.propose(cand("天氣", "u1", n=3)).reply_mode is ReplyMode.RESPOND
+
+
+@pytest.mark.parametrize("text", ["哈囉", "你好", "早安"])
+def test_two_char_greeting_in_context_still_responds_after_statement(text):
+    p, _ = joined(1)
+    first = cand("小諾 你好", "u1", n=1)
+    p.propose(first)
+    reply_with_text(p, first, "今天天氣很好。")
+    assert p.propose(cand(text, "u1", n=2)).reply_mode is ReplyMode.RESPOND
+
+
+def test_ack_after_question_expires_with_context_window():
+    p, clock = joined(3)
+    first = cand("小諾 你好", "u1", n=1)
+    p.propose(first)
+    reply_with_text(p, first, "你想聊什麼？")
+    clock.advance(1.1)
+    assert p.propose(cand("嗯", "u1", n=2)).reply_mode is ReplyMode.PASS

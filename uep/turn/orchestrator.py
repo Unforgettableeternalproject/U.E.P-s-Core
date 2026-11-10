@@ -943,7 +943,7 @@ class TurnOrchestrator:
             speakers=live.speakers or (live.ticket.speaker_ref,),
             reply_mode=live.ticket.reply_mode, reason_code=live.reason_code, status=status,
             end_reason=reason, generation_ok=facts.generation_ok, barge_in=facts.barge_in,
-            started=live.think_started,
+            started=live.think_started, reply_text=facts.spoken_text,
         ))
 
     def _emit_terminal(self, ticket: CoreTicket, kind: str, payload: dict[str, object]) -> None:

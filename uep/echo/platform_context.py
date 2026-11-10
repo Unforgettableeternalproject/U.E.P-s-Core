@@ -99,17 +99,17 @@ class PlatformContextProvider:
         self._last_key: tuple | None = None
 
     def _read_presence(self) -> tuple[PresenceStatus, PlatformId | None, int, int]:
-        """-> (有效 status, current_platform, generation, row_version)；失敗 fail-closed 為 NONE。"""
+        """-> (有效 status, current_platform, generation, row_version)；失敗 fail-closed 為 NONE（NONE = 不在任何平台、存在於主機中，是正常狀態而非故障；此處讀不到 Presence 時保守以 NONE 處理，不誤報任何平台）。"""
         try:
             view = self._presence.peek()
         except PresenceNotStarted:
-            logger.warning("platform_context：Presence 尚未 start，視為無場域")
+            logger.warning("platform_context：Presence 尚未 start，保守以 NONE（不在任何平台）處理")
             return PresenceStatus.NONE, None, 0, 0
         except Exception:
-            logger.warning("platform_context：讀取 Presence 失敗，視為無場域", exc_info=True)
+            logger.warning("platform_context：讀取 Presence 失敗，保守以 NONE（不在任何平台）處理", exc_info=True)
             return PresenceStatus.NONE, None, 0, 0
         status = view.status
-        # peek 不處理過期轉換：ACTIVE 但 Lease 已過期，視同 NONE（不把過期的位置當成 current_platform）
+        # peek 不處理過期轉換：ACTIVE 但 Lease 已過期，視同 NONE（回到主機、不在任何平台）（不把過期的位置當成 current_platform）
         if status is PresenceStatus.ACTIVE and view.expires_at is not None and view.expires_at <= self._clock():
             status = PresenceStatus.NONE
         platform = platform_from_presence_location(view.location) if status is PresenceStatus.ACTIVE else None

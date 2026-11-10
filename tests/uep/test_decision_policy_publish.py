@@ -30,7 +30,7 @@ class _ListSink:
 
 def _wired(*, run_id="run1", record_initial=False):
     hub = DecisionHub()
-    source = HostPolicySource("web")
+    source = HostPolicySource("website")
     sink = _ListSink()
     writer = DecisionLogWriter(sink, flush_interval=0.01)
     writer.attach(hub)
@@ -55,7 +55,7 @@ def _no_listener_source():
 
 
 def test_listener_does_not_change_versions_or_returns():
-    bare = HostPolicySource("web")
+    bare = HostPolicySource("website")
     _, wired, writer, _ = _wired()
     assert _script(bare) == _script(wired)
     assert wired.current().platform == bare.current().platform
@@ -63,7 +63,7 @@ def test_listener_does_not_change_versions_or_returns():
 
 
 def test_listener_sees_published_snapshot_and_publication_fields():
-    source = HostPolicySource("web", ttl_s=5.0)
+    source = HostPolicySource("website", ttl_s=5.0)
     seen = []
     source.add_publish_listener(lambda pub: seen.append((pub, source.current().version, source.core_current().version)))
     source.publish_channel_mode(ChannelMode.ACTIVE)
@@ -78,7 +78,7 @@ def test_listener_sees_published_snapshot_and_publication_fields():
 
 
 def test_listener_exception_does_not_break_publish():
-    source = HostPolicySource("web")
+    source = HostPolicySource("website")
     calls = []
 
     def boom(_pub):
@@ -121,7 +121,7 @@ def test_flip_writes_two_rows_participants_one_row():
 
 
 def test_disabled_log_and_no_hub_are_free():
-    source = HostPolicySource("web")
+    source = HostPolicySource("website")
     assert source.publish().version == 2  # 無監聽者
     hub = DecisionHub()
     writer = DecisionLogWriter(None)  # 停用
@@ -133,7 +133,7 @@ def test_disabled_log_and_no_hub_are_free():
 
 def _pub(**kw):
     base = {
-        "version": 5, "prev_version": 4, "platform": "web", "channel_mode": ChannelMode.ACTIVE,
+        "version": 5, "prev_version": 4, "platform": "website", "channel_mode": ChannelMode.ACTIVE,
         "prev_channel_mode": None, "cause": "channel_mode", "ttl_s": None, "es_version": 5, "core_version": 5,
         "core_channel_mode": ChannelMode.ACTIVE,
     }
@@ -205,7 +205,7 @@ def test_modes_are_mutually_exclusive():
 
 def test_blocked_sink_does_not_delay_publish():
     hub = DecisionHub()
-    source = HostPolicySource("web")
+    source = HostPolicySource("website")
     gate = threading.Event()
 
     class _Blocked:
@@ -232,7 +232,7 @@ def test_blocked_listener_does_not_block_readers_or_other_publishes():
 
     讀端（current／core_current）讀到已換入的新版；其他執行緒的 publish 也不會被擋（鎖在 listener 前已釋放）。
     """
-    source = HostPolicySource("web")
+    source = HostPolicySource("website")
     entered, release = threading.Event(), threading.Event()
     calls: list[int] = []
 
@@ -298,7 +298,7 @@ def test_source_without_baseline_method_skips_initial():
 
 def _facts(**kw):
     base = {
-        "version": 1, "prev_version": None, "platform": "web", "cause": "initial", "ttl_s": None,
+        "version": 1, "prev_version": None, "platform": "website", "cause": "initial", "ttl_s": None,
         "es_version": 1, "core_version": 1, "channel_mode": None, "prev_channel_mode": None,
         "core_channel_mode": None,
     }
@@ -358,7 +358,7 @@ def test_initial_is_published_before_concurrent_v2():
 
 def test_blocked_hub_does_not_block_other_publishers_and_order_is_kept():
     hub = DecisionHub()
-    source = HostPolicySource("web")
+    source = HostPolicySource("website")
     seen: list[int] = []
     gate, entered = threading.Event(), threading.Event()
 

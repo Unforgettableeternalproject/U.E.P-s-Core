@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
+from uep.contracts.platform import normalize_platform
 from uep.stream.contracts.output import (
     ModeFlags,
     PolicySnapshot,
@@ -85,7 +86,7 @@ class CoreModeRules:
 
 class HostPolicySource:
     def __init__(
-        self, platform: str = "web", *, ttl_s: float | None = None, listener: ListenerConfig | None = None,
+        self, platform: str = "website", *, ttl_s: float | None = None, listener: ListenerConfig | None = None,
         barge_in_channel_modes: frozenset[ChannelMode] | None = None,
     ) -> None:
         self._lock = threading.Lock()
@@ -98,6 +99,7 @@ class HostPolicySource:
         self._core = CorePolicySnapshot.from_listener(
             self._listener, version=1, issued_at=time.perf_counter(), ttl_s=ttl_s, **overrides
         )
+        platform = normalize_platform(platform) or platform  # 舊值 "web" 在此邊界正規化（stream 層不認舊值）
         self._snapshot = PolicySnapshot.for_platform(
             platform, version=1, mode_rules=CoreModeRules(self.core_current), ttl_s=ttl_s
         )
@@ -151,6 +153,7 @@ class HostPolicySource:
             raise ValueError(f"publish 的 cause 只接受 {CAUSE_TTL_REFRESH!r}：{cause!r}")
         if cause is not None and (platform is not None or channel_mode is not None):
             raise ValueError("ttl_refresh 不得同時帶 platform 或 channel_mode")
+        platform = normalize_platform(platform)
         with self._lock:
             old = self._snapshot
             old_mode = self._core.channel_mode

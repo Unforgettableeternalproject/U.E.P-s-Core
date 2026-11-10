@@ -81,7 +81,7 @@ def test_policy_unknown_keys_ignored():
 
 def _facts(**over):
     base = {
-        "version": 4, "prev_version": 3, "platform": "web", "cause": "channel_mode", "ttl_s": None, "es_version": 4, "core_version": 4,
+        "version": 4, "prev_version": 3, "platform": "website", "cause": "channel_mode", "ttl_s": None, "es_version": 4, "core_version": 4,
         "channel_mode": "passive", "prev_channel_mode": "active", "core_channel_mode": "passive",
     }
     return {**base, **over}

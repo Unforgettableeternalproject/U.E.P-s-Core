@@ -1,10 +1,11 @@
 """平台宣告注入端的共用型別與詞彙映射（平台宣告注入端契約草案 §2.2；SYS 增補 PD-18）。
 
 只放純資料與映射表，不 import tools／decision／presence（依賴單向，決策層與工具層才能同源引用）。
-三套平台詞彙並存是已知債（DQ-3 暫採 A：契約層映射表）：映射表集中在本檔，日後改成統一改名（B）時只動這裡。
+平台詞彙已統一為 ``PresenceLocation``（DQ-3 已裁決 B）；本檔只保留舊值 ``web`` -> ``website`` 的讀取相容層。
 """
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from uep.contracts.presence import PresenceLocation, PresenceStatus
 SAFE_REF = re.compile(r"^[a-z0-9_.:-]{1,64}$")
 
 PlatformId = str
+_PRESENCE_LOCATIONS: frozenset[str] = frozenset(loc.value for loc in PresenceLocation)
 
 # ExecutorDescriptor.origin 的合法值
 ORIGIN_REGISTRY_STATIC = "registry_static"  # 階段 A：由 registry 靜態資料推導
@@ -24,43 +26,47 @@ ORIGIN_PLATFORM_DECLARED = "platform_declared"  # 階段 B：平台已宣告、�
 ORIGIN_COARSE_FALLBACK = "coarse_fallback"  # F-1 退路：只回 current_platform 的粗粒度結果
 EXECUTOR_ORIGINS: frozenset[str] = frozenset({ORIGIN_REGISTRY_STATIC, ORIGIN_PLATFORM_DECLARED, ORIGIN_COARSE_FALLBACK})
 
-# ---- 詞彙映射表（DQ-3-A）：三套詞彙的唯一對照點 ----
-# 1. Presence location：閉集 PresenceLocation，恆等映射（PlatformId 為開放字串，但目前的值都來自此集合）
-PRESENCE_LOCATION_TO_PLATFORM: Mapping[str, PlatformId] = MappingProxyType({loc.value: loc.value for loc in PresenceLocation})
-# 2. session.platform：輸入端平台；預設值 ``web`` 對應 Presence 的 ``website``
-SESSION_PLATFORM_TO_PLATFORM: Mapping[str, PlatformId] = MappingProxyType({
-    "web": PresenceLocation.WEBSITE.value,
-    "website": PresenceLocation.WEBSITE.value,
-    "discord": PresenceLocation.DISCORD.value,
-    "desktop": PresenceLocation.DESKTOP.value,
-})
-# 3. host 端點註冊用的 location（預設 ``desktop``）：沿用 Presence location 詞彙
-ENDPOINT_LOCATION_TO_PLATFORM: Mapping[str, PlatformId] = MappingProxyType({
-    "desktop": PresenceLocation.DESKTOP.value,
-    "discord": PresenceLocation.DISCORD.value,
-    "website": PresenceLocation.WEBSITE.value,
-})
+# ---- 舊值相容層（DQ-3-B）----
+# 平台詞彙已統一為 ``PresenceLocation``（desktop／discord／website）；唯一保留的舊值是 ``web``（舊
+# ``SessionContext.platform`` 預設值），只在邊界（``SessionContext`` 建構、``replay_turn``）讀取時正規化成
+# ``website``。寫入一律用新詞彙。Presence 與 endpoint 已是同一套詞彙，不需要映射。
+LEGACY_PLATFORM_ALIASES: Mapping[str, PlatformId] = MappingProxyType({"web": PresenceLocation.WEBSITE.value})
+
+_logger = logging.getLogger("uep.contracts.platform")
+_legacy_warned: set[str] = set()
 
 
-def _lookup(table: Mapping[str, PlatformId], value: str | None) -> PlatformId | None:
+def normalize_platform(value: str | None) -> str | None:
+    """舊值 ``web`` -> ``website``，其餘原樣回傳（不做開放字串的合法性判斷）。
+
+    正規化時每個舊值只記一次 debug log（行程內），供追蹤舊資料是否仍在流入。"""
     if not isinstance(value, str):
-        return None
-    return table.get(value.strip().lower())
+        return value
+    alias = LEGACY_PLATFORM_ALIASES.get(value.strip().lower())
+    if alias is None:
+        return value
+    if value not in _legacy_warned:
+        _legacy_warned.add(value)
+        _logger.debug("platform 舊值 %r 已正規化為 %r（相容層）", value, alias)
+    return alias
 
 
 def platform_from_presence_location(location: str | None) -> PlatformId | None:
     """Presence location -> PlatformId；不在閉集（或 None）回 None。"""
-    return _lookup(PRESENCE_LOCATION_TO_PLATFORM, location)
+    if not isinstance(location, str):
+        return None
+    value = location.strip().lower()
+    return value if value in _PRESENCE_LOCATIONS else None
 
 
 def platform_from_session(session_platform: str | None) -> PlatformId | None:
-    """``SessionContext.platform`` -> PlatformId；無法映射回 None（不影響 current_platform）。"""
-    return _lookup(SESSION_PLATFORM_TO_PLATFORM, session_platform)
+    """``SessionContext.platform`` -> PlatformId（舊值 ``web`` 先正規化）；不在閉集回 None（不影響 current_platform）。"""
+    return platform_from_presence_location(normalize_platform(session_platform))
 
 
 def platform_from_endpoint_location(location: str | None) -> PlatformId | None:
-    """host 端點 location -> PlatformId；無法映射回 None。"""
-    return _lookup(ENDPOINT_LOCATION_TO_PLATFORM, location)
+    """host 端點 location -> PlatformId；endpoint 已使用 Presence 詞彙，不收舊值 ``web``。"""
+    return platform_from_presence_location(location)
 
 
 def is_safe_ref(value: object) -> bool:

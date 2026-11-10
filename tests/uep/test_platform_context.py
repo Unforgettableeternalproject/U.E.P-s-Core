@@ -14,17 +14,16 @@ from pathlib import Path
 import pytest
 
 from uep.contracts.platform import (
-    ENDPOINT_LOCATION_TO_PLATFORM,
+    LEGACY_PLATFORM_ALIASES,
     ORIGIN_COARSE_FALLBACK,
     ORIGIN_REGISTRY_STATIC,
-    PRESENCE_LOCATION_TO_PLATFORM,
     SAFE_REF,
-    SESSION_PLATFORM_TO_PLATFORM,
     ExecutorDescriptor,
     PlatformContext,
     PlatformDeclaration,
     platform_from_endpoint_location,
     platform_from_presence_location,
+    normalize_platform,
     platform_from_session,
 )
 from uep.contracts.presence import PresenceLocation, PresenceStatus
@@ -132,34 +131,47 @@ def test_platform_context_validation():
         PlatformContext(**base, current_platform="desktop", presence_active_platforms=frozenset({"desktop"}), available_executors=("a@b",))
 
 
-def test_mapping_tables_contents_are_locked():
-    # 三套詞彙的唯一對照點；改名（DQ-3-B）時要同步改這裡
-    assert dict(SESSION_PLATFORM_TO_PLATFORM) == {
-        "web": "website", "website": "website", "discord": "discord", "desktop": "desktop",
-    }
-    assert dict(PRESENCE_LOCATION_TO_PLATFORM) == {"desktop": "desktop", "discord": "discord", "website": "website"}
-    assert dict(ENDPOINT_LOCATION_TO_PLATFORM) == {"desktop": "desktop", "discord": "discord", "website": "website"}
-    assert set(PRESENCE_LOCATION_TO_PLATFORM) == {loc.value for loc in PresenceLocation}
+def test_legacy_alias_table_only_maps_web_to_website():
+    # DQ-3-B：詞彙已統一為 PresenceLocation；相容層只剩 web -> website
+    assert dict(LEGACY_PLATFORM_ALIASES) == {"web": "website"}
+    assert all(SAFE_REF.fullmatch(v) for v in LEGACY_PLATFORM_ALIASES.values())
 
 
 def test_mapping_functions():
-    assert platform_from_session("web") == "website"
+    assert platform_from_session("web") == "website"  # 舊值經相容層
     assert platform_from_session(" Web ") == "website"
+    for loc in PresenceLocation:
+        assert platform_from_session(loc.value) == loc.value
+        assert platform_from_presence_location(loc.value) == loc.value
+        assert platform_from_endpoint_location(loc.value) == loc.value
     assert platform_from_session("unknown") is None and platform_from_session(None) is None
-    assert platform_from_presence_location("website") == "website"
     assert platform_from_presence_location("mars") is None and platform_from_presence_location(None) is None
-    assert platform_from_endpoint_location("desktop") == "desktop"
-    assert platform_from_endpoint_location("web") is None
-    # 映射結果都必須是合法的平台識別字
-    for table in (SESSION_PLATFORM_TO_PLATFORM, PRESENCE_LOCATION_TO_PLATFORM, ENDPOINT_LOCATION_TO_PLATFORM):
-        assert all(SAFE_REF.fullmatch(v) for v in table.values())
+    assert platform_from_endpoint_location("web") is None  # endpoint 已用新詞彙，不收舊值
+
+
+def test_normalize_platform_only_rewrites_legacy_web():
+    assert normalize_platform("web") == "website"
+    assert normalize_platform("WEB ") == "website"
+    for value in ("website", "desktop", "discord", "mars", ""):
+        assert normalize_platform(value) == value
+    assert normalize_platform(None) is None
+
+
+def test_session_context_default_and_legacy_web_normalized():
+    from uep.turn.models import SessionContext
+
+    base = dict(conversation_id="c", segment_id="s", audience_scope="a", session_ref="r")
+    assert SessionContext(**base).platform == "website"
+    assert SessionContext(**base, platform="web").platform == "website"  # 舊值讀取相容
+    for loc in PresenceLocation:
+        assert SessionContext(**base, platform=loc.value).platform == loc.value
 
 
 # ---- provider：三態與失敗 ----
 
 def test_active_state_yields_platform_and_coarse_executor_by_default():
     provider, _ = _provider(_view(location="discord"))
-    ctx = provider.snapshot("web")
+    ctx = provider.snapshot("website")
     assert ctx.presence_status is PresenceStatus.ACTIVE
     assert ctx.current_platform == "discord" and ctx.presence_active_platforms == frozenset({"discord"})
     assert ctx.session_platform == "website"  # 兩者並存、不混用（DQ-1 暫採 C）
@@ -189,7 +201,7 @@ def test_unmappable_location_gives_no_platform():
 def test_presence_failure_is_fail_closed(error, caplog):
     provider, _ = _provider(error)
     with caplog.at_level(logging.WARNING, logger="uep.echo.platform_context"):
-        ctx = provider.snapshot("web")
+        ctx = provider.snapshot("website")
     assert ctx.presence_status is PresenceStatus.NONE and ctx.current_platform is None
     assert ctx.available_executors == () and ctx.session_platform == "website"
     assert any(r.levelno == logging.WARNING for r in caplog.records)
@@ -233,7 +245,7 @@ def test_version_bumps_on_generation_location_executors_and_registry_revision():
 
 def test_session_platform_alone_does_not_bump_version():
     provider, _ = _provider(_view())
-    v = provider.snapshot("web").version
+    v = provider.snapshot("website").version
     assert provider.snapshot("discord").version == v
 
 
@@ -290,12 +302,12 @@ def test_shadow_counts_turns_and_diffs_without_raising(caplog):
     provider, presence = _provider(_view(status=PresenceStatus.NONE))
     metrics = Metrics()
     shadow = PlatformShadow(provider, metrics)
-    shadow.observe("t1", "web")
+    shadow.observe("t1", "website")
     assert metrics["platform_shadow.turns"] == 1 and metrics["platform_shadow.current_platform_none"] == 1
     assert metrics["platform_shadow.diff_turns"] == 0
     presence.view = _view(location="desktop", row_version=9)
     with caplog.at_level(logging.INFO, logger="uep.echo.platform_context"):
-        ctx = shadow.observe("t2", "web")
+        ctx = shadow.observe("t2", "website")
     assert ctx is not None and ctx.current_platform == "desktop"
     assert metrics["platform_shadow.turns"] == 2 and metrics["platform_shadow.diff_turns"] == 1
     assert metrics["platform_shadow.diff.projection.platform"] == 1
@@ -371,7 +383,8 @@ def _importers(module: str) -> set[str]:
 def test_platform_context_is_read_only_by_shadow_wiring():
     # 平台脈絡目前只被 shadow 使用：消費點（projection／loop_consult／proactive／bridge）不得 import
     assert _importers("uep.echo.platform_context") == {"assembly.py", "echo/host.py"}
-    assert _importers("uep.contracts.platform") == {"echo/platform_context.py"}
+    # 除 shadow 外，只有相容層邊界（SessionContext 建構、HostPolicySource）可 import 舊值正規化
+    assert _importers("uep.contracts.platform") == {"echo/platform_context.py", "echo/policy.py", "turn/models.py"}
 
 
 def test_consumers_do_not_reference_platform_context_names():

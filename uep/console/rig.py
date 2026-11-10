@@ -183,9 +183,10 @@ def build_fake_runtime(
             runtime.wav_sinks.append(sink)
         return sink
 
+    # Console 是本機麥克風／喇叭的桌面端，平台取 desktop（與 endpoint 預設 location 一致）
     session = SessionContext(
         conversation_id=new_id("conv"), segment_id=new_id("seg"), audience_scope=PRIVATE_SCOPE,
-        session_ref=f"console{int(time.time() * 1000)}", platform="web",
+        session_ref=f"console{int(time.time() * 1000)}", platform="desktop",
     )
     host = EchoPipelineHost(
         publisher=publisher, think=think, speak=speak, sink_factory=sink_factory, session=session,

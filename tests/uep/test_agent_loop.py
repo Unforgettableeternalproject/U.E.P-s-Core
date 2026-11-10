@@ -735,10 +735,17 @@ class Board:
         self.cancels.append(action_id)
         if self.mode == "raise":
             raise RuntimeError("cancel 失敗")
+        path = self.tasks.actions[action_id]["params"]["path"]
         if self.mode == "stopped":
-            path = self.tasks.actions[action_id]["params"]["path"]
             self.stopped.add(path)
             self.events.setdefault(path, threading.Event()).set()
+        elif self.mode in ("complete", "stopped_complete"):  # cancel 期間 execute 正常做完（取消不及）
+            self.events.setdefault(path, threading.Event()).set()
+            time.sleep(0.05)
+        if self.mode == "complete":
+            return "isolated"
+        if self.mode in ("stopped_complete", "stopped_hang"):
+            return "stopped"  # stopped_hang：回 stopped 卻不讓 execute 收尾
         return self.mode
 
     def release_all(self) -> None:
@@ -882,3 +889,120 @@ def test_parallel_safe_timeout_is_not_enforced():
     )
     out = rig.run()
     assert out.state == "completed" and board.cancels == []
+
+
+# ───────────────────────── parallel_one_shot 審查修正：競態、取消後狀態、併發逾時 ─────────────────────────
+
+def test_execute_finishing_during_cancel_keeps_the_real_result():
+    board = Board("complete")
+    rig = one_shot_rig(
+        board, [Round("", (call("once.a", "slow"), call("once.b", "fast"))), Round("好")], behaviors={"once.a": board.hang},
+    )
+    out = rig.run()
+    fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert out.state == "completed" and fed[0]["status"] == "ok" and "reason_code" not in fed[0]
+    assert board.cancels == [action_id(0)] and rig.tasks.marked_unknown == []
+
+
+def test_mark_false_race_uses_the_real_result_not_unknown():
+    board = Board("isolated")
+    rig = one_shot_rig(
+        board, [Round("", (call("once.a", "slow"),)), Round("好")], behaviors={"once.a": board.hang},
+    )
+    real_mark = rig.tasks.mark_action_unknown
+
+    def racing_mark(action_id, **kw):
+        board.release_all()  # 剛好在轉 UNKNOWN 前 execute 做完
+        deadline = time.monotonic() + 2
+        while action_id in rig.tasks.executing and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return real_mark(action_id, **kw)
+
+    rig.tasks.mark_action_unknown = racing_mark
+    out = rig.run()
+    fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert out.state == "completed" and fed[0]["status"] == "ok" and rig.tasks.marked_unknown == []
+
+
+def test_stopped_with_a_real_failure_keeps_its_original_reason():
+    board = Board("stopped_complete")
+    rig = one_shot_rig(board, [Round("", (call("once.a", "slow"),)), Round("好")], behaviors={"once.a": board.hang})
+    rig.tasks.fail_tools = {"once.a"}  # 真實錯誤（receipt error_code 不是 timeout／cancelled）
+    out = rig.run()
+    fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert out.state == "completed" and fed[0]["status"] == "failed" and "reason_code" not in fed[0]
+
+
+def test_run_cancel_marks_unfinished_items_unknown_including_parallel_safe():
+    board = Board("isolated")
+    flag = threading.Event()
+    rig = one_shot_rig(
+        board, [Round("", (call("once.a", "p1"), call("read.a", "p2"))), Round("好")], timeout_s=30.0, cancel_grace_s=0.3,
+        behaviors={"once.a": board.hang, "read.a": board.hang}, cancelled=flag.is_set,
+    )
+    timer = threading.Timer(0.15, flag.set)
+    timer.start()
+    try:
+        out = rig.run()
+    finally:
+        timer.cancel()
+        board.release_all()
+    assert out.state == "cancelled" and board.cancels == [action_id(0)]  # parallel_safe 沒有 cancel 可呼叫
+    assert sorted(rig.tasks.marked_unknown) == sorted([action_id(0), action_id(1)])
+    assert set(rig.tasks.mark_reasons.values()) == {"run_cancelled"}
+
+
+def test_simultaneous_timeouts_are_settled_together_within_one_grace():
+    board = Board("stopped_hang")
+    rig = one_shot_rig(
+        board, [Round("", (call("once.a", "p1"), call("once.b", "p2"))), Round("好")], timeout_s=0.2, cancel_grace_s=1.0,
+        behaviors={"once.a": board.hang, "once.b": board.hang},
+    )
+    began = time.monotonic()
+    try:
+        out = rig.run()
+    finally:
+        board.release_all()
+    elapsed = time.monotonic() - began
+    fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert [v["status"] for v in fed] == ["unknown", "unknown"] and out.reason_code == "unresolved_actions"
+    assert elapsed < 1.9  # 逐項處理約 0.2 + 2 x 1.0；一起處理約 0.2 + 1.0
+
+
+def test_unknown_after_timeout_is_resolved_when_a_verified_receipt_exists():
+    board = Board("isolated")
+    rig = one_shot_rig(board, [Round("", (call("once.a", "slow"),)), Round("好")], behaviors={"once.a": board.hang})
+    rig.tasks.late_receipts[action_id(0)] = SimpleNamespace(
+        succeeded=True, source_verified=True, error_code=None, result_ref="ref:late",
+    )
+    try:
+        out = rig.run()
+    finally:
+        board.release_all()
+    fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert rig.tasks.resolved == [action_id(0)] and fed[0]["status"] == "ok" and out.state == "completed"
+
+
+def test_unknown_after_timeout_without_receipt_is_not_resolved():
+    board = Board("isolated")
+    rig = one_shot_rig(board, [Round("", (call("once.a", "slow"),)), Round("好")], behaviors={"once.a": board.hang})
+    try:
+        rig.run()
+    finally:
+        board.release_all()
+    assert rig.tasks.resolved == [] and rig.tasks.marked_unknown == [action_id(0)]
+
+
+def test_late_stale_from_a_settled_item_is_not_reported_as_stale():
+    board = Board("isolated")
+
+    def hang_then_stale(args):
+        board.hang(args)
+        raise StaleWorkerEpoch("晚到")
+
+    rig = one_shot_rig(board, [Round("", (call("once.a", "slow"),)), Round("好")], behaviors={"once.a": hang_then_stale})
+    try:
+        out = rig.run()
+    finally:
+        board.release_all()
+    assert out.state == "failed"  # unresolved_actions，而不是 stale

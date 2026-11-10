@@ -424,3 +424,15 @@ def test_supervisor_does_not_touch_a_loop_run_before_its_deadline_even_if_idle(s
     finally:
         rig.core.loop_launcher.close(timeout=0.2)
         rig.core.shutdown()
+
+
+def test_production_wiring_hands_assembly_executors_to_the_loop_launcher(session_factory, tmp_path):
+    from uep.tools.catalog.memory import MEMORY_EXECUTOR
+
+    rig, _ = _agent_rig(session_factory, tmp_path, route="agent_loop", flag=True, loop_port=FakePort([]))
+    try:
+        launcher = rig.core.loop_launcher
+        assert MEMORY_EXECUTOR in launcher._executors  # assembly 合併後的映射（含 memory executor）
+        assert launcher._executors == dict(rig.core.tasks._executors)
+    finally:
+        rig.core.shutdown()

@@ -234,8 +234,13 @@ class _OneShotExecutor(FakeToolExecutor):
         return self.cancel_mode
 
     def release_all(self) -> None:
+        """解除所有卡點，並等卡住的執行緒把階段 3（DB）做完，避免它與下一個測試的 TRUNCATE 互鎖。"""
         for gate in list(self._blocks.values()):
             gate.set()
+        deadline = time.monotonic() + 3
+        while self.active and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.3)
 
 
 def _one_shot_rig(session_factory, rounds, executor, *, timeout_s: float = 0.3, **kw):
@@ -306,6 +311,12 @@ def test_db_one_shot_timeout_with_isolated_cancel_lands_unknown_and_late_receipt
             time.sleep(0.02)
         assert rig.tm.get_action(a.action_id).status == ActionStatus.UNKNOWN.value
         assert executor.executions[a.action_id] == 1  # 沒有重送
+        # M3：晚到的 receipt 入庫存證（不推進狀態），resolve_unknown 據已驗證 receipt 解決，不再問 executor
+        receipt = rig.tm.get_receipt(a.action_id)
+        assert receipt is not None and receipt.succeeded is True and receipt.source_verified is True
+        lookups = executor.lookups[a.action_id]
+        resolved = rig.tm.resolve_unknown(a.action_id)
+        assert resolved.status is ActionStatus.SUCCEEDED and executor.lookups[a.action_id] == lookups
     finally:
         executor.release_all()
 
@@ -351,3 +362,66 @@ def test_db_stale_worker_epoch_cancels_other_in_flight_one_shot_actions(session_
         executor.release_all()
     first = _by_order(rig)[0]
     assert out.state == "stale" and executor.cancels == [first.action_id]
+
+
+def test_db_run_cancel_marks_unfinished_one_shot_and_parallel_safe_actions_unknown(session_factory):
+    executor = _OneShotExecutor(slow_paths={"p1", "p2"}, cancel_mode="isolated")
+    flag = threading.Event()
+    rig = _one_shot_rig(
+        session_factory, [Round("", (call("once.a", "p1"), call("read.a", "p2"))), Round("完成")], executor, timeout_s=30.0,
+        cancelled=flag.is_set, cancel_grace_s=0.3,
+    )
+    timer = threading.Timer(0.3, flag.set)
+    timer.start()
+    try:
+        out = rig.go()
+        rows = _by_order(rig)
+        assert out.state == "cancelled"
+        assert [r.status for r in rows] == [ActionStatus.UNKNOWN.value] * 2  # 不留在 EXECUTING
+        assert [r.concurrency for r in rows] == ["parallel_one_shot", "parallel_safe"]
+    finally:
+        timer.cancel()
+        executor.release_all()
+
+
+def test_db_mark_action_unknown_is_restricted_by_reason_and_concurrency(session_factory):
+    from uep.tasks.manager import PolicyViolation
+
+    executor = _OneShotExecutor(slow_paths={"s1", "s2"})
+    rig = _one_shot_rig(session_factory, [], executor)
+    epoch = rig.run.worker_epoch
+
+    def start(tool: str, path: str):
+        step = rig.tm.begin_step(rig.run.run_id, "think", worker_epoch=epoch)
+        action = rig.tm.create_action(
+            run_id=rig.run.run_id, step_id=step.step_id, tool=tool, params={"path": path}, worker_epoch=epoch,
+        )
+        thread = threading.Thread(
+            target=lambda: rig.tm.execute_action(action.action_id, {"path": path}, worker_epoch=epoch), daemon=True,
+        )
+        thread.start()
+        deadline = time.monotonic() + 3
+        while rig.tm.get_action(action.action_id).status != ActionStatus.EXECUTING.value and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return action.action_id, thread
+
+    try:
+        safe_id, safe_thread = start("read.a", "s1")  # parallel_safe：timeout 原因不適用，run_cancelled 可
+        assert rig.tm.mark_action_unknown(safe_id, worker_epoch=epoch, reason="timeout") is False
+        with pytest.raises(PolicyViolation):
+            rig.tm.mark_action_unknown(safe_id, worker_epoch=epoch, reason="whatever")  # type: ignore[arg-type]
+        with pytest.raises(StaleWorkerEpoch):
+            rig.tm.mark_action_unknown(safe_id, worker_epoch=epoch + 1, reason="run_cancelled")
+        assert rig.tm.mark_action_unknown(safe_id, worker_epoch=epoch, reason="run_cancelled") is True
+        assert rig.tm.get_action(safe_id).status == ActionStatus.UNKNOWN.value
+        assert rig.tm.mark_action_unknown(safe_id, worker_epoch=epoch, reason="run_cancelled") is False  # 已非 EXECUTING
+        executor.release_all()
+        safe_thread.join(3)
+        serial_id, serial_thread = start("write.s", "s2")  # serial：任何原因都不可
+        assert rig.tm.mark_action_unknown(serial_id, worker_epoch=epoch, reason="run_cancelled") is False
+        assert rig.tm.mark_action_unknown(serial_id, worker_epoch=epoch, reason="timeout") is False
+        assert rig.tm.get_action(serial_id).status == ActionStatus.EXECUTING.value
+        executor.release_all()
+        serial_thread.join(3)
+    finally:
+        executor.release_all()

@@ -372,6 +372,18 @@ def _check_cancel_support(
         raise AssemblyError(f"工具宣告可中斷或 cancellable，但其 executor 未實作 cancel：{', '.join(sorted(bad))}（D69、RA-5）")
 
 
+def _check_loop_one_shot_executors(registry: Any, executors: Mapping[str, ToolExecutor]) -> None:
+    """§6.4：AgentLoop 使用的註冊表若有 ``parallel_one_shot`` 條目，其 executor 必須在傳給 AgentLoop 的映射內且實作 ``cancel``，
+    否則逾時／取消時無法 cancel；fail-closed。"""
+    bad = sorted(
+        name for name, entry in registry.entries().items()
+        if entry.concurrency == "parallel_one_shot"
+        and not supports_cancel(executors.get(entry.spec.executor) or object())
+    )
+    if bad:
+        raise AssemblyError(f"parallel_one_shot 工具的 executor 不在 AgentLoop 的 executors 內或未實作 cancel：{', '.join(bad)}（RA-11、D69）")
+
+
 def build_request_verifier(
     secrets: Mapping[str, bytes], *, clock: Callable[[], float] = time.time
 ) -> RequestVerifier:
@@ -621,10 +633,12 @@ def assemble_core(
         assert echo is not None
         attach_agent_tools(echo.think, tasks, agent_cache)
         if loop_entry is None and loop_entry_on:
+            loop_registry = memory_registry()
+            _check_loop_one_shot_executors(loop_registry, executors)
             loop_entry, loop_launcher = build_loop_entry(
                 tool_path=tool_path, tasks=tasks, delivery=delivery, orchestrator=echo.orchestrator,
-                registry=memory_registry(), model_port=model_port, cache=agent_cache,
-                text_store=getattr(echo, "loop_text", None), persona_id=persona_id,
+                registry=loop_registry, model_port=model_port, cache=agent_cache,
+                text_store=getattr(echo, "loop_text", None), persona_id=persona_id, executors=executors,
             )
         if loop_entry is not None:
             echo.orchestrator.bind_loop_entry(loop_entry)

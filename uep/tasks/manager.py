@@ -1649,18 +1649,26 @@ class TaskManager:
         self._set_action_status(s, pending, task, action, to, "action.executed")
         return stored
 
-    def mark_action_unknown(self, action_id: str, *, worker_epoch: int) -> bool:
-        """worker 專用（§6.4 ``parallel_one_shot`` 逾時）：executor 無法確認已停止時，把仍為 EXECUTING 的 action 轉 UNKNOWN。
+    def mark_action_unknown(
+        self, action_id: str, *, worker_epoch: int, reason: Literal["timeout", "run_cancelled"],
+    ) -> bool:
+        """worker 專用：把仍為 EXECUTING 的 action 轉 UNKNOWN，``reason`` 明示呼叫原因並寫入事件的 ``reason_code``。
 
-        只處理 EXECUTING（其餘狀態不動作、回 False）；舊 ``worker_epoch`` 拋 ``StaleWorkerEpoch``。之後晚到的 receipt 因 action 已不是
-        EXECUTING 而不推進狀態，由 ``resolve_unknown`` 以 ``lookup_receipt`` 查核（T-3），不重送。
+        - ``timeout``（§6.4 ``parallel_one_shot`` 逾時、executor 無法確認已停止）：只限 ``concurrency=parallel_one_shot`` 的 action。
+        - ``run_cancelled``（Run 取消、寬限後在途項仍未收尾）：``parallel_safe``／``parallel_one_shot`` 皆可，serial 不可。
+        不符的 concurrency、或 action 已不是 EXECUTING（執行緒剛好收尾）⇒ 不動作、回 False；未知 ``reason`` 拋 ``PolicyViolation``。
+        舊 ``worker_epoch`` 拋 ``StaleWorkerEpoch``。之後晚到的 receipt 只入庫存證、不推進狀態（T-9／``_finish_execution``），
+        由 ``resolve_unknown`` 據此解決（不重送）。
         """
+        allowed = {"timeout": {"parallel_one_shot"}, "run_cancelled": set(PARALLEL_CONCURRENCY)}.get(reason)
+        if allowed is None:
+            raise PolicyViolation(f"mark_action_unknown 不認得的 reason：{reason!r}")
         with self._tx() as (s, pending):
             task, run, action = self._lock_action(s, action_id)
             self._require_epoch(run, worker_epoch)
-            if ActionStatus(action.status) is not ActionStatus.EXECUTING:
+            if ActionStatus(action.status) is not ActionStatus.EXECUTING or action.concurrency not in allowed:
                 return False
-            self._set_action_status(s, pending, task, action, ActionStatus.UNKNOWN, "action.unknown")
+            self._set_action_status(s, pending, task, action, ActionStatus.UNKNOWN, "action.unknown", reason)
             return True
 
     def _force_unknown(self, action_id: str) -> None:
@@ -1906,7 +1914,10 @@ class TaskManager:
                 stored = self._record_receipt(s, action_id, receipt_in, worker_epoch) if matched else None
                 return ActionOutcome(action_id, ActionStatus(action.status), True, stored), failure
             if ActionStatus(action.status) is not ActionStatus.EXECUTING:
-                return ActionOutcome(action_id, ActionStatus(action.status), True, None), failure
+                # 比照 T-9：action 已被轉走（例如逾時轉 UNKNOWN）時，晚到的 receipt 只入庫存證、不推進狀態，
+                # 讓 resolve_unknown 能據已驗證 receipt 解決
+                stored = self._record_receipt(s, action_id, receipt_in, worker_epoch) if matched else None
+                return ActionOutcome(action_id, ActionStatus(action.status), True, stored), failure
             if matched:
                 rec = self._apply_receipt(s, pending, task, action, receipt_in, worker_epoch)
                 outcome = ActionOutcome(action_id, ActionStatus(action.status), True, rec)

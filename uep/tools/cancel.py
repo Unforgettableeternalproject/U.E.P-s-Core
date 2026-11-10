@@ -68,7 +68,7 @@ class ActionCanceller:
                 slot: dict[str, CancelResult] = {}
                 slots[a.action_id] = slot
                 threads[a.action_id] = thread = threading.Thread(
-                    target=self._run_cancel, args=(a.action_id, ex, slot), name="tool-cancel", daemon=True,
+                    target=run_cancel, args=(a.action_id, ex, slot), name="tool-cancel", daemon=True,
                 )
                 thread.start()
             deadline = time.monotonic() + self._timeout_s
@@ -95,21 +95,23 @@ class ActionCanceller:
             return None
         return executor if interruptible == "interruptible" else None
 
-    @classmethod
-    def _run_cancel(cls, action_id: str, executor: ToolExecutor, slot: dict[str, CancelResult]) -> None:
-        slot["outcome"] = cls._cancel_one(action_id, executor)
 
-    @staticmethod
-    def _cancel_one(action_id: str, executor: ToolExecutor) -> CancelResult:
-        try:
-            outcome = executor.cancel(action_id)  # type: ignore[attr-defined]
-        except Exception:
-            logger.exception("executor.cancel 失敗，視為結果未明：action=%s", action_id)
-            return "error"
-        if outcome not in ("stopped", "isolated"):
-            logger.warning("executor.cancel 回傳非法值 %r，視為結果未明：action=%s", outcome, action_id)
-            return "error"
-        return outcome
+def cancel_one(action_id: str, executor: ToolExecutor) -> CancelResult:
+    """呼叫一次 ``executor.cancel``；例外或非法回傳一律 ``error``（結果未明）。"""
+    try:
+        outcome = executor.cancel(action_id)  # type: ignore[attr-defined]
+    except Exception:
+        logger.exception("executor.cancel 失敗，視為結果未明：action=%s", action_id)
+        return "error"
+    if outcome not in ("stopped", "isolated"):
+        logger.warning("executor.cancel 回傳非法值 %r，視為結果未明：action=%s", outcome, action_id)
+        return "error"
+    return outcome
+
+
+def run_cancel(action_id: str, executor: ToolExecutor, slot: dict[str, CancelResult]) -> None:
+    """``cancel_one`` 的執行緒進入點：結果寫進 ``slot["outcome"]``（沒寫 ⇒ 呼叫端逾時，視為 isolated）。"""
+    slot["outcome"] = cancel_one(action_id, executor)
 
 
 def cancel_executors(
@@ -131,7 +133,7 @@ def cancel_executors(
             continue
         slots[action_id] = slot = {}
         threads[action_id] = thread = threading.Thread(
-            target=ActionCanceller._run_cancel, args=(action_id, executor, slot), name="tool-cancel", daemon=True,
+            target=run_cancel, args=(action_id, executor, slot), name="tool-cancel", daemon=True,
         )
         thread.start()
     deadline = time.monotonic() + timeout_s

@@ -124,16 +124,48 @@ class FakeTasks:
         self.executions: list[tuple[str, str]] = []  # (action_id, tool)：真正執行副作用的紀錄
         self.fail_tools: set[str] = set()  # 這些工具的 action 以 FAILED 收尾（receipt succeeded=False）
         self.marked_unknown: list[str] = []  # 逾時後經 mark_action_unknown 轉 UNKNOWN 的 action
+        self.mark_reasons: dict[str, str] = {}
+        self.late_receipts: dict[str, Any] = {}  # 測試預置：UNKNOWN 之後「查得到」的已驗證 receipt（resolve_unknown 用）
+        self.resolved: list[str] = []
 
-    def mark_action_unknown(self, action_id: str, *, worker_epoch: int) -> bool:
-        """對照真實 ``TaskManager.mark_action_unknown``：仍在執行中的 action 轉 UNKNOWN；其餘不動作。"""
+    def mark_action_unknown(self, action_id: str, *, worker_epoch: int, reason: str) -> bool:
+        """對照真實 ``TaskManager.mark_action_unknown``：仍在執行中、concurrency 符合 ``reason`` 的 action 轉 UNKNOWN；其餘不動作。"""
+        allowed = {"timeout": {"parallel_one_shot"}, "run_cancelled": {"parallel_safe", "parallel_one_shot"}}[reason]
         with self.lock:
             self._check(worker_epoch)
-            if action_id not in self.executing:
+            if action_id not in self.executing or self.executing[action_id] not in allowed:
                 return False
             self.unknown.add(action_id)
             self.marked_unknown.append(action_id)
+            self.mark_reasons[action_id] = reason
             return True
+
+    def get_receipt(self, action_id: str):
+        outcome = self.outcomes.get(action_id)
+        if outcome is None or outcome.receipt is None:
+            return self.late_receipts.get(action_id)
+        return outcome.receipt
+
+    def get_action(self, action_id: str):
+        status = ActionStatus.UNKNOWN if action_id in self.unknown else (
+            self.outcomes[action_id].status if action_id in self.outcomes else ActionStatus.EXECUTING
+        )
+        return SimpleNamespace(status=status.value)
+
+    def resolve_unknown(self, action_id: str) -> ActionOutcome:
+        """對照真實 resolve_unknown 的「已有已驗證 receipt」分支：依 ``late_receipts`` 解決，否則維持 UNKNOWN。"""
+        receipt = self.late_receipts.get(action_id)
+        if receipt is None:
+            return ActionOutcome(action_id, ActionStatus.UNKNOWN, False, None)
+        self.unknown.discard(action_id)
+        outcome = ActionOutcome(
+            action_id, ActionStatus.SUCCEEDED if receipt.succeeded else ActionStatus.FAILED, False, receipt,
+        )
+        self.outcomes[action_id] = outcome
+        self.resolved.append(action_id)
+        if receipt.succeeded:
+            self.contents.setdefault(action_id, f"resolved:{action_id}")
+        return outcome
 
     def _check(self, epoch: int) -> None:
         if epoch != self.epoch:
@@ -280,7 +312,8 @@ class FakeTasks:
         except StoppedExecution:
             with self.lock:  # executor 被 cancel 且簽回失敗 receipt ⇒ action FAILED（沒有副作用、沒有內容）
                 outcome = ActionOutcome(
-                    action_id, ActionStatus.FAILED, True, SimpleNamespace(result_ref=None, source_verified=True),
+                    action_id, ActionStatus.FAILED, True,
+                    SimpleNamespace(result_ref=None, source_verified=True, error_code="timeout"),
                 )
                 self.outcomes[action_id] = outcome
                 return outcome
@@ -296,7 +329,7 @@ class FakeTasks:
             ok = tool not in self.fail_tools
             outcome = ActionOutcome(
                 action_id, ActionStatus.SUCCEEDED if ok else ActionStatus.FAILED, True,
-                SimpleNamespace(result_ref=f"ref:{action_id}", source_verified=True),
+                SimpleNamespace(result_ref=f"ref:{action_id}", source_verified=True, error_code=None if ok else "FAKE_FAILURE"),
             )
             self.outcomes[action_id] = outcome
             return outcome

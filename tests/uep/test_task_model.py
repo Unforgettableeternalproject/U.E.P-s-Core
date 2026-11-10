@@ -1164,3 +1164,32 @@ def test_transition_guard_global_stop_applies_only_to_running_restore(session_fa
     with pytest.raises(PermissionError):
         stopped.resume_run(r3.run_id)
     assert plain.get_run(r3.run_id).status == "PAUSED"
+
+
+@pytest.mark.parametrize("run_state", ["RUNNING", "WAITING_APPROVAL"])
+def test_task_layer_resume_mixed_task_waiting_input_and_run_other(mgr, run_state):
+    task, run, _step = running(mgr)
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)  # Task 與 Run 皆 WAITING_INPUT
+    mgr.transition_run(run.run_id, RunStatus.RUNNING, worker_epoch=1)  # Run 自行回 RUNNING，Task 仍等輸入
+    if run_state == "WAITING_APPROVAL":
+        mgr.transition_run(run.run_id, RunStatus.WAITING_APPROVAL, worker_epoch=1)
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    assert _paused_from(mgr, task, run) == ("WAITING_INPUT", run_state)
+    resumed = mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)  # 非 RUNNING 目標也成立
+    assert resumed.status == "WAITING_INPUT"
+    assert mgr.get_run(run.run_id).status == run_state
+    assert _paused_from(mgr, task, run) == (None, None)
+
+
+def test_task_layer_resume_cascade_legacy_null_run_returns_running(mgr, session_factory):
+    task, run, _step = running(mgr)
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    with session_factory() as s:
+        s.execute(text("UPDATE runs SET paused_from=NULL WHERE run_id=:r"), {"r": run.run_id})
+        s.commit()
+    resumed = mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
+    assert resumed.status == "WAITING_INPUT" and mgr.get_run(run.run_id).status == "RUNNING"
+    with pytest.raises(IllegalTransition):  # Task 本身不可恢復到自己 paused_from 以外的非終態
+        mgr.transition_task(task.task_id, RunStatus.PAUSED, pause_reason=PauseReason.USER)
+        mgr.transition_task(task.task_id, RunStatus.WAITING_APPROVAL)

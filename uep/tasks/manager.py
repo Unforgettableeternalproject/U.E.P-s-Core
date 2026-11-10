@@ -772,7 +772,10 @@ class TaskManager:
         """Task 狀態轉移（轉移表＋guard）。終態不可再轉；Task 結束只能經這裡（T-1）。
 
         從 PAUSED 恢復時，目標以各列的 ``paused_from`` 為準，``to``（RUNNING）只是恢復請求；
-        回傳的 TaskRow 反映實際狀態（例如 PENDING），呼叫端不可假設一定是 RUNNING。"""
+        回傳的 TaskRow 反映實際狀態（例如 PENDING），呼叫端不可假設一定是 RUNNING。
+        Task 本身必須恢復到自己的 ``paused_from``（``to`` 為其他非終態會拋 IllegalTransition）；連動的 PAUSED live Run
+        則不論 ``to`` 為何（非終態）一律回各自的 ``paused_from``（NULL 舊資料回 RUNNING），Task 與 Run 可因此不同狀態。
+        轉終態的連動不變。"""
         with self._tx() as (s, pending):
             task = self._lock_task(s, task_id, expected_version)
             if to not in TERMINAL_STATUSES:
@@ -780,9 +783,9 @@ class TaskManager:
                 # （終態由 _set_task_status 負責收尾）
                 for run in self._live_runs(s, task_id):
                     if run.status != to.value:
-                        # SA-7：從 PAUSED 恢復（to=RUNNING）時，Run 與 Task 各依自己的 paused_from 回原狀態
+                        # SA-7：從 PAUSED 恢復（任何非終態目標）時，連動的 PAUSED Run 一律回自己的 paused_from
                         target = self._resume_target("run", run) if (
-                            to is RunStatus.RUNNING and run.status == RunStatus.PAUSED.value) else to
+                            to is not RunStatus.PAUSED and run.status == RunStatus.PAUSED.value) else to
                         self._set_run_status(s, pending, task, run, target, pause_reason)
             if to is RunStatus.RUNNING and task.status == RunStatus.PAUSED.value:
                 to = self._resume_target("task", task)

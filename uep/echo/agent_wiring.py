@@ -127,9 +127,8 @@ def create_loop_run(
         origin_ref={"kind": trigger.kind, "ref": trigger.origin_ref},
     )
     try:
-        run = tasks.start_run(
-            task.task_id, persona_version=persona_version, policy_version=policy_version, run_deadline=run_deadline,
-        )
+        extra = {} if run_deadline is None else {"run_deadline": run_deadline}  # 沒給期限就維持原呼叫形狀
+        run = tasks.start_run(task.task_id, persona_version=persona_version, policy_version=policy_version, **extra)
     except BaseException:
         # Task 已建、Run 沒建成：回收 Task，不留孤兒（再讓呼叫端看到原例外）
         try:

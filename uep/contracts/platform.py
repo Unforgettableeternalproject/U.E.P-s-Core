@@ -129,6 +129,9 @@ class PlatformContext:
     available_executors: tuple[str, ...]
     registry_revision: int = 0
     declaration_revision: int = 0
+    # 有監控面在線的平台（平台端點契約 EC-3）：只供 shadow 觀察／展示，不分發給任何消費點，
+    # 與 presence_active_platforms 獨立（監控在線不代表她在場）。
+    monitor_platforms: frozenset[PlatformId] = frozenset()
 
     def __post_init__(self) -> None:
         if self.current_platform is not None and not is_safe_ref(self.current_platform):
@@ -138,13 +141,16 @@ class PlatformContext:
         bad = [ref for ref in self.available_executors if not is_safe_ref(ref)]
         if bad:
             raise ValueError(f"available_executors 含不合法的 executor_ref：{bad!r}")
+        bad_monitor = [ref for ref in self.monitor_platforms if not is_safe_ref(ref)]
+        if bad_monitor:
+            raise ValueError(f"monitor_platforms 含不合法的 platform：{bad_monitor!r}")
 
     def summary(self) -> str:
         """日誌用摘要：只含版本、狀態、平台與 executor 數，不含原文。"""
         return (
             f"v={self.version} status={self.presence_status.value} platform={self.current_platform} "
             f"session={self.session_platform} executors={len(self.available_executors)} "
-            f"gen={self.presence_generation} row={self.presence_row_version}"
+            f"gen={self.presence_generation} row={self.presence_row_version} monitors={len(self.monitor_platforms)}"
         )
 
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from uep.contracts.presence import PresenceLocation
 from uep.console.rig import CONSOLE_ACTOR, CONSOLE_SPEAKER, PRIVATE_SCOPE, ConsoleRuntime
 from uep.events.models import EventRow
 from uep.log import describe_levels, set_console_level, set_namespace_level
@@ -192,6 +193,12 @@ class Console:
     def _submit(self, text: str, **over) -> None:
         rt = self.rt
         rt.seq += 1
+        if "source_location" not in over:
+            # 工具層預設：Console 就是本機 Host 的輸入；傳 source_location 可重現缺席端輸入的反例
+            try:
+                over["source_location"] = PresenceLocation(rt.host.location)
+            except ValueError:
+                pass
         fact = UtteranceFact(speaker_ref=CONSOLE_SPEAKER, text=text, seq=rt.seq, **over)
         self._report_turn(rt.host.submit_utterance(fact))
 

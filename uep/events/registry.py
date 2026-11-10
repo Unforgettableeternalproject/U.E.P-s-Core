@@ -111,8 +111,13 @@ DEFAULT_EVENT_SPECS["proactive.trigger_observed"] = EventSpec(
 )
 # 不新增 turn.cancelled kind：以 payload.reason_code 區分取消原因
 DEFAULT_EVENT_SPECS["turn.attempt_started"] = EventSpec(_D, payload_keys=_keys("attempt_id"))
+# V18 缺席端輸入 shadow 紀錄也走 turn.skipped：只存來源、身分與長度，不存原文
 DEFAULT_EVENT_SPECS["turn.skipped"] = EventSpec(
-    _D, payload_keys=_keys("reply_mode", "proposal_ref")
+    _D,
+    payload_keys=_keys(
+        "reply_mode", "proposal_ref", "utterance_ref", "speaker_ref", "actor_id", "source_location",
+        "source_endpoint_id", "is_owner", "presence_request", "actor_authenticated",
+    ),
 )
 # ES 轉錄進 journal（§1.5 (a)）：payload 只放 ID、語言、信心、毫秒統計與 speaker_ref（平台字串），
 # 文字與 Utterance.metadata 的私人部分走 payload_blob；S3 補註冊（S1 當時只有預設鍵）

@@ -250,6 +250,7 @@ class EchoPipelineHost:
             ),
             participants=self._participant_count, veto=self._veto, decision=self._decision,
             identity=identity, snapshot_version=lambda: self.policy.version, decision_hub=self.decision_hub,
+            host_location=location,
         )
         self._wire_decision_slot()
         self._tick_thread: threading.Thread | None = None
@@ -424,6 +425,15 @@ class EchoPipelineHost:
     def wrappers_of(self, turn_id: str) -> list[AdmittingSink]:
         """某輪建立過的 sink 包裝（每個 attempt 一個；診斷與測試用，保留最近 64 輪）。"""
         return list(self._wrappers.get(turn_id, ()))
+
+    @property
+    def location(self) -> str:
+        """本機 Host 持有的 Presence location（V18 缺席端輸入比對的對象）。"""
+        return self._location
+
+    def set_require_source_location(self, required: bool) -> None:
+        """組裝層注入 ``UEP_REQUIRE_SOURCE_LOCATION``（Host 不自己讀設定）；開啟後缺 source_location 的輸入即否決。"""
+        self.orchestrator.require_source_location = bool(required)
 
     def bind_platform_shadow(self, shadow: PlatformShadow) -> None:
         """組裝層掛上平台脈絡 shadow；每個簽出 ticket 的 turn 觀察一次（失敗已在 shadow 內吞掉）。"""
@@ -812,6 +822,9 @@ class EchoPipelineHost:
         fact = UtteranceFact(
             speaker_ref=utt.speaker_id or "unknown", text=utt.text, seq=self._seq, language=utt.language,
             confidence=utt.confidence, legacy_ref=utt.turn_id,
+            # V18：來源由輸入 stage 自己宣告；Host 不用自己的 location 代簽（否則缺席端輸入會被蓋成本機而放行）
+            source_location=getattr(self._input_stage, "source_location", None),
+            source_endpoint_id=getattr(self._input_stage, "source_endpoint_id", None),
         )
         try:
             self.submit_utterance(fact)

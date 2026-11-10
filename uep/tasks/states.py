@@ -94,7 +94,8 @@ RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     }),
     S.WAITING_INPUT: frozenset({S.RUNNING, S.PAUSED, S.CANCELLED, S.FAILED}),
     S.WAITING_APPROVAL: frozenset({S.RUNNING, S.PAUSED, S.CANCELLED, S.FAILED}),
-    S.PAUSED: frozenset({S.RUNNING, S.CANCELLED, S.FAILED}),
+    # SA-7：恢復時回到 paused_from 記下的暫停前狀態
+    S.PAUSED: frozenset({S.PENDING, S.RUNNING, S.WAITING_INPUT, S.WAITING_APPROVAL, S.CANCELLED, S.FAILED}),
     S.UNKNOWN: frozenset({S.RUNNING, S.SUCCEEDED, S.FAILED, S.CANCELLED}),
     S.SUCCEEDED: frozenset(),
     S.FAILED: frozenset(),

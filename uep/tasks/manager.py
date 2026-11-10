@@ -35,6 +35,7 @@ from uep.adapters.tool import (
     ToolSpecResolver,
 )
 from uep.events.envelope import EventDraft, TrustedContext
+from uep.events.models import EventRow
 from uep.events.payload_hash import PayloadHasher, resolve_hasher
 from uep.events.publisher import EventPublisher, RecordedEvent
 from uep.ids import derived_id, is_valid_id, new_id
@@ -632,6 +633,12 @@ class TaskManager:
             raise IllegalTransition(f"{kind} 不允許 {current.value} -> {to.value}")
         if (to is RunStatus.PAUSED) != (pause_reason is not None):
             raise IllegalTransition("pause_reason 只在（且必須在）轉入 PAUSED 時提供")
+        if current is RunStatus.PAUSED and to not in TERMINAL_STATUSES:
+            # SA-7：恢復目標必須等於 paused_from，不得把 PAUSED(WAITING_*) 轉成 RUNNING 繞過等待；
+            # 舊資料（paused_from 為 NULL）只能回 RUNNING。轉終態（取消、逾時、失敗）不受限
+            expected = row.paused_from if row.paused_from in _PAUSED_FROM_VALUES else RunStatus.RUNNING.value
+            if to.value != expected:
+                raise IllegalTransition(f"{kind} 從 PAUSED 只能恢復到暫停前狀態 {expected}，不可轉 {to.value}")
         if self._guard is not None:
             ident = row.task_id if kind == "task" else row.run_id
             self._guard(TransitionRequest(kind, ident, current, to, pause_reason))
@@ -664,6 +671,7 @@ class TaskManager:
         pause_reason: PauseReason | None, *, reason_code: str | None = None,
     ) -> None:
         current = self._check_transition("task", task, to, pause_reason)
+        task.paused_from = _paused_from_value(current, to)
         if to is RunStatus.SUCCEEDED:
             # T-13：Task 完成前，所有 Run（含先前失敗或取消的）都不得留有結果未明的 action
             all_runs = list(s.scalars(select(RunRow.run_id).where(RunRow.task_id == task.task_id)))
@@ -677,9 +685,14 @@ class TaskManager:
         self._bump(task)
         event_type = _TASK_EVENT.get((current, to)) or _TASK_EVENT.get((None, to))
         if event_type:
+            extra: dict[str, Any] = {}
+            if current is RunStatus.PAUSED and to is RunStatus.WAITING_INPUT:
+                # SA-8：恢復到 WAITING_INPUT 重發輸入請求。原事件沒有專屬請求 id，去重鍵用「原始（非 resumed）
+                # task.input_requested 的 event_id」放在 ref_id；找不到原事件時退而用 task_id
+                extra = {"resumed": True, "ref_id": self._original_input_request_id(s, task.task_id)}
             self._emit(
                 s, pending, event_type, task, aggregate=("task", task.task_id, task.version),
-                payload={"status": to.value, **({"reason_code": reason_code} if reason_code else {})},
+                payload={"status": to.value, **extra, **({"reason_code": reason_code} if reason_code else {})},
             )
         if to in TERMINAL_STATUSES:
             # kind=task 的 Activity 在 Task 到達終態後才結束（§6.1a）
@@ -693,7 +706,8 @@ class TaskManager:
         self, s: Session, pending: list[RecordedEvent], task: TaskRow, run: RunRow, to: RunStatus,
         pause_reason: PauseReason | None,
     ) -> None:
-        self._check_transition("run", run, to, pause_reason)
+        current = self._check_transition("run", run, to, pause_reason)
+        run.paused_from = _paused_from_value(current, to)
         if to is RunStatus.SUCCEEDED:
             self._assert_no_inflight(s, [run.run_id])
         run.status = to.value
@@ -718,6 +732,30 @@ class TaskManager:
                 run_id=run.run_id, payload=payload,
             )
 
+    @staticmethod
+    def _original_input_request_id(s: Session, task_id: str) -> str:
+        rows = s.execute(
+            select(EventRow.event_id, EventRow.payload).where(
+                EventRow.task_id == task_id, EventRow.event_type == "task.input_requested"
+            ).order_by(EventRow.journal_seq.desc())
+        )
+        for event_id, payload in rows:
+            if not (payload or {}).get("resumed"):
+                return event_id
+        return task_id
+
+    @staticmethod
+    def _resume_target(kind: str, row: TaskRow | RunRow) -> RunStatus:
+        """PAUSED 恢復後的目標狀態（SA-7）：回到該列自己的 ``paused_from``。
+
+        舊資料（PAUSED 但 paused_from 為 NULL，或值不合法）維持舊行為回 RUNNING 並記 warning。"""
+        raw = row.paused_from
+        if raw is not None and raw in _PAUSED_FROM_VALUES:
+            return RunStatus(raw)
+        ident = row.task_id if kind == "task" else row.run_id
+        logger.warning("%s %s 為 PAUSED 但 paused_from 缺失或不合法（%r），恢復時回 RUNNING", kind, ident, raw)
+        return RunStatus.RUNNING
+
     def _lock_task(self, s: Session, task_id: str, expected_version: int | None) -> TaskRow:
         task = self._need(
             s.get(TaskRow, task_id, with_for_update=True, populate_existing=True), "task", task_id
@@ -739,7 +777,13 @@ class TaskManager:
         self, task_id: str, to: RunStatus, *, expected_version: int | None = None,
         pause_reason: PauseReason | None = None,
     ) -> TaskRow:
-        """Task 狀態轉移（轉移表＋guard）。終態不可再轉；Task 結束只能經這裡（T-1）。"""
+        """Task 狀態轉移（轉移表＋guard）。終態不可再轉；Task 結束只能經這裡（T-1）。
+
+        從 PAUSED 恢復時，目標以各列的 ``paused_from`` 為準，``to``（RUNNING）只是恢復請求；
+        回傳的 TaskRow 反映實際狀態（例如 PENDING），呼叫端不可假設一定是 RUNNING。
+        Task 本身必須恢復到自己的 ``paused_from``（``to`` 為其他非終態會拋 IllegalTransition）；連動的 PAUSED live Run
+        則不論 ``to`` 為何（非終態）一律回各自的 ``paused_from``（NULL 舊資料回 RUNNING），Task 與 Run 可因此不同狀態。
+        轉終態的連動不變。"""
         with self._tx() as (s, pending):
             task = self._lock_task(s, task_id, expected_version)
             if to not in TERMINAL_STATUSES:
@@ -747,7 +791,12 @@ class TaskManager:
                 # （終態由 _set_task_status 負責收尾）
                 for run in self._live_runs(s, task_id):
                     if run.status != to.value:
-                        self._set_run_status(s, pending, task, run, to, pause_reason)
+                        # SA-7：從 PAUSED 恢復（任何非終態目標）時，連動的 PAUSED Run 一律回自己的 paused_from
+                        target = self._resume_target("run", run) if (
+                            to is not RunStatus.PAUSED and run.status == RunStatus.PAUSED.value) else to
+                        self._set_run_status(s, pending, task, run, target, pause_reason)
+            if to is RunStatus.RUNNING and task.status == RunStatus.PAUSED.value:
+                to = self._resume_target("task", task)
             self._set_task_status(s, pending, task, to, pause_reason)
             return task
 
@@ -2023,10 +2072,11 @@ class TaskManager:
             for action in actions:
                 if action.status == ActionStatus.EXECUTING.value:
                     self._set_action_status(s, pending, task, action, ActionStatus.UNKNOWN, "action.unknown")
+            # SA-7：Run 與 Task 各依自己的 paused_from 回到暫停前狀態
             if run.status == RunStatus.PAUSED.value:
-                self._set_run_status(s, pending, task, run, RunStatus.RUNNING, None)
+                self._set_run_status(s, pending, task, run, self._resume_target("run", run), None)
             if task.status == RunStatus.PAUSED.value:
-                self._set_task_status(s, pending, task, RunStatus.RUNNING, None)
+                self._set_task_status(s, pending, task, self._resume_target("task", task), None)
             steps = list(
                 s.scalars(
                     select(StepRow).where(
@@ -2049,6 +2099,20 @@ class TaskManager:
 _LEGACY_ACTION_STATUS: dict[ActionStatus, str] = {
     ActionStatus.SUCCEEDED: "executed", ActionStatus.FAILED: "failed", ActionStatus.UNKNOWN: "unknown",
 }
+
+# SA-7：paused_from 的合法值域（暫停前的狀態；PAUSED 只能從這四種進入）
+_PAUSED_FROM_VALUES = frozenset({
+    RunStatus.PENDING.value, RunStatus.RUNNING.value,
+    RunStatus.WAITING_INPUT.value, RunStatus.WAITING_APPROVAL.value,
+})
+
+
+def _paused_from_value(current: RunStatus, to: RunStatus) -> str | None:
+    """轉入 PAUSED 時記下暫停前狀態；其餘轉移（含恢復）一律清除。"""
+    if to is RunStatus.PAUSED and current.value in _PAUSED_FROM_VALUES:
+        return current.value
+    return None
+
 
 _TASK_EVENT: dict[tuple[RunStatus | None, RunStatus], str] = {
     (None, RunStatus.SUCCEEDED): "task.completed",

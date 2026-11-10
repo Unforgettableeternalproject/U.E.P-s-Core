@@ -947,3 +947,249 @@ def test_outbox_rows_written_in_same_transaction(session_factory, executor):
     t2 = new_task(custom)
     custom.start_run(t2.task_id, persona_version=1, policy_version=1)
     assert [row for row in outbox(custom) if row[1] != "notification"] == [("run.started", "audit"), ("task.created", "x")]
+
+
+# ---- 暫停前狀態 paused_from（SA-7、D49、VC-S1-1） ----
+
+def _paused_from(mgr, task, run) -> tuple[str | None, str | None]:
+    return mgr.get_task(task.task_id).paused_from, mgr.get_run(run.run_id).paused_from
+
+
+def _resume(session_factory, run):
+    return make_manager(session_factory, StubExecutor()).resume_run(run.run_id)
+
+
+def test_pause_resume_keeps_waiting_input(mgr, session_factory):
+    task, run, step = running(mgr)
+    params = {"k": 1}
+    action = add_action(mgr, run, step, params, side_effect="reversible_local")
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)  # 連動 Run 一併進 WAITING_INPUT
+    assert mgr.get_run(run.run_id).status == "WAITING_INPUT"
+    mgr.pause_task(task.task_id, PauseReason.PRESENCE_LEFT)
+    assert _paused_from(mgr, task, run) == ("WAITING_INPUT", "WAITING_INPUT")
+    plan = _resume(session_factory, run)
+    assert plan.task.status == "WAITING_INPUT" and plan.run.status == "WAITING_INPUT"
+    assert _paused_from(mgr, task, run) == (None, None)
+    with pytest.raises(ActionBlocked):  # 不是 RUNNING：不得繞過「等使用者輸入」
+        mgr.execute_action(action.action_id, params, worker_epoch=2)
+
+
+def test_pause_resume_keeps_waiting_approval(mgr, executor, session_factory):
+    task, run, step = running(mgr)
+    params = {"to": "boss"}
+    action = add_action(mgr, run, step, params, side_effect="external_effect")
+    with pytest.raises(ApprovalRequired):
+        mgr.execute_action(action.action_id, params, worker_epoch=1)
+    mgr.pause_task(task.task_id, PauseReason.CORE_SHUTDOWN)
+    assert _paused_from(mgr, task, run) == ("WAITING_APPROVAL", "WAITING_APPROVAL")
+    plan = _resume(session_factory, run)
+    assert plan.task.status == "WAITING_APPROVAL" and plan.run.status == "WAITING_APPROVAL"
+    assert _paused_from(mgr, task, run) == (None, None)
+    fresh = make_manager(session_factory, executor)
+    declare(fresh, side_effect="external_effect")
+    with pytest.raises(ApprovalRequired):  # 缺 approval 仍被擋
+        fresh.execute_action(action.action_id, params, worker_epoch=2)
+    assert executor.calls == []
+
+
+def test_pause_resume_pending_task_via_transition_task(mgr):
+    task = new_task(mgr)
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    assert mgr.get_task(task.task_id).paused_from == "PENDING"
+    resumed = mgr.transition_task(task.task_id, RunStatus.RUNNING)  # Task 層恢復：回暫停前的 PENDING
+    assert resumed.status == "PENDING" and resumed.paused_from is None and resumed.pause_reason is None
+    mgr.start_run(task.task_id, persona_version=1, policy_version=1)
+    assert mgr.get_task(task.task_id).status == "RUNNING"
+
+
+def test_task_layer_resume_cascades_each_row_own_paused_from(mgr):
+    task, run, _step = running(mgr)
+    mgr.transition_run(run.run_id, RunStatus.WAITING_INPUT, worker_epoch=1)  # 只有 Run 在等輸入，Task 仍 RUNNING
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    assert _paused_from(mgr, task, run) == ("RUNNING", "WAITING_INPUT")
+    resumed = mgr.transition_task(task.task_id, RunStatus.RUNNING)
+    assert resumed.status == "RUNNING" and mgr.get_run(run.run_id).status == "WAITING_INPUT"
+    assert _paused_from(mgr, task, run) == (None, None)
+
+
+def test_resume_run_uses_each_rows_own_paused_from(mgr, session_factory):
+    task, run, _step = running(mgr)
+    mgr.transition_run(run.run_id, RunStatus.WAITING_INPUT, worker_epoch=1)
+    mgr.pause_task(task.task_id, PauseReason.CORE_SHUTDOWN)
+    plan = _resume(session_factory, run)
+    assert plan.task.status == "RUNNING" and plan.run.status == "WAITING_INPUT"
+
+
+def test_resume_legacy_paused_without_paused_from_falls_back_to_running(mgr, session_factory, caplog):
+    task, run, _step = running(mgr)
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
+    mgr.pause_task(task.task_id, PauseReason.CORE_SHUTDOWN)
+    with session_factory() as s:  # 模擬 0017 之前就已 PAUSED 的舊資料
+        s.execute(text("UPDATE runs SET paused_from=NULL WHERE run_id=:r"), {"r": run.run_id})
+        s.execute(text("UPDATE tasks SET paused_from=NULL WHERE task_id=:t"), {"t": task.task_id})
+        s.commit()
+    with caplog.at_level("WARNING"):
+        plan = _resume(session_factory, run)
+    assert plan.task.status == "RUNNING" and plan.run.status == "RUNNING"
+    assert sum("paused_from 缺失" in r.getMessage() for r in caplog.records) == 2
+
+
+def test_paused_from_db_checks(mgr, session_factory):
+    task, run, _step = running(mgr)
+    with session_factory() as s, pytest.raises(IntegrityError):  # 非 PAUSED 不得有 paused_from
+        s.execute(text("UPDATE tasks SET paused_from='RUNNING' WHERE task_id=:t"), {"t": task.task_id})
+        s.commit()
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    with session_factory() as s, pytest.raises(IntegrityError):  # 值域限制
+        s.execute(text("UPDATE runs SET paused_from='UNKNOWN' WHERE run_id=:r"), {"r": run.run_id})
+        s.commit()
+
+
+def _input_requests(session_factory) -> list[EventRow]:
+    with session_factory() as s:
+        return list(s.scalars(
+            select(EventRow).where(EventRow.event_type == "task.input_requested").order_by(EventRow.journal_seq)
+        ))
+
+
+def test_resume_to_waiting_input_reemits_request_with_dedup_key(mgr, session_factory):
+    task, run, _step = running(mgr)
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
+    mgr.pause_task(task.task_id, PauseReason.PRESENCE_LEFT)
+    _resume(session_factory, run)
+    first, second = _input_requests(session_factory)
+    assert "resumed" not in first.payload
+    assert second.payload["resumed"] is True and second.payload["status"] == "WAITING_INPUT"
+    assert second.payload["ref_id"] == first.event_id  # 去重鍵：原始請求事件的 event_id
+    # 再暫停／恢復一輪，去重鍵仍指向原始事件（不是上一次重發）
+    mgr.pause_task(task.task_id, PauseReason.PRESENCE_LEFT)
+    _resume(session_factory, run)
+    third = _input_requests(session_factory)[-1]
+    assert third.payload["resumed"] is True and third.payload["ref_id"] == first.event_id
+
+
+def test_run_only_waiting_input_resume_emits_no_request(mgr, session_factory):
+    task, run, _step = running(mgr)
+    mgr.transition_run(run.run_id, RunStatus.WAITING_INPUT, worker_epoch=1)
+    mgr.pause_task(task.task_id, PauseReason.CORE_SHUTDOWN)
+    _resume(session_factory, run)
+    assert _input_requests(session_factory) == []
+
+
+def test_paused_resume_target_must_equal_paused_from(mgr):
+    task, run, _step = running(mgr)
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    with pytest.raises(IllegalTransition):  # 不得把 PAUSED(WAITING_INPUT) 轉成 RUNNING 繞過等待
+        mgr.force_transition_run(run.run_id, RunStatus.RUNNING, reason="bypass")
+    with pytest.raises(IllegalTransition):
+        mgr.transition_run(run.run_id, RunStatus.RUNNING, worker_epoch=run.worker_epoch)
+    with pytest.raises(IllegalTransition):
+        mgr.force_transition_run(run.run_id, RunStatus.WAITING_APPROVAL, reason="bypass")
+    assert mgr.get_run(run.run_id).status == "PAUSED"
+    # 回 paused_from 本身合法，並清除
+    back = mgr.force_transition_run(run.run_id, RunStatus.WAITING_INPUT, reason="restore")
+    assert back.status == "WAITING_INPUT" and back.paused_from is None and back.pause_reason is None
+
+
+def test_legacy_paused_null_can_only_return_to_running(mgr, session_factory):
+    task, run, _step = running(mgr)
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    with session_factory() as s:
+        s.execute(text("UPDATE runs SET paused_from=NULL WHERE run_id=:r"), {"r": run.run_id})
+        s.commit()
+    with pytest.raises(IllegalTransition):
+        mgr.force_transition_run(run.run_id, RunStatus.WAITING_INPUT, reason="bypass")
+    assert mgr.force_transition_run(run.run_id, RunStatus.RUNNING, reason="legacy").status == "RUNNING"
+
+
+@pytest.mark.parametrize("how", ["force_failed", "force_cancelled", "task_failed"])
+def test_paused_to_terminal_still_allowed_and_clears_paused_from(mgr, how):
+    task, run, _step = running(mgr)
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    if how == "force_failed":
+        out = mgr.force_transition_run(run.run_id, RunStatus.FAILED, reason="sv")
+        assert out.status == "FAILED" and out.paused_from is None
+    elif how == "force_cancelled":
+        out = mgr.force_transition_run(run.run_id, RunStatus.CANCELLED, reason="sv")
+        assert out.status == "CANCELLED" and out.paused_from is None
+    else:
+        mgr.transition_task(task.task_id, RunStatus.FAILED)
+        assert mgr.get_run(run.run_id).status == "FAILED" and mgr.get_run(run.run_id).paused_from is None
+        assert mgr.get_task(task.task_id).status == "FAILED" and mgr.get_task(task.task_id).paused_from is None
+
+
+def test_pause_presence_bound_records_paused_from(mgr):
+    policy = TaskPolicy(presence_bound=True, interrupt_policy=InterruptPolicy.INTERRUPTIBLE, policy_ref="pol_1")
+    task = new_task(mgr, policy=policy)
+    run = mgr.start_run(task.task_id, persona_version=1, policy_version=1)
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
+    assert mgr.pause_presence_bound("uep") == [task.task_id]
+    assert _paused_from(mgr, task, run) == ("WAITING_INPUT", "WAITING_INPUT")
+
+
+def test_transition_guard_global_stop_applies_only_to_running_restore(session_factory, executor):
+    def guard(request):
+        if request.to_status is RunStatus.RUNNING:
+            raise PermissionError("全域停止")
+
+    plain = make_manager(session_factory, executor)
+    stopped = make_manager(session_factory, executor, transition_guard=guard)
+
+    # 還原到 WAITING_INPUT：不被攔
+    t1, r1, _ = running(plain)
+    plain.transition_task(t1.task_id, RunStatus.WAITING_INPUT)
+    plain.pause_task(t1.task_id, PauseReason.CORE_SHUTDOWN)
+    plan = stopped.resume_run(r1.run_id)
+    assert plan.task.status == "WAITING_INPUT" and plan.run.status == "WAITING_INPUT"
+
+    # 還原到 PENDING（Task 層）：不被攔
+    t2 = new_task(plain)
+    plain.pause_task(t2.task_id, PauseReason.USER)
+    assert stopped.transition_task(t2.task_id, RunStatus.RUNNING).status == "PENDING"
+
+    # 還原到 RUNNING：被攔，維持 PAUSED
+    t3, r3, _ = running(plain)
+    plain.pause_task(t3.task_id, PauseReason.CORE_SHUTDOWN)
+    with pytest.raises(PermissionError):
+        stopped.resume_run(r3.run_id)
+    assert plain.get_run(r3.run_id).status == "PAUSED"
+
+    # NULL 舊資料回 RUNNING：同樣被攔
+    with session_factory() as s:
+        s.execute(text("UPDATE runs SET paused_from=NULL WHERE run_id=:r"), {"r": r3.run_id})
+        s.execute(text("UPDATE tasks SET paused_from=NULL WHERE task_id=:t"), {"t": t3.task_id})
+        s.commit()
+    with pytest.raises(PermissionError):
+        stopped.resume_run(r3.run_id)
+    assert plain.get_run(r3.run_id).status == "PAUSED"
+
+
+@pytest.mark.parametrize("run_state", ["RUNNING", "WAITING_APPROVAL"])
+def test_task_layer_resume_mixed_task_waiting_input_and_run_other(mgr, run_state):
+    task, run, _step = running(mgr)
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)  # Task 與 Run 皆 WAITING_INPUT
+    mgr.transition_run(run.run_id, RunStatus.RUNNING, worker_epoch=1)  # Run 自行回 RUNNING，Task 仍等輸入
+    if run_state == "WAITING_APPROVAL":
+        mgr.transition_run(run.run_id, RunStatus.WAITING_APPROVAL, worker_epoch=1)
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    assert _paused_from(mgr, task, run) == ("WAITING_INPUT", run_state)
+    resumed = mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)  # 非 RUNNING 目標也成立
+    assert resumed.status == "WAITING_INPUT"
+    assert mgr.get_run(run.run_id).status == run_state
+    assert _paused_from(mgr, task, run) == (None, None)
+
+
+def test_task_layer_resume_cascade_legacy_null_run_returns_running(mgr, session_factory):
+    task, run, _step = running(mgr)
+    mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
+    mgr.pause_task(task.task_id, PauseReason.USER)
+    with session_factory() as s:
+        s.execute(text("UPDATE runs SET paused_from=NULL WHERE run_id=:r"), {"r": run.run_id})
+        s.commit()
+    resumed = mgr.transition_task(task.task_id, RunStatus.WAITING_INPUT)
+    assert resumed.status == "WAITING_INPUT" and mgr.get_run(run.run_id).status == "RUNNING"
+    with pytest.raises(IllegalTransition):  # Task 本身不可恢復到自己 paused_from 以外的非終態
+        mgr.transition_task(task.task_id, RunStatus.PAUSED, pause_reason=PauseReason.USER)
+        mgr.transition_task(task.task_id, RunStatus.WAITING_APPROVAL)

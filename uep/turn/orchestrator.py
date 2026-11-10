@@ -510,14 +510,14 @@ class TurnOrchestrator:
         except Exception:
             logger.exception("presence_request hook 失敗，記為未判斷")
             presence_request = None
-        # actor_verified：只看平台認證 ID。身分映射命中且輸入帶有 ingress 以已驗證 endpoint 簽發的 source_endpoint_id 才算；
+        # actor_authenticated：只看平台認證 ID。身分映射命中且輸入帶有 ingress 以已驗證 endpoint 簽發的 source_endpoint_id 才算；
         # speaker_ref 在 ingress 簽發落地前是不受信字串，資訊不足一律 False，不比對顯示名稱
-        actor_verified = bool(ident is not None and ident.actor_id is not None and fact.source_endpoint_id is not None)
+        actor_authenticated = bool(ident is not None and ident.actor_id is not None and fact.source_endpoint_id is not None)
         payload: dict[str, object] = {
             "reason_code": reason, "reply_mode": ReplyMode.PASS.value, "proposal_ref": ref, "utterance_ref": ref,
             "speaker_ref": fact.speaker_ref, "actor_id": actor_id, "is_owner": is_owner,
             "source_location": str(fact.source_location) if fact.source_location is not None else "missing",
-            "len": len(fact.text), "presence_request": presence_request, "actor_verified": actor_verified,
+            "len": len(fact.text), "presence_request": presence_request, "actor_authenticated": actor_authenticated,
         }
         if fact.source_endpoint_id is not None:
             payload["source_endpoint_id"] = fact.source_endpoint_id

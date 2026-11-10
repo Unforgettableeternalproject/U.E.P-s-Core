@@ -196,13 +196,13 @@ def test_assembly_refuses_non_desktop_adapter_without_the_switch(session_factory
         )
 
 
-def test_shadow_record_carries_presence_request_and_actor_verified(rig):
+def test_shadow_record_carries_presence_request_and_actor_authenticated(rig):
     r = rig(host_kwargs={"proposer": Spy()})
     r.say(SECRET_TEXT, source_location=PresenceLocation.DISCORD)  # 無 ingress 簽發的 endpoint：資訊不足
     (rec,) = shadow_records(r)
-    assert rec.payload["presence_request"] is None and rec.payload["actor_verified"] is False
+    assert rec.payload["presence_request"] is None and rec.payload["actor_authenticated"] is False
     r.say(SECRET_TEXT, source_location=PresenceLocation.DISCORD, source_endpoint_id="ep_discord")
-    assert shadow_records(r)[-1].payload["actor_verified"] is True  # 映射命中且 endpoint 已簽發
+    assert shadow_records(r)[-1].payload["actor_authenticated"] is True  # 映射命中且 endpoint 已簽發
 
 
 def test_presence_request_hook_is_replaceable_and_failure_is_isolated(rig):

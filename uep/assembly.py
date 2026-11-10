@@ -107,6 +107,7 @@ from uep.tasks.states import RunStatus
 from uep.tasks.supervisor import Supervisor, SupervisorLoop
 from uep.tools.cancel import ActionCanceller
 from uep.tools.catalog.memory import MEMORY_EXECUTOR, memory_registry
+from uep.tools.module_events import subscribe_module_events
 
 if TYPE_CHECKING:  # 組裝層不得硬依賴 uep.stream：只有 uep/echo/host 會 import 它
     from uep.echo.host import EchoPipelineHost
@@ -197,6 +198,7 @@ class CoreAssembly:
     supervisor: Supervisor | None = None  # D67：停用（UEP_SUPERVISOR_ENABLED=0）時為 None
     supervisor_loop: SupervisorLoop | None = None  # Supervisor 啟用且 supervisor_interval 不為 0 時建立（與維護迴圈各自獨立）
     loop_launcher: Any = None  # agent_loop 的 production 啟動器（UEP_AGENT_LOOP_ENTRY）；入口停止段先關閉，早於 Supervisor 關機暫停
+    module_events_unsubscribe: Callable[[], None] | None = None  # module.* 就緒事件訂閱的取消函式（暫定；UEP_TOOL_MODULE_EVENTS）
 
     def start(self) -> None:
         """依上述順序啟動；冪等。失敗時關閉已綁定的入口（stop API、endpoint socket）、訂閱與 Bus 後上拋。"""
@@ -257,6 +259,10 @@ class CoreAssembly:
 
         停止序反向於啟動：ES Host 最先停（停 feed、cancel_all、等 commit 與事件寫完；它的 sink 與事件都還要
         經 Bus／Gateway，也還要用 memory 做 store），其次記憶 Host（它的 sink 還要經 Bus 發布），之後關 endpoint socket。"""
+        if self.module_events_unsubscribe is not None:
+            self.module_events_unsubscribe()  # 入口停止前先退訂：關機後不再改 readiness（冪等）
+            self.module_events_unsubscribe = None
+            self.start_log.append("module_events.unsubscribe")
         if self.loop_launcher is not None:
             # 先通知進行中的 AgentLoop 取消並限時等待（它們還要經 echo／Bus 收尾 turn），再停 echo
             try:
@@ -701,6 +707,10 @@ def assemble_core(
 
     for event_type in _PRESENCE_PROJECTED + ("core.component_health_changed",):
         bus.subscribe(event_type, state.project_event)
+    module_events_unsubscribe: Callable[[], None] | None = None
+    if tool_path == "agent" and settings.tool_module_events:
+        # 暫定（module coordinator 待設計）：把 agent 路徑共用的註冊表接到 Bus 的 module.* 就緒事件
+        module_events_unsubscribe = subscribe_module_events(bus, memory_registry())
     api = LocalStopServer(stop, port=stop_api_port) if stop_api_port is not None else None
     endpoint_server: SocketControlServer | None = None
     try:
@@ -728,4 +738,5 @@ def assemble_core(
         stop_api=api,
         endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory, echo=echo,
         decision_log=writer, supervisor=supervisor_obj, supervisor_loop=supervisor_loop, loop_launcher=loop_launcher,
+        module_events_unsubscribe=module_events_unsubscribe,
     )

@@ -127,6 +127,10 @@ DEFAULT_EVENT_SPECS["input.utterance_final"] = EventSpec(
 _PARTICIPANT_KEYS = _keys("speaker_ref", "role")
 DEFAULT_EVENT_SPECS["conversation.participant_joined"] = EventSpec(_D, payload_keys=_PARTICIPANT_KEYS)
 DEFAULT_EVENT_SPECS["conversation.participant_left"] = EventSpec(_D, payload_keys=_PARTICIPANT_KEYS)
+# module coordinator 就緒事件（暫定：事件名與 payload 待 module coordinator 設計時確認；Agent架構與工具契約提案 §5.8）
+_MODULE_KEYS = _keys("module_id", "revision", "epoch")
+for _t in ("module.ready", "module.warming", "module.unavailable"):
+    DEFAULT_EVENT_SPECS[_t] = EventSpec(_D, payload_keys=_MODULE_KEYS)
 
 
 class EventRegistry:

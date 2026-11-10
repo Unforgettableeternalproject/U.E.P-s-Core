@@ -7,8 +7,9 @@
 子系統，見 test_import_boundary）；``tests/uep/test_tool_registry.py`` 有漂移測試與子系統現值對照。
 ``member_recall`` 的 schema 取自共用契約 ``uep.stream.contracts.memory_tools``（adapter 也引用同一份）。
 
-分類沿用 D79 的現況：沒有核准（approval_level=none）、不可中斷、並行資格不宣告（預設 serial）；
-切片 C 改走 ActionIntent 時再依實際執行路徑調整並升版。
+分類沿用 D79 的現況：沒有核准（approval_level=none）、不可中斷、並行資格不宣告（預設 serial）。
+切片 E3：寫入類（``force_remember``、「關於我」三工具）走完整四階段（create_action -> approve -> execute_action ->
+receipt），``approval_level=none``——使用者明確要求就直接執行，只補 ActionIntent／receipt 與稽核；分類欄未改，不升版。
 """
 from __future__ import annotations
 
@@ -25,6 +26,8 @@ GUILD_ROSTER_CONTEXT = "guild_roster"
 # PD-12：身分與場域由 Core 每輪在 Gateway 注入（LLM 面 schema 看不到，也不能提供）；執行時 executor 只讀這些欄位
 INJECTED_IDENTITY = ("actor_id", "audience", "segment_id")
 INJECTED_GUILD = ("guild_id",)
+# 旁證編號（「關於我」的 ref）以 Run 為範圍：由呼叫端（bridge／loop）在注入值帶入，executor 不依賴執行緒區域
+INJECTED_RUN = ("run_id",)
 
 # 工具結果（execute_tool 的回傳）形狀：失敗時帶 code（denied／timeout／failed）。
 MEMORY_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -121,13 +124,42 @@ def memory_entries() -> list[ToolEntry]:
             descriptor=ToolDescriptor(
                 description=_contract.MEMBER_RECALL_DESCRIPTION,
                 input_schema=_contract.MEMBER_RECALL_SCHEMA["parameters"],
-                injected_params=INJECTED_IDENTITY + INJECTED_GUILD,
+                injected_params=INJECTED_IDENTITY + INJECTED_GUILD + INJECTED_RUN,
             ),
             # 取代 host._refresh_tools 內「有 guild 才曝光」的硬編碼；投影在切片 B 啟用。
             scope=ToolScope(requires_context=frozenset({GUILD_ROSTER_CONTEXT})),
             output_schema=MEMORY_OUTPUT_SCHEMA,
         ),
+        *(_about_me_entry(name) for name in ABOUT_ME_REGISTERED),
     ]
+
+
+# correct_about_me 不註冊（DQ-16 不可逆）：見 _about_me_entry 說明
+ABOUT_ME_REGISTERED = (_contract.RETRACT_ABOUT_ME, _contract.OPT_OUT_ABOUT_ME)
+
+
+def _about_me_entry(name: str) -> ToolEntry:
+    """「關於我」寫入類工具（切片 E3；DQ-16）。schema 取自共用契約。
+
+    分類是 ``reversible_local``、無核准（Bernie 裁決：使用者明確要求就直接執行，只補 ActionIntent／receipt 與稽核）：
+    opt_out／retract 依 DQ-16 暫定。**``correct_about_me`` 不註冊**：DQ-16 稱不可逆，應標 ``external_effect`` 以上，
+    但 ``memory.write`` 的能力上限（``CAPABILITY_CEILING``）是 ``reversible_local``，註冊表會拒絕這個組合；
+    不為了通過而調低分類或改上限，所以保持不可達（開放與否另卡，G1）。
+    身分與場域由 Core 注入（PD-12）；沒有 guild 脈絡就不投出（對象是場域共享記憶裡關於說話者的旁證）。"""
+    declaration = _contract.ABOUT_ME_SCHEMAS[name]
+    return ToolEntry(
+        name=name,
+        spec=ToolSpec(
+            executor=MEMORY_EXECUTOR, side_effect_class="reversible_local", idempotency="none",
+            presence_bound=False, tool_version=1, capability="memory.write",
+        ),
+        descriptor=ToolDescriptor(
+            description=declaration["description"], input_schema=declaration["parameters"],
+            injected_params=INJECTED_IDENTITY + INJECTED_GUILD + (INJECTED_RUN if name == _contract.RETRACT_ABOUT_ME else ()),
+        ),
+        scope=ToolScope(requires_context=frozenset({GUILD_ROSTER_CONTEXT})),
+        output_schema=MEMORY_OUTPUT_SCHEMA,
+    )
 
 
 @functools.lru_cache(maxsize=1)

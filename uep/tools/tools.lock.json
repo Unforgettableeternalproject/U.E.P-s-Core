@@ -10,5 +10,13 @@
   "member_recall": {
     "schema_hash": "6b65a7b86e688f0834c856bcdd725998e38dd1578d880c4002b6040396da6359",
     "tool_version": 1
+  },
+  "opt_out_about_me": {
+    "schema_hash": "6a358ca2a33ba56a4b6baa008aa31e22d09e702312e8b56c88a1c0a9504324ea",
+    "tool_version": 1
+  },
+  "retract_about_me": {
+    "schema_hash": "8eb0e2adce5f82b6dffc830415a81fa33c472e9a08740d8828ed5600aff76460",
+    "tool_version": 1
   }
 }

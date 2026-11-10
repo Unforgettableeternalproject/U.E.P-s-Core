@@ -25,6 +25,10 @@ class TurnOutcomeCache:
         self._outcomes: dict[str, dict[str, dict[str, Any]]] = {}
         self._receipts: dict[str, dict[str, Any]] = {}  # turn -> {action_id: receipt}
         self._turn_of: dict[str, str] = {}
+        # 「關於我」工具的 ref 來源：scope=(run_id, actor_id) -> 旁證編號 -> projection_id。以注入值為鍵，不依賴執行緒區域
+        # （平行波的 worker thread、不進 turn_scope 的呼叫端都能正確解析）；Run 終態才清（park 不清）
+        self._about_by_n: dict[tuple[str, str], dict[int, str]] = {}
+        self._about_by_pid: dict[tuple[str, str], dict[str, int]] = {}
 
     @contextmanager
     def turn_scope(self, turn_id: str) -> Iterator[None]:
@@ -65,6 +69,50 @@ class TurnOutcomeCache:
         with self._lock:
             turn = self._turn_of.get(action_id)
             return self._receipts.get(turn, {}).get(action_id) if turn is not None else None
+
+    @staticmethod
+    def _valid_scope(scope: object) -> bool:
+        return isinstance(scope, tuple) and len(scope) == 2 and all(isinstance(x, str) and x.strip() for x in scope)
+
+    def assign_about_refs(self, scope: tuple[str, str] | None, refs: dict[int, str]) -> dict[int, int]:
+        """登記 LLM 看得到的旁證，回傳「引擎編號 -> 分配編號」。Run 內單調遞增、同 projection 沿用舊編號（不重編覆蓋）。
+        scope 為空或不合法 ⇒ 拒絕寫入，回空 dict。"""
+        if not self._valid_scope(scope):
+            return {}
+        assert scope is not None
+        with self._lock:
+            by_n = self._about_by_n.setdefault(scope, {})
+            by_pid = self._about_by_pid.setdefault(scope, {})
+            mapping: dict[int, int] = {}
+            for local in sorted(refs):
+                pid = refs[local]
+                assigned = by_pid.get(pid)
+                if assigned is None:
+                    assigned = max(by_n, default=0) + 1
+                    by_n[assigned] = pid
+                    by_pid[pid] = assigned
+                mapping[local] = assigned
+            return mapping
+
+    def has_about_refs(self, scope: tuple[str, str] | None) -> bool:
+        if not self._valid_scope(scope):
+            return False
+        with self._lock:
+            return bool(self._about_by_n.get(scope))
+
+    def about_ref(self, scope: tuple[str, str] | None, ref: int) -> str | None:
+        """該 scope 登記的旁證編號對應的 projection_id；scope 空／未知或沒登記一律 None（fail-closed）。"""
+        if not self._valid_scope(scope):
+            return None
+        with self._lock:
+            return self._about_by_n.get(scope, {}).get(ref)
+
+    def discard_about_refs_run(self, run_id: str) -> None:
+        """Run 終態：清掉該 Run 所有 scope 的旁證編號（park 不清）。"""
+        with self._lock:
+            for table in (self._about_by_n, self._about_by_pid):
+                for key in [k for k in table if k[0] == run_id]:
+                    del table[key]
 
     def discard_turn(self, turn_id: str) -> None:
         """回合結束：整批清除該回合的結果與 receipt 查核表。"""

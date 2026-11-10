@@ -460,7 +460,7 @@ class MemoryAccessLayer:
         if self._tool_backend is not None:
             names = [
                 n for n in (_tool_name(d) for d in self._tool_backend.definitions())
-                if n in TOOL_CLASSES and n != MEMBER_RECALL
+                if n in TOOL_CLASSES and n != MEMBER_RECALL and n not in _contract.ABOUT_ME_TOOLS
             ]
         if self._membership is not None:
             names.append(MEMBER_RECALL)
@@ -480,6 +480,8 @@ class MemoryAccessLayer:
             return _tool_denied(name)
         if name == MEMBER_RECALL:
             return self._execute_member_recall(args, actor_id, audience, session_id, context)
+        if name in _contract.ABOUT_ME_TOOLS:
+            return self._execute_about_me(name, args, actor_id, audience, session_id, context)
         if self._tool_backend is None:
             return _tool_denied(name)
         ident = self._identity.resolve_actor(actor_id)
@@ -584,11 +586,17 @@ class MemoryAccessLayer:
             text = result.to_text(display_name) or ""
             if not text:
                 return {"success": True, "result": _member_empty(label)}
-            return {
+            outcome: dict[str, Any] = {
                 "success": True,
                 "result": f"以下是「{label}」（本伺服器成員）在伺服器裡提過、可分享的內容：\n{text}",
                 "shared_ids": [str(i) for i in (getattr(result, "ids", ()) or ())],
             }
+            if member_uid == viewer:
+                # 旁證編號只在查說話者本人時才有意義（「關於我」工具的 ref）；只登記實際渲染在文字裡的編號
+                refs = _extract_about_refs(result)
+                shown = _contract.visible_about_refs(text)
+                outcome["about_refs"] = {n: pid for n, pid in refs.items() if n in shown}
+            return outcome
 
         try:
             return dict(self._runtime.call(namespace_id, work, timeout_s=self._store_timeout_s))
@@ -600,7 +608,75 @@ class MemoryAccessLayer:
             return {"success": False, "result": "tool failed", "code": "failed"}
 
 
+    def _execute_about_me(
+        self, name: str, args: Mapping[str, Any], actor_id: str | None, audience: str, session_id: str | None,
+        context: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        """「關於我」寫入類工具（切片 E3）：對象永遠是說話者本人。
+
+        場域取自 Core 注入的 ``guild_id``，說話者身分由 ``_admit`` 解析（audience、成員資格 fail-closed），
+        LLM 的 ``args`` 不能指定對象；``projection_id`` 由 executor 依回合內 member_recall 登記的旁證編號解析後放進
+        ``context``。``correct_about_me`` 不可逆、未註冊（TOOL_CLASSES 沒有它），不在此處理。"""
+        ctx = context or {}
+        guild_id = ctx.get("guild_id")
+        if not isinstance(guild_id, str) or not guild_id:
+            return _tool_denied(name)
+        admitted = self._admit(group_scope_ref(guild_id), audience, actor_id)
+        if isinstance(admitted, RetrieveResult):
+            return _tool_denied(name)
+        ident, namespace_id = admitted
+        actor_uid = ident.platform_uid
+        if not actor_uid:
+            return _tool_denied(name)
+        scope_id = f"guild:{guild_id}"
+        call_args: tuple[Any, ...]
+        call_kwargs: dict[str, Any] = {}
+        if name == _contract.OPT_OUT_ABOUT_ME:
+            enabled = args.get("enabled")
+            if not isinstance(enabled, bool):
+                return {"success": False, "result": "enabled 必須是 true 或 false。"}
+            call_args = (scope_id, actor_uid, enabled)
+        else:
+            projection_id = ctx.get("projection_id")
+            if not isinstance(projection_id, str) or not projection_id:
+                return {"success": False, "result": _contract.ABOUT_BAD_REF}
+            call_args = (scope_id, actor_uid, projection_id)
+        try:
+            if self._runtime.adapter(namespace_id) is not None:
+                async def via_adapter(adapter: MemoryAdapterLike) -> Any:
+                    fn = getattr(adapter, name, None)
+                    return None if fn is None else await fn(*call_args, **call_kwargs)
+
+                res = self._runtime.adapter_call(namespace_id, via_adapter, timeout_s=self._store_timeout_s)
+            else:
+                def work(engine: MemoryEngineLike) -> Any:
+                    fn = getattr(engine, name, None)
+                    return None if fn is None else fn(*call_args, **call_kwargs)
+
+                res = self._runtime.call(namespace_id, work, timeout_s=self._store_timeout_s)
+        except TimeoutError:
+            self._metrics.inc("memory.tool.timeout")
+            return {"success": False, "result": "tool timeout", "code": "timeout"}
+        except Exception as exc:  # noqa: BLE001 - 對外降級；只記例外類別，不記內容
+            logger.warning("關於我工具執行失敗：%s %s", name, type(exc).__name__)
+            return {"success": False, "result": "tool failed", "code": "failed"}
+        result = res if isinstance(res, Mapping) else None
+        return {"success": bool(result and result.get("ok")), "result": _contract.about_me_text(name, result)}
+
+
 _declares_param = _contract.declares_param
+
+
+def _extract_about_refs(result: Any) -> dict[int, str]:
+    """取 ``result.about_refs()``（旁證編號 -> projection_id）；不存在或失敗回空 dict，不猜 id。"""
+    fn = getattr(result, "about_refs", None)
+    if not callable(fn):
+        return {}
+    try:
+        return {int(k): str(v) for k, v in dict(fn()).items()}
+    except Exception as exc:  # noqa: BLE001 - 編號只是加分項
+        logger.warning("about_refs 取得失敗，略過：%s", type(exc).__name__)
+        return {}
 
 
 def _member_empty(label: str) -> str:

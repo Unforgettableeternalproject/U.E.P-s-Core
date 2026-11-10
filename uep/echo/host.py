@@ -865,7 +865,8 @@ class EchoPipelineHost:
         ]
 
     # direct_chat 回合只曝光唯讀記憶工具（Q-E）：標籤取自決策層 route 預設表（目前為 memory.read），
-    # force_remember（memory.write）不在其內；表內標籤是否合法由組裝層以 CAPABILITY_CEILING 驗證
+    # 寫入類（memory.write：force_remember、關於我）不在其內，只在 agent_loop 的標籤集合內才可能投出（切片 E3）；
+    # 表內標籤是否合法由組裝層以 CAPABILITY_CEILING 驗證
     _DIRECT_CHAT_CAPABILITY_TAGS = frozenset(ROUTE_DEFAULT_CAPABILITIES[ROUTE_DIRECT_CHAT])
 
     def _refresh_tools_agent(self) -> None:

@@ -71,5 +71,31 @@
       "member"
     ],
     "type": "object"
+  },
+  "opt_out_about_me": {
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "description": "true 退出；false 恢復。",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "enabled"
+    ],
+    "type": "object"
+  },
+  "retract_about_me": {
+    "additionalProperties": false,
+    "properties": {
+      "ref": {
+        "description": "要處理的旁證編號 N（member_recall 結果中「〔旁證N〕」那行的數字）。只能指定你本人那次查詢（查詢對象是目前說話的人）結果裡的旁證；查別人的結果沒有可用編號。",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "ref"
+    ],
+    "type": "object"
   }
 }

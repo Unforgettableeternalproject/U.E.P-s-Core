@@ -660,3 +660,37 @@ def test_reason_codes_come_from_the_fixed_set():
         assert out.reason_code in values
         parts = rig_case.tasks.checkpoints[-1]["next_step_semantic"].split(":")
         assert parts[0] == "end" and parts[1] in values
+
+
+def test_run_id_is_injected_explicitly_into_tools_in_parallel_wave_and_cleanup_runs_on_terminal():
+    """E3 M1：以 Run 為範圍的暫存（旁證編號）用注入的 run_id，平行波 worker thread 也拿得到；終態才呼叫清理。"""
+    import dataclasses
+
+    from uep.adapters.tool import ToolDescriptor
+    from uep.tools.registry import ToolRegistry
+
+    base = make_registry()
+    entries = []
+    for name in ("read.a", "read.b"):
+        e = base.entry(name)
+        entries.append(dataclasses.replace(
+            e, descriptor=ToolDescriptor(e.descriptor.description, e.descriptor.input_schema, injected_params=("run_id",)),
+        ))
+    registry = ToolRegistry.build([*entries, *(base.entry(n) for n in ("read.lone", "write.s", "post.ask"))])
+    seen: list[tuple[str, str]] = []
+    cleaned: list[str] = []
+    lock = threading.Lock()
+
+    def record(args):
+        with lock:
+            seen.append((args.get("run_id"), threading.current_thread().name))
+        return "ok"
+
+    rig = Rig(
+        [Round("", (call("read.a", "1"), call("read.b", "2"))), Round("完成")], budget=LoopBudget(max_parallel=2),
+        behaviors={"read.a": record, "read.b": record}, registry=registry, run_cleanup=cleaned.append,
+    )
+    out = rig.run()
+    assert out.state == "completed"
+    assert sorted(r for r, _ in seen) == [RUN, RUN]  # 兩個平行項都拿到注入的 run_id
+    assert cleaned == [RUN]  # 終態清理一次

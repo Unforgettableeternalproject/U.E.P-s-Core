@@ -60,6 +60,7 @@ class DecisionLogRow(Base):
     trigger: Mapped[str | None] = mapped_column(String)  # initial／reeval／event／tick
     namespace: Mapped[str | None] = mapped_column(String)  # 決策主體的 namespace ID
     snapshot_version: Mapped[int | None] = mapped_column(Integer)  # 決策依據的 policy 快照版本
+    platform_context_version: Mapped[int | None] = mapped_column(Integer)  # 決策當下平台快照版本（migration 0018）
 
     __table_args__ = (
         CheckConstraint("role IN ('primary', 'shadow')", name="role"),

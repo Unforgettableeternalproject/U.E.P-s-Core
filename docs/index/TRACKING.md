@@ -133,7 +133,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | DL-3 | 決策日誌與離線重放評估 | C／2 | done（ec5c3ba；組裝層接上 d6b43c2） | — | — | — |
 | DL-4 | 中樞決策→capability 收窄（對應 Agent 提案 §10 的 I-1～I-4） | C／2 | planned | — | — | — |
 | DL-5 | 現有英文 NLP 收編為特徵層 | C／2 | planned | — | — | — |
-| DL-6 | Proactive 評估／仲裁 規則版＋shadow | C／2 | planned | — | — | — |
+| DL-6 | Proactive 評估／仲裁 規則版＋shadow | C／2 | DL-6a 契約＋規則 engine＋shadow 日誌 done（`feature/decision-dl6a`，`uep/decision/proactive.py`）；DL-6b 對接 S-H planned | — | — | [Proactive決策契約草案](../架構重構/Proactive決策契約草案.md) |
 
 T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細節待敏卡展開後補。
 

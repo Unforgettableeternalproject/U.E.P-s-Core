@@ -305,7 +305,7 @@ def test_generations_are_global_monotonic_and_bump_only_known_turns():
 # ---- 策略 ----
 
 def test_policy_source_snapshot_is_atomic_and_versioned():
-    src = HostPolicySource("web")
+    src = HostPolicySource("website")
     first = src.current()
     second = src.publish()
     assert second.version == first.version + 1 and src.current() is second and first.version == 1

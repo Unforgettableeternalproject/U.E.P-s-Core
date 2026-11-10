@@ -35,12 +35,12 @@ def test_peek_does_not_write_even_when_lease_is_expired(session_factory, tmp_pat
 def test_provider_follows_real_presence(session_factory, tmp_path):
     rig = make_rig(session_factory, tmp_path)
     provider = PlatformContextProvider(rig.manager, clock=rig.clock)
-    none_ctx = provider.snapshot("web")
+    none_ctx = provider.snapshot("website")
     assert none_ctx.current_platform is None
     activate(rig, location="discord")
-    active = provider.snapshot("web")
+    active = provider.snapshot("website")
     assert active.current_platform == "discord" and active.session_platform == "website"
     assert active.version == none_ctx.version + 1 and active.available_executors == ("discord",)
     rig.clock.advance(31)  # peek 不轉換，但 provider 以 expires_at 判為 NONE
-    expired = provider.snapshot("web")
+    expired = provider.snapshot("website")
     assert expired.current_platform is None and expired.presence_status is PresenceStatus.NONE

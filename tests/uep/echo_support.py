@@ -42,7 +42,7 @@ WAIT = 8.0
 def make_session(**over: Any) -> SessionContext:
     data: dict[str, Any] = {
         "conversation_id": new_id("conv"), "segment_id": new_id("seg"), "audience_scope": PRIVATE,
-        "session_ref": f"sess{int(time.time() * 1000)}", "platform": "web",
+        "session_ref": f"sess{int(time.time() * 1000)}", "platform": "website",
     }
     data.update(over)
     return SessionContext(**data)

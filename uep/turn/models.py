@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
+from uep.contracts.platform import normalize_platform
 from uep.contracts.presence import AuthorizationTuple
 
 
@@ -27,8 +28,14 @@ class SessionContext:
     session_ref: str  # 只能含 [A-Za-z0-9_:.-]；進冪等鍵（E-20）
     scope_ref: str | None = None  # 預設與 audience_scope 相同
     guild_id: str | None = None  # 共享層成員與在場名單由它推導
-    platform: str = "web"
+    platform: str = "website"  # Presence location 詞彙；舊值 "web" 於建構時正規化（見 __post_init__）
     profile_actor_id: str | None = None  # 重設 profile 時以誰的長期記憶為準；None = 不帶 profile
+
+    def __post_init__(self) -> None:
+        # 讀取相容層（DQ-3-B）：舊值 "web" 只在這個邊界正規化成 "website"；寫入一律用新詞彙
+        normalized = normalize_platform(self.platform)
+        if normalized != self.platform:
+            object.__setattr__(self, "platform", normalized)
 
     @property
     def event_scope(self) -> str:

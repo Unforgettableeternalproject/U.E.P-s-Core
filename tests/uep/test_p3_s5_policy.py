@@ -202,8 +202,8 @@ def test_publish_bumps_es_and_core_snapshots_to_the_same_version():
     src.publish_channel_mode(ChannelMode.ACTIVE)
     assert src.version == src.core_current().version == 3
     assert src.core_current().channel_mode is ChannelMode.ACTIVE
-    src.publish(platform="web")
-    assert src.version == src.core_current().version == 4 and src.current().platform == "web"
+    src.publish(platform="website")
+    assert src.version == src.core_current().version == 4 and src.current().platform == "website"
     assert src.core_current().channel_mode is ChannelMode.ACTIVE  # 換平台不重置頻道模式
 
 

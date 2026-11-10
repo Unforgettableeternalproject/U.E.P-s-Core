@@ -56,12 +56,23 @@ def test_standalone_ticket_maps_source_and_matches() -> None:
 
 def test_snapshot_platform_presets() -> None:
     assert PolicySnapshot.for_platform("discord").barge_in_min_speech_s == 2.0
-    assert PolicySnapshot.for_platform("web").barge_in_min_speech_s == 0.4
-    assert PolicySnapshot().barge_in_min_speech_s == BARGE_IN_PRESETS["web"]
+    assert PolicySnapshot.for_platform("website").barge_in_min_speech_s == 0.4
+    assert PolicySnapshot().barge_in_min_speech_s == BARGE_IN_PRESETS["website"]
     custom = PolicySnapshot.for_platform("discord", barge_in_min_speech_s=1.0, version=2)
     assert custom.barge_in_min_speech_s == 1.0 and custom.version == 2
     with pytest.raises(ValueError):
         PolicySnapshot.for_platform("nope")
+    with pytest.raises(ValueError):  # stream 層不認舊值 web：由組裝層（HostPolicySource）先正規化
+        PolicySnapshot.for_platform("web")
+
+
+def test_barge_in_presets_cover_every_presence_location() -> None:
+    from uep.contracts.presence import PresenceLocation
+
+    for loc in PresenceLocation:
+        assert loc.value in BARGE_IN_PRESETS
+        assert PolicySnapshot.for_platform(loc.value).barge_in_min_speech_s == BARGE_IN_PRESETS[loc.value]
+    assert set(BARGE_IN_PRESETS) == {loc.value for loc in PresenceLocation}
 
 
 def test_snapshot_staleness_and_mode_rules() -> None:

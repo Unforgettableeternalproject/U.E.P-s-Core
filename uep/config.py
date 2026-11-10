@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
@@ -142,7 +142,8 @@ class UepSettings(BaseSettings):
     stt_job_timeout_per_audio_s: float = Field(default=0.5, ge=0, validation_alias="UEP_STT_JOB_TIMEOUT_PER_AUDIO_S")
     infer_llm_provider: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_PROVIDER")
     infer_llm_model: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_MODEL")
-    infer_system_prompt: str = Field(default="", validation_alias="UEP_INFER_SYSTEM_PROMPT")
+    # 人設 system prompt：留空（含未設）時用 repo 內受版控的預設（uep/persona/persona.yaml）；env 有值以 env 為準
+    infer_system_prompt: str = Field(default="", validate_default=True, validation_alias="UEP_INFER_SYSTEM_PROMPT")
     # 各 stage prepare 的逾時（秒）；Host 啟動總上限目前為 60 秒（EchoPipelineHost.start），三者相加須小於它（未設定 UEP_INFER_HOST_START_TIMEOUT_S 時由組裝自動推得）
     # speak 未設定（None）時依引擎取預設：indextts2 為 40 秒、vox 為 240 秒（見 inference_wiring）
     infer_speak_prepare_timeout_s: float | None = Field(default=None, validation_alias="UEP_INFER_SPEAK_PREPARE_TIMEOUT_S")
@@ -190,6 +191,16 @@ class UepSettings(BaseSettings):
     legacy_openai_project: str | None = Field(default=None, validation_alias="OPENAI_PROJECT")
     legacy_openai_org: str | None = Field(default=None, validation_alias="OPENAI_ORG")
     legacy_openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
+
+    @field_validator("infer_system_prompt")
+    @classmethod
+    def _default_persona_when_blank(cls, value: str) -> str:
+        """空白（未設或設成空字串）時以受版控的人設檔為預設。"""
+        if value.strip():
+            return value
+        from uep.persona import default_system_prompt
+
+        return default_system_prompt()
 
     def think_config(self) -> "ThinkConfig":
         """解析成 Think adapter 的 ThinkConfig：``UEP_LLM_*`` → ``UEP_INFER_LLM_*`` → 舊名（警告一次）→ 預設。"""

@@ -43,6 +43,9 @@ class UepSettings(BaseSettings):
     # route=agent_loop 的 production 入口（DL-4 PR4）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效，開啟後
     # route=agent_loop 的回合由 AgentLoop 處理（不再走 direct_chat 回覆）
     agent_loop_entry: bool = Field(default=False, validation_alias="UEP_AGENT_LOOP_ENTRY")
+    # module.* 就緒事件訂閱（切片 F，註冊表端；事件名暫定，module coordinator 待設計）：預設關閉，
+    # 只在 UEP_TOOL_PATH=agent 下有效。目前沒有任何 producer，關閉時不訂閱＝與舊行為完全一致
+    tool_module_events: bool = Field(default=False, validation_alias="UEP_TOOL_MODULE_EVENTS")
     # 平台脈絡 shadow（平台宣告注入端 R0 第 3、4 步）：預設關閉；開啟時每個簽出的 turn 多一次唯讀 Presence SELECT（鎖外）
     platform_shadow: bool = Field(default=False, validation_alias="UEP_PLATFORM_SHADOW")
     # V18 缺席端輸入 fail-closed：開啟後 UtteranceFact 缺 source_location 即否決（預設關＝缺失放行並計數）。

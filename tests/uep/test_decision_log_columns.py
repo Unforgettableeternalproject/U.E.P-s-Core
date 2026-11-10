@@ -156,7 +156,7 @@ def test_migration_0014_revision_chain():
     assert rev is not None and rev.down_revision == "0013_run_supervisor_flags"
     assert callable(rev.module.upgrade) and callable(rev.module.downgrade)
     assert script.get_revision("0015_action_retry_of").down_revision == "0014_decision_log_columns"
-    assert script.get_heads() == ["0015_action_retry_of"]
+    assert script.get_heads() == ["0016_approval_revoked"]
 
 
 def test_orm_model_has_new_columns_and_index():

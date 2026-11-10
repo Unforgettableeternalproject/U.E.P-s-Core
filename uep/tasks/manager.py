@@ -254,6 +254,15 @@ PARAMS_NOT_CANONICAL = "params_not_canonical"
 TOOL_VERSION_CHANGED = "tool_version_changed"
 ACTION_UNRESOLVED = "action_unresolved"  # ActionBlocked.code：action 本身為 UNKNOWN／EXECUTING（副作用可能已發生、尚無定論）
 APPROVAL_DENIED = "approval_denied"  # receipt.error_code：人類否決核准（E2）；action 轉 FAILED，回餵 Agent 為 rejected
+ALREADY_EXECUTING = "already_executing"  # PolicyViolation.code：否決時 action 已離開 INTENDED（已核准／執行中／已有結果）
+
+
+def is_denial_receipt(receipt: Any) -> bool:
+    """人類否決的 receipt：error_code、meta.origin、meta.decision 三者同時成立（executor 只靠 error_code 偽造不算，m3）。"""
+    if receipt is None or getattr(receipt, "error_code", None) != APPROVAL_DENIED:
+        return False
+    meta = getattr(receipt, "meta", None) or {}
+    return meta.get("origin") == "manual" and meta.get("decision") == "denied"
 
 
 def _not_canonical(reason: str) -> PolicyViolation:
@@ -1224,7 +1233,13 @@ class TaskManager:
         self, *, principal: AuthenticatedPrincipal, action_hash: str, target: str, scope: str,
         expiry: datetime, approval_id: str | None = None,
     ) -> ApprovalRow:
-        """記錄人類經 Approval 通道產生的核准。只收已認證的人類身分，拒絕裸字串（M2、T-5）。"""
+        """記錄人類經 Approval 通道產生的核准。只收已認證的人類身分，拒絕裸字串（M2、T-5）。
+
+        E2（審查 M1）：寫入前先以 task -> run -> action 的鎖序鎖住「此核准可消耗」的候選 action（hash／target／scope 相符者，
+        判定與消耗共用 ``_approval_problem``），讓核准與否決（``record_rejection``）、消耗（``execute_action``）互斥。
+        鎖內若可消耗的候選只有被否決的 action、沒有任何 INTENDED 的 action，核准一律拒絕（``approval_for_denied_action``）：
+        否決後殘留的核准不可讓同 hash 的新 action 執行；人類須在新 action（或 ``retry_of``）出現後重新核准。
+        """
         if not isinstance(principal, AuthenticatedPrincipal):
             raise PolicyViolation("approval 必須由 AuthenticatedPrincipal 建立")
         if principal.kind != "human" or not principal.verified:
@@ -1234,20 +1249,51 @@ class TaskManager:
                 approval_id=approval_id or new_id("appr"), actor_id=principal.actor_id,
                 action_hash=action_hash, target=target, scope=scope, expiry=expiry,
             )
+            candidates = list(
+                s.scalars(
+                    select(ActionIntentRow.action_id)
+                    .join(RunRow, RunRow.run_id == ActionIntentRow.run_id)
+                    .join(TaskRow, TaskRow.task_id == RunRow.task_id)
+                    .where(ActionIntentRow.params_hash == action_hash, ActionIntentRow.tool == target, TaskRow.scope_ref == scope)
+                    .order_by(ActionIntentRow.action_id)
+                )
+            )
+            live = False
+            denied = False
+            for candidate_id in candidates:
+                task, _run, action = self._lock_action(s, candidate_id)
+                if self._approval_problem(row, action, task) is not None:  # 與消耗共用同一個判斷
+                    continue
+                status = ActionStatus(action.status)
+                if status is ActionStatus.INTENDED:
+                    live = True
+                elif status is ActionStatus.FAILED and self._is_denied(s, action.action_id):
+                    denied = True
+            if denied and not live:
+                raise PolicyViolation("此核准對應的 action 已被否決，須對新 action 重新核准", code="approval_for_denied_action")
             s.add(row)
             s.flush()
             return row
 
+    @staticmethod
+    def _is_denied(s: Session, action_id: str) -> bool:
+        receipt = s.scalar(
+            select(ReceiptRow).where(ReceiptRow.action_id == action_id).execution_options(populate_existing=True)
+        )
+        return is_denial_receipt(receipt)
+
     def record_rejection(self, *, principal: AuthenticatedPrincipal, action_id: str) -> ActionOutcome:
         """人類否決等待核准的 action（E2）。只收已驗證、屬於此 task approvers 的人類身分，不呼叫 executor。
 
-        - 只收 INTENDED、需核准（external_effect／high_impact）、且 Run 為 WAITING_APPROVAL 的 action；轉終態
-          ``FAILED``，記一筆 Core 簽發、``source_verified=True`` 的 receipt（``error_code=approval_denied``、
-          ``meta.origin=manual``／``decision=denied``），Run／Task 回 RUNNING 讓 worker 之後能接手收尾。
-        - 重複否決：action 已是被否決的 FAILED ⇒ 回傳既有結果（冪等）。
-        - 衝突：已有未消耗且仍有效、與此 action 的 hash／target／scope 相符的核准 ⇒ 拒絕（``approval_already_granted``）；
-          action 已 APPROVED／執行過／其他原因 FAILED ⇒ ``IllegalTransition``。否決後才到的核准不會被消耗
-          （``execute_action`` 對 FAILED 直接回既有結果）。
+        - 只收 INTENDED、需核准（external_effect／high_impact）、Run 為 ``WAITING_APPROVAL`` 的 action；轉終態
+          ``FAILED``（INTENDED -> FAILED 只限此路徑，``reason_code=approval_denied``），記一筆 Core 簽發、
+          ``source_verified=True`` 的 receipt（``error_code=approval_denied``、``meta.origin=manual``／``decision=denied``／
+          ``revoked``＝被撤銷的 approval_id 清單），Run／Task 回 RUNNING。
+        - 與核准消耗互斥：在 task -> run -> action 鎖內判定；action 已 APPROVED／EXECUTING 或之後的狀態 ⇒
+          ``already_executing``（不嘗試中斷）。
+        - 核准後可反悔：所有「此 action 可消耗」的未消耗核准（條件與 ``_approval_problem`` 共用）一併標為撤銷
+          （``revoked_at``／``revoked_by``／``revoked_reason``／``revoked_by_action_id``），之後同 hash 的新 action 也不能消耗。
+        - 重複否決：action 已是被否決的 ``FAILED`` ⇒ 回傳既有結果（冪等）。
         """
         if not isinstance(principal, AuthenticatedPrincipal):
             raise PolicyViolation("否決必須由 AuthenticatedPrincipal 發動")
@@ -1261,35 +1307,57 @@ class TaskManager:
                 select(ReceiptRow).where(ReceiptRow.action_id == action_id).execution_options(populate_existing=True)
             )
             status = ActionStatus(action.status)
-            prior_meta = (prior.meta or {}) if prior is not None else {}
-            if status is ActionStatus.FAILED and prior_meta.get("origin") == "manual" and prior_meta.get("decision") == "denied":
+            if status is ActionStatus.FAILED and is_denial_receipt(prior):
                 return ActionOutcome(action_id, status, False, prior)  # 重複否決：冪等
             if status is not ActionStatus.INTENDED:
-                raise IllegalTransition(f"action 不是等待核准的 INTENDED（{action.status}），不可否決")
+                raise PolicyViolation(
+                    f"action 已不是等待核准的 INTENDED（{action.status}），不可否決", code=ALREADY_EXECUTING,
+                )
             if action.side_effect_class not in APPROVAL_REQUIRED:
                 raise PolicyViolation("此 action 不需要核准，不可否決", code="approval_not_required")
             if run.status != RunStatus.WAITING_APPROVAL.value:
                 raise IllegalTransition(f"run 不在等待核准（{run.status}），不可否決")
-            granted = s.scalar(
-                select(ApprovalRow.approval_id).where(
-                    ApprovalRow.action_hash == action.params_hash, ApprovalRow.target == action.tool,
-                    ApprovalRow.scope == task.scope_ref, ApprovalRow.consumed_at.is_(None),
-                    ApprovalRow.expiry > self._clock(),
-                ).limit(1)
-            )
-            if granted is not None:
-                raise PolicyViolation("此 action 已有有效核准，不可再否決", code="approval_already_granted")
+            now = self._clock()
             actor = principal.actor_id
+            revoked = self._revoke_consumable_approvals(s, action, task, actor, now)
             if not _SAFE_STR.fullmatch(actor):  # 不合規的 actor_id（如 email）改存雜湊
                 actor = "h:" + hashlib.sha256(actor.encode("utf-8")).hexdigest()[:16]
             receipt = ToolReceipt(
                 receipt_id=new_id("rcpt"), action_id=action_id, succeeded=False, result_ref=None,
-                recorded_at=self._clock(), source_verified=True, error_code=APPROVAL_DENIED,
-                meta={"origin": "manual", "principal": actor, "decision": "denied"},
+                recorded_at=now, source_verified=True, error_code=APPROVAL_DENIED,
+                meta={"origin": "manual", "principal": actor, "decision": "denied", "revoked": revoked},
             )
-            stored = self._apply_receipt(s, pending, task, action, receipt)
+            stored = self._record_receipt(s, action_id, receipt)
+            self._set_action_status(
+                s, pending, task, action, ActionStatus.FAILED, "action.executed", reason_code=APPROVAL_DENIED,
+            )
             self._back_to_running(s, pending, task, run)
             return ActionOutcome(action_id, ActionStatus(action.status), False, stored)
+
+    def _revoke_consumable_approvals(
+        self, s: Session, action: ActionIntentRow, task: TaskRow, actor: str, now: datetime,
+    ) -> list[str]:
+        """撤銷所有「此 action 可消耗」的核准（判斷與消耗共用 ``_approval_problem``，不另寫 hash／target／scope 查詢）。
+
+        逐筆以 FOR UPDATE 鎖定後再判斷（與另一個 action 的消耗互斥）；已消耗或已撤銷者不是候選。"""
+        open_ids = list(
+            s.scalars(
+                select(ApprovalRow.approval_id)
+                .where(ApprovalRow.consumed_at.is_(None), ApprovalRow.revoked_at.is_(None))
+                .order_by(ApprovalRow.approval_id)
+            )
+        )
+        revoked: list[str] = []
+        for approval_id in open_ids:
+            approval = s.get(ApprovalRow, approval_id, with_for_update=True, populate_existing=True)
+            if self._approval_problem(approval, action, task) is not None:
+                continue
+            approval.revoked_at = now
+            approval.revoked_by = actor
+            approval.revoked_reason = "action_denied"
+            approval.revoked_by_action_id = action.action_id
+            revoked.append(approval_id)
+        return revoked
 
     def _approval_problem(self, approval: ApprovalRow | None, action: ActionIntentRow, task: TaskRow) -> str | None:
         """回傳不合格原因碼；合格回 None。"""
@@ -1297,6 +1365,8 @@ class TaskManager:
             return "not_found"
         if approval.consumed_at is not None:
             return "consumed"
+        if approval.revoked_at is not None:
+            return "revoked"
         if approval.expiry <= self._clock():
             return "expired"
         if approval.actor_id not in self._approvers(task):
@@ -1425,21 +1495,27 @@ class TaskManager:
 
     def _set_action_status(
         self, s: Session, pending: list[RecordedEvent], task: TaskRow, action: ActionIntentRow,
-        to: ActionStatus, event_type: str | None,
+        to: ActionStatus, event_type: str | None, reason_code: str | None = None,
     ) -> None:
         current = ActionStatus(action.status)
         if to not in ACTION_TRANSITIONS[current]:
             raise IllegalTransition(f"action 不允許 {current.value} -> {to.value}")
+        if current is ActionStatus.INTENDED and to is ActionStatus.FAILED and reason_code != APPROVAL_DENIED:
+            # INTENDED -> FAILED 只為人類否決而開（E2）；其他原因一律拒絕
+            raise IllegalTransition("action INTENDED -> FAILED 只允許 reason_code=approval_denied")
         action.status = to.value
         self._bump(action)
         if event_type:
             payload: dict[str, Any] = {"action_id": action.action_id, "status": to.value}
+            if reason_code:
+                payload["reason_code"] = reason_code
             if task.goal == TURN_TASK_GOAL:
                 # 回合 Task 的 action.* 取代舊的 Host 補記（D79）：沿用舊 payload（kind／status／ref_id），再加 action_id
                 legacy_status = _LEGACY_ACTION_STATUS.get(to, to.value)
                 payload = {
                     "action_id": action.action_id, "kind": action.side_effect_class, "status": legacy_status,
                     "ref_id": f"tool:{action.tool}",
+                    **({"reason_code": reason_code} if reason_code else {}),
                 }
             self._emit(
                 s, pending, event_type, task, aggregate=("action", action.action_id, action.version),

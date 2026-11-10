@@ -355,7 +355,7 @@ def _check_registry_executors(
 def _check_cancel_support(
     resolver: ToolSpecResolver, specs: Mapping[str, Any], executors: Mapping[str, ToolExecutor]
 ) -> None:
-    """D69／RA-5：宣告 interruptible／checkpoint_only 或 cancellable 的工具，其 executor 必須實作 ``cancel``；fail-closed。
+    """D69／RA-5／RA-11：宣告 interruptible／checkpoint_only、cancellable 或 parallel_one_shot 的工具，其 executor 必須實作 ``cancel``；fail-closed。
     executor 不在映射內的情形由 TG-5 另行回報，這裡略過。"""
     entries = resolver.entries() if callable(getattr(resolver, "entries", None)) else {}
     bad: list[str] = []
@@ -364,7 +364,9 @@ def _check_cancel_support(
         if executor is None or supports_cancel(executor):
             continue
         entry = entries.get(name)
-        if spec.interruptible != "non_interruptible" or (entry is not None and entry.cancellable):
+        if spec.interruptible != "non_interruptible" or (
+            entry is not None and (entry.cancellable or entry.concurrency == "parallel_one_shot")
+        ):
             bad.append(name)
     if bad:
         raise AssemblyError(f"工具宣告可中斷或 cancellable，但其 executor 未實作 cancel：{', '.join(sorted(bad))}（D69、RA-5）")

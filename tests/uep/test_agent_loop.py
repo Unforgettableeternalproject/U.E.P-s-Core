@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,8 @@ from tests.uep.loop_support import (
     FakeTasks,
     Round,
     ScriptedRuntime,
+    StoppedExecution,
+    _entry,
     make_registry,
     projector_for,
 )
@@ -24,6 +27,7 @@ from uep.agent.loop_context import ParentSnapshot, child_ref
 from uep.agent.trigger import LoopTrigger
 from uep.fakes.loop_context import InMemoryLoopContextStore
 from uep.models.port import ChatMessage, history_hash
+from uep.tasks.manager import StaleWorkerEpoch
 from uep.tasks.states import RunStatus
 from uep.tools.gateway import ToolGateway
 
@@ -694,3 +698,187 @@ def test_run_id_is_injected_explicitly_into_tools_in_parallel_wave_and_cleanup_r
     assert out.state == "completed"
     assert sorted(r for r, _ in seen) == [RUN, RUN]  # 兩個平行項都拿到注入的 run_id
     assert cleaned == [RUN]  # 終態清理一次
+
+
+# ───────────────────────── 驗收：parallel_one_shot（RA-11／RA-12、§6.4 逾時與取消，切片 F） ─────────────────────────
+
+def one_shot_registry(timeout_s: float = 0.3):
+    return make_registry(
+        _entry("once.a", concurrency="parallel_one_shot", side="reversible_local", capability="memory.write", timeout_s=timeout_s),
+        _entry("once.b", concurrency="parallel_one_shot", side="reversible_local", capability="memory.write", timeout_s=timeout_s),
+    )
+
+
+class Board:
+    """一批會卡住的 one_shot 工具與其 executor：``cancel`` 依 action 的 path 找到對應的卡點，記錄呼叫並依模式回應。
+
+    stopped ⇒ 解除卡點並讓 behavior 拋 ``StoppedExecution``（執行端簽回失敗 receipt）；isolated／raise ⇒ 不解除。"""
+
+    def __init__(self, mode="stopped", wait_s: float = 5.0) -> None:
+        self.mode, self.wait_s = mode, wait_s
+        self.tasks: FakeTasks | None = None
+        self.events: dict[str, threading.Event] = {}
+        self.stopped: set[str] = set()
+        self.started: list[str] = []
+        self.cancels: list[str] = []
+
+    def hang(self, args) -> str:
+        path = args["path"]
+        ev = self.events.setdefault(path, threading.Event())
+        self.started.append(path)
+        ev.wait(self.wait_s)
+        if path in self.stopped:
+            raise StoppedExecution(path)
+        return f"late:{path}"
+
+    def cancel(self, action_id: str) -> str:
+        self.cancels.append(action_id)
+        if self.mode == "raise":
+            raise RuntimeError("cancel 失敗")
+        if self.mode == "stopped":
+            path = self.tasks.actions[action_id]["params"]["path"]
+            self.stopped.add(path)
+            self.events.setdefault(path, threading.Event()).set()
+        return self.mode
+
+    def release_all(self) -> None:
+        for ev in self.events.values():
+            ev.set()
+
+
+def one_shot_rig(board: Board, rounds, *, timeout_s: float = 0.3, behaviors=None, **kw):
+    kw.setdefault("budget", LoopBudget(max_parallel=2, repeat_limit=99))
+    kw.setdefault("executors", {"fake": board})
+    kw.setdefault("cancel_grace_s", 1.0)
+    rig = Rig(rounds, registry=one_shot_registry(timeout_s), behaviors=behaviors, **kw)
+    board.tasks = rig.tasks
+    return rig
+
+
+def action_id(ordinal: int) -> str:
+    return stable_action_id(RUN, "step_1", ordinal)
+
+
+def test_two_one_shot_items_run_concurrently():
+    barrier = threading.Barrier(2, timeout=3)
+
+    def meet(args):
+        barrier.wait()
+        return f"ok:{args['path']}"
+
+    rig = Rig(
+        [Round("", (call("once.a", "1"), call("once.b", "2"))), Round("好")], registry=one_shot_registry(2.0),
+        budget=LoopBudget(max_parallel=2), behaviors={"once.a": meet, "once.b": meet},
+    )
+    out = rig.run()
+    assert out.state == "completed" and len(rig.tasks.executions) == 2
+    assert [v["status"] for _, v in next(iter(rig.runtime.submitted.values()))] == ["ok", "ok"]
+
+
+def test_one_shot_and_parallel_safe_share_a_wave_and_same_keys_split_waves():
+    log: list[str] = []
+    rig = Rig(
+        [Round("", (call("once.a", "same"), call("read.a", "same"), call("once.b", "other"))), Round("好")],
+        registry=one_shot_registry(2.0), budget=LoopBudget(max_parallel=4, repeat_limit=99),
+        behaviors={t: (lambda args, t=t: log.append(t) or "ok") for t in ("once.a", "read.a", "once.b")},
+    )
+    assert rig.run().state == "completed"
+    ran = [t for _, t in rig.tasks.executions]
+    assert ran[0] == "once.a" and sorted(ran) == ["once.a", "once.b", "read.a"]  # 同鍵 once.a／read.a 序列化、依 index
+
+
+def test_one_shot_timeout_with_stopped_cancel_fails_with_timeout_and_siblings_continue():
+    board = Board("stopped")
+    rig = one_shot_rig(
+        board, [Round("", (call("once.a", "slow"), call("once.b", "fast"))), Round("好")],
+        behaviors={"once.a": board.hang},
+    )
+    out = rig.run()
+    fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert out.state == "completed"  # failed(timeout) 不是未決副作用，Run 可繼續
+    assert (fed[0]["status"], fed[0].get("reason_code")) == ("failed", "timeout") and fed[1]["status"] == "ok"
+    assert board.cancels == [action_id(0)]  # 只取消逾時的那一項
+    assert rig.tasks.marked_unknown == [] and [t for _, t in rig.tasks.executions] == ["once.b"]
+
+
+def test_one_shot_timeout_with_isolated_cancel_becomes_unknown_and_is_not_resent():
+    board = Board("isolated")
+    rig = one_shot_rig(
+        board, [Round("", (call("once.a", "slow"), call("once.b", "fast"))), Round("好")], behaviors={"once.a": board.hang},
+    )
+    try:
+        out = rig.run()
+    finally:
+        board.release_all()
+    fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert (fed[0]["status"], fed[0].get("reason_code")) == ("unknown", "timeout") and fed[1]["status"] == "ok"
+    assert (out.state, out.reason_code) == ("failed", "unresolved_actions")
+    assert board.cancels == [action_id(0)] and rig.tasks.marked_unknown == [action_id(0)]
+    assert board.started == ["slow"]  # 沒有第二次執行
+
+
+@pytest.mark.parametrize("mode", ["raise", "no_executors"])
+def test_one_shot_timeout_with_failing_or_missing_cancel_is_unknown(mode):
+    board = Board("raise" if mode == "raise" else "isolated")
+    extra = {"executors": {}} if mode == "no_executors" else {}
+    rig = one_shot_rig(board, [Round("", (call("once.a", "slow"),)), Round("好")], behaviors={"once.a": board.hang}, **extra)
+    try:
+        out = rig.run()
+    finally:
+        board.release_all()
+    fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert fed[0]["status"] == "unknown" and rig.tasks.marked_unknown == [action_id(0)]
+    assert out.reason_code == "unresolved_actions" and board.cancels == ([action_id(0)] if mode == "raise" else [])
+
+
+def test_one_shot_that_finishes_before_its_deadline_is_untouched():
+    board = Board("stopped")
+    rig = one_shot_rig(board, [Round("", (call("once.a", "1"),)), Round("好")], timeout_s=2.0)
+    out = rig.run()
+    assert out.state == "completed" and board.cancels == [] and len(rig.tasks.executions) == 1
+
+
+def test_run_cancel_cancels_every_in_flight_one_shot_item():
+    board = Board("stopped")
+    flag = threading.Event()
+    rig = one_shot_rig(
+        board, [Round("", (call("once.a", "p1"), call("once.b", "p2"))), Round("好")], timeout_s=30.0,
+        behaviors={"once.a": board.hang, "once.b": board.hang}, cancelled=flag.is_set,
+    )
+    timer = threading.Timer(0.15, flag.set)
+    timer.start()
+    try:
+        out = rig.run()
+    finally:
+        timer.cancel()
+        board.release_all()
+    assert out.state == "cancelled" and sorted(board.cancels) == sorted([action_id(0), action_id(1)])
+
+
+def test_stale_worker_epoch_cancels_the_other_in_flight_one_shot_items():
+    board = Board("stopped")
+
+    def lose_epoch(args):
+        time.sleep(0.1)  # 讓另一項先進入執行
+        raise StaleWorkerEpoch("run 已被接手")
+
+    rig = one_shot_rig(
+        board, [Round("", (call("once.a", "p1"), call("once.b", "p2"))), Round("好")], timeout_s=30.0,
+        behaviors={"once.a": board.hang, "once.b": lose_epoch},
+    )
+    try:
+        out = rig.run()
+    finally:
+        board.release_all()
+    assert out.state == "stale" and board.cancels == [action_id(0)]
+
+
+def test_parallel_safe_timeout_is_not_enforced():
+    board = Board("stopped")
+    rig = Rig(
+        [Round("", (call("read.a", "1"), call("read.b", "2"))), Round("好")], registry=one_shot_registry(),
+        budget=LoopBudget(max_parallel=2), executors={"fake": board},
+        behaviors={"read.a": lambda args: (time.sleep(1.2), "slow-but-fine")[1]},  # 超過 timeout_s=1.0 仍等它做完
+    )
+    out = rig.run()
+    assert out.state == "completed" and board.cancels == []

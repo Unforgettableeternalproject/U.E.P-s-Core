@@ -32,9 +32,11 @@ EPOCH = 1
         ("serial", ["parallel_safe"], False),
         ("parallel_safe", ["serial"], False),
         ("serial", ["serial"], False),
-        ("parallel_one_shot", ["parallel_safe"], False),  # 本期視同 serial
-        ("parallel_safe", ["parallel_one_shot"], False),
-        ("parallel_one_shot", ["parallel_one_shot"], False),
+        ("parallel_one_shot", ["parallel_safe"], True),  # 切片 F：one_shot 與 parallel_safe 可同時 EXECUTING
+        ("parallel_safe", ["parallel_one_shot"], True),
+        ("parallel_one_shot", ["parallel_one_shot", "parallel_safe"], True),
+        ("serial", ["parallel_one_shot"], False),
+        ("parallel_one_shot", ["serial"], False),
         ("bogus", [], True),
         ("bogus", ["parallel_safe"], False),  # 未知值視同 serial
         ("parallel_safe", ["bogus"], False),

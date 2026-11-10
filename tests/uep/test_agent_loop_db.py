@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import threading
+import time
 from datetime import timedelta
 
 import pytest
@@ -29,6 +31,7 @@ from uep.tasks.manager import (
     ActionBlocked,
     IllegalTransition,
     PolicyViolation,
+    StaleWorkerEpoch,
     TaskManager,
 )
 from uep.tasks.states import ActionStatus, RunStatus
@@ -51,9 +54,13 @@ class LosingExecutor(FakeToolExecutor):
 
 
 class DbRig:
-    def __init__(self, session_factory, rounds, *, lose_tool: str | None = None, budget: LoopBudget | None = None) -> None:
-        self.registry = make_registry()
-        self.executor = LosingExecutor(lose_tool)
+    def __init__(
+        self, session_factory, rounds, *, lose_tool: str | None = None, budget: LoopBudget | None = None,
+        registry=None, executor: FakeToolExecutor | None = None, **loop_kwargs,
+    ) -> None:
+        self.registry = registry or make_registry()
+        self.loop_kwargs = loop_kwargs
+        self.executor = executor or LosingExecutor(lose_tool)
         self.tm = make_tm(session_factory, self.executor, tool_resolver=self.registry)
         task = self.tm.create_task(persona_id="uep", goal="查資料", owner_actor_id="owner", scope_ref=SCOPE, policy=POLICY)
         self.run = self.tm.start_run(task.task_id, persona_version=1, policy_version=1)
@@ -65,7 +72,7 @@ class DbRig:
         return AgentLoop(
             runtime=runtime or self.runtime, tasks=self.tm, gateway=ToolGateway(self.registry), registry=self.registry,
             store=self.store, projector=projector_for(self.registry), budget=self.budget,
-            worker_epoch=self.run.worker_epoch if epoch is None else epoch,
+            worker_epoch=self.run.worker_epoch if epoch is None else epoch, **self.loop_kwargs,
         )
 
     def go(self):
@@ -191,3 +198,156 @@ def _actions(rig: DbRig):
     with rig.tm._sf() as s:
         return list(s.scalars(select(ActionIntentRow).where(ActionIntentRow.run_id == rig.run.run_id)))
 
+
+
+# ───────────────────────── parallel_one_shot：真實 Manager 的狀態轉移（RA-11／12、§6.4） ─────────────────────────
+
+class _OneShotExecutor(FakeToolExecutor):
+    """路徑在 ``slow_paths`` 內的呼叫會卡住（模擬逾時的慢工具）；``cancel_mode`` 決定 ``cancel`` 的回應。
+    同時記錄 execute 內的最大並行數，證明兩個 one_shot 真的在 DB 內同時 EXECUTING。"""
+
+    def __init__(self, slow_paths=(), cancel_mode: str = "stopped", work_s: float = 0.0) -> None:
+        super().__init__()
+        self.slow_paths, self.cancel_mode, self.work_s = set(slow_paths), cancel_mode, work_s
+        self.active = self.peak = 0
+        self._guard = threading.Lock()
+
+    def execute(self, call):
+        if call.params.get("path") in self.slow_paths:
+            self.block_execution(call.action_id)
+        with self._guard:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(self.work_s)
+            return super().execute(call)
+        finally:
+            with self._guard:
+                self.active -= 1
+
+    def cancel(self, action_id):
+        if self.cancel_mode == "stopped":
+            return super().cancel(action_id)
+        self.cancels.append(action_id)
+        if self.cancel_mode == "raise":
+            raise RuntimeError("cancel 失敗")
+        return self.cancel_mode
+
+    def release_all(self) -> None:
+        for gate in list(self._blocks.values()):
+            gate.set()
+
+
+def _one_shot_rig(session_factory, rounds, executor, *, timeout_s: float = 0.3, **kw):
+    from tests.uep.test_agent_loop import one_shot_registry
+
+    kw.setdefault("budget", LoopBudget(max_parallel=2, repeat_limit=99))
+    kw.setdefault("executors", {"fake": executor})
+    kw.setdefault("cancel_grace_s", 2.0)
+    return DbRig(session_factory, rounds, registry=one_shot_registry(timeout_s), executor=executor, **kw)
+
+
+def _by_order(rig):
+    """該 Run 的 action，依建立順序（＝波內序號）。"""
+    return sorted(_actions(rig), key=lambda a: a.created_at)
+
+
+def test_db_two_one_shot_items_execute_concurrently_and_both_succeed(session_factory):
+    executor = _OneShotExecutor(work_s=0.2)
+    rig = _one_shot_rig(
+        session_factory, [Round("", (call("once.a", "1"), call("once.b", "2"))), Round("完成")], executor, timeout_s=5.0,
+    )
+    out = rig.go()
+    assert out.state == "completed" and executor.peak == 2  # 真實 _check_single_executing 放行 one_shot 並行
+    rows = _by_order(rig)
+    assert [r.status for r in rows] == [ActionStatus.SUCCEEDED.value] * 2
+    assert {r.concurrency for r in rows} == {"parallel_one_shot"}
+
+
+def test_db_serial_action_is_still_blocked_while_one_shot_is_executing(session_factory):
+    executor = _OneShotExecutor(work_s=0.3)
+    rig = _one_shot_rig(
+        session_factory, [Round("", (call("once.a", "1"), call("write.s", "2"))), Round("完成")], executor, timeout_s=5.0,
+    )
+    out = rig.go()
+    assert out.state == "completed" and executor.peak == 1  # serial 是屏障：不與 one_shot 同時執行
+    assert [r.status for r in _by_order(rig)] == [ActionStatus.SUCCEEDED.value] * 2
+
+
+def test_db_one_shot_timeout_with_stopped_cancel_lands_failed_timeout(session_factory):
+    executor = _OneShotExecutor(slow_paths={"slow"})
+    rig = _one_shot_rig(session_factory, [Round("", (call("once.a", "slow"), call("once.b", "fast"))), Round("完成")], executor)
+    try:
+        out = rig.go()
+    finally:
+        executor.release_all()
+    a, b = _by_order(rig)
+    assert out.state == "completed"
+    assert (a.status, b.status) == (ActionStatus.FAILED.value, ActionStatus.SUCCEEDED.value)
+    assert executor.cancels == [a.action_id]
+    receipt = rig.tm.get_receipt(a.action_id)
+    assert receipt.succeeded is False and receipt.error_code == "timeout"
+    fed = [v for _, v in next(iter(rig.runtime.submitted.values()))]
+    assert (fed[0]["status"], fed[0]["reason_code"]) == ("failed", "timeout") and fed[1]["status"] == "ok"
+    assert rig.tm.get_run(rig.run.run_id).status == RunStatus.SUCCEEDED.value
+
+
+def test_db_one_shot_timeout_with_isolated_cancel_lands_unknown_and_late_receipt_does_not_change_it(session_factory):
+    executor = _OneShotExecutor(slow_paths={"slow"}, cancel_mode="isolated")
+    rig = _one_shot_rig(session_factory, [Round("", (call("once.a", "slow"), call("once.b", "fast"))), Round("完成")], executor)
+    try:
+        out = rig.go()
+        a, b = _by_order(rig)
+        assert (a.status, b.status) == (ActionStatus.UNKNOWN.value, ActionStatus.SUCCEEDED.value)
+        assert (out.state, out.reason_code) == ("failed", "unresolved_actions")
+        executor.release_all()  # 卡住的 execute 之後才回來：action 不再是 EXECUTING，晚到的 receipt 不推進狀態
+        deadline = time.monotonic() + 3
+        while executor.active and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert rig.tm.get_action(a.action_id).status == ActionStatus.UNKNOWN.value
+        assert executor.executions[a.action_id] == 1  # 沒有重送
+    finally:
+        executor.release_all()
+
+
+def test_db_run_cancel_cancels_all_in_flight_one_shot_actions(session_factory):
+    executor = _OneShotExecutor(slow_paths={"p1", "p2"})
+    flag = threading.Event()
+    rig = _one_shot_rig(
+        session_factory, [Round("", (call("once.a", "p1"), call("once.b", "p2"))), Round("完成")], executor, timeout_s=30.0,
+        cancelled=flag.is_set,
+    )
+    timer = threading.Timer(0.3, flag.set)
+    timer.start()
+    try:
+        out = rig.go()
+    finally:
+        timer.cancel()
+        executor.release_all()
+    rows = _by_order(rig)
+    assert out.state == "cancelled" and sorted(executor.cancels) == sorted(r.action_id for r in rows)
+    assert [r.status for r in _by_order(rig)] == [ActionStatus.FAILED.value] * 2  # stopped：executor 簽回失敗 receipt
+
+
+def test_db_stale_worker_epoch_cancels_other_in_flight_one_shot_actions(session_factory):
+    executor = _OneShotExecutor(slow_paths={"p1"})
+    rig = _one_shot_rig(
+        session_factory, [Round("", (call("once.a", "p1"), call("once.b", "p2"))), Round("完成")], executor, timeout_s=30.0,
+    )
+    real_execute = rig.tm.execute_action
+    calls = []
+
+    def execute_action(action_id, params, **kw):
+        calls.append(action_id)
+        if params["path"] == "p2":  # 第二項在第一項進入執行後被接手：以真實 StaleWorkerEpoch 回報
+            time.sleep(0.3)
+            raise StaleWorkerEpoch("run 已被接手")
+        return real_execute(action_id, params, **kw)
+
+    rig.tm.execute_action = execute_action  # type: ignore[method-assign]
+    try:
+        out = rig.go()
+    finally:
+        executor.release_all()
+    first = _by_order(rig)[0]
+    assert out.state == "stale" and executor.cancels == [first.action_id]

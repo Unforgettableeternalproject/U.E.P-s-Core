@@ -55,14 +55,15 @@ TAGS = frozenset({"memory.read", "memory.write", "chatroom.post"})
 
 
 def _entry(name: str, *, concurrency="serial", keys=("file:{path}",), approval="none", side="internal_read",
-           capability="memory.read") -> ToolEntry:
+           capability="memory.read", timeout_s=1.0) -> ToolEntry:
     spec = ToolSpec(
         executor="fake", side_effect_class=side, idempotency="native", presence_bound=False, tool_version=1,
         capability=capability, approval_level=approval,
     )
     return ToolEntry(
         name=name, spec=spec, descriptor=ToolDescriptor(f"{name} 說明", _IN), output_schema=_OUT, concurrency=concurrency,
-        conflict_keys=tuple(keys) if concurrency != "serial" else (), timeout_s=1.0 if concurrency != "serial" else None,
+        conflict_keys=tuple(keys) if concurrency != "serial" else (), timeout_s=timeout_s if concurrency != "serial" else None,
+        cancellable=concurrency == "parallel_one_shot",
     )
 
 
@@ -82,6 +83,10 @@ def projector_for(registry: ToolRegistry) -> Callable[[frozenset[str], frozenset
         return registry.project(tags, ProjectionContext(), prior=prior)
 
     return project
+
+
+class StoppedExecution(Exception):
+    """behavior 專用：模擬 executor 被 ``cancel`` 後簽回失敗 receipt（action 以 FAILED 收尾，不是 UNKNOWN）。"""
 
 
 Behavior = Callable[[dict[str, Any]], str]  # 回傳結果文字；拋例外 ⇒ executor 失聯（UNKNOWN）
@@ -118,6 +123,17 @@ class FakeTasks:
         self.executing: dict[str, str] = {}  # 進行中的 action_id -> concurrency（TC-3 守衛用）
         self.executions: list[tuple[str, str]] = []  # (action_id, tool)：真正執行副作用的紀錄
         self.fail_tools: set[str] = set()  # 這些工具的 action 以 FAILED 收尾（receipt succeeded=False）
+        self.marked_unknown: list[str] = []  # 逾時後經 mark_action_unknown 轉 UNKNOWN 的 action
+
+    def mark_action_unknown(self, action_id: str, *, worker_epoch: int) -> bool:
+        """對照真實 ``TaskManager.mark_action_unknown``：仍在執行中的 action 轉 UNKNOWN；其餘不動作。"""
+        with self.lock:
+            self._check(worker_epoch)
+            if action_id not in self.executing:
+                return False
+            self.unknown.add(action_id)
+            self.marked_unknown.append(action_id)
+            return True
 
     def _check(self, epoch: int) -> None:
         if epoch != self.epoch:
@@ -261,11 +277,20 @@ class FakeTasks:
                 text = f"{tool}:executor"
             else:
                 text = behavior(dict(params))  # 在鎖外執行，讓並行波能真的並行
+        except StoppedExecution:
+            with self.lock:  # executor 被 cancel 且簽回失敗 receipt ⇒ action FAILED（沒有副作用、沒有內容）
+                outcome = ActionOutcome(
+                    action_id, ActionStatus.FAILED, True, SimpleNamespace(result_ref=None, source_verified=True),
+                )
+                self.outcomes[action_id] = outcome
+                return outcome
         except Exception:
             with self.lock:
                 self.unknown.add(action_id)  # 真實 Manager：executor 例外 ⇒ action 標 UNKNOWN 並重新拋出
             raise
         with self.lock:
+            if action_id in self.unknown:
+                return ActionOutcome(action_id, ActionStatus.UNKNOWN, True, None)  # 逾時已轉 UNKNOWN：晚到結果不推進
             self.executions.append((action_id, tool))
             self.contents[action_id] = text
             ok = tool not in self.fail_tools

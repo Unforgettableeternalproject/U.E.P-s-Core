@@ -31,6 +31,7 @@ def _entry(name: str, *, concurrency="parallel_safe", keys=("file:{path}",), app
     return ToolEntry(
         name=name, spec=spec, descriptor=ToolDescriptor("d", _IN), output_schema=_OUT, concurrency=concurrency,
         conflict_keys=tuple(keys), timeout_s=1.0 if concurrency != "serial" else None,
+        cancellable=concurrency == "parallel_one_shot",
     )
 
 
@@ -39,6 +40,8 @@ REGISTRY = ToolRegistry.build([
     _entry("read.b"),
     _entry("read.free", keys=()),
     _entry("read.tool", keys=("tool:{name}",)),
+    _entry("once.a", concurrency="parallel_one_shot", side="reversible_local", capability="memory.write"),
+    _entry("once.b", concurrency="parallel_one_shot", side="reversible_local", capability="memory.write"),
     _entry("write.s", concurrency="serial", side="reversible_local", capability="memory.write"),
     _entry("post.ask", concurrency="serial", approval="per_action", side="external_effect", capability="chatroom.post"),
 ])
@@ -114,3 +117,21 @@ def test_defer_tail():
     kept, deferred = defer_tail([1, 2, 3, 4], 2, DEFERRED_BATCH_LIMIT)
     assert kept == [1, 2] and deferred == [(3, DEFERRED_BATCH_LIMIT), (4, DEFERRED_BATCH_LIMIT)]
     assert defer_tail([1], 0, DEFERRED_BUDGET) == ([], [(1, DEFERRED_BUDGET)])
+
+
+def test_parallel_one_shot_is_eligible_and_mixes_with_parallel_safe():
+    waves = plan_waves([item(0, "once.a", "p1"), item(1, "read.a", "p2"), item(2, "once.b", "p3")], REGISTRY, max_parallel=8)
+    assert shape(waves) == [(True, (0, 1, 2))]
+
+
+def test_one_shot_conflicting_keys_split_waves_in_index_order():
+    batch = [item(0, "once.a", "same"), item(1, "once.b", "same"), item(2, "read.a", "other")]
+    assert shape(plan_waves(batch, REGISTRY, max_parallel=8)) == [(True, (0,)), (True, (1, 2))]
+
+
+def test_one_shot_with_serial_barrier_and_max_parallel():
+    batch = [item(0, "once.a", "1"), item(1, "write.s"), item(2, "once.b", "2")]
+    assert shape(plan_waves(batch, REGISTRY, max_parallel=8)) == [(True, (0,)), (False, (1,)), (True, (2,))]
+    assert shape(plan_waves([item(0, "once.a", "1"), item(1, "once.b", "2")], REGISTRY, max_parallel=1)) == [
+        (True, (0,)), (True, (1,)),
+    ]

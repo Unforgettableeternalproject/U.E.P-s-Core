@@ -95,7 +95,7 @@ def test_建構不載模型且共用同一個預建_backend():
     assert w.speak._backend is tts  # 預建一次、注入（所有 turn 共用）
     assert w.speak.warmup is True  # 預設在 prepare（Host 啟動）做暖機
     assert {k: r.ready for k, r in w.readiness.items()} == {"speak": None, "think": None, "input": None}
-    assert set(w.host_kwargs()) == {"think", "speak", "input_stage", "start_timeout_s"}
+    assert set(w.host_kwargs()) == {"think", "speak", "input_stage", "start_timeout_s", "prewarm_prompt"}
     assert not w.voice_ready
 
 
@@ -597,3 +597,17 @@ def test_stt_job_逾時_卡住的_job_被丟棄_佇列不被堵住():
             await asyncio.sleep(0.05)
 
     run(go())
+
+
+# ---- prompt cache 預熱接線 ----
+
+def test_host_kwargs_帶_prewarm_prompt_預設開啟_可關(monkeypatch):
+    w = build(cfg=_ix(stt_mode="single", system_prompt="你是 UEP"))
+    kwargs = w.host_kwargs()
+    assert kwargs["prewarm_prompt"] == "你是 UEP"
+    assert run(w.think.prewarm(kwargs["prewarm_prompt"])) is True  # 假 backend 也能走完預熱路徑
+    assert "prewarm_prompt" not in build(cfg=_ix(stt_mode="single", prewarm=False)).host_kwargs()
+    monkeypatch.setenv("UEP_LLM_PREWARM", "false")
+    assert InferenceConfig.from_settings(UepSettings(_env_file=None)).prewarm is False
+    monkeypatch.delenv("UEP_LLM_PREWARM")
+    assert InferenceConfig.from_settings(UepSettings(_env_file=None)).prewarm is True

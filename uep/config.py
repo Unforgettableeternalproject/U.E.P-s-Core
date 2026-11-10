@@ -161,6 +161,8 @@ class UepSettings(BaseSettings):
     llm_organization: str | None = Field(default=None, validation_alias="UEP_LLM_ORGANIZATION")
     llm_base_url: str | None = Field(default=None, validation_alias="UEP_LLM_BASE_URL")
     llm_prompt_cache_key: str | None = Field(default=None, validation_alias="UEP_LLM_PROMPT_CACHE_KEY")
+    # Host 啟動時預熱 prompt cache（_startup：speak -> think -> prewarm -> 輸入）；預熱用的 effort 即 UEP_LLM_REASONING_EFFORT
+    llm_prewarm: bool = Field(default=True, validation_alias="UEP_LLM_PREWARM")
     llm_output_guard: bool | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_GUARD")
     llm_output_blocklist_extra: str | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_BLOCKLIST_EXTRA")
     # 舊名（相容讀取）

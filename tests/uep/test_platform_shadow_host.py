@@ -51,7 +51,7 @@ def _host(results: IntakeResult, *, shadow: bool) -> tuple[EchoPipelineHost, Fak
     host._intake_lock = threading.Lock()
     host._closed, host._started, host._switching = False, True, False
     host._session = SessionContext(
-        conversation_id="c", segment_id="s", audience_scope="private", session_ref="r", platform="web"
+        conversation_id="c", segment_id="s", audience_scope="private", session_ref="r", platform="website"
     )
     host._es = SimpleNamespace(in_loop_thread=lambda: False, call_soon=lambda *a, **k: None)
     host.orchestrator = StubOrchestrator(results)
@@ -73,7 +73,7 @@ def _results() -> IntakeResult:
 def test_enabled_observes_each_dispatched_turn_once_outside_lock():
     host, shadow = _host(_results(), shadow=True)
     host.submit_utterance(_fact())
-    assert shadow.calls == [("t1", "web"), ("t2", "web")]
+    assert shadow.calls == [("t1", "website"), ("t2", "website")]
     assert shadow.lock_held == [False, False]
 
 

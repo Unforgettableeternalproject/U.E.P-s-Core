@@ -57,7 +57,7 @@ def clock(monkeypatch):
 def make_host(clock, *, ttl=TTL, ticks=1, on_tick=None, on_sync=None, ticking=True):
     """不經 __init__ 的最小 Host：只放 _tick_loop／_refresh_policy_if_due 用到的欄位。"""
     host = object.__new__(EchoPipelineHost)
-    host.policy = HostPolicySource("web", ttl_s=ttl)
+    host.policy = HostPolicySource("website", ttl_s=ttl)
     host._session = _Ctx()
     host._tick_stop = StopAfter(ticks)
     host._decision = SimpleNamespace(tick_interval_s=0.05)
@@ -162,7 +162,7 @@ def test_sync_that_already_published_is_not_followed_by_ttl_refresh(clock):
 
 
 def test_publish_rejects_illegal_cause():
-    src = HostPolicySource("web")
+    src = HostPolicySource("website")
     for bad in ("participants", "channel_mode", "initial", "bogus", ""):
         with pytest.raises(ValueError):
             src.publish(cause=bad)
@@ -172,8 +172,8 @@ def test_publish_rejects_illegal_cause():
 
 
 def test_age_s_and_ttl_s_properties(clock):
-    src = HostPolicySource("web", ttl_s=3.0)
-    assert src.ttl_s == 3.0 and HostPolicySource("web").ttl_s is None
+    src = HostPolicySource("website", ttl_s=3.0)
+    assert src.ttl_s == 3.0 and HostPolicySource("website").ttl_s is None
     assert src.age_s() == 0.0
     clock.t += 2.5
     assert src.age_s() == 2.5 and src.age_s(now=clock.t + 1) == 3.5
@@ -189,7 +189,7 @@ class _ListSink:
 
 def test_audit_records_ttl_refresh_with_contiguous_versions(clock):
     hub = DecisionHub()
-    source = HostPolicySource("web", ttl_s=TTL)
+    source = HostPolicySource("website", ttl_s=TTL)
     sink = _ListSink()
     writer = DecisionLogWriter(sink, flush_interval=0.01)
     writer.attach(hub)
@@ -246,3 +246,16 @@ def test_ttl_none_thread_condition_unchanged(clock):
     clock.t += 10_000
     plain._tick_loop()
     assert plain.calls == [] and plain.policy.version == 1
+
+
+def test_host_policy_source_accepts_legacy_web_via_compat_layer():
+    """舊值 "web" 在 HostPolicySource 邊界正規化成 "website"（DQ-3-B），publish 同理。"""
+    src = HostPolicySource("web")
+    assert src.current().platform == "website"
+    src.publish(platform="web")  # 與目前相同：不視為平台變更
+    assert src.current().platform == "website" and src.version == 2
+    src.publish(platform="discord")
+    assert src.current().platform == "discord"
+    src.publish(platform="web")
+    assert src.current().platform == "website"
+    assert HostPolicySource().current().platform == "website"

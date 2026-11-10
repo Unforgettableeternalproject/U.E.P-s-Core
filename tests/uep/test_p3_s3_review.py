@@ -344,6 +344,17 @@ def test_invalid_speaker_ref_and_language_are_dropped_and_counted(rig):
     assert r.events(types=("input.utterance_final",))[-1].payload["language"] == "zh-TW"
 
 
+def test_roster_prefix_match_unaffected_by_platform_vocab(rig):
+    """roster 比對 speaker_ref 前綴與 session.platform；詞彙統一後 discord 不受影響，舊前綴 web 仍視為不符。"""
+    roster = GuildRoster({"123": {"actor_a": "111"}})
+    session = make_session(platform="discord", guild_id="123", audience_scope="scope_group_g123")
+    r = rig(session=session, host_kwargs={"roster": roster}, presence_audience=lambda: "scope_group_g123")
+    r.host.participant_joined("discord:111", session=session)
+    assert roster.present_uids("123") == ["111"]
+    r.host.participant_joined("website:222", session=session)
+    assert roster.present_uids("123") == ["111"] and r.host.metrics["echo.participant_platform_mismatch"] == 1
+
+
 def test_participant_uses_given_session_guild_and_keeps_platform_prefix(rig):
     roster = GuildRoster({"123": {"actor_a": "111"}, "456": {"actor_b": "222"}})
     old = make_session(platform="discord", guild_id="123", audience_scope="scope_group_g123")

@@ -251,12 +251,14 @@ class ModeRules(Protocol):
 
 
 BARGE_IN_PRESETS: dict[str, float] = {
-    "web": 0.4,
+    "website": 0.4,
+    "desktop": 0.4,  # 暫定值：沿用 website 的單次事件語意，依實測再調
     "discord": 2.0,
 }
-"""平台 preset：barge-in 的有聲秒數門檻（Q4）。
+"""平台 preset：barge-in 的有聲秒數門檻（Q4）；鍵為 Presence location 詞彙（desktop／discord／website）。
 
-兩者語意不同、不統一：Web 看單次事件的 ``duration_s``，Discord 是跨事件累積的有聲秒數。
+語意不同、不統一：website／desktop 看單次事件的 ``duration_s``，Discord 是跨事件累積的有聲秒數。
+本檔不得 import ``uep`` 其他部分，故舊值 ``web`` 不在此處理：由組裝層（``HostPolicySource``）先正規化再查表。
 """
 
 
@@ -265,8 +267,8 @@ class PolicySnapshot:
     """熱路徑唯一讀取的策略快照（同步、純記憶體）。"""
 
     version: int = 0
-    platform: str = "web"
-    barge_in_min_speech_s: float = BARGE_IN_PRESETS["web"]
+    platform: str = "website"
+    barge_in_min_speech_s: float = BARGE_IN_PRESETS["website"]
     """連續（或累積）有聲達此秒數才算插話。"""
 
     barge_in_gap_reset_s: float = 0.5

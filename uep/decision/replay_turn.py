@@ -27,6 +27,7 @@ _CTX_FIELDS = {
 
 def candidate_from_dict(data: dict[str, Any]) -> TurnCandidate:
     ctx = data.get("ctx") or {}
+    # ctx.platform 若是舊 fixture 的 "web"，由 SessionContext 建構時的相容層正規化成 "website"（DQ-3-B）
     session = SessionContext(**{k: v for k, v in ctx.items() if k in _CTX_FIELDS})
     return TurnCandidate(
         candidate_id=data["candidate_id"],

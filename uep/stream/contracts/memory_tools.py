@@ -6,6 +6,7 @@ N5 去重：``member_recall`` 的 schema、成員標籤常數、工具結果字�
 from __future__ import annotations
 
 import inspect
+import re
 from typing import Any
 
 MEMBER_RECALL = "member_recall"
@@ -102,6 +103,24 @@ ABOUT_BAD_REF = "找不到這個編號對應的內容，請先查詢相關內容
 ABOUT_REASON_TEXT = {
     "already_hidden": "這條內容先前已經處理過了。",
 }
+
+
+ABOUT_REF_LINE = re.compile(r"^(- 〔旁證)(\d+)〕", re.MULTILINE)
+"""旁證編號只認行首的「- 〔旁證N〕」（引擎渲染格式）；他人內容被壓成單行接在冒號後，偽造的「〔旁證N〕」不會落在行首。"""
+
+
+def visible_about_refs(text: str) -> set[int]:
+    """文字中實際以行首格式渲染的旁證編號集合。"""
+    return {int(m.group(2)) for m in ABOUT_REF_LINE.finditer(text)}
+
+
+def renumber_about_refs(text: str, mapping: dict[int, int]) -> str:
+    """把行首的旁證編號換成 ``mapping`` 指定的編號；不在 mapping 內的（沒有登記）拿掉編號，避免與已分配的編號混淆。"""
+    def sub(m: re.Match[str]) -> str:
+        new = mapping.get(int(m.group(2)))
+        return f"{m.group(1)}{new}〕" if new else f"{m.group(1)}〕"
+
+    return ABOUT_REF_LINE.sub(sub, text)
 
 
 def about_me_text(name: str, res: dict[str, Any] | None) -> str:

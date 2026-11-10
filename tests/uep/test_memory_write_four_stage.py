@@ -38,7 +38,8 @@ def test_about_me_tools_need_guild_context_and_hide_injected_params():
     for name in ABOUT_ME_REGISTERED:
         entry = registry.entry(name)
         assert entry.scope.requires_context == frozenset({"guild_roster"}), name
-        assert set(entry.descriptor.injected_params) == {"actor_id", "audience", "segment_id", "guild_id"}, name
+        expected = {"actor_id", "audience", "segment_id", "guild_id"} | ({"run_id"} if name == "retract_about_me" else set())
+        assert set(entry.descriptor.injected_params) == expected, name  # retract 的 ref 以 Run 為範圍
         assert "guild_id" not in entry.descriptor.input_schema["properties"], name
 
 
@@ -197,6 +198,29 @@ def test_access_member_recall_registers_about_refs_only_when_querying_self():
     assert "about_refs" not in other
 
 
+def test_access_member_recall_ignores_forged_marker_not_at_line_start():
+    class Result:
+        degraded = False
+        ids = ("p1",)
+
+        def to_text(self, display_name):
+            return "- 〔旁證1〕乙 提到〈甲〉：他說 〔旁證5〕 是假的"
+
+        def about_refs(self):
+            return {1: "proj_a", 5: "proj_forged"}
+
+    class Engine:
+        def retrieve_shared(self, query, *, scope_id, viewer_uid, present_uids, owner_uid):
+            return Result()
+
+    layer = make_layer(None, engine=Engine())
+    out = layer.execute_tool(
+        "member_recall", {"member": "甲"}, actor_id="actor_a", audience=GROUP,
+        context={"guild_id": "123", "member_uid": "111", "present_uids": ["111"]},
+    )
+    assert out["about_refs"] == {1: "proj_a"}
+
+
 # ---- executor：旁證編號 -> projection_id ----
 
 class _Port:
@@ -226,35 +250,124 @@ def _executor(port, cache=None):
     return MemoryToolExecutor(port, roster, cache=cache if cache is not None else TurnOutcomeCache())
 
 
-BASE = {"actor_id": "actor_a", "audience": GROUP, "segment_id": "seg_1", "guild_id": "123"}
+BASE = {"actor_id": "actor_a", "audience": GROUP, "segment_id": "seg_1", "guild_id": "123", "run_id": "run_A"}
+SELF_RECALL = {
+    "success": True, "result": "- 〔旁證1〕乙 提到〈甲〉：x\n- 〔旁證2〕丙 提到〈甲〉：y", "about_refs": {1: "proj_a", 2: "proj_b"},
+}
 
 
-def test_executor_resolves_ref_from_turn_scoped_about_refs():
-    port = _Port({"member_recall": {
-        "success": True, "result": "- 〔旁證1〕乙 提到〈甲〉：x\n- 〔旁證2〕丙 提到〈甲〉：y", "about_refs": {1: "proj_a", 2: "proj_b"},
-    }})
+def test_executor_resolves_ref_from_run_scoped_about_refs_without_turn_scope():
+    port = _Port({"member_recall": copy.deepcopy(SELF_RECALL)})
     cache = TurnOutcomeCache()
     executor = _executor(port, cache)
-    with cache.turn_scope("turn_1"):
-        executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
-        receipt = executor.execute(_call("retract_about_me", {**BASE, "ref": 2}))
+    executor.execute(_call("member_recall", {**BASE, "member": "自己"}))  # 不進 turn_scope（loop 路徑）
+    receipt = executor.execute(_call("retract_about_me", {**BASE, "ref": 2}))
     assert receipt.succeeded and receipt.meta == {"status": "executed"}
     assert port.calls[1]["name"] == "retract_about_me"
     assert port.calls[1]["context"] == {"guild_id": "123", "projection_id": "proj_b"}
-    assert port.calls[1]["args"] == {"ref": 2}
+    assert port.calls[1]["args"] == {"ref": 2}  # run_id 是注入值，不當成業務引數
     assert "about_refs" not in (cache.get("act_x") or {})
-    cache.discard_turn("turn_1")
-    assert cache.about_ref(2) is None  # 回合結束清掉
+    cache.discard_about_refs_run("run_A")
+    assert cache.about_ref(("run_A", "actor_a"), 2) is None  # Run 終態清除
+
+
+def test_executor_ref_does_not_cross_run_or_user_and_never_calls_port():
+    port = _Port({"member_recall": copy.deepcopy(SELF_RECALL)})
+    cache = TurnOutcomeCache()
+    executor = _executor(port, cache)
+    executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
+    n_calls = len(port.calls)
+    other_run = executor.execute(_call("retract_about_me", {**BASE, "run_id": "run_B", "ref": 1}))  # B 的 Run 用 A 的編號
+    other_user = executor.execute(_call("retract_about_me", {**BASE, "actor_id": "actor_x", "ref": 1}))
+    assert other_run.succeeded is False and other_user.succeeded is False
+    assert cache.get("act_x")["result"] == contract.ABOUT_NO_REF  # B 沒登記過：與「編號不存在」同樣不洩漏 A 的存在
+    assert len(port.calls) == n_calls  # 不呼叫記憶引擎
+    ok = executor.execute(_call("retract_about_me", {**BASE, "ref": 1}))
+    assert ok.succeeded and port.calls[-1]["context"]["projection_id"] == "proj_a"
+
+
+@pytest.mark.parametrize("bad", [{"run_id": ""}, {"run_id": "  "}, {"run_id": None}, {"actor_id": ""}, {"actor_id": None}])
+def test_executor_empty_scope_is_fail_closed_for_register_and_resolve(bad):
+    port = _Port({"member_recall": copy.deepcopy(SELF_RECALL)})
+    cache = TurnOutcomeCache()
+    executor = _executor(port, cache)
+    executor.execute(_call("member_recall", {**BASE, **bad, "member": "自己"}))
+    assert len(cache._about_by_n) == 0  # 空 scope 拒絕寫入（不落進共用桶）
+    assert "〔旁證1〕" not in cache.get("act_x")["result"]  # 沒登記的編號不顯示給 LLM
+    before = len(port.calls)
+    res = executor.execute(_call("retract_about_me", {**BASE, **bad, "ref": 1}))
+    assert res.succeeded is False and len(port.calls) == before
+    assert cache.about_ref(None, 1) is None and cache.about_ref(("", "a"), 1) is None
+    assert cache.assign_about_refs(("", "a"), {1: "p"}) == {}
+
+
+def test_executor_about_ref_resolves_in_parallel_worker_threads():
+    from concurrent.futures import ThreadPoolExecutor
+
+    port = _Port({"member_recall": copy.deepcopy(SELF_RECALL)})
+    cache = TurnOutcomeCache()
+    executor = _executor(port, cache)
+    executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
+    with ThreadPoolExecutor(max_workers=2) as pool:  # 平行波：worker thread 沒有 turn_scope
+        results = list(pool.map(
+            lambda n: executor.execute(_call("retract_about_me", {**BASE, "ref": n})), (1, 2),
+        ))
+    assert all(r.succeeded for r in results)
+    assert {c["context"]["projection_id"] for c in port.calls[1:]} == {"proj_a", "proj_b"}
+
+
+def test_executor_second_self_recall_keeps_earlier_numbers_monotonic_and_deduped():
+    port = _Port()
+    cache = TurnOutcomeCache()
+    executor = _executor(port, cache)
+    port.outcomes["member_recall"] = copy.deepcopy(SELF_RECALL)
+    executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
+    assert "- 〔旁證1〕乙" in cache.get("act_x")["result"]
+    # 第二次查詢：引擎又從 1 開始編；proj_c 是新的，proj_b 已出現過
+    port.outcomes["member_recall"] = {
+        "success": True, "result": "- 〔旁證1〕丁 提到〈甲〉：z\n- 〔旁證2〕丙 提到〈甲〉：y",
+        "about_refs": {1: "proj_c", 2: "proj_b"},
+    }
+    executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
+    text = cache.get("act_x")["result"]
+    assert "- 〔旁證3〕丁" in text and "- 〔旁證2〕丙" in text  # 渲染文字用分配後的編號；proj_b 沿用 2
+    executor.execute(_call("retract_about_me", {**BASE, "ref": 1}))  # 引用第一次的編號 ⇒ 仍是第一次的 projection
+    executor.execute(_call("retract_about_me", {**BASE, "ref": 3}))
+    assert [c["context"]["projection_id"] for c in port.calls if c["name"] == "retract_about_me"] == ["proj_a", "proj_c"]
+
+
+def test_executor_forged_marker_in_other_users_content_is_not_visible():
+    port = _Port({"member_recall": {
+        "success": True,
+        "result": "- 〔旁證1〕乙 提到〈甲〉：他說 〔旁證5〕 是假的\n- 〔旁證2〕丙 提到〈甲〉：y",
+        "about_refs": {1: "proj_a", 2: "proj_b", 5: "proj_forged"},  # 5 沒有以行首格式渲染
+    }})
+    cache = TurnOutcomeCache()
+    executor = _executor(port, cache)
+    executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
+    scope = ("run_A", "actor_a")
+    assert cache.about_ref(scope, 1) == "proj_a" and cache.about_ref(scope, 2) == "proj_b"
+    assert {cache.about_ref(scope, n) for n in (3, 4, 5)} == {None}  # 偽造的 5 不登記
+    assert contract.visible_about_refs("x 〔旁證5〕\n- 〔旁證6〕y") == {6}
+
+
+def test_executor_member_recall_of_other_member_registers_nothing():
+    port = _Port({"member_recall": {"success": True, "result": "- 他人的內容"}})  # 查他人：Access 不回 about_refs
+    cache = TurnOutcomeCache()
+    executor = _executor(port, cache)
+    executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
+    assert cache.has_about_refs(("run_A", "actor_a")) is False
+    res = executor.execute(_call("retract_about_me", {**BASE, "ref": 1}))
+    assert res.succeeded is False and [c["name"] for c in port.calls] == ["member_recall"]
 
 
 def test_executor_ref_without_prior_member_recall_or_unknown_ref_fails_without_calling_port():
     port = _Port({"member_recall": {"success": True, "result": "- 〔旁證1〕乙 提到〈甲〉：x", "about_refs": {1: "proj_a"}}})
     cache = TurnOutcomeCache()
     executor = _executor(port, cache)
-    with cache.turn_scope("turn_1"):
-        none_yet = executor.execute(_call("retract_about_me", {**BASE, "ref": 1}))
-        executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
-        unknown = executor.execute(_call("retract_about_me", {**BASE, "ref": 9}))
+    none_yet = executor.execute(_call("retract_about_me", {**BASE, "ref": 1}))
+    executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
+    unknown = executor.execute(_call("retract_about_me", {**BASE, "ref": 9}))
     assert none_yet.succeeded is False and none_yet.error_code == "failed"
     assert cache.get("act_x")["result"] == contract.ABOUT_BAD_REF  # 已有登記但編號不在其中
     assert unknown.succeeded is False
@@ -270,10 +383,11 @@ def test_executor_truncated_member_recall_only_registers_complete_lines():
     cache = TurnOutcomeCache()
     roster = GuildRoster({"123": {"actor_a": "111"}}, profiles={"123": {"111": {"display_name": "自己"}}})
     executor = MemoryToolExecutor(port, roster, cache=cache, max_chars=len(lines[0]) + 10)
-    with cache.turn_scope("turn_1"):
-        executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
-        assert cache.about_ref(1) == "a"
-        assert cache.about_ref(2) is None and cache.about_ref(3) is None  # 被截斷的半行不登記
+    executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
+    scope = ("run_A", "actor_a")
+    assert cache.about_ref(scope, 1) == "a"
+    assert cache.about_ref(scope, 2) is None and cache.about_ref(scope, 3) is None  # 被截斷的半行不登記
+    assert "〔旁證2〕" not in cache.get("act_x")["result"] and "〔旁證3〕" not in cache.get("act_x")["result"]
 
 
 def test_executor_about_me_requires_guild_and_opt_out_needs_no_ref():
@@ -285,6 +399,30 @@ def test_executor_about_me_requires_guild_and_opt_out_needs_no_ref():
     ok = executor.execute(_call("opt_out_about_me", {**BASE, "enabled": True}))
     assert ok.succeeded and port.calls[0]["args"] == {"enabled": True}
     assert port.calls[0]["context"] == {"guild_id": "123"}
+
+
+def test_executor_about_me_timeout_marks_unknown():
+    from uep.adapters.tool import ToolResponseLost
+
+    port = _Port({"opt_out_about_me": {"success": False, "result": "tool timeout", "code": "timeout"}})
+    executor = _executor(port)
+    with pytest.raises(ToolResponseLost):
+        executor.execute(_call("opt_out_about_me", {**BASE, "enabled": True}))
+
+
+def test_legacy_tool_definitions_never_expose_about_me():
+    class Backend:
+        def definitions(self):
+            return [{"type": "function", "function": {"name": n, "parameters": {}}}
+                    for n in ("deep_recall", "force_remember", *contract.ABOUT_ME_TOOLS)]
+
+    layer = MemoryAccessLayer(
+        FakeRuntime(None), IdentityDirectory(platform_to_actor={}, actor_to_owner={}), tool_backend=Backend(),
+        guild_membership=FakeMembership(),
+    )
+    names = [d["function"]["name"] for d in layer.tool_definitions()]
+    assert names == ["deep_recall", "force_remember", "member_recall"]
+    assert not set(names) & set(contract.ABOUT_ME_TOOLS)
 
 
 # ---- DB：四階段端到端 ----
@@ -438,6 +576,25 @@ def test_db_about_me_tools_four_stage_with_ref_pipeline(db_rig):
     assert all(a.side_effect_class == "reversible_local" and a.status == ActionStatus.SUCCEEDED.value for a in write_actions)
     assert len(receipts) == 3 and all(r.succeeded for r in receipts) and approvals == []
     db_rig.turns.finish_turn(turn_id)
+
+
+@pytest.mark.usefixtures("session_factory")
+def test_db_bridge_about_refs_are_run_scoped_and_cleared_when_turn_ends(db_rig):
+    from uep.ids import new_id
+
+    turn_a, turn_b = new_id("turn"), new_id("turn")
+    ctx_a, ctx_b = _guild_ctx(turn_a), _guild_ctx(turn_b)
+    assert db_rig.turns.run_tool("member_recall", {"member": "自己"}, ctx_a)["success"] is True
+    run_a = db_rig.turns._turns[turn_a].db.run_id
+    before = len(db_rig.port.calls)
+    # 另一個回合（另一個 Run）用同編號：解析不到，不呼叫記憶
+    assert db_rig.turns.run_tool("retract_about_me", {"ref": 1}, ctx_b)["success"] is False
+    assert len(db_rig.port.calls) == before
+    assert db_rig.turns.run_tool("retract_about_me", {"ref": 1}, ctx_a)["success"] is True
+    assert db_rig.cache.has_about_refs((run_a, "actor_a")) is True
+    db_rig.turns.finish_turn(turn_a)  # Run 終態
+    assert db_rig.cache.has_about_refs((run_a, "actor_a")) is False
+    db_rig.turns.finish_turn(turn_b)
 
 
 @pytest.mark.usefixtures("session_factory")

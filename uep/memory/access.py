@@ -460,7 +460,7 @@ class MemoryAccessLayer:
         if self._tool_backend is not None:
             names = [
                 n for n in (_tool_name(d) for d in self._tool_backend.definitions())
-                if n in TOOL_CLASSES and n != MEMBER_RECALL
+                if n in TOOL_CLASSES and n != MEMBER_RECALL and n not in _contract.ABOUT_ME_TOOLS
             ]
         if self._membership is not None:
             names.append(MEMBER_RECALL)
@@ -594,7 +594,8 @@ class MemoryAccessLayer:
             if member_uid == viewer:
                 # 旁證編號只在查說話者本人時才有意義（「關於我」工具的 ref）；只登記實際渲染在文字裡的編號
                 refs = _extract_about_refs(result)
-                outcome["about_refs"] = {n: pid for n, pid in refs.items() if f"〔旁證{n}〕" in text}
+                shown = _contract.visible_about_refs(text)
+                outcome["about_refs"] = {n: pid for n, pid in refs.items() if n in shown}
             return outcome
 
         try:

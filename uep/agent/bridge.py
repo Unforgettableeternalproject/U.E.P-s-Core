@@ -99,6 +99,8 @@ class AgentToolTurns:
                 late = turn.closed
             if late:  # 收尾逾時之後才回來的呼叫：它寫進暫存的東西也要清掉
                 self._cache.discard_turn(turn.turn_id)
+                if turn.db is not None:
+                    self._cache.discard_about_refs_run(turn.db.run_id)
 
     def finish_turn(self, turn_id: str) -> None:
         with self._lock:
@@ -120,6 +122,8 @@ class AgentToolTurns:
                 self._tasks.finish_turn_task(db.task_id, abandon_executing=not drained)
         finally:
             self._cache.discard_turn(turn_id)  # 整批清除：結果暫存與 receipt 查核表
+            if db is not None:
+                self._cache.discard_about_refs_run(db.run_id)  # Run（回合）終態：旁證編號一併清除
 
     # ---- 內部 ----
     def _db(self, turn: _Turn, context: dict[str, Any]) -> _TurnDb:
@@ -152,6 +156,7 @@ class AgentToolTurns:
             self._tags, ProjectionContext(available_context=available, audience=audience)
         )
         injected = {k: context[k] for k in INJECTED_CONTEXT_KEYS if k in context}
+        injected["run_id"] = db.run_id  # 旁證編號的範圍（Run）；經注入值帶入，不靠執行緒區域
         core = AgentCore(
             None, self._tasks, self._gateway, worker_epoch=db.epoch, content_lookup=self._cache.text,
         )

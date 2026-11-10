@@ -211,7 +211,9 @@ class AgentLoop:
         content_lookup: Callable[[str], str | None] | None = None, consults: _ConsultStore | None = None,
         consult_scope: Callable[[], Mapping[str, Collection[str]]] | None = None,
         on_escalate: Callable[[EscalationCandidate], None] | None = None,
+        run_cleanup: Callable[[str], None] | None = None,
     ) -> None:
+        self._run_cleanup = run_cleanup  # Run 終態（非 park）時清除以 run_id 為鍵的回合範圍暫存（例如旁證編號）
         self._consults = consults
         self._consult_scope = consult_scope
         self._on_escalate = on_escalate
@@ -468,6 +470,10 @@ class AgentLoop:
             return dict(cap)
         return {"tools": [dict(t) for t in cap.get("tools", ()) if t["tool"] != CONSULT_TOOL]}
 
+    def _run_injected(self, st: _State) -> dict[str, Any]:
+        """一般工具的注入值：Core 持有的基礎值加上 ``run_id``（旁證編號等以 Run 為範圍的暫存用；顯式帶入，不靠執行緒區域）。"""
+        return {**self._base_injected, "run_id": st.run_id}
+
     def _consult_injected(self, st: _State, step_id: str, ordinal: int) -> dict[str, Any]:
         now = self._scope_now()
         values: dict[str, Any] = {
@@ -578,6 +584,11 @@ class AgentLoop:
         discard = getattr(self._consults, "discard_run", None)
         if callable(discard):
             discard(st.run_id)
+        if self._run_cleanup is not None:
+            try:
+                self._run_cleanup(st.run_id)
+            except Exception as exc:  # noqa: BLE001 - 清理失敗不影響 Run 終態
+                logger.warning("Run 終態清理失敗：%s", type(exc).__name__)
 
     def _checkpoint(self, st: _State, semantic: str, pending: Sequence[str] = ()) -> None:
         revision, digest = persist_child(self._store, st.child_ref, st.transcript)
@@ -872,7 +883,7 @@ class AgentLoop:
             is_consult = calls[k]["name"] == CONSULT_TOOL
             res = self._core.screen_intent(
                 run_id=st.run_id, step_id=step_id, ordinal=k, capability_set=cap, tool=calls[k]["name"], args=it.get("args"),
-                injected=self._consult_injected(st, step_id, k) if is_consult else None,
+                injected=self._consult_injected(st, step_id, k) if is_consult else self._run_injected(st),
             )
             if isinstance(res, IntentResult):
                 views[k], observed[k] = res.view, "rejected"
@@ -1054,6 +1065,7 @@ class AgentLoop:
         可重試的 ``PresenceRequired`` 與缺／過期核准一樣再次 park；不可重試的（階段 1.5，action 已 FAILED、核准已消耗）視為已執行且失敗。"""
         screened = self._core.screen_intent(
             run_id=st.run_id, step_id=step_id, ordinal=ordinal, capability_set=st.cap, tool=call["name"], args=call["args"],
+            injected=self._run_injected(st),
         )
         if isinstance(screened, IntentResult):
             res = screened

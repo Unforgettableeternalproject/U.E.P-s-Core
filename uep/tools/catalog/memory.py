@@ -26,6 +26,8 @@ GUILD_ROSTER_CONTEXT = "guild_roster"
 # PD-12：身分與場域由 Core 每輪在 Gateway 注入（LLM 面 schema 看不到，也不能提供）；執行時 executor 只讀這些欄位
 INJECTED_IDENTITY = ("actor_id", "audience", "segment_id")
 INJECTED_GUILD = ("guild_id",)
+# 旁證編號（「關於我」的 ref）以 Run 為範圍：由呼叫端（bridge／loop）在注入值帶入，executor 不依賴執行緒區域
+INJECTED_RUN = ("run_id",)
 
 # 工具結果（execute_tool 的回傳）形狀：失敗時帶 code（denied／timeout／failed）。
 MEMORY_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -122,7 +124,7 @@ def memory_entries() -> list[ToolEntry]:
             descriptor=ToolDescriptor(
                 description=_contract.MEMBER_RECALL_DESCRIPTION,
                 input_schema=_contract.MEMBER_RECALL_SCHEMA["parameters"],
-                injected_params=INJECTED_IDENTITY + INJECTED_GUILD,
+                injected_params=INJECTED_IDENTITY + INJECTED_GUILD + INJECTED_RUN,
             ),
             # 取代 host._refresh_tools 內「有 guild 才曝光」的硬編碼；投影在切片 B 啟用。
             scope=ToolScope(requires_context=frozenset({GUILD_ROSTER_CONTEXT})),
@@ -153,7 +155,7 @@ def _about_me_entry(name: str) -> ToolEntry:
         ),
         descriptor=ToolDescriptor(
             description=declaration["description"], input_schema=declaration["parameters"],
-            injected_params=INJECTED_IDENTITY + INJECTED_GUILD,
+            injected_params=INJECTED_IDENTITY + INJECTED_GUILD + (INJECTED_RUN if name == _contract.RETRACT_ABOUT_ME else ()),
         ),
         scope=ToolScope(requires_context=frozenset({GUILD_ROSTER_CONTEXT})),
         output_schema=MEMORY_OUTPUT_SCHEMA,

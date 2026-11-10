@@ -87,6 +87,7 @@ class InferenceConfig:
     llm_model: str | None = None
     system_prompt: str = ""
     think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
+    compress: Any = None  # CompressConfig（長對話壓縮，由 UepSettings.compress_config() 解析）；None＝停用，沿用 history_limit 截斷
     tts_engine: str = "indextts2"
     vox_config: Mapping[str, Any] | None = None  # 原樣轉給 VoxBackend(config)；None＝不傳
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
@@ -135,6 +136,7 @@ class InferenceConfig:
             stt_mode=settings.infer_stt_mode, stt_language=settings.infer_stt_language,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
             system_prompt=settings.infer_system_prompt, think=settings.think_config(),
+            compress=settings.compress_config(),
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
             think_prepare_timeout_s=settings.infer_think_prepare_timeout_s,
             input_prepare_timeout_s=settings.infer_input_prepare_timeout_s,
@@ -474,6 +476,10 @@ def build_inference_wiring(
     llm = think_backend if think_backend is not None else (think_backend_factory or default_think_backend)(cfg)
     think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt, "config": cfg.think}
     think_kwargs.update(extra.get("think", {}))
+    from uep.stream.adapters.think_compress import compression_kwargs
+
+    for key, value in compression_kwargs(cfg.compress, cfg.think, llm).items():
+        think_kwargs.setdefault(key, value)
     recommended = _vox_recommended_split_policy(cfg, speak)
     if recommended is not None:
         think_kwargs.setdefault("split_policy", recommended)

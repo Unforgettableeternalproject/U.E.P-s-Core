@@ -6,15 +6,17 @@
 ``isolated``／逾時／例外／非法回傳則結果未明，action 由 Run 的 force 轉 UNKNOWN、經 ``resolve_unknown`` 查核（T-3），不重送。
 
 ``prepare(run_id)`` 先取 EXECUTING 快照並回傳「稍後執行 cancel」的函式，讓呼叫端（Supervisor）能在 force 之後才取消。
-cancel 在執行緒池平行呼叫，並有總逾時；逾時視為 ``isolated``，不累加阻塞（卡住的 cancel 執行緒會留在背景，不影響呼叫端）。
+cancel 各在一條 daemon 執行緒平行呼叫，並有總逾時；逾時視為 ``isolated``，不累加阻塞（卡住的 cancel 執行緒會留在背景，
+且因為是 daemon，不會阻止行程結束；不用 ``ThreadPoolExecutor``，它的 worker 在解譯器結束時會被 join）。
 已知限制：``action_intents`` 沒有保存建立時的 ``interruptible``，這裡以當前註冊表宣告判定（``tool_version`` 漂移時可能不一致，
 但漂移時只會多／少一次盡力而為的 cancel，不影響終態）。
 """
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any, Literal
 
 from uep.adapters.tool import ToolExecutor, ToolSpecResolver, supports_cancel
@@ -60,18 +62,24 @@ class ActionCanceller:
             else:
                 targets.append((a, executor))
         if targets:
-            pool = ThreadPoolExecutor(max_workers=len(targets), thread_name_prefix="tool-cancel")
-            try:
-                futures = {a.action_id: pool.submit(self._cancel_one, a.action_id, ex) for a, ex in targets}
-                wait(list(futures.values()), timeout=self._timeout_s)
-                for action_id, future in futures.items():
-                    if future.done():
-                        results[action_id] = future.result()
-                    else:
-                        logger.warning("executor.cancel 逾時（%.1fs），視為 isolated：action=%s", self._timeout_s, action_id)
-                        results[action_id] = "isolated"
-            finally:
-                pool.shutdown(wait=False, cancel_futures=True)
+            slots: dict[str, dict[str, CancelResult]] = {}
+            threads: dict[str, threading.Thread] = {}
+            for a, ex in targets:
+                slot: dict[str, CancelResult] = {}
+                slots[a.action_id] = slot
+                threads[a.action_id] = thread = threading.Thread(
+                    target=self._run_cancel, args=(a.action_id, ex, slot), name="tool-cancel", daemon=True,
+                )
+                thread.start()
+            deadline = time.monotonic() + self._timeout_s
+            for action_id, thread in threads.items():
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+                outcome = slots[action_id].get("outcome")
+                if outcome is None:
+                    logger.warning("executor.cancel 逾時（%.1fs），視為 isolated：action=%s", self._timeout_s, action_id)
+                    results[action_id] = "isolated"
+                else:
+                    results[action_id] = outcome
         for action_id, outcome in results.items():
             logger.info("D69 cancel 結果：action=%s outcome=%s", action_id, outcome)
         return results
@@ -86,6 +94,10 @@ class ActionCanceller:
             logger.warning("取消前解析工具宣告失敗，略過：action=%s tool=%s", action.action_id, action.tool)
             return None
         return executor if interruptible == "interruptible" else None
+
+    @classmethod
+    def _run_cancel(cls, action_id: str, executor: ToolExecutor, slot: dict[str, CancelResult]) -> None:
+        slot["outcome"] = cls._cancel_one(action_id, executor)
 
     @staticmethod
     def _cancel_one(action_id: str, executor: ToolExecutor) -> CancelResult:

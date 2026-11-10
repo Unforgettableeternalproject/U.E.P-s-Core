@@ -206,7 +206,7 @@ Agent Core（**新增**）是 Core 內「worker」的實作：持有 `worker_epo
 Supervisor（**新增**）是 Core 內的週期性監督元件。實作形式建議沿用 `PresenceMaintenance` 的 tick 模式（`uep/tasks/presence_bridge.py`），決策 D67。
 
 **SV-1**（關機暫停）：
-1. `CoreAssembly.shutdown()` 在 `_close_inputs()`（含 `bus.stop()`）**之前**，同步呼叫 `supervisor.pause_all(PauseReason.CORE_SHUTDOWN)`；不依賴 `core.stopping` 事件被訂閱（該事件無發佈者且 Bus 是 best-effort，E-13）。暫停完成後才可另發 `core.stopping` 供觀測。
+1. `CoreAssembly.shutdown()` 的順序（實作後修訂，原寫「在 `_close_inputs()` 之前」）：停 Supervisor 迴圈 → **先停產生工作的入口**（ES Host、記憶 Host、endpoint socket；進行中的回合照既有流程收尾，回合 Task 由 Agent Core `finish_turn_task` 結束）→ 同步呼叫 `supervisor.pause_all(PauseReason.CORE_SHUTDOWN)`（連同 3. 的等待）→ 決策日誌、stop API、維護迴圈、橋接與 `bus.stop()`。理由：入口停掉之後才暫停，進行中的回合 Task 才不會在被 PAUSED 後才收尾而被 `finish_turn_task` 判成 `FAILED(turn_not_running)`（違反 4.），`pause_all` 之後也不會再有新回合 Task 建立；Bus 仍在暫停之後才停，暫停事件才送得出去。不依賴 `core.stopping` 事件被訂閱（該事件無發佈者且 Bus 是 best-effort，E-13）。暫停完成後才可另發 `core.stopping` 供觀測。
 2. `pause_all` 對每個未終態 Task 呼叫 `pause_task`。**`UNKNOWN` 的 Task／Run 無 `PAUSED` 邊**（`RUN_TRANSITIONS[UNKNOWN]` 為 `{RUNNING, SUCCEEDED, FAILED, CANCELLED}`），略過並記 warning，留待重啟後查核；單一 Task 失敗不影響其餘（同 `pause_presence_bound`）。
 3. 暫停後，對仍有 `EXECUTING` action 的 Run 等待其 receipt，**等待上限為 `shutdown_grace`**（調校起點 10 秒，設定項）。逾時不再等，`shutdown()` 繼續；該 action 保持 `EXECUTING`，重啟後 `resume_run` 轉 `UNKNOWN` 查核（T-11）。`non_interruptible` 的等待同樣受此上限約束，不得無限期阻擋關機。
 4. 不寫 `task.cancelled`／`task.failed`（E-10）。

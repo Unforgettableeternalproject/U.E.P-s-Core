@@ -17,7 +17,13 @@
 2. Bus 啟動、Runtime 軸 STARTING、Presence 初始投影、presence_bound Task 補暫停（reconcile）。
 3. 維護迴圈（``maintenance_interval`` 不為 None 時）：定期 ``presence.expire_due()`` 與 ``bridge.reconcile()``，
    讓到期與橋接失敗不依賴外部觸發而補上（T-23）。Supervisor 迴圈（同條件）隨後啟動，定期 deadline／核准過期／孤兒回合掃描
-   （D67；``UEP_SUPERVISOR_ENABLED`` 預設開）。``shutdown`` 在關閉入口之前同步 ``supervisor.shutdown()``（SV-1）。
+   （D67；``UEP_SUPERVISOR_ENABLED`` 預設開）。
+
+關閉順序（``CoreAssembly.shutdown``，SV-1）：停 Supervisor 迴圈 -> 先停產生工作的入口（ES Host、記憶 Host、endpoint socket；
+進行中的回合照既有流程收尾，回合 Task 由 Agent Core ``finish_turn_task`` 結束）-> 同步 ``supervisor.shutdown()``
+（``pause_all(CORE_SHUTDOWN)`` 加等 receipt，上限 ``shutdown_grace``）-> 決策日誌、stop API、維護迴圈、橋接、Bus。
+理由：入口停掉之後才暫停，才不會有回合在 Task 被 PAUSED 後才收尾而被 ``finish_turn_task`` 判成 FAILED(turn_not_running)，
+也不會在 ``pause_all`` 之後又建出新的回合 Task；Bus 在暫停之後才停，暫停事件才送得出去。
 4. 其後才啟動 relay（``relay_starters``，例如 outbox relay）與全域停止本機 API。
 5. Runtime 軸 READY。
 
@@ -86,7 +92,12 @@ from uep.presence.manager import PresenceManager
 from uep.state.coordinator import Axis, RuntimeState, StateCoordinator
 from uep.stop.api import LocalStopServer
 from uep.stop.service import GlobalStop, make_flag_blocker
-from uep.tasks.manager import IllegalTransition, TaskManager, TransitionRequest
+from uep.tasks.manager import (
+    TURN_MAX_DURATION,
+    IllegalTransition,
+    TaskManager,
+    TransitionRequest,
+)
 from uep.tasks.presence_bridge import (
     DEFAULT_MAINTENANCE_INTERVAL,
     PresenceMaintenance,
@@ -184,7 +195,7 @@ class CoreAssembly:
     echo: EchoPipelineHost | None = None  # P3 S3：可選；啟動於 memory 之後（ES 需要 MemoryPort）、relay 之前
     decision_log: DecisionLogWriter | None = None  # 決策日誌寫入器（有 echo 且啟用時才有）；於 echo／memory 停止後才關閉
     supervisor: Supervisor | None = None  # D67：停用（UEP_SUPERVISOR_ENABLED=0）時為 None
-    supervisor_loop: SupervisorLoop | None = None  # 僅在維護迴圈啟用（maintenance_interval 不為 None）時建立
+    supervisor_loop: SupervisorLoop | None = None  # Supervisor 啟用且 supervisor_interval 不為 0 時建立（與維護迴圈各自獨立）
 
     def start(self) -> None:
         """依上述順序啟動；冪等。失敗時關閉已綁定的入口（stop API、endpoint socket）、訂閱與 Bus 後上拋。"""
@@ -236,11 +247,15 @@ class CoreAssembly:
         self.started = True
 
     def _close_inputs(self) -> None:
-        """關閉入口、訂閱與 Bus（不寫 DB）；可重複呼叫。
+        """關閉入口、訂閱與 Bus（不寫 DB）；可重複呼叫。啟動失敗的收尾路徑用；正常關機由 ``shutdown`` 分兩段呼叫。"""
+        self._stop_intake()
+        self._stop_infrastructure()
+
+    def _stop_intake(self) -> None:
+        """第一段：停止產生工作的入口，讓進行中的回合照既有流程收尾（可重複呼叫，每一步獨立容錯）。
 
         停止序反向於啟動：ES Host 最先停（停 feed、cancel_all、等 commit 與事件寫完；它的 sink 與事件都還要
-        經 Bus／Gateway，也還要用 memory 做 store），其次記憶 Host（它的 sink 還要經 Bus 發布），之後才關
-        endpoint socket 等入口。每一步獨立容錯。"""
+        經 Bus／Gateway，也還要用 memory 做 store），其次記憶 Host（它的 sink 還要經 Bus 發布），之後關 endpoint socket。"""
         if self.echo is not None:
             try:
                 self.echo.stop()
@@ -253,6 +268,11 @@ class CoreAssembly:
             except Exception:
                 logger.exception("MemoryHost 停止失敗")
             self.start_log.append("memory.stop")
+        if self.endpoint_server is not None:
+            self.endpoint_server.close()
+
+    def _stop_infrastructure(self) -> None:
+        """第二段：決策日誌、stop API、迴圈、橋接與 Bus（在 Supervisor 關機暫停之後）。"""
         if self.decision_log is not None:
             # 最後才關：echo／memory（含其擁有的 dream）停止前仍可能送出決策；排空佇列後才釋放連線
             try:
@@ -262,10 +282,10 @@ class CoreAssembly:
             self.start_log.append("decision_log.close")
         if self.stop_api is not None:
             self.stop_api.stop()
-        if self.endpoint_server is not None:
-            self.endpoint_server.close()
         if self.maintenance is not None:
             self.maintenance.stop()
+        if self.supervisor_loop is not None:
+            self.supervisor_loop.stop()
         self.bridge.stop()
         self.bus.stop()
 
@@ -278,14 +298,15 @@ class CoreAssembly:
             logger.exception("Runtime 軸寫入 STOPPING 失敗")
         if self.supervisor_loop is not None:
             self.supervisor_loop.stop()  # 先停 tick，避免與關機暫停競爭
+        self._stop_intake()  # 入口先停：進行中的回合收尾、不再有新回合 Task（M1）
         if self.supervisor is not None and self.started:
-            # SV-1：在 bus.stop() 之前同步暫停所有未終態 Task／Run（PAUSED(core_shutdown)），不依賴事件被訂閱
+            # SV-1：入口停止之後、bus.stop() 之前同步暫停所有未終態 Task／Run（PAUSED(core_shutdown)），不依賴事件被訂閱
             try:
                 self.supervisor.shutdown()
             except Exception:
                 logger.exception("Supervisor 關機暫停失敗")
             self.start_log.append("supervisor.shutdown")
-        self._close_inputs()
+        self._stop_infrastructure()
         self.started = False
 
 
@@ -455,6 +476,7 @@ def assemble_core(
     loop_entry: Callable[[Any, Any], object] | None = None,
     decision_log: bool | None = None,
     supervisor: bool | None = None,
+    supervisor_interval: float | None = None,
     platform_shadow: bool | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
@@ -472,7 +494,9 @@ def assemble_core(
     於所有驗證之後才建立，任何 ``AssemblyError`` 都不會留下寫入器，關閉由 ``CoreAssembly.shutdown`` 負責。
     ``supervisor``：None 依 ``UEP_SUPERVISOR_ENABLED``（預設啟用）；False 不建立。建立時以 ``ActionCanceller.prepare`` 作為
     ``cancel_actions``；間隔、``shutdown_grace``、``deadline_grace``、cancel 逾時取自設定（``UEP_SUPERVISOR_*``）。
-    背景 tick 迴圈與維護迴圈同條件（``maintenance_interval`` 不為 None）；關機暫停則不論是否有迴圈都會執行。
+    ``supervisor_interval`` 為背景 tick 間隔秒數，與 ``maintenance_interval`` 各自獨立：None 取 ``UEP_SUPERVISOR_INTERVAL_S``，
+    0 不建立迴圈（由外部排程）；關機暫停則不論是否有迴圈都會執行。孤兒掃描的 ``older_than`` 取 ``UEP_SUPERVISOR_ORPHAN_OLDER_THAN_S``，
+    必須大於 ``TURN_MAX_DURATION``，否則 ``AssemblyError``。
     ``strict`` 為 True 時，缺少（或過短的）``UEP_PAYLOAD_HASH_KEY`` 直接拒絕組裝；預設只告警。
     ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
@@ -596,14 +620,23 @@ def assemble_core(
     supervisor_loop: SupervisorLoop | None = None
     settings = get_settings()
     if settings.supervisor_enabled if supervisor is None else supervisor:
+        orphan_older_than = timedelta(seconds=settings.supervisor_orphan_older_than_s)
+        if orphan_older_than <= TURN_MAX_DURATION:
+            raise AssemblyError(
+                f"UEP_SUPERVISOR_ORPHAN_OLDER_THAN_S 必須大於 TURN_MAX_DURATION（{TURN_MAX_DURATION}），否則會誤收仍在進行的回合"
+            )
+        interval = settings.supervisor_interval_s if supervisor_interval is None else supervisor_interval
+        if interval < 0:
+            raise AssemblyError("supervisor_interval 不可為負數")
         canceller = ActionCanceller(tasks, executors, tool_resolver, timeout_s=settings.supervisor_cancel_timeout_s)
         supervisor_obj = Supervisor(
             tasks, deadline_grace=timedelta(seconds=settings.supervisor_deadline_grace_s),
+            older_than=orphan_older_than,
             shutdown_grace=timedelta(seconds=settings.supervisor_shutdown_grace_s),
             cancel_actions=canceller.prepare, **clock_kw,
         )
-        if maintenance_interval is not None:
-            supervisor_loop = SupervisorLoop(supervisor_obj, interval=settings.supervisor_interval_s)
+        if interval > 0:
+            supervisor_loop = SupervisorLoop(supervisor_obj, interval=interval)
 
     for event_type in _PRESENCE_PROJECTED + ("core.component_health_changed",):
         bus.subscribe(event_type, state.project_event)

@@ -347,12 +347,26 @@ def test_mark_failure_after_notify_resends_with_the_same_key():
     assert sup.tick(at(manager, 10)).notified == 0
 
 
-def test_default_notify_is_a_noop():
+def test_without_notify_channel_expiry_is_skipped_unmarked_and_warned_once(caplog):
+    """m3：沒接通知通道時不可把核准過期標成已通知；同一 run＋expiry 的 warning 只記第一次。"""
     manager = FakeManager()
     sup = Supervisor(manager, clock=lambda: T0)  # type: ignore[arg-type]
     run = manager.add(status="WAITING_APPROVAL", beat=None)
     run.approval_expiry = T0 - timedelta(seconds=1)
-    assert sup.tick().notified == 1
+    with caplog.at_level("WARNING", logger="uep.tasks.supervisor"):
+        first, second = sup.tick(), sup.tick()
+    assert (first.notified, first.approvals_expired) == (0, 0) and (second.notified, second.approvals_expired) == (0, 0)
+    assert not [c for c in manager.calls if c[0] == "mark_approval_expired"]
+    assert len([r for r in caplog.records if "未接通知通道" in r.getMessage()]) == 1
+
+
+def test_closing_supervisor_ticks_do_nothing():
+    """m2：shutdown 開始後 tick 不再處理任何 Run（尤其不 force）。"""
+    manager = FakeManager()
+    sup = Supervisor(manager, clock=lambda: T0)  # type: ignore[arg-type]
+    sup.shutdown()
+    stats = sup.tick()
+    assert stats.forced == 0 and sup.ticks == 0 and manager.swept == []
 
 
 def test_non_waiting_run_is_never_marked():

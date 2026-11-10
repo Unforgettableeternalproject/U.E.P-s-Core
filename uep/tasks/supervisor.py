@@ -83,7 +83,10 @@ class Supervisor:
         self._shutdown_grace = shutdown_grace
         self._older_than = older_than
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._notify = notify or (lambda _run_id, _key: None)
+        # None＝沒有通知通道：核准過期不處理也不標記（否則會在沒人收到通知的情況下被當成已通知），只記一次 warning
+        self._notify = notify
+        self._warned_no_notify: set[tuple[str, int]] = set()
+        self._closing = False  # shutdown 開始後 tick 不再做任何事（尤其不 force）
         # D69：``ActionCanceller.prepare``。force 前呼叫它取 EXECUTING 快照，force 後執行回傳的函式對 interruptible action
         # 呼叫 executor.cancel（action_id -> 結果，僅用於統計與 log）；None＝不取消（維持 F-3 行為）。
         # 注意：這是 fallback（worker 卡住或旗標沒被讀到）；旗標路徑的 cancel 由 Agent Core 負責
@@ -99,12 +102,16 @@ class Supervisor:
         deadline 的 force 規則：心跳新鮮時，在 ``deadline_grace`` 內不 force；超過 grace 就 force，並以 epoch 遞增圍堵慢 worker。"""
         at = now or self._clock()
         stats = SupervisorStats()
+        if self._closing:
+            return stats
         try:
             due = self._tasks.list_runs_due(at)
         except Exception:  # noqa: BLE001  單一步驟失敗不外洩
             self._fail(stats, "查詢到期的 Run 失敗，下個 tick 重試")
             due = []
         for run in due:
+            if self._closing:
+                break
             try:
                 self._handle_run(run, at, stats)
             except Exception:  # noqa: BLE001
@@ -152,6 +159,8 @@ class Supervisor:
         worker_gone = beat is None or now - beat >= stale_after  # T-12：心跳新鮮 ⇒ worker 還活著，絕不 force
         if not (worker_gone or now - requested_at > self._grace):
             return False
+        if self._closing:
+            return False  # 關機開始：Run 已（或即將）PAUSED(core_shutdown)，不 force
         cancel_run = self._snapshot_in_flight(run.run_id)  # 先取 EXECUTING 快照；cancel 在 force 之後才呼叫，絕不延後 force／epoch 圍堵
         try:
             self._tasks.force_transition_run(run.run_id, RunStatus.FAILED, reason=str(reason))
@@ -220,6 +229,12 @@ class Supervisor:
             return
         if run.approval_expired_at == expiry:
             return  # 同一 expiry 已通知並標記過
+        if self._notify is None:
+            token = (run.run_id, int(expiry.timestamp()))
+            if token not in self._warned_no_notify:
+                self._warned_no_notify.add(token)
+                logger.warning("核准已過期但未接通知通道，略過且不標記已通知：run=%s expiry=%s", run.run_id, expiry.isoformat())
+            return
         key = approval_expired_key(run.run_id, expiry)
         try:
             self._notify(run.run_id, key)
@@ -265,6 +280,7 @@ class Supervisor:
         """SV-1：同步 ``pause_all``，再等仍有 EXECUTING action 的 Run 收到 receipt；整體不超過 ``shutdown_grace``。
 
         逾時不再等（該 action 保持 EXECUTING，重啟後 ``resume_run`` 轉 UNKNOWN 查核，T-11）。永不拋例外（關機不可被它擋住）。"""
+        self._closing = True
         deadline = time.monotonic() + self._shutdown_grace.total_seconds()
         try:
             paused = self.pause_all(reason)
@@ -334,6 +350,7 @@ class SupervisorLoop:
             thread.join(timeout=timeout)
             if thread.is_alive():
                 logger.error("Supervisor 執行緒未能正常結束")
+                return  # 保留參照：start() 見到還活著的執行緒就不再開第二條 tick
         self._thread = None
 
     def _run(self) -> None:

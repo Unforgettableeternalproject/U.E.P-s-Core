@@ -152,13 +152,29 @@ def test_assembly_builds_supervisor_with_action_canceller(build):
     assert core.supervisor is not None
     cancel_actions = core.supervisor._cancel_actions
     assert isinstance(cancel_actions.__self__, ActionCanceller)
-    assert core.supervisor_loop is None  # maintenance_interval=None：不起背景執行緒
+    # 第 4 點：迴圈與 maintenance_interval 無關（kwargs 傳 maintenance_interval=None 仍建立），supervisor_interval=0 才不建
+    assert core.supervisor_loop is not None
+    assert build(supervisor_interval=0).supervisor_loop is None
+
+
+def test_assembly_rejects_orphan_older_than_not_above_turn_max_duration(build, monkeypatch):
+    """B：older_than 必須大於 TURN_MAX_DURATION，組裝時就拒絕（不是等到第一個 tick 才炸）。"""
+    from uep.assembly import AssemblyError
+    from uep.tasks.manager import TURN_MAX_DURATION
+
+    monkeypatch.setattr(get_settings(), "supervisor_orphan_older_than_s", TURN_MAX_DURATION.total_seconds())
+    with pytest.raises(AssemblyError, match="TURN_MAX_DURATION"):
+        build()
+    assert build(supervisor=False).supervisor is None  # 停用時不驗證
+    monkeypatch.setattr(get_settings(), "supervisor_orphan_older_than_s", TURN_MAX_DURATION.total_seconds() + 1)
+    assert build().supervisor._older_than == TURN_MAX_DURATION + timedelta(seconds=1)
+    assert get_settings().supervisor_orphan_older_than_s > 0
 
 
 def test_assembly_supervisor_disabled_by_flag_or_setting(build, monkeypatch):
     assert build(supervisor=False).supervisor is None
     monkeypatch.setattr(get_settings(), "supervisor_enabled", False)
-    off = build(maintenance_interval=0.05)
+    off = build()
     assert off.supervisor is None and off.supervisor_loop is None
     assert build(supervisor=True).supervisor is not None  # 明示參數優先於設定
 
@@ -175,8 +191,8 @@ def test_assembly_supervisor_uses_settings_graces(build, monkeypatch):
 
 def test_assembly_starts_loop_ticks_and_stops_with_shutdown(build, monkeypatch):
     monkeypatch.setattr(get_settings(), "supervisor_interval_s", 0.05)
-    core = build(maintenance_interval=0.05)
-    assert core.supervisor_loop is not None
+    core = build()  # maintenance_interval=None：Supervisor 迴圈仍照設定啟動
+    assert core.maintenance is None and core.supervisor_loop is not None
     core.start()
     assert "supervisor.start" in core.start_log
     deadline = time.monotonic() + 5
@@ -245,3 +261,105 @@ def test_vc_sv_1_shutdown_pauses_live_tasks_with_paused_from_and_resume_restores
         mgr.resume_run(run.run_id, stale_after=timedelta(0))
         assert mgr.get_run(run.run_id).status == expected[key]
         assert mgr.get_task(task.task_id).status == expected[key]
+
+
+# ---- A：回合 Run 不會被 Supervisor force ----
+
+def test_turn_run_without_heartbeat_is_never_forced_however_old(session_factory):
+    """A：direct_chat 回合 Run 沒有 heartbeat、沒有 deadline；比 stale_after（與孤兒門檻以內）久也不會被 force。"""
+    from datetime import UTC, datetime
+
+    mgr = make_manager(session_factory, StubExecutor(), heartbeat_stale_after=timedelta(seconds=60))
+    task, run = mgr.get_or_create_turn_task(
+        "turn_a1", persona_id="uep", owner_actor_id="o", scope_ref=SCOPE, policy_ref="pol_t",
+        persona_version=1, policy_version=1,
+    )
+    assert run.run_deadline is None and task.deadline is None  # 回合 Run 只有建立時的一次心跳（之後不再更新），也沒有 deadline
+    sup = Supervisor(mgr, shutdown_grace=timedelta(seconds=1))
+    later = datetime.now(UTC) + timedelta(minutes=20)  # 遠大於 stale_after，仍小於孤兒門檻（30 分鐘）
+    stats = sup.tick(later)
+    assert (stats.forced, stats.cancel_requested, stats.tasks_failed, stats.failures) == (0, 0, 0, 0)
+    assert mgr.get_run(run.run_id).status == RunStatus.RUNNING.value
+    assert mgr.get_run(run.run_id).worker_epoch == run.worker_epoch  # 沒有 epoch 遞增（沒 force）
+    assert mgr.get_task(task.task_id).status == RunStatus.RUNNING.value
+    assert sup.tick(later + timedelta(hours=1)).orphans_closed == 1  # 真的孤兒才由掃描收尾（FAILED，非 force）
+
+
+# ---- M1：進行中的回合 Task 與關機 ----
+
+class _FakeEcho:
+    """代替 ES Host：stop() 時像 Agent Core 一樣把進行中的回合 Task 收尾（finish_turn_task），並記下呼叫序。"""
+
+    def __init__(self, tasks, task_id, log) -> None:
+        self._tasks, self._task_id, self._log = tasks, task_id, log
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        self._log.append("echo.stop")
+        self._tasks.finish_turn_task(self._task_id)
+
+
+def test_inflight_turn_task_finishes_before_pause_and_no_task_failed(build, session_factory):
+    core = build()
+    core.start()
+    task, _run = core.tasks.get_or_create_turn_task(
+        "turn_m1", persona_id="uep", owner_actor_id="o", scope_ref=SCOPE, policy_ref="pol_t",
+        persona_version=1, policy_version=1,
+    )
+    calls: list[str] = []
+    core.echo = _FakeEcho(core.tasks, task.task_id, calls)
+    real_shutdown = core.supervisor.shutdown
+    core.supervisor.shutdown = lambda *a, **k: (calls.append("supervisor.shutdown"), real_shutdown(*a, **k))[1]
+    other = core.tasks.create_task(persona_id="uep", goal="other", owner_actor_id="o", scope_ref=SCOPE, policy=FREE)
+    core.tasks.start_run(other.task_id, persona_version=1, policy_version=1)
+    core.shutdown()
+    assert calls == ["echo.stop", "supervisor.shutdown"]  # 入口先停、再暫停
+    assert core.tasks.get_task(task.task_id).status == RunStatus.SUCCEEDED.value  # 回合收尾在 pause 之前：不是 FAILED
+    assert core.tasks.get_task(other.task_id).status == RunStatus.PAUSED.value
+    with session_factory() as s:
+        failed = list(s.scalars(select(EventRow.event_type).where(EventRow.event_type == "task.failed")))
+    assert failed == []
+
+
+# ---- m1：啟動失敗的收尾路徑會停 Supervisor 迴圈 ----
+
+def test_start_failure_stops_supervisor_loop(build):
+    core = build()
+
+    class Boom:
+        def start(self):
+            raise RuntimeError("echo 起不來")
+
+        def stop(self):
+            pass
+
+    core.echo = Boom()
+    with pytest.raises(RuntimeError):
+        core.start()
+    assert core.supervisor_loop._thread is None  # 已停止
+
+
+# ---- m2：stop() 逾時保留執行緒參照 ----
+
+def test_loop_stop_timeout_keeps_thread_reference_and_does_not_double_start():
+    gate = threading.Event()
+
+    class Stuck:
+        def tick(self):
+            gate.wait(10)
+
+    loop = SupervisorLoop(Stuck(), interval=0.01)
+    loop.start()
+    time.sleep(0.1)
+    try:
+        loop.stop(timeout=0.1)
+        first = loop._thread
+        assert first is not None and first.is_alive()
+        loop.start()
+        assert loop._thread is first  # 沒有第二條 tick 執行緒
+    finally:
+        gate.set()
+        loop.stop(timeout=5)
+    assert loop._thread is None

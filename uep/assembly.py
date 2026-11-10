@@ -43,6 +43,7 @@ from uep.adapters.tool import (
     EnumerableToolSpecResolver,
     ToolExecutor,
     ToolSpecResolver,
+    supports_cancel,
 )
 from uep.config import get_settings
 from uep.contracts.presence import PresenceStatus
@@ -295,12 +296,31 @@ def _check_registry_executors(
         logger.warning("tool_resolver 不可列舉，略過 TG-5 註冊表與 executors 的雙向檢查")
         return
     specs = resolver.specs()
+    _check_cancel_support(resolver, specs, executors)
     unknown = sorted({spec.executor for spec in specs.values()} - set(executors))
     if unknown:
         raise AssemblyError(f"註冊表引用了不存在的 executor：{', '.join(unknown)}（TG-5）")
     unused = sorted(set(executors) - {spec.executor for spec in specs.values()} - set(internal))
     if unused:
         raise AssemblyError(f"executors 中沒有任何註冊表項目引用：{', '.join(unused)}（TG-5）")
+
+
+def _check_cancel_support(
+    resolver: ToolSpecResolver, specs: Mapping[str, Any], executors: Mapping[str, ToolExecutor]
+) -> None:
+    """D69／RA-5：宣告 interruptible／checkpoint_only 或 cancellable 的工具，其 executor 必須實作 ``cancel``；fail-closed。
+    executor 不在映射內的情形由 TG-5 另行回報，這裡略過。"""
+    entries = resolver.entries() if callable(getattr(resolver, "entries", None)) else {}
+    bad: list[str] = []
+    for name, spec in specs.items():
+        executor = executors.get(spec.executor)
+        if executor is None or supports_cancel(executor):
+            continue
+        entry = entries.get(name)
+        if spec.interruptible != "non_interruptible" or (entry is not None and entry.cancellable):
+            bad.append(name)
+    if bad:
+        raise AssemblyError(f"工具宣告可中斷或 cancellable，但其 executor 未實作 cancel：{', '.join(sorted(bad))}（D69、RA-5）")
 
 
 def build_request_verifier(

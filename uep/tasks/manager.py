@@ -535,6 +535,14 @@ class TaskManager:
         with self._sf() as s:
             return self._need(s.get(ActionIntentRow, action_id), "action", action_id)
 
+    def list_executing_actions(self, run_id: str) -> list[ActionIntentRow]:
+        """該 Run 目前 EXECUTING 的 action（唯讀；Supervisor 取消在途 executor 用，D69）。"""
+        with self._sf() as s:
+            stmt = select(ActionIntentRow).where(
+                ActionIntentRow.run_id == run_id, ActionIntentRow.status == ActionStatus.EXECUTING.value
+            ).order_by(ActionIntentRow.created_at)
+            return list(s.scalars(stmt))
+
     def get_receipt(self, action_id: str) -> ReceiptRow | None:
         with self._sf() as s:
             return s.scalar(select(ReceiptRow).where(ReceiptRow.action_id == action_id))

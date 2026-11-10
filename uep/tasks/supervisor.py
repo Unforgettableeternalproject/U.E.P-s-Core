@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -50,6 +50,7 @@ class SupervisorStats:
     approvals_expired: int = 0  # 新標記的過期 expiry
     notified: int = 0  # 成功呼叫 notify 的次數
     orphans_closed: int = 0  # 孤兒回合 Task 收尾數
+    actions_cancelled: int = 0  # force 後對在途 interruptible action 呼叫 executor.cancel 的次數（D69，不論結果）
     failures: int = 0  # 失敗（記 log、下個 tick 重試）
 
 
@@ -62,6 +63,7 @@ class Supervisor:
         older_than: timedelta = DEFAULT_ORPHAN_OLDER_THAN,
         clock: Callable[[], datetime] | None = None,
         notify: Callable[[str, str], None] | None = None,
+        cancel_actions: Callable[[str], Callable[[], Mapping[str, str]]] | None = None,
     ) -> None:
         if deadline_grace <= timedelta(0):
             raise ValueError("deadline_grace 必須 > 0")
@@ -72,6 +74,10 @@ class Supervisor:
         self._older_than = older_than
         self._clock = clock or (lambda: datetime.now(UTC))
         self._notify = notify or (lambda _run_id, _key: None)
+        # D69：``ActionCanceller.prepare``。force 前呼叫它取 EXECUTING 快照，force 後執行回傳的函式對 interruptible action
+        # 呼叫 executor.cancel（action_id -> 結果，僅用於統計與 log）；None＝不取消（維持 F-3 行為）。
+        # 注意：這是 fallback（worker 卡住或旗標沒被讀到）；旗標路徑的 cancel 由 Agent Core 負責
+        self._cancel_actions = cancel_actions
         self.ticks = 0
         self.failures = 0  # 累計失敗（tick 與 pause_all）
 
@@ -136,6 +142,7 @@ class Supervisor:
         worker_gone = beat is None or now - beat >= stale_after  # T-12：心跳新鮮 ⇒ worker 還活著，絕不 force
         if not (worker_gone or now - requested_at > self._grace):
             return False
+        cancel_run = self._snapshot_in_flight(run.run_id)  # 先取 EXECUTING 快照；cancel 在 force 之後才呼叫，絕不延後 force／epoch 圍堵
         try:
             self._tasks.force_transition_run(run.run_id, RunStatus.FAILED, reason=str(reason))
             stats.forced += 1
@@ -153,7 +160,32 @@ class Supervisor:
                 self._fail_task(run.task_id, stats)
             return True
         self._fail_task(run.task_id, stats)
+        self._run_cancel(run.run_id, cancel_run, stats)
         return True
+
+    def _snapshot_in_flight(self, run_id: str) -> Callable[[], Mapping[str, str]] | None:
+        """D69：force 之前呼叫 ``cancel_actions(run_id)`` 取 EXECUTING action 快照，回傳「稍後執行 cancel」的函式。
+        快照失敗只記 log 並回 None（不取消），絕不阻擋 force。"""
+        if self._cancel_actions is None:
+            return None
+        try:
+            return self._cancel_actions(run_id)
+        except Exception:
+            logger.exception("取得在途 action 快照失敗，略過取消、仍 force：%s", run_id)
+            return None
+
+    def _run_cancel(self, run_id: str, cancel_run: Callable[[], Mapping[str, str]] | None, stats: SupervisorStats) -> None:
+        """force 之後才呼叫 executor.cancel（盡力而為，由 ``ActionCanceller`` 負責逾時）。任何失敗都只記 log，不影響 tick。
+        action 的終態照舊由 force（EXECUTING -> UNKNOWN）與 lookup 決定，``stopped`` 目前不改變終態。"""
+        if cancel_run is None:
+            return
+        try:
+            results = cancel_run()
+            count = sum(1 for outcome in results.values() if outcome in ("stopped", "isolated", "error"))
+        except Exception:
+            logger.exception("取消在途 action 失敗（force 已完成）：%s", run_id)
+            return
+        stats.actions_cancelled += count
 
     def _deadline_reason(self, run: RunRow, now: datetime) -> CancelReason | None:
         if run.status == RunStatus.PAUSED.value:

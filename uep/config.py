@@ -40,6 +40,8 @@ class UepSettings(BaseSettings):
     laya_model: str | None = Field(default=None, validation_alias="UEP_LAYA_MODEL")
     laya_revision: str | None = Field(default=None, validation_alias="UEP_LAYA_REVISION")
     laya_device: str | None = Field(default=None, validation_alias="UEP_LAYA_DEVICE")
+    # nlp.legacy（現有英文 NLP shadow proposer）的模型目錄；未設＝repo 相對的 models/nlp。只有放進 shadow 清單才會用到
+    nlp_model_dir: str | None = Field(default=None, validation_alias="UEP_NLP_MODEL_DIR")
     test_database_url: SecretStr | None = Field(default=None, validation_alias="UEP_TEST_DATABASE_URL")
     # Host 本機 epoch 檔（D26，DB 外）；未設定時用使用者資料目錄的預設位置
     host_epoch_file: Path | None = Field(default=None, validation_alias="UEP_HOST_EPOCH_FILE")

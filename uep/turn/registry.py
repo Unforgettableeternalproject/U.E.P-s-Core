@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from uep.echo.laya_wiring import LAYA_PROPOSER_ID, create_laya_proposer
+from uep.echo.nlp_wiring import NLP_PROPOSER_ID, create_nlp_proposer
 from uep.turn.proposer import ProposerRegistry, RespondProposer, TurnProposer
 from uep.turn.rule_proposer import RuleProposer
 
@@ -10,6 +11,8 @@ PROPOSERS.register(RespondProposer.proposer_id, lambda **_: RespondProposer())
 PROPOSERS.register(RuleProposer.proposer_id, lambda **kw: RuleProposer(**kw))
 # DL-2：laya 套件只在工廠建立時檢查；未安裝時 ValueError（啟動即報錯），預設不啟用
 PROPOSERS.register(LAYA_PROPOSER_ID, create_laya_proposer)
+# DL-5：英文 NLP 模型檔只在工廠建立時檢查；缺檔時 ValueError（啟動即報錯），預設不啟用
+PROPOSERS.register(NLP_PROPOSER_ID, create_nlp_proposer)
 
 
 def create_proposer(proposer_id: str, **kwargs: object) -> TurnProposer:

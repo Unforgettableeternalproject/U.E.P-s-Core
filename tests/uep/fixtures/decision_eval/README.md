@@ -14,7 +14,7 @@
 
 | 檔案 | 內容 |
 |---|---|
-| `candidates.jsonl` | 合成候選（59 筆，中英各半） |
+| `candidates.jsonl` | 合成候選（64 筆） |
 | `golden.jsonl` | 每筆候選的現況 outcome／reason_code |
 | `golden_meta.json` | 產生時的 commit、各 proposer 的 engine version、筆數（`timed` 子物件為時間相關 golden 的對應資訊） |
 | `timed_scripts.jsonl` | 時間相關事件腳本（DL-2b，92 行事件，其中 52 筆有結果） |

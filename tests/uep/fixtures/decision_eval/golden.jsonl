@@ -34,6 +34,11 @@
 {"id": "zh-solo-05", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "pass", "reason_code": "not_meaningful"}}
 {"id": "zh-solo-06", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "pass", "reason_code": "not_meaningful"}}
 {"id": "zh-solo-07", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "respond", "reason_code": "active"}}
+{"id": "zh-solo-08", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "respond", "reason_code": "active"}}
+{"id": "zh-solo-09", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "respond", "reason_code": "active"}}
+{"id": "zh-solo-10", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "respond", "reason_code": "active"}}
+{"id": "zh-solo-11", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "pass", "reason_code": "not_meaningful"}}
+{"id": "zh-solo-12", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "pass", "reason_code": "not_meaningful"}}
 {"id": "zh-group-01", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "pass", "reason_code": "observe"}}
 {"id": "zh-group-02", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "pass", "reason_code": "observe"}}
 {"id": "zh-group-03", "respond.minimal": {"outcome": "respond", "reason_code": "default_respond"}, "rules.default": {"outcome": "pass", "reason_code": "tentative_unconfirmed"}}

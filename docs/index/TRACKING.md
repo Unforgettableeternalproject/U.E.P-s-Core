@@ -128,11 +128,11 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | T-24 | 週期 2 Core 追加驗證（P1、P2、T-23 對抗式稽核） | C／2 | `core-cycle2-audit` | — | D43、A20 | `tests/uep/test_cycle2_audit_a.py`、`tests/uep/test_cycle2_audit_b.py`、`tests/uep/test_cycle2_audit_c_tasks.py`、`tests/uep/test_cycle2_audit_c_context.py`、`tests/uep/test_cycle2_audit_fix2.py`；契約同步於 [Core契約草案](../架構重構/Core契約草案.md) E-17～E-22、X-7～X-9、R-7、P-16～P-25、O-13～O-15、§6.7 的 T 系列條號 16～20；`0007_journal_truncate_guard`、`0008_receipt_worker_epoch` |
 | Part S | SYS Agent 基底（S0～S3 契約草案；S4、S5 僅邊界） | C／2 | 部分完成（尚未轉任務層）：TG-1／TG-5 已有實作與測試，下一週期由 [Agent架構與工具契約提案](../架構重構/Agent架構與工具契約提案.md) 取代或重構 | V29–V31、V36（延伸 V21、V22、V28） | D49–D69、A21、A22 | [SYS契約草案](../架構重構/SYS契約草案.md) |
 | DL-0 | 決策中樞架構提案 | C／2 | done（feature/decision-hub 668a5e2） | — | — | — |
-| DL-1 | TurnProposer 收編為第一個決策點（P0） | C／2 | done（891ef68；Host 注入與 shadow 組裝 dc28d32；預設 primary 改 rules.default 為 DL-1b，feature/decision-dl1b） | — | — | — |
+| DL-1 | TurnProposer 收編為第一個決策點（P0） | C／2 | done（891ef68；Host 注入與 shadow 組裝 dc28d32；預設 primary 改 rules.default 為 DL-1b，9d0832b） | — | — | — |
 | DL-2 | 決策評測集與標註規格 | C／2 | done（DL-2a 5849647、DL-2b 43551af；標註規格 v1 155f46a） | — | — | — |
 | DL-3 | 決策日誌與離線重放評估 | C／2 | done（ec5c3ba；組裝層接上 d6b43c2） | — | — | — |
 | DL-4 | 中樞決策→capability 收窄（對應 Agent 提案 §10 的 I-1～I-4） | C／2 | planned | — | — | — |
-| DL-5 | 現有英文 NLP 收編為特徵層 | C／2 | planned | — | — | — |
+| DL-5 | 現有英文 NLP 收編為特徵層 | C／2 | done（95c81a0：`nlp.legacy` shadow proposer，英文限定；不含 MT，中文待 Q6=C 兩條路 shadow） | — | — | `uep/echo/nlp_wiring.py`、`tests/uep/test_nlp_wiring.py`、[決策中樞架構提案 §5.2.1](../架構重構/決策中樞架構提案.md) |
 | DL-6 | Proactive 評估／仲裁 規則版＋shadow | C／2 | planned | — | — | — |
 
 T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細節待敏卡展開後補。

@@ -184,6 +184,11 @@ class ApprovalRow(Base):
     expiry: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consumed_by_action_id: Mapped[str | None] = mapped_column(String)
+    # 撤銷（migration 0016、E2）：人類否決 action 時，作廢「此 action 可消耗」的核准；撤銷後一律判無效
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(String)
+    revoked_reason: Mapped[str | None] = mapped_column(String)
+    revoked_by_action_id: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = _ts()
 
 

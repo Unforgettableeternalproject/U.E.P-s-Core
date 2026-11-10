@@ -64,6 +64,7 @@ from uep.ids import new_id
 from uep.models.port import ChatMessage
 from uep.tasks.manager import (
     ACTION_UNRESOLVED,
+    APPROVAL_DENIED,
     TOOL_VERSION_CHANGED,
     IllegalTransition,
     PolicyViolation,
@@ -1093,6 +1094,7 @@ class AgentLoop:
         | action 本身 UNKNOWN／EXECUTING（``block_code=action_unresolved``） | ``unresolved_actions`` |
         | TC-3／其他 ActionBlocked、建立時的基礎設施錯誤 | ``action_blocked`` |
         | UNKNOWN（executor 例外、結果未明） | ``unresolved_actions`` |
+        | 人類否決（action 已 FAILED、receipt ``approval_denied``） | None（回 rejected 視圖續跑，E2） |
         """
         if res.block_code == TOOL_VERSION_CHANGED:
             return LoopReason.TOOL_VERSION_CHANGED
@@ -1105,6 +1107,8 @@ class AgentLoop:
         status = res.view.get("status")
         if res.record.action_id and status in ("ok", "failed"):
             return None
+        if status == "rejected" and res.view.get("reason_code") == APPROVAL_DENIED:
+            return None  # 人類否決（E2）：action 已是終態 FAILED，回 rejected 視圖讓迴圈續跑，不結束 Run
         if status == "unknown":
             return LoopReason.UNRESOLVED_ACTIONS
         if status == "rejected":

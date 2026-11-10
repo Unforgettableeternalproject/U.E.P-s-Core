@@ -106,7 +106,7 @@ A = ActionStatus
 
 # ActionIntent 合法轉移。UNKNOWN -> INTENDED 只在 executor 確認「未執行」後發生（T-3）。
 ACTION_TRANSITIONS: dict[ActionStatus, frozenset[ActionStatus]] = {
-    A.INTENDED: frozenset({A.APPROVED}),
+    A.INTENDED: frozenset({A.APPROVED, A.FAILED}),  # FAILED：人類否決核准（E2，record_rejection），action 從未執行
     A.APPROVED: frozenset({A.EXECUTING}),
     A.EXECUTING: frozenset({A.SUCCEEDED, A.FAILED, A.UNKNOWN}),
     A.UNKNOWN: frozenset({A.SUCCEEDED, A.FAILED, A.INTENDED}),

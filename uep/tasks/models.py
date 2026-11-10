@@ -201,6 +201,8 @@ class ActionIntentRow(Base):
         CheckConstraint(_CONCURRENCY, name="concurrency"),
         Index("ix_action_intents_run_id", "run_id"),
         Index("ix_action_intents_step_id", "step_id"),
+        # retry_of 一對一（SA-11）：一個 action 只能被重試一次；並發第二筆由唯一索引擋下
+        Index("uq_action_intents_retry_of", "retry_of", unique=True, postgresql_where=text("retry_of IS NOT NULL")),
         # D62／TC-3（D1b 修訂）：一 Run 的 EXECUTING 集合不再由部分唯一索引限制；改由 Manager 在持有 Run 鎖的
         # 同一交易內檢查（``TaskManager._check_single_executing``）
     )

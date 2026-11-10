@@ -1284,7 +1284,7 @@ class TaskManager:
 
         executor／side_effect_class／idempotency／tool_version 一律來自 ``tool_resolver.resolve(tool)``（TG-1）；
         ``presence_bound`` 只能收緊（TG-3）：註冊表為真時不可傳 False。
-        ``retry_of`` 指向同一 Run 內已是 FAILED 的 action（含經 ``resolve_unknown_manual`` 標記 retry 的 UNKNOWN，SA-11）。
+        ``retry_of`` 指向同一 Task 內、tool 相同且已是 FAILED 的 action，且一個 action 只能被重試一次（含經 ``resolve_unknown_manual`` 標記 retry 的 UNKNOWN，SA-11）。
         """
         spec = self._tool_resolver.resolve(tool)  # 解析不到拋 PolicyViolation；在交易之前
         concurrency = self._resolve_concurrency(tool)
@@ -1303,15 +1303,23 @@ class TaskManager:
                 existing = s.get(ActionIntentRow, action_id, with_for_update=True, populate_existing=True)
                 if existing is not None:
                     self._assert_same_action(existing, run_id, tool, spec, digest, spec.presence_bound or bool(presence_bound))
-                    if retry_of is not None and existing.retry_of != retry_of:
+                    if existing.retry_of != retry_of:
                         raise PolicyViolation("同 action_id 的 retry_of 不同，須建立新 action")
                     return existing
             if retry_of is not None:
-                origin = s.get(ActionIntentRow, retry_of)
-                if origin is None or origin.run_id != run_id:
-                    raise PolicyViolation("retry_of 必須是同一 run 內既有的 action", code="retry_of_invalid")
+                origin = s.scalar(
+                    select(ActionIntentRow).join(RunRow, RunRow.run_id == ActionIntentRow.run_id)
+                    .where(ActionIntentRow.action_id == retry_of, RunRow.task_id == task.task_id)
+                    .with_for_update(of=ActionIntentRow).execution_options(populate_existing=True)
+                )
+                if origin is None:
+                    raise PolicyViolation("retry_of 必須是同一 Task 內既有的 action", code="retry_of_invalid")
                 if origin.status != ActionStatus.FAILED.value:
                     raise PolicyViolation("retry_of 只能指向 FAILED 的 action", code="retry_of_not_failed")
+                if origin.tool != tool:
+                    raise PolicyViolation("retry_of 的 tool 必須與原 action 相同", code="retry_of_tool_mismatch")
+                if s.scalar(select(ActionIntentRow.action_id).where(ActionIntentRow.retry_of == retry_of)) is not None:
+                    raise PolicyViolation("此 action 已被重試過（retry_of 一對一）", code="retry_of_already_used")
             action = ActionIntentRow(
                 action_id=action_id or new_id("act"), run_id=run_id, step_id=step_id, tool=tool,
                 executor=spec.executor, params_hash=digest, side_effect_class=spec.side_effect_class,
@@ -1326,6 +1334,8 @@ class TaskManager:
             except IntegrityError:
                 existing = s.get(ActionIntentRow, action.action_id, populate_existing=True)
                 if existing is None:
+                    if retry_of is not None:  # 並發第二筆 retry_of：唯一索引擋下，轉為明確錯誤
+                        raise PolicyViolation("此 action 已被重試過（retry_of 一對一）", code="retry_of_already_used")
                     raise
                 self._assert_same_action(existing, run_id, tool, spec, digest, spec.presence_bound or bool(presence_bound))
                 return existing
@@ -1606,7 +1616,7 @@ class TaskManager:
     @staticmethod
     def _check_single_executing(s: Session, action: ActionIntentRow) -> None:
         """TC-3（D1b 修訂，Agent 架構提案 §6.5）：同一 Run 的 EXECUTING 集合（含即將進入的這一筆）要麼恰好一個
-        serial，要麼全部 parallel_safe；``parallel_one_shot`` 本期視同 serial。另有非 internal_read 的 UNKNOWN 一律擋。
+        serial，要麼全部 parallel_safe；``parallel_one_shot`` 本期視同 serial。另有同一 Task（含其他 Run）內非 internal_read 的 UNKNOWN 一律擋。
 
         併發安全依據（0012 移除部分唯一索引後，不變量只剩這裡在守）：本函式只在 ``execute_action`` 階段 1 呼叫，
         該交易（單一 ``_tx``）以 ``_lock_action`` 先鎖 task 再鎖 run（``FOR UPDATE``），同 Run 的其他
@@ -1616,9 +1626,12 @@ class TaskManager:
         依賴 READ COMMITTED（PostgreSQL 預設，``make_engine`` 未改）：REPEATABLE READ 的快照在第一次查詢（鎖之前）
         就固定，鎖釋放後再查仍讀不到先到者的 EXECUTING（phantom），檢查會失效。DB 測試斷言隔離等級以防被改。
         """
+        task_id = s.scalar(select(RunRow.task_id).where(RunRow.run_id == action.run_id))
         other = s.execute(
-            select(ActionIntentRow.action_id, ActionIntentRow.status).where(
-                ActionIntentRow.run_id == action.run_id,
+            select(ActionIntentRow.action_id, ActionIntentRow.status).join(
+                RunRow, RunRow.run_id == ActionIntentRow.run_id
+            ).where(
+                RunRow.task_id == task_id,  # 跨同 Task 的所有 Run：新 Run 不能繞過前一個 Run 的 UNKNOWN（SA-11）
                 ActionIntentRow.action_id != action.action_id,
                 ActionIntentRow.status == ActionStatus.UNKNOWN.value,
                 ActionIntentRow.side_effect_class != "internal_read",
@@ -1636,7 +1649,7 @@ class TaskManager:
                 other = executing[0]
         if other is not None:
             raise ActionBlocked(
-                f"同一 Run 已有 {other.status} 的 action（{other.action_id}），不可再進入執行（TC-3）"
+                f"同一 Task 已有 {other.status} 的 action（{other.action_id}），不可再進入執行（TC-3）"
             )
 
     def _recheck_before_call(self, action_id: str, worker_epoch: int) -> TaskError | None:
@@ -1784,15 +1797,24 @@ class TaskManager:
             task, _run, action = self._lock_action(s, action_id)
             if principal.actor_id not in self._approvers(task):
                 raise PolicyViolation("人工解決者不屬於此 task 的 approvers", code="unauthorized_approver")
-            if ActionStatus(action.status) is not ActionStatus.UNKNOWN:
-                raise IllegalTransition(f"action 不是 UNKNOWN（{action.status}），不可人工解決")
-            verified = s.scalar(
-                select(ReceiptRow.receipt_id).where(ReceiptRow.action_id == action_id, ReceiptRow.source_verified.is_(True))
+            prior = s.scalar(
+                select(ReceiptRow).where(ReceiptRow.action_id == action_id)
+                .execution_options(populate_existing=True)
             )
-            if verified is not None:
+            if ActionStatus(action.status) is not ActionStatus.UNKNOWN:
+                prior_meta = (prior.meta or {}) if prior is not None else {}
+                if prior_meta.get("origin") == "manual" and prior_meta.get("decision") == outcome:
+                    return ActionOutcome(action_id, ActionStatus(action.status), False, prior)  # 同一裁決重送：冪等
+                raise IllegalTransition(f"action 不是 UNKNOWN（{action.status}），不可人工解決")
+            if prior is not None and prior.source_verified:
                 raise ActionBlocked("action 已有已驗證 receipt，請走 resolve_unknown", code=ACTION_UNRESOLVED)
+            actor = principal.actor_id
+            if not _SAFE_STR.fullmatch(actor):  # 不合規的 actor_id（如 email）改存雜湊，origin／decision 才不會被脫敏掉
+                actor = "h:" + hashlib.sha256(actor.encode("utf-8")).hexdigest()[:16]
             succeeded = outcome == "succeeded"
-            meta = {"origin": "manual", "principal": principal.actor_id, "decision": outcome}
+            meta = {"origin": "manual", "principal": actor, "decision": outcome}
+            if prior is not None:
+                meta["prior_receipt_id"] = prior.receipt_id
             receipt = ToolReceipt(
                 receipt_id=new_id("rcpt"), action_id=action_id, succeeded=succeeded, result_ref=None,
                 recorded_at=self._clock(), source_verified=True,

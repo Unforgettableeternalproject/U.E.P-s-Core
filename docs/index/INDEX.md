@@ -67,6 +67,7 @@
 | `docs/架構重構/Proactive決策契約草案.md` | DL-6 定稿（Q-A～Q-J 已裁決）：`ProactiveCandidate` 契約、`proactive.initiate` 決策點（async、shadow-only）、9 關規則仲裁與 28 個 reason_code、與工具層 S-H 的交界（`to_loop_trigger`、`capability_lookup`）、import 邊界與風險；DL-6a 實作對照 | 設計／實作 |
 | `docs/架構重構/Capability收窄ADR.md` | DL-4 定稿（D4-1～D4-7 照建議裁決＋房內裁決）：中樞決策→capability 收窄，`DecisionPlan.capability`（只放 hint）、route 預設表與 `narrow_capability` 純函式、fail-closed 規則、D4-3（快照標籤短期等同不收窄）風險、PR1～PR4 切分；PR1／PR2 實作對照 | 設計／實作 |
 | `docs/架構重構/平台宣告注入端契約草案.md` | 平台宣告注入端定稿（DQ-2、DQ-4～DQ-8 照建議，DQ-1／DQ-3 待 Bernie）：`current_platform`／`available_executors`／`executor_ref`（`tool:platform`）的來源、`PlatformContextProvider`、版本判定、詞彙映射表；第 1～4 步（零行為變化）實作對照；回寫 SYS 增補 PD-18 | 設計／實作 |
+| `docs/架構重構/V18缺席端輸入契約.md` | V18 定稿：`UtteranceFact.source_location`／`source_endpoint_id` 契約與簽入點、`TurnOrchestrator.on_utterance` 的缺席端輸入否決（`presence_inactive`／`absent_platform_input`／`source_location_missing`）、不含原文的 shadow 紀錄（`turn.skipped`，含 `is_owner`／`presence_request`／`actor_verified`）、`UEP_REQUIRE_SOURCE_LOCATION` 與 P4 fail-closed 前置、監控 vs Presence | 設計／實作 |
 | `docs/架構重構/決策標註規格草案.md` | v1 定案（2026-11-06 裁決）：`reply_mode`／`risky`／選填 `content_risk` 人工真值的標註單位、欄位取值、判準、品質控管、存放 schema 與開放問題；供 P4 訓練與評估，與 DL-2 golden 分開 | 設計／資料標註 |
 | `docs/index/TRACKING.md` | 決策／驗收項／任務卡對應矩陣 | 所有人 |
 | `hidden_docs/DECISIONS.md`、`hidden_docs/TASKS.md` | 內部決策與任務規劃（gitignored，clone 後可能不存在） | 敏卡 |

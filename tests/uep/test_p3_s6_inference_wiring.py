@@ -660,6 +660,29 @@ def test_vox_語速停頓_環境變數接線到_VoxSpeakStage(monkeypatch):
     }
 
 
+def test_vox_情緒_預設不傳_環境變數接線到_VoxSpeakStage(monkeypatch):
+    monkeypatch.delenv("UEP_INFER_VOX_EMOTION_ENABLED", raising=False)
+    monkeypatch.delenv("UEP_INFER_VOX_EMOTION_MAP", raising=False)
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert (cfg.vox_emotion_enabled, cfg.vox_emotion_map) == (False, None)
+
+    monkeypatch.setenv("UEP_INFER_VOX_EMOTION_ENABLED", "true")
+    monkeypatch.setenv("UEP_INFER_VOX_EMOTION_MAP", '{"happy": {"emotion": "happy", "intensity": 0.7}}')
+    captured: dict = {}
+    _install_fake_vox(monkeypatch, captured)
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    build_inference_wiring(
+        InferenceConfig(**{**cfg.__dict__, "stt_mode": "single"}), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert captured == {
+        "emotion_enabled": True, "emotion_map": {"happy": {"emotion": "happy", "intensity": 0.7}},
+    }
+
+    monkeypatch.setenv("UEP_INFER_VOX_EMOTION_MAP", "[1]")
+    with pytest.raises(InferenceWiringError, match="EMOTION_MAP"):
+        InferenceConfig.from_settings(UepSettings(_env_file=None))
+
+
 def test_vox_語速_未設_vox_speed_時退回_tts_speed(monkeypatch):
     captured: dict = {}
     _install_fake_vox(monkeypatch, captured)

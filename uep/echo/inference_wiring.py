@@ -83,6 +83,19 @@ def _parse_vox_config(raw: str | None) -> dict[str, Any] | None:
     return value
 
 
+def _parse_vox_emotion_map(raw: str | None) -> dict[str, Any] | None:
+    """``UEP_INFER_VOX_EMOTION_MAP`` 為 JSON 物件字串；空值回 None，格式錯誤 fail-closed。"""
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise InferenceWiringError(f"UEP_INFER_VOX_EMOTION_MAP 不是合法 JSON：{exc}") from exc
+    if not isinstance(value, dict):
+        raise InferenceWiringError("UEP_INFER_VOX_EMOTION_MAP 必須是 JSON 物件")
+    return value
+
+
 @dataclass(frozen=True)
 class InferenceConfig:
     tts_repo: Path | None = None
@@ -114,6 +127,8 @@ class InferenceConfig:
     vox_segment_silence_ms: float | None = None  # 整輪最後一句／硬切處尾端靜音；None＝adapter 預設 15ms
     vox_terminal_pause_ms: float | None = None  # 句號／問號／驚嘆號切開處的停頓；None＝沿用 segment_silence_ms
     vox_secondary_pause_ms: float | None = None  # 逗號切開處的停頓；None＝沿用 segment_silence_ms
+    vox_emotion_enabled: bool = False  # VOX 情緒開關（UEP_INFER_VOX_EMOTION_ENABLED）；關＝不傳 emotion／intensity
+    vox_emotion_map: Mapping[str, Any] | None = None  # SpeechStyle → Vox 情緒對照表覆寫；None＝預設全 neutral
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
     think_prepare_timeout_s: float = 8.0
     input_prepare_timeout_s: float = 10.0
@@ -159,6 +174,8 @@ class InferenceConfig:
             vox_speed=settings.infer_vox_speed, vox_segment_silence_ms=settings.infer_vox_segment_silence_ms,
             vox_terminal_pause_ms=settings.infer_vox_terminal_pause_ms,
             vox_secondary_pause_ms=settings.infer_vox_secondary_pause_ms,
+            vox_emotion_enabled=settings.infer_vox_emotion_enabled,
+            vox_emotion_map=_parse_vox_emotion_map(settings.infer_vox_emotion_map),
             tts_repo=settings.infer_tts_repo, stt_repo=settings.infer_stt_repo,
             session_repo=settings.infer_session_repo, tts_device=settings.infer_tts_device,
             tts_fp16=settings.infer_tts_fp16, tts_use_accel=settings.infer_tts_use_accel,
@@ -420,6 +437,11 @@ def _build_vox_speak(cfg: InferenceConfig, extra: Mapping[str, Any]) -> Any:
     ):
         if value is not None:
             vox_kwargs[key] = float(value)
+    # 情緒：開關關閉時不傳（沿用 adapter 預設）；對照表值域錯誤在建構時 fail-closed
+    if cfg.vox_emotion_enabled:
+        vox_kwargs["emotion_enabled"] = True
+    if cfg.vox_emotion_map:
+        vox_kwargs["emotion_map"] = dict(cfg.vox_emotion_map)
     vox_kwargs.update(extra)
     return VoxSpeakStage(**vox_kwargs)
 

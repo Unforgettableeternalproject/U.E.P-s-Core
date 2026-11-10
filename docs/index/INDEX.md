@@ -65,6 +65,7 @@
 | `docs/架構重構/Agent架構與工具契約提案.md` | 下一週期提案（初稿＋艾斯維爾裁決）：Agent 自迴圈、thought stream、provider 無關 tool calling、工具註冊表契約；將取代或重構 Part S 現有 `uep/tools/`、`uep/agent/` | 設計／裁決 |
 | `docs/架構重構/決策中樞架構提案.md` | DL-0 成果：全系統決策點盤點 45 點（A 硬閘／B 熱路徑／C 中樞）、DecisionRequest／DecisionResult／DecisionPlan 契約、decision.consult、引擎分層、遷移 P0～P4、§8 待裁決 Q1～Q26（Q2／Q5／Q6／Q17／Q19 已定案） | 設計／實作 |
 | `docs/架構重構/Proactive決策契約草案.md` | DL-6 定稿（Q-A～Q-J 已裁決）：`ProactiveCandidate` 契約、`proactive.initiate` 決策點（async、shadow-only）、9 關規則仲裁與 28 個 reason_code、與工具層 S-H 的交界（`to_loop_trigger`、`capability_lookup`）、import 邊界與風險；DL-6a 實作對照 | 設計／實作 |
+| `docs/架構重構/Capability收窄ADR.md` | DL-4 定稿（D4-1～D4-7 照建議裁決＋房內裁決）：中樞決策→capability 收窄，`DecisionPlan.capability`（只放 hint）、route 預設表與 `narrow_capability` 純函式、fail-closed 規則、D4-3（快照標籤短期等同不收窄）風險、PR1～PR4 切分；PR1／PR2 實作對照 | 設計／實作 |
 | `docs/架構重構/決策標註規格草案.md` | v1 定案（2026-11-06 裁決）：`reply_mode`／`risky`／選填 `content_risk` 人工真值的標註單位、欄位取值、判準、品質控管、存放 schema 與開放問題；供 P4 訓練與評估，與 DL-2 golden 分開 | 設計／資料標註 |
 | `docs/index/TRACKING.md` | 決策／驗收項／任務卡對應矩陣 | 所有人 |
 | `hidden_docs/DECISIONS.md`、`hidden_docs/TASKS.md` | 內部決策與任務規劃（gitignored，clone 後可能不存在） | 敏卡 |

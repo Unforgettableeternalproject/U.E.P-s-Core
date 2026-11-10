@@ -405,3 +405,93 @@ def test_contract_layer_has_no_upward_imports():
 def test_registry_is_untouched_by_executors_for():
     # 工具層尚未接上 executors_for（歸工具層 PR4 前後）；這次不得動 registry
     assert "executors_for" not in (UEP_ROOT / "tools" / "registry.py").read_text(encoding="utf-8")
+
+
+# ---- 平台端點契約 E2：monitor_platforms（shadow 觀察，不分發；EC-3）----
+
+def test_monitor_platforms_default_is_empty_and_changes_nothing():
+    provider, _ = _provider(_view(status=PresenceStatus.NONE))
+    ctx = provider.snapshot()
+    assert ctx.monitor_platforms == frozenset()
+    assert diff_against_production(ctx) == ()
+    assert ProductionInputs().monitor_platforms == frozenset()
+
+
+def test_monitor_online_does_not_make_presence():
+    # 監控面在線不代表她在場：Presence=NONE 時 current_platform／presence_active_platforms 不受影響
+    provider, _ = _provider(_view(status=PresenceStatus.NONE), monitor_platforms=lambda: ["discord", "website"])
+    ctx = provider.snapshot()
+    assert ctx.monitor_platforms == frozenset({"discord", "website"})
+    assert ctx.current_platform is None and ctx.presence_active_platforms == frozenset()
+    assert ctx.available_executors == ()
+    assert diff_against_production(ctx) == ("monitor_platforms",)
+
+
+def test_monitor_platforms_independent_of_active_presence():
+    provider, _ = _provider(_view(location="desktop"), monitor_platforms=lambda: {"discord"})
+    ctx = provider.snapshot()
+    assert ctx.current_platform == "desktop" and ctx.presence_active_platforms == frozenset({"desktop"})
+    assert ctx.monitor_platforms == frozenset({"discord"})
+    # 同平台同時有監控也合法，但不互相推論
+    provider2, _ = _provider(_view(location="discord"), monitor_platforms=lambda: {"discord"})
+    assert provider2.snapshot().current_platform == "discord"
+
+
+def test_monitor_platforms_source_failure_and_invalid_refs_are_swallowed():
+    def boom():
+        raise RuntimeError("monitor source down")
+
+    provider, _ = _provider(_view(location="desktop"), monitor_platforms=boom)
+    ctx = provider.snapshot()
+    assert ctx.monitor_platforms == frozenset() and ctx.current_platform == "desktop"
+    provider, _ = _provider(_view(status=PresenceStatus.NONE), monitor_platforms=lambda: ["discord", "Bad Ref", "a@b"])
+    assert provider.snapshot().monitor_platforms == frozenset({"discord"})
+
+
+def test_monitor_platforms_change_bumps_version():
+    current: set[str] = set()
+    provider, _ = _provider(_view(status=PresenceStatus.NONE), monitor_platforms=lambda: current)
+    v1 = provider.snapshot().version
+    assert provider.snapshot().version == v1
+    current.add("discord")
+    v2 = provider.snapshot().version
+    assert v2 == v1 + 1
+    assert provider.snapshot().version == v2
+
+
+def test_platform_context_rejects_invalid_monitor_platform():
+    base = {
+        "version": 1, "presence_generation": 0, "presence_row_version": 0, "presence_status": PresenceStatus.NONE,
+        "current_platform": None, "presence_active_platforms": frozenset(), "session_platform": None,
+        "available_executors": (),
+    }
+    PlatformContext(**base, monitor_platforms=frozenset({"discord"}))
+    with pytest.raises(ValueError):
+        PlatformContext(**base, monitor_platforms=frozenset({"Discord"}))
+
+
+def test_shadow_counts_monitor_platforms_diff_without_touching_other_fields():
+    provider, _ = _provider(_view(status=PresenceStatus.NONE), monitor_platforms=lambda: {"discord"})
+    metrics = Metrics()
+    ctx = PlatformShadow(provider, metrics).observe("t1")
+    assert ctx is not None and ctx.monitor_platforms == frozenset({"discord"})
+    assert metrics["platform_shadow.diff.monitor_platforms"] == 1 and metrics["platform_shadow.diff_turns"] == 1
+    assert metrics["platform_shadow.current_platform_none"] == 1
+    assert not any(k.startswith("platform_shadow.diff.") and k != "platform_shadow.diff.monitor_platforms" for k in dict(metrics))
+
+
+def test_shadow_production_baseline_matches_monitor_platforms():
+    provider, _ = _provider(_view(status=PresenceStatus.NONE), monitor_platforms=lambda: {"discord"})
+    prod = ProductionInputs(monitor_platforms=frozenset({"discord"}))
+    assert diff_against_production(provider.snapshot(), prod) == ()
+
+
+def test_consumers_do_not_reference_monitor_platforms():
+    # monitor_platforms 只供 shadow 觀察：除型別定義與 provider／shadow 外，uep/ 內沒有任何引用
+    allowed = {"contracts/platform.py", "echo/platform_context.py"}
+    offenders = [
+        path.relative_to(UEP_ROOT).as_posix()
+        for path in UEP_ROOT.rglob("*.py")
+        if "monitor_platforms" in path.read_text(encoding="utf-8") and path.relative_to(UEP_ROOT).as_posix() not in allowed
+    ]
+    assert offenders == []

@@ -155,15 +155,59 @@ def test_registered_and_created_through_registry(monkeypatch):
     proposer.wait_ready(5)
 
 
-def test_settings_resolution(monkeypatch):
+def _make_model_dir(root, revision: str | None = "abc123"):
+    model_dir = root / "laya-multilingual"
+    model_dir.mkdir(parents=True)
+    if revision:
+        (model_dir / "REVISION").write_text(revision, encoding="utf-8")
+    return model_dir
+
+
+def test_settings_default_resolves_local_dir(monkeypatch, tmp_path):
+    fake = _install_fake(monkeypatch, agent=_FakeAgent(revision=None))  # 本地載入的 agent 沒有 hub revision
+    model_dir = _make_model_dir(tmp_path)
+    proposer = create_laya_proposer(settings=UepSettings(_env_file=None, UEP_LAYA_MODELS_DIR=str(tmp_path)))
+    proposer.wait_ready(5)
+    assert fake.loads[-1] == (str(model_dir), "cuda", {})
+    assert proposer.version.endswith(":abc123")
+
+
+def test_default_models_dir_is_under_user_home(monkeypatch):
+    monkeypatch.setattr(laya_wiring.Path, "home", classmethod(lambda cls: cls("/home/u")))
+    assert laya_wiring.default_laya_model_dir() == laya_wiring.Path("/home/u/.uep/models/laya/laya-multilingual")
+    assert laya_wiring.default_laya_model_dir("/x/y") == laya_wiring.Path("/x/y/laya-multilingual")
+
+
+def test_default_local_dir_ignores_hub_revision(monkeypatch, tmp_path):
+    fake = _install_fake(monkeypatch, agent=_FakeAgent(revision=None))
+    _make_model_dir(tmp_path, revision=None)
+    st = UepSettings(_env_file=None, UEP_LAYA_MODELS_DIR=str(tmp_path), UEP_LAYA_REVISION="r9", UEP_LAYA_DEVICE="cpu")
+    proposer = create_laya_proposer(settings=st)
+    proposer.wait_ready(5)
+    assert fake.loads[-1][2] == {}
+    assert proposer.version.endswith(":unpinned")
+
+
+def test_missing_default_local_dir_fails_fast(monkeypatch, tmp_path):
     fake = _install_fake(monkeypatch)
-    default = create_laya_proposer(settings=UepSettings(_env_file=None))
-    default.wait_ready(5)
-    assert fake.loads[-1] == ("convaiinnovations/laya-multilingual", "cuda", {})
-    st = UepSettings(_env_file=None, UEP_LAYA_MODEL="a/b", UEP_LAYA_REVISION="r9", UEP_LAYA_DEVICE="cpu")
+    missing = tmp_path / "nope"
+    with pytest.raises(ValueError) as exc:
+        create_laya_proposer(settings=UepSettings(_env_file=None, UEP_LAYA_MODELS_DIR=str(missing)))
+    assert str(missing / "laya-multilingual") in str(exc.value)
+    assert fake.loads == []
+
+
+def test_explicit_model_used_as_is(monkeypatch, tmp_path):
+    fake = _install_fake(monkeypatch)
+    # 明確設定時不檢查預設本地目錄（即使不存在），HF id 與其他路徑都原樣傳入
+    st = UepSettings(_env_file=None, UEP_LAYA_MODELS_DIR=str(tmp_path / "nope"), UEP_LAYA_MODEL="a/b",
+                     UEP_LAYA_REVISION="r9", UEP_LAYA_DEVICE="cpu")
     custom = create_laya_proposer(settings=st)
     custom.wait_ready(5)
     assert fake.loads[-1] == ("a/b", "cpu", {"revision": "r9"})
+    other = create_laya_proposer(settings=UepSettings(_env_file=None, UEP_LAYA_MODEL=str(tmp_path / "other")))
+    other.wait_ready(5)
+    assert fake.loads[-1][0] == str(tmp_path / "other")
 
 
 def test_device_falls_back_to_cpu_without_cuda():

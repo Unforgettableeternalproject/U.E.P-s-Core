@@ -9,6 +9,12 @@
 warmup 期間（或載入失敗後）``propose`` 立即回 D80 預設（``proposer_id=laya.shadow``、``reason_code`` 標明原因）
 並累計 ``metrics``，不會阻塞 ``ProposerGuard`` 的預算。
 
+權重位置：比照 TTS 權重慣例放在使用者目錄，不進 git、不走 HF 快取。``UEP_LAYA_MODEL`` 未設時載入
+``<UEP_LAYA_MODELS_DIR>/laya-multilingual``（``UEP_LAYA_MODELS_DIR`` 預設 ``~/.uep/models/laya``），
+目錄內是解參照後的 HF snapshot 實體檔（含 ``REVISION`` 檔記錄來源 snapshot 雜湊，作為 ``version`` 的 revision）；
+該目錄不存在時工廠建立當下就拋 ``ValueError``，不自動退回 hub 下載。``UEP_LAYA_MODEL`` 明確設成 HF id
+或其他路徑則照原樣傳給 ``laya.load``。
+
 隱私：只送出 state 所需欄位（助理名稱、泛稱的說話者、在場人數、本句文字）。``speaker_ref`` 等平台識別、
 Risky／秘密欄位一律不進模型；文字只在 shadow 內使用，不進日誌。
 """
@@ -21,6 +27,7 @@ import sys
 import threading
 from collections import Counter
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from uep.turn.decision_config import DecisionConfig
@@ -30,7 +37,9 @@ from uep.turn.proposer import ROUTES, fallback_proposal
 logger = logging.getLogger("uep.echo.laya_wiring")
 
 LAYA_PROPOSER_ID = "laya.shadow"
-DEFAULT_LAYA_MODEL = "convaiinnovations/laya-multilingual"
+DEFAULT_LAYA_MODEL = "convaiinnovations/laya-multilingual"  # HF hub id；只在使用者明確設定時使用
+LAYA_MODEL_SUBDIR = "laya-multilingual"  # <UEP_LAYA_MODELS_DIR> 下的預設模型目錄名
+LAYA_REVISION_FILE = "REVISION"  # 模型目錄內記錄來源 snapshot 雜湊的檔案
 DEFAULT_LAYA_DEVICE = "cuda"
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.:\-]")
 
@@ -61,6 +70,28 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "instructions": "這則訊息是對助理說的（直接對助理說話或延續與助理的對話）嗎？",
     },
 }
+
+
+def laya_models_dir(configured: str | None = None) -> Path:
+    """Laya 權重根目錄：``UEP_LAYA_MODELS_DIR`` 優先，否則 ``~/.uep/models/laya``。"""
+    raw = (configured or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".uep" / "models" / "laya"
+
+
+def default_laya_model_dir(configured: str | None = None) -> Path:
+    """預設的本地模型目錄（``<根>/laya-multilingual``）。"""
+    return laya_models_dir(configured) / LAYA_MODEL_SUBDIR
+
+
+def read_source_revision(model_dir: Path) -> str | None:
+    """讀模型目錄內記錄的來源 revision；沒有該檔或為空回 None。"""
+    try:
+        text = (model_dir / LAYA_REVISION_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
 
 
 def laya_available() -> bool:
@@ -125,6 +156,7 @@ class LayaProposer:
         revision: str | None = None,
         device: str = DEFAULT_LAYA_DEVICE,
         assistant_name: str = "U.E.P",
+        source_revision: str | None = None,
         autoload: bool = True,
     ) -> None:
         if not laya_available():
@@ -134,6 +166,7 @@ class LayaProposer:
             )
         self._model_id = model_id
         self._revision = revision or None
+        self._source_revision = source_revision or None  # 本地載入時的來源 revision，只用於 version 標示
         self._device = device
         self._assistant_name = assistant_name
         self.version = "warming"
@@ -171,7 +204,7 @@ class LayaProposer:
             if self._revision:
                 kwargs["revision"] = self._revision
             agent = laya.load(self._model_id, **kwargs)
-            revision = getattr(agent, "revision", None) or self._revision or "unpinned"
+            revision = getattr(agent, "revision", None) or self._revision or self._source_revision or "unpinned"
             self.version = _safe_code(f"laya-{getattr(laya, '__version__', 'unknown')}:{revision}")
             self._agent = agent
             logger.info("laya.shadow 載入完成：model=%s device=%s version=%s", self._model_id, device, self.version)
@@ -207,14 +240,33 @@ class LayaProposer:
 
 
 def create_laya_proposer(config: DecisionConfig | None = None, settings: object | None = None, **_: object) -> LayaProposer:
-    """registry 工廠：組態來自 ``UEP_LAYA_MODEL``／``UEP_LAYA_REVISION``／``UEP_LAYA_DEVICE``。"""
+    """registry 工廠：組態來自 ``UEP_LAYA_MODELS_DIR``／``UEP_LAYA_MODEL``／``UEP_LAYA_REVISION``／``UEP_LAYA_DEVICE``。
+
+    ``UEP_LAYA_MODEL`` 未設時用預設本地目錄；該目錄不存在就在這裡拋 ``ValueError``（不退回 hub）。
+    """
     from uep.config import get_settings
 
     st = settings if settings is not None else get_settings()
     cfg = config or DecisionConfig()
+    explicit = (getattr(st, "laya_model", None) or "").strip()
+    revision = (getattr(st, "laya_revision", None) or "").strip() or None
+    source_revision: str | None = None
+    if explicit:
+        model_id = explicit
+    else:
+        local = default_laya_model_dir(getattr(st, "laya_models_dir", None))
+        if not local.is_dir():
+            raise ValueError(
+                f"laya.shadow 找不到本地模型目錄：{local}；請把 laya-multilingual 權重放在該處，"
+                "或設定 UEP_LAYA_MODELS_DIR／UEP_LAYA_MODEL，或從 UEP_DECISION_SHADOW_PROPOSERS 移除 laya.shadow"
+            )
+        model_id = str(local)
+        source_revision = read_source_revision(local)
+        revision = None  # 本地目錄沒有 hub revision 可固定
     return LayaProposer(
-        model_id=(getattr(st, "laya_model", None) or "").strip() or DEFAULT_LAYA_MODEL,
-        revision=(getattr(st, "laya_revision", None) or "").strip() or None,
+        model_id=model_id,
+        revision=revision,
         device=(getattr(st, "laya_device", None) or "").strip() or DEFAULT_LAYA_DEVICE,
         assistant_name=cfg.bot_identity.primary_name,
+        source_revision=source_revision,
     )

@@ -227,6 +227,27 @@ def test_agent_path_direct_chat_projection_is_read_only(guild_id):
     assert all(t["type"] == "function" and "parameters" in t["function"] for t in stub.think.tools)
 
 
+def test_agent_path_direct_chat_tags_come_from_route_table(monkeypatch):
+    """黃金：經 Host 組裝的 direct_chat 投影輸入 == {memory.read}，且來源是決策層 route 表（DL-4 PR3）。"""
+    from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
+
+    assert EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS == frozenset({"memory.read"})
+    assert EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS == ROUTE_DEFAULT_CAPABILITIES["direct_chat"]
+    seen: list[frozenset[str]] = []
+    real = memory_registry()
+
+    class Spy:
+        def project(self, tags, ctx):
+            seen.append(frozenset(tags))
+            return real.project(tags, ctx)
+
+    monkeypatch.setattr("uep.echo.host.memory_registry", lambda: Spy())
+    stub = _host_stub(None, audience="scope_private_owner", path="agent")
+    EchoPipelineHost._refresh_tools(stub)
+    assert seen == [frozenset({"memory.read"})]
+    assert _names(stub.think.tools) == ["deep_recall"]
+
+
 def test_agent_path_fails_closed_on_projection_error():
     stub = _host_stub(None, audience="not-an-audience", path="agent")
     EchoPipelineHost._refresh_tools(stub)

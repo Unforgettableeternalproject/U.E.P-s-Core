@@ -131,7 +131,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | DL-1 | TurnProposer 收編為第一個決策點（P0） | C／2 | done（891ef68；Host 注入與 shadow 組裝 dc28d32；預設 primary 改 rules.default 為 DL-1b，9d0832b） | — | — | — |
 | DL-2 | 決策評測集與標註規格 | C／2 | done（DL-2a 5849647、DL-2b 43551af；標註規格 v1 155f46a） | — | — | — |
 | DL-3 | 決策日誌與離線重放評估 | C／2 | done（ec5c3ba；組裝層接上 d6b43c2） | — | — | — |
-| DL-4 | 中樞決策→capability 收窄（對應 Agent 提案 §10 的 I-1～I-4） | C／2 | PR1／PR2 done，PR3 待組裝、PR4 工具層（D4-3 快照標籤短期等同不收窄） | — | — | [Capability收窄ADR](../架構重構/Capability收窄ADR.md)、`uep/decision/capability.py`、`tests/uep/test_decision_capability.py` |
+| DL-4 | 中樞決策→capability 收窄（對應 Agent 提案 §10 的 I-1～I-4） | C／2 | PR1／PR2 done，PR3 決策層部分 done（組裝期驗證 route 表、host 讀表）；`capability_tags_for`／LoopEntry 接線與 `enabled_tags()` 歸工具層 PR4（房內 #113）（D4-3 快照標籤短期等同不收窄） | — | — | [Capability收窄ADR](../架構重構/Capability收窄ADR.md)、`uep/decision/capability.py`、`tests/uep/test_decision_capability.py` |
 | DL-5 | 現有英文 NLP 收編為特徵層 | C／2 | done（95c81a0：`nlp.legacy` shadow proposer，英文限定；不含 MT，中文待 Q6=C 兩條路 shadow） | — | — | `uep/echo/nlp_wiring.py`、`tests/uep/test_nlp_wiring.py`、[決策中樞架構提案 §5.2.1](../架構重構/決策中樞架構提案.md) |
 | DL-6 | Proactive 評估／仲裁 規則版＋shadow | C／2 | DL-6a 契約＋規則 engine＋shadow 日誌 done（`uep/decision/proactive.py`）；DL-6b 對接 S-H planned | — | — | [Proactive決策契約草案](../架構重構/Proactive決策契約草案.md) |
 

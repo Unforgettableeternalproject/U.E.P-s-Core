@@ -38,7 +38,12 @@ from pydantic import SecretStr
 from sqlalchemy.orm import Session, sessionmaker
 
 from uep.adapters.output import OutputAdapter
-from uep.adapters.tool import EnumerableToolSpecResolver, ToolExecutor, ToolSpecResolver
+from uep.adapters.tool import (
+    CAPABILITY_CEILING,
+    EnumerableToolSpecResolver,
+    ToolExecutor,
+    ToolSpecResolver,
+)
 from uep.config import get_settings
 from uep.contracts.presence import PresenceStatus
 from uep.control.channel import (
@@ -48,6 +53,7 @@ from uep.control.channel import (
     ControlSubscription,
 )
 from uep.control.socket_transport import SocketControlServer
+from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
 from uep.decision.db import DbSink
 from uep.decision.log import DecisionLogWriter
 from uep.decision.policy_publish import register_policy_publish
@@ -308,6 +314,24 @@ def build_request_verifier(
     )
 
 
+def validate_route_capabilities(
+    table: Mapping[str, Collection[str]] | None = None,
+    ceiling: Mapping[str, Any] | None = None,
+) -> None:
+    """DL-4 PR3：route 預設表的每個標籤都必須屬於工具層閉集（``CAPABILITY_CEILING``），表內有未知標籤即 ``ValueError``。
+
+    決策層不得 import 工具層，所以這項驗證放在組裝層。``decision.consult`` 本身就在閉集內
+    （``uep/tools/catalog/decision.py`` 的 consult 工具以它為能力標籤），不需要特例。
+    """
+    table = ROUTE_DEFAULT_CAPABILITIES if table is None else table
+    ceiling = CAPABILITY_CEILING if ceiling is None else ceiling
+    unknown = {
+        route: sorted(set(tags) - set(ceiling)) for route, tags in table.items() if set(tags) - set(ceiling)
+    }
+    if unknown:
+        raise ValueError(f"route 預設表含有不在 CAPABILITY_CEILING 的未知標籤：{unknown}")
+
+
 def _check_tool_path_consistency(tool_path: str, echo: EchoPipelineHost | None) -> None:
     """Host 注入的路徑與 think stage 種類都必須等於組裝層決定的路徑；不一致一律拒絕（不靜默退回另一條路徑）。"""
     if tool_path not in ("legacy", "agent"):
@@ -412,6 +436,7 @@ def assemble_core(
     ``UEP_ENDPOINT_SECRETS``）為空仍不起 socket（沒有可驗證的端點身分就不開口）。
     """
     _probe_payload_hash_key(strict)
+    validate_route_capabilities()  # 表內有未知標籤 = 啟動失敗（DL-4 PR3）
     missing = [
         name for name, value in (
             ("bus", bus), ("publisher", publisher), ("control", control), ("adapter", adapter),

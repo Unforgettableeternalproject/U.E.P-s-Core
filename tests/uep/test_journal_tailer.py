@@ -2,6 +2,8 @@
 
 重點：交錯提交（後號先提交）時 tailing 不漏、不重；游標可持久化後續讀。
 """
+import os
+import time
 from datetime import timedelta
 
 import pytest
@@ -14,7 +16,7 @@ from uep.events.bus import EventBus
 from uep.events.envelope import EventDraft
 from uep.events.models import EventRow
 from uep.events.publisher import EventPublisher
-from uep.events.tailer import JournalTailer, TailCursor
+from uep.events.tailer import JournalTailer, TailCursor, current_xmin
 
 pytestmark = pytest.mark.usefixtures("session_factory")
 
@@ -33,7 +35,33 @@ def _keys(events):
     return [e.idempotency_key for e in events]
 
 
+def _settle(session_factory):
+    """等水位越過已提交事件的 txid。
+
+    xmin 是叢集範圍：別的 schema、別的資料庫、別的 pytest 行程裡任何一個未結束的交易都會把它釘住，
+    讓 tailer 暫時什麼都讀不到（設計如此，見 tailer 模組「運作限制」）。測試用條件等待取代「寫完立刻 poll」的假設；
+    逾時（預設 60 秒，``UEP_TEST_WATERMARK_TIMEOUT`` 可調）代表叢集上有長交易，直接點名占住水位的連線。
+    """
+    timeout = float(os.environ.get("UEP_TEST_WATERMARK_TIMEOUT", "60"))
+    deadline = time.monotonic() + timeout
+    while True:
+        with session_factory() as s:
+            top = s.scalar(text("SELECT coalesce(max(txid), 0) FROM events"))
+            if current_xmin(s) > top:
+                return
+            holders = s.execute(
+                text(
+                    "SELECT pid, datname, state, now() - xact_start FROM pg_stat_activity "
+                    "WHERE pid <> pg_backend_pid() AND (backend_xmin IS NOT NULL OR backend_xid IS NOT NULL)"
+                )
+            ).all()
+        if time.monotonic() > deadline:
+            pytest.fail(f"水位 {timeout:.0f} 秒內未越過 txid {top}；叢集上有未結束的交易：{holders}")
+        time.sleep(0.05)
+
+
 def _drain(tailer):
+    _settle(tailer._session_factory)
     out = []
     while batch := tailer.poll(limit=2):
         out.extend(batch)
@@ -54,6 +82,7 @@ def test_migration_0006_adds_txid_and_is_reversible(alembic_cfg, engine, session
 
 def test_new_rows_record_writing_transaction_id(session_factory, publisher):
     publisher.publish(EventDraft(event_type="input.text_final", idempotency_key="a"), EXTERNAL)
+    _settle(session_factory)
     with session_factory() as s:
         txid, xmin = s.execute(
             text("SELECT (SELECT txid FROM events), pg_snapshot_xmin(pg_current_snapshot())::text::bigint")
@@ -70,12 +99,14 @@ def test_tailer_reads_committed_events_in_order_without_duplicates(session_facto
     assert _keys(_drain(tailer)) == ["a", "b", "c", "d", "e"]
     assert tailer.poll() == []
     publisher.publish(EventDraft(event_type="input.text_final", idempotency_key="f"), EXTERNAL)
+    _settle(session_factory)
     assert _keys(tailer.poll()) == ["f"]
     assert tailer.poll() == []
 
 
 def test_tailer_from_now_skips_history(session_factory, publisher):
     publisher.publish(EventDraft(event_type="input.text_final", idempotency_key="old"), EXTERNAL)
+    _settle(session_factory)  # from_now 以目前水位為起點：水位須先越過 old
     tailer = JournalTailer.from_now(session_factory)
     publisher.publish(EventDraft(event_type="input.text_final", idempotency_key="new"), EXTERNAL)
     assert _keys(_drain(tailer)) == ["new"]
@@ -84,11 +115,13 @@ def test_tailer_from_now_skips_history(session_factory, publisher):
 def test_cursor_persists_and_resumes(session_factory, publisher):
     for key in ("a", "b", "c"):
         publisher.publish(EventDraft(event_type="input.text_final", idempotency_key=key), EXTERNAL)
+    _settle(session_factory)
     first = JournalTailer(session_factory)
     got = _keys(first.poll(limit=2))  # 區間內處理到一半
     saved = first.cursor
     assert saved.high_txid is not None  # 區間處理中
     publisher.publish(EventDraft(event_type="input.text_final", idempotency_key="d"), EXTERNAL)
+    _settle(session_factory)
     resumed = JournalTailer(session_factory, cursor=TailCursor(**vars(saved)))
     got += _keys(_drain(resumed))
     assert got == ["a", "b", "c", "d"]
@@ -186,12 +219,14 @@ def test_safety_lag_delays_visibility_but_never_loses(session_factory, publisher
     now = [0.0]
     tailer = JournalTailer(session_factory, safety_lag=timedelta(seconds=10), clock=lambda: now[0])
     publisher.publish(EventDraft(event_type="input.text_final", idempotency_key="a"), EXTERNAL)
+    _settle(session_factory)  # 第一次觀察到的 xmin 必須已越過 a，否則 clock 推進後仍讀不到
     assert tailer.poll() == []  # 水位的觀察還不夠舊
     now[0] = 5.0
     assert tailer.poll() == []
     now[0] = 10.0
     assert _keys(tailer.poll()) == ["a"]
     publisher.publish(EventDraft(event_type="input.text_final", idempotency_key="b"), EXTERNAL)
+    _settle(session_factory)
     now[0] = 12.0
     assert tailer.poll() == []
     now[0] = 25.0

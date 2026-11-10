@@ -128,16 +128,21 @@ def memory_entries() -> list[ToolEntry]:
             scope=ToolScope(requires_context=frozenset({GUILD_ROSTER_CONTEXT})),
             output_schema=MEMORY_OUTPUT_SCHEMA,
         ),
-        *(_about_me_entry(name) for name in _contract.ABOUT_ME_TOOLS),
+        *(_about_me_entry(name) for name in ABOUT_ME_REGISTERED),
     ]
+
+
+# correct_about_me 不註冊（DQ-16 不可逆）：見 _about_me_entry 說明
+ABOUT_ME_REGISTERED = (_contract.RETRACT_ABOUT_ME, _contract.OPT_OUT_ABOUT_ME)
 
 
 def _about_me_entry(name: str) -> ToolEntry:
     """「關於我」寫入類工具（切片 E3；DQ-16）。schema 取自共用契約。
 
-    分類全部是 ``reversible_local``、無核准（Bernie 裁決：使用者明確要求就直接執行，只補 ActionIntent／receipt 與稽核）：
-    opt_out／retract 依 DQ-16 暫定；``correct_about_me`` DQ-16 稱不可逆，但 ``memory.write`` 的能力上限就是
-    ``reversible_local``，升到 ``external_effect`` 會被 TaskManager 強制核准，與裁決衝突，所以暫列同級（G1 定案時再議）。
+    分類是 ``reversible_local``、無核准（Bernie 裁決：使用者明確要求就直接執行，只補 ActionIntent／receipt 與稽核）：
+    opt_out／retract 依 DQ-16 暫定。**``correct_about_me`` 不註冊**：DQ-16 稱不可逆，應標 ``external_effect`` 以上，
+    但 ``memory.write`` 的能力上限（``CAPABILITY_CEILING``）是 ``reversible_local``，註冊表會拒絕這個組合；
+    不為了通過而調低分類或改上限，所以保持不可達（開放與否另卡，G1）。
     身分與場域由 Core 注入（PD-12）；沒有 guild 脈絡就不投出（對象是場域共享記憶裡關於說話者的旁證）。"""
     declaration = _contract.ABOUT_ME_SCHEMAS[name]
     return ToolEntry(

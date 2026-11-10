@@ -376,7 +376,7 @@ def test_render_adds_additional_properties_false_and_nothing_else(registry):
     all_rendered = {t["function"]["name"]: t for t in render_tools(cs)}
     golden = {d["function"]["name"]: d for d in json.loads(GOLDEN.read_text(encoding="utf-8"))}
     assert set(golden) < set(all_rendered)  # E3：另有 about-me 三工具（golden 不涵蓋）
-    assert set(all_rendered) - set(golden) == {"retract_about_me", "opt_out_about_me", "correct_about_me"}
+    assert set(all_rendered) - set(golden) == {"retract_about_me", "opt_out_about_me"}
     rendered = {name: all_rendered[name] for name in golden}
     for name, tool in rendered.items():
         expected = json.loads(json.dumps(golden[name]))

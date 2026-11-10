@@ -18,7 +18,8 @@ from uep.stream.contracts import memory_tools as contract
 from uep.tools.catalog.memory import memory_registry
 from uep.tools.outcomes import TurnOutcomeCache
 
-WRITE_TOOLS = ("force_remember", *contract.ABOUT_ME_TOOLS)
+ABOUT_ME_REGISTERED = ("retract_about_me", "opt_out_about_me")
+WRITE_TOOLS = ("force_remember", *ABOUT_ME_REGISTERED)
 GROUP = "scope_group_g123"
 
 
@@ -34,7 +35,7 @@ def test_write_tools_are_reversible_local_without_approval_and_memory_write():
 
 def test_about_me_tools_need_guild_context_and_hide_injected_params():
     registry = memory_registry()
-    for name in contract.ABOUT_ME_TOOLS:
+    for name in ABOUT_ME_REGISTERED:
         entry = registry.entry(name)
         assert entry.scope.requires_context == frozenset({"guild_roster"}), name
         assert set(entry.descriptor.injected_params) == {"actor_id", "audience", "segment_id", "guild_id"}, name
@@ -118,17 +119,14 @@ def test_access_opt_out_calls_adapter_with_guild_scope_and_actor_uid():
     assert adapter.calls == [("opt_out_about_me", "guild:123", "111", True)]
 
 
-def test_access_retract_and_correct_use_projection_id_from_context_not_args():
+def test_access_retract_uses_projection_id_from_context_not_args():
     adapter = FakeAdapter()
     layer = make_layer(adapter)
     assert run_about(layer, "retract_about_me", {"ref": 1, "projection_id": "evil"})["success"] is True
-    out = run_about(layer, "correct_about_me", {"ref": 1, "correction_text": " 我其實不玩 "})
-    assert out["success"] is True
-    assert adapter.calls[0] == ("retract_about_me", "guild:123", "111", "proj_1")
-    name, scope, uid, pid, text, evidence, session = adapter.calls[1]
-    assert (name, scope, uid, pid, text, evidence, session) == (
-        "correct_about_me", "guild:123", "111", "proj_1", "我其實不玩", None, "seg_1",
-    )
+    assert adapter.calls == [("retract_about_me", "guild:123", "111", "proj_1")]
+    # correct_about_me 不可逆、未註冊：Access 不處理
+    denied = run_about(layer, "correct_about_me", {"ref": 1, "correction_text": "x"})
+    assert denied["code"] == "denied" and len(adapter.calls) == 1
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -143,11 +141,10 @@ def test_access_about_me_is_fail_closed_and_never_touches_adapter(kwargs):
     assert out["success"] is False and out["code"] == "denied" and adapter.calls == []
 
 
-def test_access_about_me_missing_projection_or_empty_correction_is_failure_without_write():
+def test_access_about_me_missing_projection_is_failure_without_write():
     adapter = FakeAdapter()
     layer = make_layer(adapter)
     assert run_about(layer, "retract_about_me", {"ref": 1}, projection_id="")["result"] == contract.ABOUT_BAD_REF
-    assert "空的" in run_about(layer, "correct_about_me", {"ref": 1, "correction_text": "  "})["result"]
     assert adapter.calls == []
 
 
@@ -255,9 +252,9 @@ def test_executor_ref_without_prior_member_recall_or_unknown_ref_fails_without_c
     cache = TurnOutcomeCache()
     executor = _executor(port, cache)
     with cache.turn_scope("turn_1"):
-        none_yet = executor.execute(_call("correct_about_me", {**BASE, "ref": 1, "correction_text": "z"}))
+        none_yet = executor.execute(_call("retract_about_me", {**BASE, "ref": 1}))
         executor.execute(_call("member_recall", {**BASE, "member": "自己"}))
-        unknown = executor.execute(_call("correct_about_me", {**BASE, "ref": 9, "correction_text": "z"}))
+        unknown = executor.execute(_call("retract_about_me", {**BASE, "ref": 9}))
     assert none_yet.succeeded is False and none_yet.error_code == "failed"
     assert cache.get("act_x")["result"] == contract.ABOUT_BAD_REF  # 已有登記但編號不在其中
     assert unknown.succeeded is False
@@ -306,7 +303,8 @@ def db_rig(session_factory):
     executor = _executor(port, cache)
     tm = TaskManager(session_factory, EventPublisher(session_factory, EventBus()),
                      {"core_memory": executor}, tool_resolver=memory_registry())
-    turns = AgentToolTurns(tm, memory_registry(), cache)
+    # direct_chat 仍只讀；寫入類只在 agent_loop 的標籤集合內才投出，這裡以明示標籤模擬
+    turns = AgentToolTurns(tm, memory_registry(), cache, capability_tags={"memory.read", "memory.write"})
     return types.SimpleNamespace(tm=tm, turns=turns, port=port, cache=cache, sf=session_factory)
 
 
@@ -429,16 +427,16 @@ def test_db_about_me_tools_four_stage_with_ref_pipeline(db_rig):
     assert db_rig.turns.run_tool("opt_out_about_me", {"enabled": True}, ctx)["success"] is True
     assert db_rig.turns.run_tool("member_recall", {"member": "自己"}, ctx)["success"] is True
     assert db_rig.turns.run_tool("retract_about_me", {"ref": 1}, ctx)["success"] is True
-    assert db_rig.turns.run_tool("correct_about_me", {"ref": 1, "correction_text": "我不玩"}, ctx)["success"] is True
+    assert db_rig.turns.run_tool("correct_about_me", {"ref": 1, "correction_text": "我不玩"}, ctx)["success"] is False
     calls = {c["name"]: c for c in db_rig.port.calls}
     assert calls["retract_about_me"]["context"]["projection_id"] == "proj_a"
-    assert calls["correct_about_me"]["args"] == {"ref": 1, "correction_text": "我不玩"}
+    assert "correct_about_me" not in calls  # 未註冊、不可達：沒有呼叫記憶
     assert calls["opt_out_about_me"]["context"] == {"guild_id": "123"}
     actions, receipts, approvals = _rows(db_rig.sf)
     write_actions = [a for a in actions if a.tool != "member_recall"]
-    assert {a.tool for a in write_actions} == set(contract.ABOUT_ME_TOOLS)
+    assert {a.tool for a in write_actions} == set(ABOUT_ME_REGISTERED)
     assert all(a.side_effect_class == "reversible_local" and a.status == ActionStatus.SUCCEEDED.value for a in write_actions)
-    assert len(receipts) == 4 and all(r.succeeded for r in receipts) and approvals == []
+    assert len(receipts) == 3 and all(r.succeeded for r in receipts) and approvals == []
     db_rig.turns.finish_turn(turn_id)
 
 
@@ -452,3 +450,21 @@ def test_db_about_me_not_offered_without_guild_context(db_rig):
     actions, receipts, _ = _rows(db_rig.sf)
     assert actions == [] and receipts == []  # 工具不在可見集合：Gateway 拒絕，不建 action
     db_rig.turns.finish_turn(turn_id)
+
+
+def test_correct_about_me_is_not_registered_nor_projected_anywhere():
+    registry = memory_registry()
+    assert "correct_about_me" not in registry.entries()
+    every_tag = {"memory.read", "memory.write", "decision.consult", "chatroom.post", "lore.write", "desktop.file_write"}
+    from uep.tools.projection import ProjectionContext
+
+    projected = registry.project(every_tag, ProjectionContext(available_context=frozenset({"guild_roster"})))
+    assert "correct_about_me" not in {t["tool"] for t in projected["tools"]}
+    from uep.memory.access import TOOL_CLASSES
+
+    assert "correct_about_me" not in TOOL_CLASSES
+    from uep.agent.bridge import DIRECT_CHAT_TAGS
+    from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
+
+    assert "memory.write" not in DIRECT_CHAT_TAGS  # direct_chat 維持只讀（Q-E）
+    assert all("memory.write" not in tags for tags in ROUTE_DEFAULT_CAPABILITIES.values())

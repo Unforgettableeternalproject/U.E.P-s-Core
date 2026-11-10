@@ -217,28 +217,21 @@ def test_legacy_path_bytes_unchanged(guild_id):
 
 
 @pytest.mark.parametrize("guild_id", [None, "123"])
-def test_agent_path_direct_chat_projection_includes_write_tools(guild_id):
-    """E3：direct_chat 加上 memory.write（approval_level=none 的寫入類走四階段）；「關於我」只在有場域時投出。"""
+def test_agent_path_direct_chat_projection_is_read_only(guild_id):
     stub = _host_stub(guild_id, audience="scope_group_g123" if guild_id else "scope_private_owner", path="agent")
     EchoPipelineHost._refresh_tools(stub)
     names = _names(stub.think.tools)
-    assert names == (
-        ["force_remember", "deep_recall", "member_recall", "retract_about_me", "opt_out_about_me", "correct_about_me"]
-        if guild_id else ["force_remember", "deep_recall"]
-    )
-    assert {n for n in names if TOOL_CLASSES[n] != "internal_read"} == (
-        {"force_remember", "retract_about_me", "opt_out_about_me", "correct_about_me"} if guild_id else {"force_remember"}
-    )
+    assert "force_remember" not in names  # Q-E：direct_chat 僅唯讀工具
+    assert names == (["deep_recall", "member_recall"] if guild_id else ["deep_recall"])
+    assert all(TOOL_CLASSES[n] == "internal_read" for n in names)
     assert all(t["type"] == "function" and "parameters" in t["function"] for t in stub.think.tools)
 
 
 def test_agent_path_direct_chat_tags_come_from_route_table(monkeypatch):
-    """黃金：經 Host 組裝的 direct_chat 投影輸入 == {memory.read, memory.write}（E3），來源是決策層 route 表（DL-4 PR3）。"""
-    from uep.agent.bridge import DIRECT_CHAT_TAGS
+    """黃金：經 Host 組裝的 direct_chat 投影輸入 == {memory.read}，且來源是決策層 route 表（DL-4 PR3）。"""
     from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
 
-    assert EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS == frozenset({"memory.read", "memory.write"})
-    assert DIRECT_CHAT_TAGS == ROUTE_DEFAULT_CAPABILITIES["direct_chat"]  # 橋接層與決策層同一份
+    assert EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS == frozenset({"memory.read"})
     assert EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS == ROUTE_DEFAULT_CAPABILITIES["direct_chat"]
     seen: list[frozenset[str]] = []
     real = memory_registry()
@@ -251,8 +244,8 @@ def test_agent_path_direct_chat_tags_come_from_route_table(monkeypatch):
     monkeypatch.setattr("uep.echo.host.memory_registry", lambda: Spy())
     stub = _host_stub(None, audience="scope_private_owner", path="agent")
     EchoPipelineHost._refresh_tools(stub)
-    assert seen == [frozenset({"memory.read", "memory.write"})]
-    assert _names(stub.think.tools) == ["force_remember", "deep_recall"]
+    assert seen == [frozenset({"memory.read"})]
+    assert _names(stub.think.tools) == ["deep_recall"]
 
 
 def test_agent_path_fails_closed_on_projection_error():

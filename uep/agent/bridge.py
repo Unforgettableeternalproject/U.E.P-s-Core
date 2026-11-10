@@ -32,9 +32,7 @@ from uep.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 INJECTED_CONTEXT_KEYS = ("actor_id", "audience", "segment_id", "guild_id")
-# direct_chat 預設標籤（與決策層 ROUTE_DEFAULT_CAPABILITIES["direct_chat"] 同；測試比對）。E3：Q-E 的「僅唯讀」改為
-# 加上 memory.write——寫入類工具（approval_level=none）也走四階段，使用者明確要求才直接執行。
-DIRECT_CHAT_TAGS = frozenset({"memory.read", "memory.write"})
+DIRECT_CHAT_TAGS = frozenset({"memory.read"})  # Q-E：direct_chat 僅唯讀
 DEFAULT_FINISH_TIMEOUT_S = 2.0  # 回合收尾等在途工具的上限（沿用工具層的短逾時；逾時即標 UNKNOWN）
 
 

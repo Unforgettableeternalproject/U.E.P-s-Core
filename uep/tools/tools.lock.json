@@ -1,8 +1,4 @@
 {
-  "correct_about_me": {
-    "schema_hash": "61fd365dd59a3b63180be704087b6778f33f7d97ce959cbf57c47167938e1853",
-    "tool_version": 1
-  },
   "deep_recall": {
     "schema_hash": "6d53da405e34d3fba27b7e38e0ebec9b4e988374d9d7961e7d40dcd9bad489da",
     "tool_version": 1

@@ -615,8 +615,7 @@ class MemoryAccessLayer:
 
         場域取自 Core 注入的 ``guild_id``，說話者身分由 ``_admit`` 解析（audience、成員資格 fail-closed），
         LLM 的 ``args`` 不能指定對象；``projection_id`` 由 executor 依回合內 member_recall 登記的旁證編號解析後放進
-        ``context``。``correct_about_me`` 在 Core 路徑沒有本輪 evidence 來源：不傳 evidence，引擎把更正當私有陳述寫入
-        （遮蔽仍生效，更正不會出現在別人的查詢裡）。"""
+        ``context``。``correct_about_me`` 不可逆、未註冊（TOOL_CLASSES 沒有它），不在此處理。"""
         ctx = context or {}
         guild_id = ctx.get("guild_id")
         if not isinstance(guild_id, str) or not guild_id:
@@ -640,14 +639,7 @@ class MemoryAccessLayer:
             projection_id = ctx.get("projection_id")
             if not isinstance(projection_id, str) or not projection_id:
                 return {"success": False, "result": _contract.ABOUT_BAD_REF}
-            if name == _contract.CORRECT_ABOUT_ME:
-                text = str(args.get("correction_text") or "").strip()
-                if not text:
-                    return {"success": False, "result": "更正內容是空的，請使用者說出正確的說法。"}
-                call_args = (scope_id, actor_uid, projection_id, text)
-                call_kwargs = {"evidence": None, "session_id": self._current_session(session_id)}
-            else:
-                call_args = (scope_id, actor_uid, projection_id)
+            call_args = (scope_id, actor_uid, projection_id)
         try:
             if self._runtime.adapter(namespace_id) is not None:
                 async def via_adapter(adapter: MemoryAdapterLike) -> Any:

@@ -224,8 +224,7 @@ class UepSettings(BaseSettings):
         return CompressConfig(
             enabled=defaults.enabled if self.llm_compress is None else self.llm_compress,
             model=(self.llm_compress_model or "").strip() or defaults.model,
-            context_window=self.llm_context_window if self.llm_context_window and self.llm_context_window > 0
-            else defaults.context_window,
+            context_window=self.llm_context_window if self.llm_context_window and self.llm_context_window > 0 else None,
         )
 
 

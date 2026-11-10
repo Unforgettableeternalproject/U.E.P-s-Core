@@ -367,3 +367,114 @@ async def test_compression_disabled_keeps_history_limit_window() -> None:
     stage.history[:] = seed_history(12)
     assert stage._compressor is None
     assert len(stage._history_window()) <= 6
+
+
+# --- 視窗預設跟著模型走、Console／Host 共用接線 ---
+
+
+def _openai_backend(model: str = "gpt-5.6-luna") -> Any:
+    from echo_thought_core.backends.openai import OpenAIBackend
+
+    return OpenAIBackend({"model": model, "api_key": "sk-test"})
+
+
+def test_context_window_follows_backend_when_env_unset() -> None:
+    from uep.stream.adapters.think_compress import (
+        FALLBACK_CONTEXT_WINDOW,
+        resolve_context_window,
+    )
+
+    backend = _openai_backend()
+    assert backend.get_context_window_size() == 272_000  # min(1.05M, 價格跳階 272K)
+    assert resolve_context_window(CompressConfig(), backend) == 272_000
+    assert resolve_context_window(CompressConfig(), object()) == FALLBACK_CONTEXT_WINDOW
+
+
+def test_context_window_env_overrides_backend() -> None:
+    from uep.stream.adapters.think_compress import resolve_context_window
+
+    assert resolve_context_window(CompressConfig(context_window=500_000), _openai_backend()) == 500_000
+
+
+def test_settings_context_window_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from uep.config import UepSettings
+
+    monkeypatch.delenv("UEP_LLM_CONTEXT_WINDOW", raising=False)
+    assert UepSettings(_env_file=None).compress_config().context_window is None
+    monkeypatch.setenv("UEP_LLM_CONTEXT_WINDOW", "300000")
+    assert UepSettings(_env_file=None).compress_config().context_window == 300_000
+
+
+def test_compression_kwargs_resolves_window_and_degrades_without_key() -> None:
+    from uep.stream.adapters.think_compress import compression_kwargs
+    from uep.stream.adapters.think_config import ThinkConfig
+
+    kwargs = compression_kwargs(CompressConfig(), ThinkConfig(api_key="sk-test"), _openai_backend())
+    assert kwargs["compress"].context_window == 272_000
+    assert kwargs["compress_backend"] is not None
+    over = compression_kwargs(CompressConfig(context_window=400_000), ThinkConfig(api_key="sk-test"), _openai_backend())
+    assert over["compress"].context_window == 400_000
+    assert compression_kwargs(CompressConfig(), ThinkConfig(api_key=None)) == {}  # 缺金鑰：退回 history_limit
+    assert compression_kwargs(CompressConfig(enabled=False), ThinkConfig(api_key="sk-test")) == {}
+    assert compression_kwargs(None, ThinkConfig(api_key="sk-test")) == {}
+
+
+@pytest.fixture
+def llm_env(monkeypatch: pytest.MonkeyPatch):
+    from uep.config import get_settings
+
+    for name in ("UEP_LLM_COMPRESS", "UEP_LLM_CONTEXT_WINDOW", "UEP_LLM_COMPRESS_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("UEP_LLM_API_KEY", "sk-test")
+    get_settings.cache_clear()
+    yield monkeypatch
+    get_settings.cache_clear()
+
+
+def test_console_rig_enables_compression(llm_env: pytest.MonkeyPatch) -> None:
+    from uep.console.rig import real_think_factory
+
+    stage = real_think_factory()(None)
+    assert stage._compressor is not None
+    assert stage._compressor.config.context_window == 272_000
+    assert stage._compressor.config.model == "gpt-5.6-luna"
+
+
+def test_console_rig_respects_switch_and_window_env(llm_env: pytest.MonkeyPatch) -> None:
+    from uep.config import get_settings
+    from uep.console.rig import real_think_factory
+
+    llm_env.setenv("UEP_LLM_COMPRESS", "0")
+    get_settings.cache_clear()
+    assert real_think_factory()(None)._compressor is None
+    llm_env.setenv("UEP_LLM_COMPRESS", "1")
+    llm_env.setenv("UEP_LLM_CONTEXT_WINDOW", "300000")
+    get_settings.cache_clear()
+    assert real_think_factory()(None)._compressor.config.context_window == 300_000
+
+
+def test_console_llm_cmd_enables_compression(llm_env: pytest.MonkeyPatch) -> None:
+    from uep.console.llm_cmd import default_stage_factory, load_think_config
+
+    config, prompt = load_think_config()
+    stage = default_stage_factory(config, prompt, None)
+    assert stage._compressor is not None
+    assert stage._compressor.config.context_window == 272_000
+
+
+def test_host_wiring_enables_compression_with_same_setup(llm_env: pytest.MonkeyPatch) -> None:
+    from uep.config import get_settings
+    from uep.echo.inference_wiring import InferenceConfig, build_inference_wiring
+
+    class Llm:
+        def get_context_window_size(self) -> int:
+            return 200_000
+
+        async def stream_query(self, messages, system_instruction=None, **kwargs):
+            yield "好"
+
+    cfg = InferenceConfig.from_settings(get_settings())
+    wiring = build_inference_wiring(cfg, think_backend=Llm(), tts_backend=object(), stt_backend=object())
+    stage = wiring.think
+    assert stage._compressor is not None
+    assert stage._compressor.config.context_window == 200_000  # 跟著對話 backend

@@ -320,19 +320,6 @@ def default_think_backend(cfg: InferenceConfig) -> Any:
     return build_backend(provider, session_repo=str(repo) if repo is not None else None, config=cfg.think, **overrides)
 
 
-def _build_compress_backend(cfg: InferenceConfig) -> Any:
-    """長對話壓縮用的 openai backend；未啟用、缺金鑰或建立失敗時回 None（降級為 history_limit 截斷）。"""
-    if cfg.compress is None or not cfg.compress.enabled or cfg.think is None:
-        return None
-    from uep.stream.adapters.think_compress import build_compress_backend
-
-    try:
-        return build_compress_backend(cfg.compress, cfg.think)
-    except Exception as exc:  # noqa: BLE001 - 缺金鑰等：不擋 Think 啟動
-        logger.warning("長對話壓縮停用：%s（改用 history_limit 截斷）", type(exc).__name__)
-        return None
-
-
 class _VoxUnavailableStage:
     """VOX adapter 無法使用時的佔位 speak stage：``prepare`` 明確失敗，由 _SpeakGuard 降級（標 not ready、之後無聲）。"""
 
@@ -489,10 +476,10 @@ def build_inference_wiring(
     llm = think_backend if think_backend is not None else (think_backend_factory or default_think_backend)(cfg)
     think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt, "config": cfg.think}
     think_kwargs.update(extra.get("think", {}))
-    compress_backend = _build_compress_backend(cfg)
-    if compress_backend is not None:
-        think_kwargs.setdefault("compress", cfg.compress)
-        think_kwargs.setdefault("compress_backend", compress_backend)
+    from uep.stream.adapters.think_compress import compression_kwargs
+
+    for key, value in compression_kwargs(cfg.compress, cfg.think, llm).items():
+        think_kwargs.setdefault(key, value)
     recommended = _vox_recommended_split_policy(cfg, speak)
     if recommended is not None:
         think_kwargs.setdefault("split_policy", recommended)

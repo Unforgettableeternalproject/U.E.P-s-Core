@@ -249,8 +249,15 @@ def real_think_factory() -> Callable[[LatencyTracer], Any]:
     except ThinkConfigError as exc:
         raise ConsoleError(str(exc)) from exc
 
+    from uep.stream.adapters.think_compress import compression_kwargs
+
+    # 與 Host 路徑共用同一份壓縮接線（開關、缺金鑰退路、視窗預設都一致）
+    compress = compression_kwargs(settings.compress_config(), config, backend)
+
     def factory(tracer: LatencyTracer) -> Any:
-        return LLMThinkStage(backend, system_prompt=settings.infer_system_prompt, tracer=tracer, config=config)
+        return LLMThinkStage(
+            backend, system_prompt=settings.infer_system_prompt, tracer=tracer, config=config, **compress
+        )
 
     return factory
 

@@ -30,6 +30,7 @@ ContextManager 吃的是 pydantic ``Message``，壓縮用的是 backend 的 ``su
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 from collections.abc import Callable
@@ -37,6 +38,9 @@ from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+FALLBACK_CONTEXT_WINDOW = 128_000
+"""backend 說不出視窗大小時的保守值（與 openai 後端對未知模型的退路一致）。"""
 
 DEFAULT_COMPRESS_MODEL = "gpt-5.6-luna"
 """壓縮用模型預設值（走 openai 後端）；可由 ``UEP_LLM_COMPRESS_MODEL`` 覆寫。"""
@@ -61,8 +65,10 @@ class CompressConfig:
 
     enabled: bool = True
     model: str = DEFAULT_COMPRESS_MODEL
-    context_window: int = 128_000
-    """用來算 60／80／92% 的 token 預算（不是模型的硬上限，留餘裕給 system、記憶注入與輸出）。"""
+    context_window: int | None = None
+    """算 60／80／92% 的 token 預算。``None`` = 跟著模型走：取 backend 的 ``get_context_window_size()``
+    （openai 後端為有效工作上限 ``min(context_window, 價格跳階 272K)``，見 ``backends/openai.py``）；
+    給整數（``UEP_LLM_CONTEXT_WINDOW``）則以它為準。"""
     reasoning_effort: str = "low"
     max_output_tokens: int = 4096
     cooldown_seconds: float = 30.0
@@ -99,14 +105,46 @@ def is_context_overflow(exc: BaseException) -> bool:
     return bool(_OVERFLOW_RE.search(str(exc)))
 
 
+def resolve_context_window(config: CompressConfig, *backends: Any) -> int:
+    """壓縮用的 token 預算：env 明確覆寫優先，否則依序問 backend 的有效工作上限，最後退保守值。"""
+    if config.context_window and config.context_window > 0:
+        return config.context_window
+    for backend in backends:
+        getter = getattr(backend, "get_context_window_size", None)
+        if callable(getter):
+            try:
+                size = int(getter())
+            except Exception:  # 取不到就問下一個
+                logger.debug("backend 取視窗大小失敗，改問下一個", exc_info=True)
+                continue
+            if size > 0:
+                return size
+    return FALLBACK_CONTEXT_WINDOW
+
+
+def compression_kwargs(config: CompressConfig | None, think: Any, chat_backend: Any = None) -> dict[str, Any]:
+    """給 ``LLMThinkStage(**...)`` 的壓縮參數；Host（inference_wiring）與 Console（llm_cmd／rig）共用。
+
+    未啟用、缺金鑰或建立失敗時回空 dict（stage 退回 ``history_limit`` 截斷），只警告不擋啟動。
+    視窗預設跟著**對話**模型（``chat_backend``）的有效上限走，其次才是壓縮模型。
+    """
+    if config is None or not config.enabled or think is None:
+        return {}
+    try:
+        backend = build_compress_backend(config, think)
+    except Exception as exc:  # noqa: BLE001 - 缺金鑰等：不擋 Think 啟動
+        logger.warning("長對話壓縮停用：%s（改用 history_limit 截斷）", type(exc).__name__)
+        return {}
+    window = resolve_context_window(config, chat_backend, backend)
+    return {"compress": dataclasses.replace(config, context_window=window), "compress_backend": backend}
+
+
 def build_compress_backend(config: CompressConfig, think: Any) -> Any:
     """以 Core 現有的 openai 後端建壓縮用 backend（沿用 ``think`` 的金鑰／base_url，只換模型）。
 
     ``think`` 是 :class:`~uep.stream.adapters.think_config.ThinkConfig`。缺金鑰時由
     ``require_credentials`` 拋 ``ThinkConfigError``，呼叫端自行決定降級。
     """
-    import dataclasses
-
     from echo_thought_core.backends.registry import BackendRegistry
 
     cfg = dataclasses.replace(think, provider="openai", model=config.model, api="chat")
@@ -130,6 +168,8 @@ class HistoryCompressor:
         from echo_thought_core.context_manager import ContextManager
         from echo_thought_core.schemas.config import CompactionConfig
 
+        window = resolve_context_window(config, backend)
+        config = dataclasses.replace(config, context_window=window)
         self.config = config
         self._system_text = system_text
         self._manager = ContextManager(
@@ -137,7 +177,7 @@ class HistoryCompressor:
                 backend="openai",
                 model=config.model,
                 compaction_model=config.model,
-                context_window_size=config.context_window,
+                context_window_size=window,
                 compaction_cooldown_seconds=config.cooldown_seconds,
                 max_emergency_messages=max(1, config.keep_recent),
             ),
@@ -272,9 +312,12 @@ class HistoryCompressor:
 
 __all__ = [
     "DEFAULT_COMPRESS_MODEL",
+    "FALLBACK_CONTEXT_WINDOW",
     "CompressConfig",
     "CompressOutcome",
     "HistoryCompressor",
     "build_compress_backend",
+    "compression_kwargs",
     "is_context_overflow",
+    "resolve_context_window",
 ]

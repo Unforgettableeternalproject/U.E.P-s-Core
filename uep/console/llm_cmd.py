@@ -29,10 +29,14 @@ def load_think_config() -> tuple[ThinkConfig, str]:
 
 def default_stage_factory(config: ThinkConfig, system_prompt: str, tracer: Any) -> Any:
     """建真實 Think stage；缺金鑰時於此拋 ``ThinkConfigError``（不等到第一句話）。"""
+    from uep.config import get_settings
+    from uep.stream.adapters.think_compress import compression_kwargs
     from uep.stream.adapters.think_llm import LLMThinkStage, build_backend
 
     backend = build_backend(config=config)
-    return LLMThinkStage(backend, system_prompt=system_prompt, tracer=tracer, config=config)
+    # 與 Host 路徑共用同一份壓縮接線（開關、缺金鑰退路、視窗預設都一致）
+    compress = compression_kwargs(get_settings().compress_config(), config, backend)
+    return LLMThinkStage(backend, system_prompt=system_prompt, tracer=tracer, config=config, **compress)
 
 
 def run_coro(coro: Any) -> Any:

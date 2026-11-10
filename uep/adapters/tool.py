@@ -198,6 +198,9 @@ class ToolResponseLost(Exception):
 
 
 LookupOutcome = Literal["found", "confirmed_not_executed", "undetermined"]
+# executor.cancel 的結果（D69、提案 §6.4）：stopped＝確定已停止；isolated＝無法確認停止（副作用可能仍在進行，
+# 呼叫端須當成結果未明，action 轉 UNKNOWN 走 lookup）。
+CancelOutcome = Literal["stopped", "isolated"]
 
 
 @dataclass(frozen=True)
@@ -228,3 +231,22 @@ class ToolExecutor(Protocol):
     def lookup_receipt(self, action_id: str) -> ReceiptLookup:
         """以 action_id 查核是否已執行。查核本身失聯時回 undetermined，不拋例外。"""
         ...
+
+
+@runtime_checkable
+class CancellableToolExecutor(ToolExecutor, Protocol):
+    """可選能力（D69、TC-4）：實作 ``cancel`` 的 executor。
+
+    ToolExecutor 本身不含 ``cancel``，沒實作的 executor 仍是合法 ToolExecutor；但註冊表宣告
+    ``interruptible != non_interruptible`` 或 ``cancellable=True`` 的工具，其 executor 必須實作 ``cancel``（RA-5，組裝層檢查）。
+    """
+
+    def cancel(self, action_id: str) -> CancelOutcome:
+        """盡力停止該 action 的進行中執行；冪等，對未知或已結束的 action 回 ``stopped``。
+        回覆遺失或無法確認停止時回 ``isolated`` 或拋例外，呼叫端一律當作結果未明（不得推定已停止）。"""
+        ...
+
+
+def supports_cancel(executor: object) -> bool:
+    """executor 是否實作 ``cancel``（RA-5／RA-11／RA-12 的 cancellable 判定來源）。"""
+    return callable(getattr(executor, "cancel", None))

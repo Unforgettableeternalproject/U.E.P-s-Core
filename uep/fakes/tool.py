@@ -10,6 +10,7 @@
   * ``lookup_outcome(action_id, outcome)``：強制 ``found`` / ``confirmed_not_executed`` / ``undetermined``；
     對已執行的 action 強制後兩者即「已執行但查核遺失紀錄」（誤報），用以驗證 idempotency=none 不重做。
   * ``unverified_receipt(action_id)``：該 action 的 receipt 以 source_verified=False 簽回。
+  * ``cancel_behavior(action_id, mode)``：``stopped`` / ``isolated`` / ``raise``（cancel 拋 RuntimeError）；預設 ``stopped``。
   * crash 點：``tool.before_execute``、``tool.after_execute``（已執行記帳、尚未回傳）。
 """
 from __future__ import annotations
@@ -18,11 +19,18 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import Literal
 
-from uep.adapters.tool import ReceiptLookup, ToolCall, ToolReceipt, ToolResponseLost
+from uep.adapters.tool import (
+    CancelOutcome,
+    ReceiptLookup,
+    ToolCall,
+    ToolReceipt,
+    ToolResponseLost,
+)
 from uep.fakes.crash import CrashInjector
 from uep.ids import new_id
 
 ExecuteMode = Literal["ok", "fail", "lose_after_exec", "lose_before_exec"]
+CancelMode = Literal["stopped", "isolated", "raise"]
 LookupResult = Literal["found", "confirmed_not_executed", "undetermined"]
 
 
@@ -37,6 +45,8 @@ class FakeToolExecutor:
         self._execute_modes: dict[str, ExecuteMode] = {}
         self._lookup_outcomes: dict[str, LookupResult] = {}
         self._unverified: set[str] = set()
+        self.cancels: list[str] = []  # cancel 的呼叫紀錄（D69）
+        self._cancel_modes: dict[str, CancelMode] = {}
 
     @property
     def lookup_authoritative(self) -> bool:
@@ -55,6 +65,9 @@ class FakeToolExecutor:
 
     def unverified_receipt(self, action_id: str) -> None:
         self._unverified.add(action_id)
+
+    def cancel_behavior(self, action_id: str, mode: CancelMode) -> None:
+        self._cancel_modes[action_id] = mode
 
     # ---- 查詢 ----
     def execution_count(self, action_id: str) -> int:
@@ -102,3 +115,11 @@ class FakeToolExecutor:
         if receipt is not None:
             return ReceiptLookup("found", receipt)
         return ReceiptLookup("confirmed_not_executed" if self._authoritative else "undetermined")
+
+    def cancel(self, action_id: str) -> CancelOutcome:
+        """D69：記錄呼叫；不改動已簽回的 receipt（R-2）。"""
+        self.cancels.append(action_id)
+        mode = self._cancel_modes.get(action_id, "stopped")
+        if mode == "raise":
+            raise RuntimeError(f"{action_id}: cancel 失敗")
+        return mode

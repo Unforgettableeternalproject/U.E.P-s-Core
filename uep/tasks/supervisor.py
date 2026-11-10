@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -50,6 +50,7 @@ class SupervisorStats:
     approvals_expired: int = 0  # 新標記的過期 expiry
     notified: int = 0  # 成功呼叫 notify 的次數
     orphans_closed: int = 0  # 孤兒回合 Task 收尾數
+    actions_cancelled: int = 0  # force 前對在途 interruptible action 呼叫 executor.cancel 的次數（D69，不論結果）
     failures: int = 0  # 失敗（記 log、下個 tick 重試）
 
 
@@ -62,6 +63,7 @@ class Supervisor:
         older_than: timedelta = DEFAULT_ORPHAN_OLDER_THAN,
         clock: Callable[[], datetime] | None = None,
         notify: Callable[[str, str], None] | None = None,
+        cancel_actions: Callable[[str], Mapping[str, str]] | None = None,
     ) -> None:
         if deadline_grace <= timedelta(0):
             raise ValueError("deadline_grace 必須 > 0")
@@ -72,6 +74,9 @@ class Supervisor:
         self._older_than = older_than
         self._clock = clock or (lambda: datetime.now(UTC))
         self._notify = notify or (lambda _run_id, _key: None)
+        # D69：force 前對該 Run 在途的 interruptible action 呼叫 executor.cancel（``ActionCanceller.cancel_run_actions``）；
+        # None＝不取消（維持 F-3 行為）。回傳 action_id -> 結果，僅用於統計與 log
+        self._cancel_actions = cancel_actions
         self.ticks = 0
         self.failures = 0  # 累計失敗（tick 與 pause_all）
 
@@ -136,6 +141,7 @@ class Supervisor:
         worker_gone = beat is None or now - beat >= stale_after  # T-12：心跳新鮮 ⇒ worker 還活著，絕不 force
         if not (worker_gone or now - requested_at > self._grace):
             return False
+        self._cancel_in_flight(run.run_id, stats)  # 盡力而為：在 force 把 EXECUTING 轉 UNKNOWN 之前通知 executor 停手
         try:
             self._tasks.force_transition_run(run.run_id, RunStatus.FAILED, reason=str(reason))
             stats.forced += 1
@@ -154,6 +160,17 @@ class Supervisor:
             return True
         self._fail_task(run.task_id, stats)
         return True
+
+    def _cancel_in_flight(self, run_id: str, stats: SupervisorStats) -> None:
+        """D69／RA-5：取消失敗或結果未明都不阻擋 force；action 的終態照舊由 force（EXECUTING -> UNKNOWN）與 lookup 決定。"""
+        if self._cancel_actions is None:
+            return
+        try:
+            results = self._cancel_actions(run_id)
+        except Exception:
+            logger.exception("取消在途 action 失敗，仍繼續 force：%s", run_id)
+            return
+        stats.actions_cancelled += sum(1 for outcome in results.values() if outcome in ("stopped", "isolated", "error"))
 
     def _deadline_reason(self, run: RunRow, now: datetime) -> CancelReason | None:
         if run.status == RunStatus.PAUSED.value:

@@ -58,6 +58,7 @@ from uep.decision.db import DbSink
 from uep.decision.log import DecisionLogWriter
 from uep.decision.policy_publish import register_policy_publish
 from uep.echo.agent_wiring import attach_agent_tools
+from uep.echo.platform_context import PlatformContextProvider, PlatformShadow
 from uep.echo.services import EchoServices
 from uep.endpoint.auth import (
     DEFAULT_SKEW_SECONDS,
@@ -530,6 +531,9 @@ def assemble_core(
             delivery=delivery, gate=gate,
             presence_audience=None if presence_audience is ALLOW_ALL else presence_audience,
         ))
+    if echo is not None and hasattr(echo, "bind_platform_shadow"):
+        # 平台脈絡 shadow：只記錄與比對，不改任何消費點的輸入；Presence 走唯讀 peek，不進寫入交易
+        echo.bind_platform_shadow(PlatformShadow(PlatformContextProvider(presence), echo.metrics))
     stop = GlobalStop(session_factory, presence, control, publisher=publisher, token=stop_token, **clock_kw)
     bridge = PresenceTaskBridge(bus, tasks, lambda: presence.current().status, persona_id=persona_id)
 

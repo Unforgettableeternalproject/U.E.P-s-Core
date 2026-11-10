@@ -59,6 +59,7 @@ from uep.echo.endpoint import DeferredCoreApi, EchoEndpoint, StopNotice
 from uep.echo.loop import EsLoop
 from uep.echo.memory import GuildRoster, make_memory_resolver
 from uep.echo.metrics import Metrics
+from uep.echo.platform_context import PlatformShadow
 from uep.echo.outcomes import facts_from_outcome
 from uep.echo.policy import CAUSE_TTL_REFRESH, CoreYieldPolicy, HostPolicySource
 from uep.echo.services import EchoServices
@@ -266,6 +267,7 @@ class EchoPipelineHost:
         self._closed = False  # 宿主生命週期：停止開始後不再簽新 ticket（aclose 後的 submit 由 ES 回 VOIDED）
         self.lease_result: AcquireResult | None = None
         self.metrics: Metrics = Metrics()
+        self._platform_shadow: PlatformShadow | None = None  # 平台脈絡 shadow（只記錄，不改任何消費點的輸入）
         self.discarded_by_turn: Counter[str] = Counter()
         self._retract_tasks: set[asyncio.Future[Any]] = set()  # 只在 ES loop 執行緒上存取
         self._pollers: set[asyncio.Future[Any]] = set()  # 播放進度輪詢任務（只在 ES loop 上存取）
@@ -416,6 +418,10 @@ class EchoPipelineHost:
     def wrappers_of(self, turn_id: str) -> list[AdmittingSink]:
         """某輪建立過的 sink 包裝（每個 attempt 一個；診斷與測試用，保留最近 64 輪）。"""
         return list(self._wrappers.get(turn_id, ()))
+
+    def bind_platform_shadow(self, shadow: PlatformShadow) -> None:
+        """組裝層掛上平台脈絡 shadow；每個簽出 ticket 的 turn 觀察一次（失敗已在 shadow 內吞掉）。"""
+        self._platform_shadow = shadow
 
     def bind(self, services: EchoServices) -> None:
         if self._services is not None:
@@ -598,6 +604,8 @@ class EchoPipelineHost:
             fact = item.fact or fallback
             if ticket is None or fact is None:
                 continue
+            if self._platform_shadow is not None:
+                self._platform_shadow.observe(ticket.turn_id, self._session.platform)
             try:
                 self._es.call_soon(self._start_turn, ticket, fact)
             except RuntimeError:

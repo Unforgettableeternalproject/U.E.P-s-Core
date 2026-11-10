@@ -24,7 +24,7 @@ DEFAULT_PAYLOAD_KEYS: frozenset[str] = frozenset(
     {
         "status", "reason_code", "result_code", "count", "len", "version", "kind",
         "ref_id", "action_id", "task_id", "run_id", "step_id", "turn_id",
-        "segment_id", "conversation_id", "activity_id", "lease_id", "delivery_id",
+        "segment_id", "conversation_id", "activity_id", "lease_id", "delivery_id", "resumed",
     }
 )
 

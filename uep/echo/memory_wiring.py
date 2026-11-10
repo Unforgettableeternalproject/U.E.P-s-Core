@@ -16,15 +16,21 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import time as _time
 from pathlib import Path
 from typing import Any
 
+from uep.memory.dream_planner import (
+    DreamLoopConfig,
+    FixedWindowPolicy,
+    RestWindowPolicy,
+)
 from uep.stream.contracts.memory_tools import DEFAULT_TOOL_MAX_CHARS
 
 logger = logging.getLogger("uep.echo.memory_wiring")
 
 MEMORY_TOOLS: tuple[str, ...] = ("deep_recall", "force_remember")
-DEFAULT_ENGINE_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+DEFAULT_ENGINE_EMBEDDING_MODEL = "BAAI/bge-m3"
 """``MemoryEngine`` 的 embedding_model 參數預設（呼叫端沒給模型時實際生效的值）。"""
 KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "BAAI/bge-m3": 1024, "bge-m3": 1024, "BAAI/bge-small-zh-v1.5": 512, "all-MiniLM-L6-v2": 384,
@@ -204,12 +210,45 @@ class MemoryWiring:
     engine_factory: Callable[[str, Path], Any]
     adapter_factory: Callable[[str, Any, threading.Lock], Any]
     tool_backend: EchoMemoryToolBackend
+    dream_loop: DreamLoopConfig | None = None  # None＝不傳給 Host（沒有做夢迴圈）
+    dream_rest_policy: RestWindowPolicy | None = None
 
     def host_kwargs(self) -> dict[str, Any]:
-        return {
+        kwargs: dict[str, Any] = {
             "engine_factory": self.engine_factory, "adapter_factory": self.adapter_factory,
             "tool_backend": self.tool_backend,
         }
+        if self.dream_loop is not None:
+            kwargs["dream_loop"] = self.dream_loop
+            if self.dream_rest_policy is not None:
+                kwargs["dream_rest_policy"] = self.dream_rest_policy
+        return kwargs
+
+
+def _parse_clock(text: str, name: str) -> _time:
+    try:
+        return _time.fromisoformat(text.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} 必須是 HH:MM 格式：{text!r}") from exc
+
+
+def build_dream_loop_config(settings: Any) -> tuple[DreamLoopConfig, FixedWindowPolicy | None]:
+    """由 ``UepSettings`` 的 ``dream_*`` 欄位組出 ``DreamLoopConfig`` 與（有覆寫時的）休息窗口。
+
+    其餘門檻一律用 ``DreamLoopConfig`` 預設（D93～D98）。窗口三個欄位都未設時回傳 ``None``，由 ``DreamLoop`` 用
+    ``FixedWindowPolicy()`` 預設值；只給一端時另一端沿用預設。格式錯誤直接 ``ValueError``（fail-fast，不靜默退回預設）。
+    """
+    config = DreamLoopConfig(enabled=bool(settings.dream_enabled), shadow=bool(settings.dream_shadow))
+    start, end, tz = settings.dream_window_start, settings.dream_window_end, settings.dream_window_tz
+    if not (start or end or tz):
+        return config, None
+    default = FixedWindowPolicy()
+    policy = FixedWindowPolicy(
+        start=_parse_clock(start, "UEP_DREAM_WINDOW_START") if start else default.start,
+        end=_parse_clock(end, "UEP_DREAM_WINDOW_END") if end else default.end,
+        tz=tz or default.tz,
+    )
+    return config, policy
 
 
 def build_memory_wiring(
@@ -222,6 +261,8 @@ def build_memory_wiring(
     events_enabled_fn: Callable[[], bool] | None = None,
     assess_mode: str = "llm",
     min_similarity: float | None = None,
+    dream_loop: DreamLoopConfig | None = None,
+    dream_rest_policy: RestWindowPolicy | None = None,
 ) -> MemoryWiring:
     return MemoryWiring(
         engine_factory=EchoEngineFactory(
@@ -230,4 +271,5 @@ def build_memory_wiring(
         ),
         adapter_factory=make_adapter_factory(llm_fn=llm_fn, assess_llm_fn=assess_llm_fn, assess_mode=assess_mode),
         tool_backend=EchoMemoryToolBackend(),
+        dream_loop=dream_loop, dream_rest_policy=dream_rest_policy,
     )

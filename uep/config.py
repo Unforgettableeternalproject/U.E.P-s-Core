@@ -91,6 +91,16 @@ class UepSettings(BaseSettings):
     # （N5 實測：相關 0.49–0.69、無關最近鄰 0.30–0.56，重疊大），0.35 幾乎不過濾；要收緊以 A5 實資料校準後在此設定。
     memory_min_similarity: float | None = Field(default=None, validation_alias="UEP_MEMORY_MIN_SIMILARITY")
 
+    # Host 全域做夢迴圈（D92～D100，docs/架構重構/Host全域做夢迴圈設計.md）：只有在真實記憶組裝（MemoryHost）時有意義。
+    # 預設啟用但 shadow（D100）：迴圈照常評估並在 log／指標記下 would_run，不呼叫 dream()；觀察後再以 UEP_DREAM_SHADOW=0 轉真執行。
+    # 窗口預設 03:00–05:30 Asia/Taipei（FixedWindowPolicy）；白天驗證時以 start／end 覆寫（格式 HH:MM，end<=start 視為跨午夜）。
+    # 只給 start 或只給 end 時，另一端沿用預設值。
+    dream_enabled: bool = Field(default=True, validation_alias="UEP_DREAM_ENABLED")
+    dream_shadow: bool = Field(default=True, validation_alias="UEP_DREAM_SHADOW")
+    dream_window_start: str | None = Field(default=None, validation_alias="UEP_DREAM_WINDOW_START")
+    dream_window_end: str | None = Field(default=None, validation_alias="UEP_DREAM_WINDOW_END")
+    dream_window_tz: str | None = Field(default=None, validation_alias="UEP_DREAM_WINDOW_TZ")
+
     # 系統日誌（uep/log.py，只在進入點 configure_logging 讀取）：UEP_LOG_LEVEL 優先於 UEP_LOG_DEPTH（1..4＝KEY／INFO／DEBUG／TRACE）；
     # log_levels 為 "uep.decision=DEBUG,echo_tts=WARNING" 的命名空間覆寫；console 輸出到 stderr；檔案每行程一組，JSONL 供查核
     log_level: str | None = Field(default=None, validation_alias="UEP_LOG_LEVEL")

@@ -775,9 +775,9 @@ class TaskManager:
 
     def transition_task(
         self, task_id: str, to: RunStatus, *, expected_version: int | None = None,
-        pause_reason: PauseReason | None = None,
+        pause_reason: PauseReason | None = None, reason_code: str | None = None,
     ) -> TaskRow:
-        """Task 狀態轉移（轉移表＋guard）。終態不可再轉；Task 結束只能經這裡（T-1）。
+        """Task 狀態轉移（轉移表＋guard）。終態不可再轉；Task 結束只能經這裡（T-1）。``reason_code`` 帶入終態事件（選用）。
 
         從 PAUSED 恢復時，目標以各列的 ``paused_from`` 為準，``to``（RUNNING）只是恢復請求；
         回傳的 TaskRow 反映實際狀態（例如 PENDING），呼叫端不可假設一定是 RUNNING。
@@ -797,7 +797,7 @@ class TaskManager:
                         self._set_run_status(s, pending, task, run, target, pause_reason)
             if to is RunStatus.RUNNING and task.status == RunStatus.PAUSED.value:
                 to = self._resume_target("task", task)
-            self._set_task_status(s, pending, task, to, pause_reason)
+            self._set_task_status(s, pending, task, to, pause_reason, reason_code=reason_code)
             return task
 
     # ---- Run ----

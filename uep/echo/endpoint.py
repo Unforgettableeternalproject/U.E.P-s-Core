@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from uep.adapters.output import SendResult
+from uep.adapters.output import SendFailed, SendResult
 from uep.contracts.presence import AuthorizationTuple, GateDecision, ReleaseResult
 from uep.endpoint.endpoint import CliEndpoint, EndpointRejected, LocalLease, _Dropped
 from uep.endpoint.protocol import (
@@ -27,14 +27,33 @@ from uep.endpoint.protocol import (
     RenewReply,
 )
 from uep.output.delivery import DeliveryEvidence
-from uep.output.intent import ControlKind, ControlScope, ControlSignal, OutputIntent
+from uep.output.intent import (
+    ControlKind,
+    ControlScope,
+    ControlSignal,
+    OutputIntent,
+    OutputKind,
+    OutputOrigin,
+)
 
 logger = logging.getLogger("uep.echo.endpoint")
 
 _RESULT_LIMIT = 1024
+_TEXT_KINDS = frozenset({OutputKind.TEXT, OutputKind.SYSTEM_NOTICE})
+_TEXT_LIMIT = 256
 REASON_PRESENCE_LOST = "presence_lost"
 REASON_GLOBAL_STOP = "global_stop"
 REASON_CONTROL_STOP = "control_stop"
+
+
+@dataclass(frozen=True)
+class RenderedText:
+    """端點實際渲染給使用者的一則文字。``system`` 為真代表系統訊息（不是角色發言）。"""
+
+    turn_id: str | None
+    output_id: str
+    text: str
+    system: bool
 
 
 @dataclass(frozen=True)
@@ -101,6 +120,21 @@ class EchoEndpoint(CliEndpoint):
         self._on_stop = on_stop
         self._notices: deque[StopNotice] = deque()
         self._sent: OrderedDict[str, SendResult] = OrderedDict()
+        # agent_loop 的文字輸出（DL-4 PR4）：OutputIntent 只帶 content_ref，端點在 Gate 放行後的 send 依它解析成文字
+        self._text_resolver: Callable[[str], str | None] | None = None
+        self._on_text: Callable[[RenderedText], None] | None = None
+        self._texts: deque[RenderedText] = deque(maxlen=_TEXT_LIMIT)
+
+    def set_text_resolver(
+        self, resolver: Callable[[str], str | None] | None, on_text: Callable[[RenderedText], None] | None = None,
+    ) -> None:
+        self._text_resolver = resolver
+        self._on_text = on_text
+
+    def rendered_texts(self, turn_id: str | None = None) -> list[RenderedText]:
+        """已渲染的文字（診斷與 Console 用）；``turn_id`` 給定時只回該 turn。"""
+        with self._lock:
+            return [t for t in self._texts if turn_id is None or t.turn_id == turn_id]
 
     def set_core(self, core: CoreApi) -> None:
         self._core = core
@@ -129,6 +163,14 @@ class EchoEndpoint(CliEndpoint):
     # ---- OutputAdapter：送入即返回，播放證據之後由 sink 回報（O-16）----
 
     def send(self, intent: OutputIntent, dispatch_id: str) -> SendResult:
+        rendered: RenderedText | None = None
+        if intent.kind in _TEXT_KINDS:
+            # 文字 intent：content_ref 解析不到就是明確失敗（不假裝已送出）；解析在鎖外，渲染在二次接納通過之後
+            resolver = self._text_resolver
+            text = resolver(intent.content_ref) if resolver is not None else None
+            if text is None:
+                raise SendFailed(f"文字 intent 的 content_ref 解析不到內容：{intent.output_id}")
+            rendered = RenderedText(intent.turn_id, intent.output_id, text, intent.origin is OutputOrigin.SYSTEM)
         with self._lock:
             previous = self._sent.get(dispatch_id)
             if previous is not None:
@@ -141,6 +183,13 @@ class EchoEndpoint(CliEndpoint):
             self._results[dispatch_id] = result  # lookup 同源
             while len(self._sent) > _RESULT_LIMIT:
                 self._sent.popitem(last=False)
+            if rendered is not None:
+                self._texts.append(rendered)
+        if rendered is not None and self._on_text is not None:
+            try:
+                self._on_text(rendered)
+            except Exception:
+                logger.exception("文字渲染回呼失敗")
         return result
 
     # ---- 停止通知 ----

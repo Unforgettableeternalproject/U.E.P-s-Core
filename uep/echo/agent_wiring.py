@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
+import time
 from collections import Counter
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from uep.adapters.tool import CAPABILITY_CEILING
@@ -25,12 +27,13 @@ from uep.decision.capability import (
     record_narrow,
     route_base,
 )
+from uep.echo.loop_text import LoopTextStore
 from uep.ids import new_id
 from uep.memory.protocol import MemoryPort
 from uep.output.delivery import DeliveryStatus
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
 from uep.tasks.manager import TaskManager, TaskPolicy
-from uep.tasks.states import InterruptPolicy
+from uep.tasks.states import TERMINAL_STATUSES, InterruptPolicy, RunStatus
 from uep.tools.catalog.memory import memory_registry
 from uep.tools.executors.memory import MemoryToolExecutor, RosterPort
 from uep.tools.gateway import ToolGateway
@@ -120,14 +123,29 @@ def create_loop_run(
         policy=TaskPolicy(presence_bound=False, interrupt_policy=interrupt_policy, policy_ref=trigger.policy_ref),
         origin_ref={"kind": trigger.kind, "ref": trigger.origin_ref},
     )
-    run = tasks.start_run(task.task_id, persona_version=persona_version, policy_version=policy_version)
+    try:
+        run = tasks.start_run(task.task_id, persona_version=persona_version, policy_version=policy_version)
+    except BaseException:
+        # Task 已建、Run 沒建成：回收 Task，不留孤兒（再讓呼叫端看到原例外）
+        try:
+            tasks.transition_task(task.task_id, RunStatus.FAILED, reason_code="loop_start_failed")
+        except Exception:
+            logger.exception("回收未啟動的 Task 失敗：task=%s", task.task_id)
+        raise
     return task, run
 
 
 # ───────────────────────── production 入口（DL-4 PR4） ─────────────────────────
 
 DEFAULT_LOOP_SYSTEM_TEXT = "你是使用者的長期 AI 助理。需要時使用工具查詢記憶，最後以簡短自然的繁體中文回覆。"
-_DELIVERY_REFUSED = frozenset({DeliveryStatus.REJECTED, DeliveryStatus.CANCELLED, DeliveryStatus.FAILED})
+# 送出結果未明（UNKNOWN）不算已交付；被拒／取消／失敗同樣不算
+_DELIVERY_REFUSED = frozenset({
+    DeliveryStatus.REJECTED, DeliveryStatus.CANCELLED, DeliveryStatus.FAILED, DeliveryStatus.UNKNOWN,
+})
+# loop 失敗時給使用者的固定系統訊息：不經 LLM、不以角色身分發出，只說這次處理失敗（不得編出看似成功的回答）
+LOOP_FAILURE_TEXT = "這次處理失敗了，沒有產生回覆。"
+DEFAULT_MAX_CONCURRENT_LOOPS = 4
+DEFAULT_CLOSE_TIMEOUT_S = 5.0
 
 
 def make_capability_tags_for(
@@ -152,30 +170,56 @@ def make_capability_tags_for(
     return tags_for
 
 
-class LoopLauncher:
-    """``LoopEntry.launch`` 的 production 實作：同步建立 Task／Run（失敗 -> 例外 -> 回合退回 direct_chat），
-    再把 ``AgentLoop.run`` 丟到 worker 執行緒（不阻塞 turn）。
+class LoopLaunchRefused(RuntimeError):
+    """入口明確拒絕啟動（並發上限、投影為空、關閉中）。orchestrator 看 ``loop_refused``：不算故障，回合退回 direct_chat。"""
 
-    交付只有一條路：``AgentLoop`` 的 ``deliver_result`` -> ``OutputIntent(kind=text)`` -> ``DeliveryManager``（Output Gate）。
-    宿主在 turn 被認領（``orchestrator.loop_claimed``）後不啟動 ES 生成，所以同一輸入只會有一次對外輸出。
-    worker 結束時負責 turn 的終結事件（completed／cancelled／failed），否則 turn 與 Interaction 軸會殘留。"""
+    loop_refused = True
+
+
+@dataclass
+class _RunCtx:
+    """一個被認領的 turn 對應的 Run 狀態（worker 與 deliver_result 共用）。"""
+
+    ticket: Any
+    task_id: str
+    run: Any
+    delivered: bool = False  # 角色回覆已確實交付（Gate 放行且端點收下）
+    delivery_unknown: bool = False  # 送出結果未明：不補發失敗訊息（避免使用者看到兩則）
+    text: str = ""
+
+
+class LoopLauncher:
+    """``LoopEntry.launch`` 的 production 實作。
+
+    - 啟動：先檢查並發上限與投影（任一不成立 -> ``LoopLaunchRefused``，回合退回 direct_chat），再同步建立 Task／Run，
+      最後起 daemon worker 執行緒跑 ``AgentLoop``（不阻塞 turn）。建 Run 之後的啟動失敗會回收 Task／Run 再上拋。
+    - 交付只有一條路：``deliver_result`` -> ``OutputIntent`` -> ``DeliveryManager``（Output Gate）-> 端點依 ``content_ref``
+      解析文字並渲染。宿主在 turn 被認領後不啟動 ES 生成，所以同一輸入只有一次對外輸出。
+    - 失敗：Run／Task 以同一 ``worker_epoch`` 收尾為 FAILED（原因碼具體）；使用者端經 Output Gate 收到固定的系統訊息
+      （``origin=system``、``kind=system_notice``，不經 LLM、不以角色身分發出，只說這次處理失敗）。
+    - worker 結束時負責 turn 的終結事件與暫存清理（文字、結果暫存、child context）。
+    - ``close()``（組裝層關機時於入口停止段呼叫）設取消旗標並限時等待 worker。"""
 
     def __init__(
         self, *, tasks: TaskManager, delivery: Any, orchestrator: Any, registry: ToolRegistry, model_port: Any,
-        cache: TurnOutcomeCache | None = None, store: Any | None = None, persona_id: str = "uep",
-        persona_version: int = 1, policy_version: int = 1, budget: LoopBudget | None = None,
+        text_store: LoopTextStore | None = None, cache: TurnOutcomeCache | None = None, store: Any | None = None,
+        persona_id: str = "uep", persona_version: int = 1, policy_version: int = 1, budget: LoopBudget | None = None,
         system_text: Callable[[Any], str] = lambda ticket: DEFAULT_LOOP_SYSTEM_TEXT,
-        executor: ThreadPoolExecutor | None = None,
+        max_concurrent: int | None = None, close_timeout_s: float | None = None,
     ) -> None:
+        max_concurrent = DEFAULT_MAX_CONCURRENT_LOOPS if max_concurrent is None else max_concurrent
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent 必須 >= 1")
         self._tasks = tasks
         self._delivery = delivery
         self._orchestrator = orchestrator
         self._registry = registry
         self._port = model_port
+        self._texts = text_store
         self._cache = cache
         if store is None:
             from uep.fakes.loop_context import (
-                InMemoryLoopContextStore,  # 尚無 production store（session_store 未接）：行程內暫存
+                InMemoryLoopContextStore,  # 尚無 production store（session_store 未接）：行程內暫存，Run 終態時清理
             )
 
             store = InMemoryLoopContextStore()
@@ -185,57 +229,174 @@ class LoopLauncher:
         self._policy_version = policy_version
         self._budget = budget or LoopBudget(run_deadline_s=300.0)
         self._system_text = system_text
-        self._pool = executor or ThreadPoolExecutor(max_workers=2, thread_name_prefix="uep-agent-loop")
+        self._max = max_concurrent
+        self._close_timeout_s = DEFAULT_CLOSE_TIMEOUT_S if close_timeout_s is None else close_timeout_s
+        self._lock = threading.Lock()
+        self._active = 0
+        self._threads: set[threading.Thread] = set()
+        self._closing = threading.Event()
+
+    # ---- 啟動 ----
 
     def __call__(self, trigger: LoopTrigger, ticket: Any) -> object:
-        _task, run = create_loop_run(
-            self._tasks, trigger, persona_id=self._persona_id, persona_version=self._persona_version,
-            policy_version=self._policy_version,
+        with self._lock:
+            if self._closing.is_set():
+                raise LoopLaunchRefused("loop_closing")
+            if self._active >= self._max:
+                raise LoopLaunchRefused("loop_busy")
+            self._active += 1  # 先占名額，建 Task／Run 之前就會被擋下（不排隊）
+        try:
+            capability_set = self._registry.project(
+                trigger.capability_tags, ProjectionContext(audience=getattr(ticket, "audience_scope", "private")),
+            )
+            if not capability_set["tools"]:
+                raise LoopLaunchRefused("capability_projection_empty")  # 例如全部 warming：不啟動，回 direct_chat
+            task, run = create_loop_run(
+                self._tasks, trigger, persona_id=self._persona_id, persona_version=self._persona_version,
+                policy_version=self._policy_version,
+            )
+        except BaseException:
+            self._release()
+            raise
+        ctx = _RunCtx(ticket, task.task_id, run)
+        thread = threading.Thread(
+            target=self._work, args=(trigger, ctx), name=f"uep-agent-loop-{ticket.turn_id}", daemon=True,
         )
-        self._pool.submit(self._work, trigger, ticket, run)
+        with self._lock:
+            self._threads.add(thread)
+        try:
+            thread.start()
+        except BaseException:
+            self._settle(ctx, ok=False, reason="loop_start_failed")  # 剛建的 Task／Run 回收，再讓回合退回 direct_chat
+            self._forget(thread)
+            self._release()
+            raise
         return run
 
-    def close(self) -> None:
-        self._pool.shutdown(wait=False, cancel_futures=True)
+    def close(self, timeout: float | None = None) -> None:
+        """關機：不再接新 Run、通知進行中的迴圈取消（Step 邊界生效），限時等待 worker 收尾；逾時的 daemon 執行緒不阻擋關機。"""
+        self._closing.set()
+        deadline = time.monotonic() + (self._close_timeout_s if timeout is None else timeout)
+        with self._lock:
+            threads = list(self._threads)
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        if any(t.is_alive() for t in threads):
+            logger.warning("AgentLoop worker 在 %.1f 秒內未收尾（daemon，不阻擋關機）", self._close_timeout_s)
+
+    @property
+    def active(self) -> int:
+        with self._lock:
+            return self._active
+
+    def _release(self) -> None:
+        with self._lock:
+            self._active = max(0, self._active - 1)
+
+    def _forget(self, thread: threading.Thread) -> None:
+        with self._lock:
+            self._threads.discard(thread)
 
     # ---- worker ----
 
-    def _work(self, trigger: LoopTrigger, ticket: Any, run: Any) -> None:
+    def _cancelled(self, turn_id: str) -> bool:
+        orch = self._orchestrator
+        return self._closing.is_set() or orch.is_ended(turn_id) or orch.cancel_reason_of(turn_id) is not None
+
+    def _work(self, trigger: LoopTrigger, ctx: _RunCtx) -> None:
+        ticket, run = ctx.ticket, ctx.run
         turn_id = ticket.turn_id
         facts = TurnEndFacts(status="failed", reason_code="loop_failed")
         try:
-            scope = self._cache.turn_scope(turn_id) if self._cache is not None else contextlib.nullcontext()
-            with scope:
-                outcome = self._build_loop(ticket, run).run(
-                    trigger, run.run_id,
-                    parent=ParentSnapshot(parent_id=ticket.conversation_id or ticket.segment_id, revision=0),
-                    system_text=self._system_text(ticket), trigger_text=ticket.user_text,
-                    persona_version=self._persona_version,
-                )
-            cancel = self._orchestrator.cancel_reason_of(turn_id)
-            if outcome.delivered:
-                facts = TurnEndFacts(
-                    status="completed", generation_ok=True, generated_len=len(outcome.text), spoken_text=outcome.text,
-                    snapshot_version=ticket.snapshot_version,
-                )
-            elif cancel is not None or outcome.state == "cancelled":
-                facts = TurnEndFacts(status="cancelled", reason_code=cancel or "loop_cancelled")
-            else:
-                facts = TurnEndFacts(status="failed", reason_code=f"loop_{outcome.reason_code or outcome.state}")
+            outcome = None
+            raised = False
+            try:
+                scope = self._cache.turn_scope(turn_id) if self._cache is not None else contextlib.nullcontext()
+                with scope:
+                    outcome = self._build_loop(ctx).run(
+                        trigger, run.run_id,
+                        parent=ParentSnapshot(parent_id=ticket.conversation_id or ticket.segment_id, revision=0),
+                        system_text=self._system_text(ticket), trigger_text=ticket.user_text,
+                        persona_version=self._persona_version,
+                    )
+            except Exception:
+                raised = True
+                logger.exception("AgentLoop worker 失敗：turn=%s", turn_id)
+            facts = self._conclude(ctx, outcome, raised)
         except Exception:
-            logger.exception("AgentLoop worker 失敗：turn=%s", turn_id)
+            logger.exception("AgentLoop 收尾失敗：turn=%s", turn_id)
         finally:
             if self._cache is not None:
                 self._cache.discard_turn(turn_id)
+            if self._texts is not None:
+                self._texts.discard_turn(turn_id)
+            discard = getattr(self._store, "discard_run", None)
+            if callable(discard):
+                discard(run.run_id)  # Run 終態：child／parent 暫存清理，不得無限增長
             try:
                 self._orchestrator.on_turn_ended(turn_id, facts)
             except Exception:
                 logger.exception("AgentLoop 結束 turn 失敗：turn=%s", turn_id)
+            self._forget(threading.current_thread())
+            self._release()
 
-    def _build_loop(self, ticket: Any, run: Any) -> AgentLoop:
+    def _conclude(self, ctx: _RunCtx, outcome: Any, raised: bool) -> TurnEndFacts:
+        """Run 收尾（Run／Task 狀態、使用者端的最後一則訊息）-> turn 終結事實。"""
+        ticket = ctx.ticket
+        if outcome is not None and getattr(outcome, "state", None) == "awaiting_approval" and not ctx.delivered:
+            reason = "loop_awaiting_approval"  # park 的 Run 保留（核准路徑屬切片 E），不在這裡收掉
+        else:
+            code = getattr(outcome, "reason_code", None)
+            code = getattr(code, "value", code)
+            reason = "loop_exception" if raised else f"loop_{code or getattr(outcome, 'state', 'failed')}"
+            self._settle(ctx, ok=ctx.delivered, reason=reason)
+        if ctx.delivered:
+            return TurnEndFacts(
+                status="completed", generation_ok=True, generated_len=len(ctx.text), spoken_text=ctx.text,
+                snapshot_version=ticket.snapshot_version,
+            )
+        if self._cancelled(ticket.turn_id):
+            return TurnEndFacts(
+                status="cancelled", reason_code=self._orchestrator.cancel_reason_of(ticket.turn_id) or "loop_cancelled",
+            )
+        if ctx.delivery_unknown:
+            return TurnEndFacts(status="failed", reason_code="loop_delivery_unknown")  # 可能已送達：不再補發
+        self._notify_failure(ctx)
+        return TurnEndFacts(status="failed", reason_code=reason)
+
+    def _settle(self, ctx: _RunCtx, *, ok: bool, reason: str) -> None:
+        """用同一 ``worker_epoch`` 把未終態的 Run 轉 FAILED，並終結 Task（reason_code 具體）。
+        epoch 已變（Supervisor／resume 接手）-> 不動，交給接手者。每一步獨立容錯。"""
+        run = ctx.run
+        try:
+            row = self._tasks.get_run(run.run_id)
+        except Exception:
+            logger.exception("讀取 Run 失敗：run=%s", run.run_id)
+            return
+        if row.worker_epoch != run.worker_epoch:
+            return
+        status = row.status
+        terminal = {s.value for s in TERMINAL_STATUSES}
+        if status not in terminal:
+            try:
+                self._tasks.transition_run(run.run_id, RunStatus.FAILED, worker_epoch=run.worker_epoch)
+                status = RunStatus.FAILED.value
+            except Exception:
+                logger.exception("Run 轉 FAILED 失敗：run=%s", run.run_id)
+        succeeded = ok and status == RunStatus.SUCCEEDED.value
+        try:
+            self._tasks.transition_task(
+                ctx.task_id, RunStatus.SUCCEEDED if succeeded else RunStatus.FAILED,
+                reason_code=None if succeeded else reason[:64],
+            )
+        except Exception:
+            logger.exception("Task 終結失敗：task=%s", ctx.task_id)
+
+    def _build_loop(self, ctx: _RunCtx) -> AgentLoop:
         from uep.agent.loop import AgentLoop, LoopSnapshots
         from uep.agent.runtime import ModelPortRuntime
 
+        ticket, run = ctx.ticket, ctx.run
         snapshots = LoopSnapshots()
         registry = self._registry
         context = ProjectionContext(audience=ticket.audience_scope)
@@ -248,42 +409,72 @@ class LoopLauncher:
             tasks=self._tasks, gateway=ToolGateway(registry), registry=registry, store=self._store, projector=projector,
             budget=self._budget, worker_epoch=run.worker_epoch, snapshots=snapshots,
             injected={"actor_id": ticket.actor_id, "audience": ticket.audience_scope, "segment_id": ticket.segment_id},
-            cancelled=lambda: self._orchestrator.cancel_reason_of(ticket.turn_id) is not None,
-            deliver_result=lambda text: self._deliver(ticket, run, text),
+            cancelled=lambda: self._cancelled(ticket.turn_id),
+            deliver_result=lambda text: self._deliver(ctx, text),
             content_lookup=self._cache.text if self._cache is not None else None,
             run_cleanup=self._cache.discard_about_refs_run if self._cache is not None else None,
         )
 
-    def _deliver(self, ticket: Any, run: Any, text: str) -> bool:
-        """Run 的最終文字 -> Output Gate（``DeliveryManager``）。被拒、失敗都回 False（Run 結果不標已交付）。"""
+    # ---- 交付（只經 Output Gate） ----
+
+    def _deliver(self, ctx: _RunCtx, text: str) -> bool:
+        """Run 的最終文字 -> Output Gate。被拒、失敗、結果未明（UNKNOWN）都回 False（Run 結果不標已交付）。"""
+        if self._cancelled(ctx.ticket.turn_id):
+            return False
+        status = self._dispatch(ctx, text, kind=OutputKind.TEXT, origin=OutputOrigin.PERSONA)
+        if status is DeliveryStatus.UNKNOWN:
+            ctx.delivery_unknown = True
+        if status is None or status in _DELIVERY_REFUSED:
+            return False
+        ctx.delivered, ctx.text = True, text
+        return True
+
+    def _notify_failure(self, ctx: _RunCtx) -> None:
+        """失敗時給使用者的固定系統訊息：經同一條 Output Gate；origin=system，不是角色發言，也不編造看似成功的回答。"""
+        try:
+            self._dispatch(ctx, LOOP_FAILURE_TEXT, kind=OutputKind.SYSTEM_NOTICE, origin=OutputOrigin.SYSTEM)
+        except Exception:
+            logger.exception("AgentLoop 失敗訊息交付失敗：turn=%s", ctx.ticket.turn_id)
+
+    def _dispatch(self, ctx: _RunCtx, text: str, *, kind: OutputKind, origin: OutputOrigin) -> DeliveryStatus | None:
+        ticket, run = ctx.ticket, ctx.run
+        if self._texts is None:
+            logger.error("LoopLauncher 沒有文字暫存，無法交付：turn=%s", ticket.turn_id)
+            return None
         a = ticket.auth
+        output_id = new_id("out")
+        ref = f"loop:{ticket.turn_id}:{run.run_id}:{output_id}"
+        self._texts.put(ref, ticket.turn_id, text)
         intent = OutputIntent(
-            output_id=new_id("out"), sequence=0, kind=OutputKind.TEXT, origin=OutputOrigin.PERSONA,
+            output_id=output_id, sequence=0, kind=kind, origin=origin,
             persona_id=a.persona_id, endpoint_id=a.endpoint_id, lease_id=a.lease_id, fencing_epoch=a.fencing_epoch,
             core_epoch=a.core_epoch, presence_generation=a.presence_generation, turn_id=ticket.turn_id,
             turn_generation=ticket.turn_generation, attempt_id=attempt_label(1), audience_scope=ticket.audience_scope,
-            content_ref=f"loop:{ticket.turn_id}:{run.run_id}", valid_until=ticket.valid_until,
+            content_ref=ref, valid_until=ticket.valid_until,
         )
         try:
             self._delivery.prepare(intent)
             record = self._delivery.dispatch(intent)
         except Exception:
             logger.exception("AgentLoop 交付失敗：turn=%s", ticket.turn_id)
-            return False
-        return record.status not in _DELIVERY_REFUSED
+            return None
+        return record.status
 
 
 def build_loop_entry(
     *, tool_path: str, tasks: TaskManager, delivery: Any, orchestrator: Any, registry: ToolRegistry, model_port: Any,
-    cache: TurnOutcomeCache | None, persona_id: str = "uep", policy_ref: str = "pol_agent_loop", **launcher_kwargs: Any,
-) -> LoopEntry:
-    """組裝層用：production 的 ``LoopEntry``（capability 收窄 + ``LoopLauncher``）。只在 ``tool_path == "agent"`` 可建。
-    ``owner_for`` 取 ticket 的 ``actor_id``（與 agent 路徑的回合 Task 一致；現有記憶工具不需核准）。"""
+    cache: TurnOutcomeCache | None, text_store: LoopTextStore | None, persona_id: str = "uep",
+    policy_ref: str = "pol_agent_loop", **launcher_kwargs: Any,
+) -> tuple[LoopEntry, LoopLauncher]:
+    """組裝層用：production 的 ``(LoopEntry, LoopLauncher)``（capability 收窄 + 啟動器）。只在 ``tool_path == "agent"`` 可建。
+    launcher 另回傳是為了讓 ``CoreAssembly.shutdown`` 能關閉它。``owner_for`` 取 ticket 的 ``actor_id``
+    （與 agent 路徑的回合 Task 一致；現有記憶工具不需核准）。"""
     launcher = LoopLauncher(
         tasks=tasks, delivery=delivery, orchestrator=orchestrator, registry=registry, model_port=model_port,
-        cache=cache, persona_id=persona_id, **launcher_kwargs,
+        text_store=text_store, cache=cache, persona_id=persona_id, **launcher_kwargs,
     )
-    return LoopEntry(
+    entry = LoopEntry(
         tool_path, capability_tags_for=make_capability_tags_for(registry, orchestrator.metrics), launch=launcher,
         policy_ref=policy_ref, owner_for=lambda ticket: ticket.actor_id,
     )
+    return entry, launcher

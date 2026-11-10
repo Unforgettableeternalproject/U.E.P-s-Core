@@ -160,149 +160,135 @@ def test_orchestrator_claims_only_when_entry_returns_trigger():
     assert not orch.loop_claimed("t3")
 
 
-# ---- DB 端到端：雙重回覆鎖定 ----
+# ---- 啟動器（離線）：UNKNOWN 不算已交付、投影預檢、並發上限、取消判定 ----
 
-class _LoopProposer:
-    proposer_id = "test.agent_loop"
-    version = "t"
+def _stub_launcher(registry=None, delivery=None, **kw):
+    from uep.echo.agent_wiring import LoopLauncher
+    from uep.echo.loop_text import LoopTextStore
 
-    def __init__(self, route: str) -> None:
-        self.route = route
+    orch = SimpleNamespace(
+        metrics=Counter(), cancel_reason_of=lambda t: None, is_ended=lambda t: False, on_turn_ended=lambda *a: None,
+    )
+    tasks = SimpleNamespace(
+        create_task=lambda **k: pytest.fail("不應建 Task"), start_run=lambda *a, **k: pytest.fail("不應建 Run"),
+    )
+    return LoopLauncher(
+        tasks=tasks, delivery=delivery, orchestrator=orch, registry=registry or memory_registry(), model_port=object(),
+        text_store=LoopTextStore(), **kw,
+    )
 
-    def propose(self, candidate):
-        return Proposal(
-            reply_mode=ReplyMode.RESPOND, route=self.route, reason_code="default_respond",
-            proposer_id=self.proposer_id, proposer_version=self.version,
-        )
+
+def _ticket():
+    from datetime import UTC, datetime, timedelta
+
+    auth = SimpleNamespace(
+        persona_id="uep", endpoint_id="ep", lease_id="l", fencing_epoch=1, core_epoch=1, presence_generation=1,
+    )
+    return SimpleNamespace(
+        turn_id="turn_u", auth=auth, turn_generation=1, audience_scope="scope_private_owner", conversation_id="c",
+        segment_id="s", user_text="hi", actor_id="a", snapshot_version=1,
+        valid_until=datetime.now(UTC) + timedelta(minutes=1),
+    )
 
 
-def _agent_rig(session_factory, tmp_path, *, route, flag, loop_port):
-    from tests.uep.echo_support import Rig, fast_speak, make_identity, make_session
-    from tests.uep.test_agent_tool_path import FakePort, _Port
-    from uep.agent.runtime import ModelPortBackend
-    from uep.control.channel import InProcessControlChannel
+def _trigger():
+    from uep.agent.trigger import LoopTrigger
+
+    return LoopTrigger("user_turn", "t", "g", frozenset({"memory.read"}), "scope_private_owner", "o", "p", "snap_1")
+
+
+def test_unknown_delivery_is_not_delivered():
+    from uep.echo.agent_wiring import _RunCtx
+    from uep.output.delivery import DeliveryStatus
+
+    sent: list = []
+
+    class Delivery:
+        def prepare(self, intent):
+            sent.append(intent)
+
+        def dispatch(self, intent):
+            return SimpleNamespace(status=DeliveryStatus.UNKNOWN)
+
+    launcher = _stub_launcher(delivery=Delivery())
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1))
+    assert launcher._deliver(ctx, "答案") is False  # 結果未明 -> 不算已交付，也不補發失敗訊息
+    assert ctx.delivery_unknown and not ctx.delivered
+    assert len(sent) == 1 and sent[0].kind.value == "text" and sent[0].origin.value == "persona"
+    assert launcher._texts.get(sent[0].content_ref) == "答案"
+
+
+def test_projection_precheck_refuses_before_creating_task_when_all_warming():
+    from uep.echo.agent_wiring import LoopLaunchRefused
+
+    reg = ToolRegistry.build(
+        [make_entry("read.warm", spec={"capability": "memory.read"}, requires=("gpu:x",), warm_required=True)],
+        known_modules=["gpu:x"],
+    )
+    launcher = _stub_launcher(registry=reg)
+    with pytest.raises(LoopLaunchRefused, match="projection_empty"):
+        launcher(_trigger(), _ticket())  # tasks 的 create_task／start_run 會 pytest.fail：沒有建任何東西
+    assert launcher.active == 0  # 名額已釋放
+
+
+def test_concurrency_limit_refuses_before_creating_task():
+    from uep.echo.agent_wiring import LoopLaunchRefused
+
+    launcher = _stub_launcher(max_concurrent=1)
+    launcher._active = 1
+    with pytest.raises(LoopLaunchRefused, match="loop_busy"):
+        launcher(_trigger(), _ticket())
+    assert launcher.active == 1
+
+
+def test_cancelled_uses_public_orchestrator_state_and_closing_flag():
+    state = {"ended": False, "reason": None}
+    launcher = _stub_launcher()
+    launcher._orchestrator.is_ended = lambda t: state["ended"]
+    launcher._orchestrator.cancel_reason_of = lambda t: state["reason"]
+    assert launcher._cancelled("t") is False
+    state["reason"] = "presence_lost"
+    assert launcher._cancelled("t") is True
+    state.update(reason=None, ended=True)
+    assert launcher._cancelled("t") is True
+    state["ended"] = False
+    launcher._closing.set()
+    assert launcher._cancelled("t") is True
+
+
+def test_loop_text_store_is_bounded_and_discards_by_turn():
+    from uep.echo.loop_text import LoopTextStore
+
+    store = LoopTextStore(max_entries=2)
+    store.put("a", "t1", "x")
+    store.put("b", "t1", "y")
+    store.put("c", "t2", "z")
+    assert store.get("a") is None and store.get("c") == "z"
+    store.discard_turn("t1")
+    assert len(store) == 1
+
+
+def test_in_memory_store_discard_run_clears_child_and_parent_entries():
+    from uep.agent.loop_context import ParentSnapshot, fork_child, merge_back
+    from uep.fakes.loop_context import InMemoryLoopContextStore
+
+    store = InMemoryLoopContextStore()
+    fork_child(store, "run_1", parent=ParentSnapshot("p", 0), system_text="s", goal_code="g", persona_version=1, scope_ref="x")
+    merge_back(store, run_id="run_1", parent_id="p", scope_ref="x", state="completed", reason_code=None, summary="a", result="a")
+    assert store.children and store.parent_entries
+    store.discard_run("run_1")
+    assert not store.children and not store.parent_entries and not store._keys
+
+
+def test_host_tolerates_orchestrator_without_loop_claimed():
+    """舊式替身 orchestrator 沒有 loop_claimed：宿主用 getattr 防禦，視為未認領（照常啟動 ES）。"""
     from uep.echo.host import EchoPipelineHost
-    from uep.events.bus import EventBus
-    from uep.events.publisher import EventPublisher
-    from uep.presence.epoch import HostEpochStore
-    from uep.stream.adapters.think_agent import AgentThinkStage
-    from uep.stream.adapters.think_llm import LLMThinkStage
-    from uep.stream.tracer import LatencyTracer
 
-    class Memory(_Port):
-        def retrieve(self, *a, **k):
-            return []
-
-        def store(self, **kw):
-            pass
-
-        def profile(self, **kw):
-            return ""
-
-        def set_session(self, session_id):
-            pass
-
-        def tool_definitions(self):
-            return []
-
-    bus = EventBus()
-    publisher = EventPublisher(session_factory, bus)
-    es_port = FakePort([])
-    think = AgentThinkStage(LLMThinkStage(ModelPortBackend(es_port)))
-    host = EchoPipelineHost(
-        publisher=publisher, think=think, speak=fast_speak(), sink_factory=lambda v, t: "x", session=make_session(),
-        identity=make_identity(), memory=Memory(), tracer=LatencyTracer(), tool_path="agent",
-        proposer=_LoopProposer(route), endpoint_kwargs={"tick_interval": 0.05},
-    )
-    core = assemble_core(
-        session_factory, bus=bus, publisher=publisher, control=InProcessControlChannel(), adapter=host.adapter,
-        executors={}, tool_resolver=memory_registry(), turn_generation_source=host.generation_source,
-        presence_audience=lambda: "scope_private_owner", epoch_store=HostEpochStore(tmp_path / "host_epoch.json"),
-        maintenance_interval=None, echo=host, tool_path="agent", model_port=loop_port, agent_loop_entry=flag,
-        decision_log=False, supervisor=False,
-    )
-    rig = Rig(core, host, session_factory, think, host.speak, host.tracer if hasattr(host, "tracer") else LatencyTracer(), [])
-    core.start()
-    return rig, es_port
-
-
-def _submits(rig):
-    calls: list = []
-    original = rig.host.coordinator.submit
-
-    def spy(request):
-        calls.append(request)
-        return original(request)
-
-    rig.host.coordinator.submit = spy
-    return calls
-
-
-def test_db_agent_loop_route_delivers_once_and_skips_direct_chat(session_factory, tmp_path):
-    from tests.uep.test_agent_tool_path import FakePort, fin, text
-
-    loop_port = FakePort([[text("查完了，答案是四十二。"), fin()]])
-    rig, es_port = _agent_rig(session_factory, tmp_path, route="agent_loop", flag=True, loop_port=loop_port)
-    try:
-        submits = _submits(rig)
-        result = rig.say("幫我想一下答案")
-        assert result.ticket is not None and result.proposal.route == "agent_loop"
-        turn_id = result.ticket.turn_id
-        kinds = rig.wait_terminal(turn_id)
-        assert kinds.count("turn.completed") == 1 and "turn.cancelled" not in kinds
-        assert submits == []  # direct_chat（ES coordinator）一次都沒被啟動
-        assert es_port.requests == []  # ES 的 think 沒呼叫過模型
-        intents = rig.intents(turn_id)
-        assert len(intents) == 1 and intents[0].kind == "text"  # 同一輸入只有一次對外輸出
-        assert len(rig.deliveries()) == 1
-        assert rig.core.echo.orchestrator.metrics["turn.loop_claimed"] == 1
-        assert rig.core.echo.orchestrator._live == {}  # turn 已終結，沒有殘留
-        assert len(loop_port.requests) == 1
-    finally:
-        rig.core.shutdown()
-
-
-def test_db_flag_off_agent_loop_route_behaves_as_direct_chat(session_factory, tmp_path):
-    from tests.uep.test_agent_tool_path import FakePort
-
-    rig, _ = _agent_rig(session_factory, tmp_path, route="agent_loop", flag=False, loop_port=FakePort([]))
-    try:
-        assert rig.core.echo.orchestrator._loop_entry is None
-        submits = _submits(rig)
-        result = rig.say("你好")
-        assert result.ticket is not None
-        rig.wait_for(lambda: len(submits) == 1, what="direct_chat 啟動")  # 旗標關閉：行為不變，仍走 ES
-        assert rig.core.echo.orchestrator.metrics["turn.loop_claimed"] == 0
-    finally:
-        rig.core.shutdown()
-
-
-def test_db_direct_chat_route_is_untouched_even_with_flag_on(session_factory, tmp_path):
-    from tests.uep.test_agent_tool_path import FakePort
-
-    loop_port = FakePort([])
-    rig, _ = _agent_rig(session_factory, tmp_path, route="direct_chat", flag=True, loop_port=loop_port)
-    try:
-        submits = _submits(rig)
-        result = rig.say("你好")
-        assert result.ticket is not None
-        rig.wait_for(lambda: len(submits) == 1, what="direct_chat 啟動")
-        assert loop_port.requests == [] and rig.core.echo.orchestrator.metrics["turn.loop_claimed"] == 0
-    finally:
-        rig.core.shutdown()
-
-
-def test_db_absent_endpoint_input_opens_no_turn_and_no_run(session_factory, tmp_path):
-    """§10 查核：Presence 沒有生效 Lease（auth is None）時 intake 在簽 ticket 之前就被否決，LoopEntry 不會被呼叫。
-    這是既有的 turn 層行為，PR4 沒有新增任何 Presence 判定。"""
-    from tests.uep.test_agent_tool_path import FakePort
-
-    loop_port = FakePort([])
-    rig, _ = _agent_rig(session_factory, tmp_path, route="agent_loop", flag=True, loop_port=loop_port)
-    try:
-        rig.core.presence.revoke("presence_lost_test")
-        result = rig.say("在嗎")
-        assert result.ticket is None and result.reason_code == "presence_inactive"
-        assert loop_port.requests == [] and rig.core.echo.orchestrator.metrics["turn.loop_claimed"] == 0
-    finally:
-        rig.core.shutdown()
+    started: list = []
+    host = EchoPipelineHost.__new__(EchoPipelineHost)
+    host.orchestrator = SimpleNamespace()
+    host._es = SimpleNamespace(call_soon=lambda fn, *a: started.append(a))
+    host.metrics = SimpleNamespace(inc=lambda *a: None)
+    item = SimpleNamespace(ticket=SimpleNamespace(turn_id="t"), fact=object())
+    host._dispatch_results([item], None)
+    assert len(started) == 1

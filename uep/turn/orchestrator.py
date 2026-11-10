@@ -579,14 +579,25 @@ class TurnOrchestrator:
         claimed = False
         try:
             claimed = self._loop_entry(ticket, proposal) is not None
-        except Exception:  # Agent 層的失敗不得讓 turn 簽發失敗；未認領 -> 回合照 direct_chat 處理
-            self.metrics["turn.loop_entry_failed"] += 1
-            logger.exception("agent_loop 入口失敗：turn=%s", ticket.turn_id)
+        except Exception as exc:  # Agent 層的失敗不得讓 turn 簽發失敗；未認領 -> 回合照 direct_chat 處理
+            if getattr(exc, "loop_refused", False):
+                # 入口明確拒絕（並發上限、投影為空等）：不是故障，回合退回 direct_chat
+                self.metrics["turn.loop_entry_refused"] += 1
+                logger.warning("agent_loop 入口拒絕，改走 direct_chat：turn=%s reason=%s", ticket.turn_id, exc)
+            else:
+                self.metrics["turn.loop_entry_failed"] += 1
+                logger.exception("agent_loop 入口失敗：turn=%s", ticket.turn_id)
         if claimed:
             self.metrics["turn.loop_claimed"] += 1
         else:
             with self._lock:
                 self._loop_claims.pop(ticket.turn_id, None)
+
+    def is_ended(self, turn_id: str) -> bool:
+        """turn 已結束（或根本不是 live）。AgentLoop worker 用它判斷要不要繼續（公開方法，不讀私有屬性）。"""
+        with self._lock:
+            live = self._live.get(turn_id)
+            return live is None or live.ended
 
     def loop_claimed(self, turn_id: str) -> bool:
         """這個 turn 是否已由 AgentLoop 認領（入口啟動成功）。宿主據此不再送 ES 生成回覆；交付只經 Run 的 ``deliver_result``。"""

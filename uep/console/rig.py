@@ -138,12 +138,15 @@ def build_fake_runtime(
     speak_stage: Any | None = None, start_timeout_s: float | None = None,
     input_stage: Any | None = None, memory_factory: Callable[..., Any] | None = None,
     memory_root: Path | None = None, warmups: dict[str, float] | None = None, player: Any | None = None,
+    host_kwargs: dict[str, Any] | None = None, assemble_kwargs: dict[str, Any] | None = None,
 ) -> ConsoleRuntime:
     """fake speak 驅動的 Core：文字 → Coordinator → AdmittingSink → wav。
 
     預設 think 也是 fake（A0）；``think_factory(tracer)`` 給定時改用該 Think stage（N3：真實 LLM，A1）。
     real 模式另可給 ``input_stage``（真實 STT，音訊經 ``host.feed``）與 ``memory_factory(publisher, identity)``
     （真實記憶 Host，經 Access Layer 注入 Host）；``player`` 給定時 sink 同步本機播放（``--play``）。
+    ``host_kwargs``／``assemble_kwargs`` 覆寫 Host／``assemble_core`` 的建構參數（例如 agent 工具路徑的 ``tool_path``、
+    ``model_port``、``agent_loop_entry``；預設不傳，行為不變）。
     """
     session_dir = Path(session_dir)
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -187,14 +190,18 @@ def build_fake_runtime(
     host = EchoPipelineHost(
         publisher=publisher, think=think, speak=speak, sink_factory=sink_factory, session=session,
         identity=identity, tracer=tracer, endpoint_kwargs={"tick_interval": 0.05}, **host_extra,
-        input_stage=input_stage, memory=memory_host.access if memory_host is not None else None,
+        **{"input_stage": input_stage, "memory": memory_host.access if memory_host is not None else None,
+           **(host_kwargs or {})},
     )
     core = assemble_core(
-        session_factory, bus=bus, publisher=publisher, control=InProcessControlChannel(), adapter=host.adapter,
-        executors={"fake": FakeToolExecutor()}, tool_resolver=FakeToolSpecResolver(**{"files.read": {}}),
-        turn_generation_source=host.generation_source, presence_audience=lambda: PRIVATE_SCOPE,
-        epoch_store=HostEpochStore(session_dir / "host_epoch.json"), maintenance_interval=None, echo=host,
-        memory=memory_host,  # 決策日誌由組裝層依 UEP_DECISION_LOG 接上（DL-3）
+        session_factory, **{
+            "bus": bus, "publisher": publisher, "control": InProcessControlChannel(), "adapter": host.adapter,
+            "executors": {"fake": FakeToolExecutor()}, "tool_resolver": FakeToolSpecResolver(**{"files.read": {}}),
+            "turn_generation_source": host.generation_source, "presence_audience": lambda: PRIVATE_SCOPE,
+            "epoch_store": HostEpochStore(session_dir / "host_epoch.json"), "maintenance_interval": None, "echo": host,
+            "memory": memory_host,  # 決策日誌由組裝層依 UEP_DECISION_LOG 接上（DL-3）
+            **(assemble_kwargs or {}),
+        },
     )
     runtime = ConsoleRuntime(
         "fake" if think_factory is None else "real", core, host, session_factory, think, speak, tracer, session_dir,

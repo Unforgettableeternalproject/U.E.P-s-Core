@@ -218,6 +218,8 @@ class ActionIntentRow(Base):
     presence_bound: Mapped[bool] = mapped_column(Boolean, nullable=False)
     # 建立時由註冊表快照（TG-1），建立後不可改（TaskManager 沒有任何更新路徑）；fail-closed 預設 serial
     concurrency: Mapped[str] = mapped_column(String, nullable=False, server_default="serial")
+    # 重試來源（CC-6 §6.5、SA-11）：指向被重試的 FAILED action（含人工標記 retry 的 UNKNOWN）；migration 0015
+    retry_of: Mapped[str | None] = mapped_column(ForeignKey("action_intents.action_id"))
     status: Mapped[str] = mapped_column(String, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     created_at: Mapped[datetime] = _ts()

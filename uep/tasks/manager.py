@@ -1278,12 +1278,13 @@ class TaskManager:
 
     def create_action(
         self, *, run_id: str, step_id: str, tool: str, params: Mapping[str, Any], worker_epoch: int,
-        presence_bound: bool | None = None, action_id: str | None = None,
+        presence_bound: bool | None = None, action_id: str | None = None, retry_of: str | None = None,
     ) -> ActionIntentRow:
         """建立 INTENDED 的 ActionIntent。同 action_id 重呼叫回傳既有列；參數改變則拒絕（須新 action）。
 
         executor／side_effect_class／idempotency／tool_version 一律來自 ``tool_resolver.resolve(tool)``（TG-1）；
         ``presence_bound`` 只能收緊（TG-3）：註冊表為真時不可傳 False。
+        ``retry_of`` 指向同一 Run 內已是 FAILED 的 action（含經 ``resolve_unknown_manual`` 標記 retry 的 UNKNOWN，SA-11）。
         """
         spec = self._tool_resolver.resolve(tool)  # 解析不到拋 PolicyViolation；在交易之前
         concurrency = self._resolve_concurrency(tool)
@@ -1302,13 +1303,21 @@ class TaskManager:
                 existing = s.get(ActionIntentRow, action_id, with_for_update=True, populate_existing=True)
                 if existing is not None:
                     self._assert_same_action(existing, run_id, tool, spec, digest, spec.presence_bound or bool(presence_bound))
+                    if retry_of is not None and existing.retry_of != retry_of:
+                        raise PolicyViolation("同 action_id 的 retry_of 不同，須建立新 action")
                     return existing
+            if retry_of is not None:
+                origin = s.get(ActionIntentRow, retry_of)
+                if origin is None or origin.run_id != run_id:
+                    raise PolicyViolation("retry_of 必須是同一 run 內既有的 action", code="retry_of_invalid")
+                if origin.status != ActionStatus.FAILED.value:
+                    raise PolicyViolation("retry_of 只能指向 FAILED 的 action", code="retry_of_not_failed")
             action = ActionIntentRow(
                 action_id=action_id or new_id("act"), run_id=run_id, step_id=step_id, tool=tool,
                 executor=spec.executor, params_hash=digest, side_effect_class=spec.side_effect_class,
                 idempotency=spec.idempotency, tool_version=spec.tool_version,
                 presence_bound=spec.presence_bound or bool(presence_bound), concurrency=concurrency,
-                status=ActionStatus.INTENDED.value, version=1,
+                retry_of=retry_of, status=ActionStatus.INTENDED.value, version=1,
             )
             try:
                 with s.begin_nested():  # 唯一約束衝突只回滾這個 savepoint
@@ -1754,6 +1763,43 @@ class TaskManager:
                 self._set_action_status(s, pending, task, action, ActionStatus.INTENDED, "action.intended")
                 return ActionOutcome(action_id, ActionStatus.INTENDED, False, None)
             return ActionOutcome(action_id, ActionStatus.UNKNOWN, False, None)
+
+    def resolve_unknown_manual(
+        self, action_id: str, *, principal: AuthenticatedPrincipal,
+        outcome: Literal["succeeded", "failed", "retry"],
+    ) -> ActionOutcome:
+        """UNKNOWN 的人工出口（SA-11、D52）：已驗證的人類 approver 裁決結果。不呼叫 executor。
+
+        - succeeded／failed：轉對應終態，記一筆 Core 簽發、``source_verified=True``、``meta.origin=manual`` 的 receipt。
+        - retry：轉終態 FAILED（receipt ``meta.decision=retry``）；之後以新 action_id 重建，新 intent 帶 ``retry_of``。
+        - 只收目前為 UNKNOWN 的 action；已有已驗證 receipt 者走 ``resolve_unknown``，不由人工覆寫。
+        """
+        if not isinstance(principal, AuthenticatedPrincipal):
+            raise PolicyViolation("人工解決必須由 AuthenticatedPrincipal 發動")
+        if principal.kind != "human" or not principal.verified:
+            raise PolicyViolation("人工解決只接受已驗證的人類身分")
+        if outcome not in ("succeeded", "failed", "retry"):
+            raise PolicyViolation(f"不支援的 outcome：{outcome}")
+        with self._tx("resolve.before_commit") as (s, pending):
+            task, _run, action = self._lock_action(s, action_id)
+            if principal.actor_id not in self._approvers(task):
+                raise PolicyViolation("人工解決者不屬於此 task 的 approvers", code="unauthorized_approver")
+            if ActionStatus(action.status) is not ActionStatus.UNKNOWN:
+                raise IllegalTransition(f"action 不是 UNKNOWN（{action.status}），不可人工解決")
+            verified = s.scalar(
+                select(ReceiptRow.receipt_id).where(ReceiptRow.action_id == action_id, ReceiptRow.source_verified.is_(True))
+            )
+            if verified is not None:
+                raise ActionBlocked("action 已有已驗證 receipt，請走 resolve_unknown", code=ACTION_UNRESOLVED)
+            succeeded = outcome == "succeeded"
+            meta = {"origin": "manual", "principal": principal.actor_id, "decision": outcome}
+            receipt = ToolReceipt(
+                receipt_id=new_id("rcpt"), action_id=action_id, succeeded=succeeded, result_ref=None,
+                recorded_at=self._clock(), source_verified=True,
+                error_code=None if succeeded else f"manual_{outcome}", meta=meta,
+            )
+            stored = self._apply_receipt(s, pending, task, action, receipt)
+            return ActionOutcome(action_id, ActionStatus(action.status), False, stored)
 
     # ---- 恢復（T-1、T-7、T-11） ----
 

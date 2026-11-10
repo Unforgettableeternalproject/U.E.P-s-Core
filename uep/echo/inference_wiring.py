@@ -87,7 +87,7 @@ class InferenceConfig:
     llm_model: str | None = None
     system_prompt: str = ""
     think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
-    tts_engine: str = "indextts2"
+    tts_engine: str = "vox"
     vox_config: Mapping[str, Any] | None = None  # 原樣轉給 VoxBackend(config)；None＝不傳
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
     think_prepare_timeout_s: float = 8.0

@@ -118,8 +118,8 @@ class UepSettings(BaseSettings):
     infer_stt_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_STT_REPO")
     # Session 已遷入 Core（subsystems/echo_thought_core）：預設不設，由 Core 的 editable 安裝提供；僅作可選覆寫
     infer_session_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_SESSION_REPO")
-    # TTS 引擎：indextts2（預設，V25）或 vox；兩者不能同時常駐，由此單選
-    infer_tts_engine: str = Field(default="indextts2", validation_alias="UEP_INFER_TTS_ENGINE")
+    # TTS 引擎：vox（預設）或 indextts2（V25，可選）；兩者不能同時常駐，由此單選
+    infer_tts_engine: str = Field(default="vox", validation_alias="UEP_INFER_TTS_ENGINE")
     # VOX backend 設定：JSON 物件字串（原樣轉給 VoxBackend(config)）；空值＝不傳
     infer_vox_config: str | None = Field(default=None, validation_alias="UEP_INFER_VOX_CONFIG")
     infer_tts_device: str = Field(default="cuda", validation_alias="UEP_INFER_TTS_DEVICE")
@@ -135,7 +135,7 @@ class UepSettings(BaseSettings):
     infer_llm_model: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_MODEL")
     infer_system_prompt: str = Field(default="", validation_alias="UEP_INFER_SYSTEM_PROMPT")
     # 各 stage prepare 的逾時（秒）；Host 啟動總上限目前為 60 秒（EchoPipelineHost.start），三者相加須小於它（未設定 UEP_INFER_HOST_START_TIMEOUT_S 時由組裝自動推得）
-    # speak 未設定（None）時依引擎取預設：indextts2 為 40 秒、vox 為 90 秒（見 inference_wiring）
+    # speak 未設定（None）時依引擎取預設：indextts2 為 40 秒、vox 為 240 秒（見 inference_wiring）
     infer_speak_prepare_timeout_s: float | None = Field(default=None, validation_alias="UEP_INFER_SPEAK_PREPARE_TIMEOUT_S")
     infer_think_prepare_timeout_s: float = Field(default=8.0, validation_alias="UEP_INFER_THINK_PREPARE_TIMEOUT_S")
     infer_input_prepare_timeout_s: float = Field(default=10.0, validation_alias="UEP_INFER_INPUT_PREPARE_TIMEOUT_S")

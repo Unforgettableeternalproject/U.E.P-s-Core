@@ -30,6 +30,12 @@ from uep.echo.inference_wiring import (
 from uep.echo.metrics import Metrics
 
 
+def _ix(**kwargs):
+    """IndexTTS2 引擎的設定（預設已改 vox；這些測試以假 IndexTTS2 backend 驗證，需明確指定引擎）。"""
+    kwargs.setdefault("tts_engine", "indextts2")
+    return InferenceConfig(**kwargs)
+
+
 class FakeTtsBackend:
     """只記錄 load／generate 次數；``load_error`` 例外、``block`` 阻塞到事件被設定（模擬載入過慢）。"""
 
@@ -62,7 +68,7 @@ class FakeStt:
 
 
 def build(*, tts=None, cfg=None, **kw):
-    cfg = cfg or InferenceConfig(stt_mode="single")
+    cfg = cfg or _ix(stt_mode="single")
     return build_inference_wiring(
         cfg, tts_backend=tts or FakeTtsBackend(), think_backend=FakeLlm(), stt_backend=FakeStt(), **kw
     )
@@ -94,7 +100,7 @@ def test_建構不載模型且共用同一個預建_backend():
 
 
 def test_設定傳到_speak_stage():
-    cfg = InferenceConfig(
+    cfg = _ix(
         stt_mode="single", tts_device="cpu", tts_fp16=False, tts_warmup=False, tts_speed=0.2, tts_lora_scale=0.5,
         tts_language="zh", system_prompt="你是 UEP",
     )
@@ -107,18 +113,18 @@ def test_stt_模式選擇():
     from uep.stream.adapters.input_multichannel import MultiChannelSttInputStage
     from uep.stream.adapters.input_stt import SttInputStage
 
-    assert isinstance(build(cfg=InferenceConfig(stt_mode="multichannel")).input_stage, MultiChannelSttInputStage)
-    assert isinstance(build(cfg=InferenceConfig(stt_mode="single")).input_stage, SttInputStage)
+    assert isinstance(build(cfg=_ix(stt_mode="multichannel")).input_stage, MultiChannelSttInputStage)
+    assert isinstance(build(cfg=_ix(stt_mode="single")).input_stage, SttInputStage)
     with pytest.raises(InferenceWiringError):
-        InferenceConfig(stt_mode="bogus")
+        _ix(stt_mode="bogus")
 
 
 def test_缺子系統路徑_fail_closed():
     # TTS（M5）、STT（M3）、Session 都已遷入 Core：不設 *_REPO 不再被拒絕；只有 Session 的可選覆寫設了就必須存在
     with pytest.raises(InferenceWiringError, match="UEP_INFER_SESSION_REPO.*不存在"):
-        default_think_backend(InferenceConfig(session_repo=Path("Z:/不存在的路徑")))
+        default_think_backend(_ix(session_repo=Path("Z:/不存在的路徑")))
     # 沒設 TTS 路徑、也沒注入 backend：可組裝（backend 在 prepare 才建，這裡不載模型）
-    w = build_inference_wiring(InferenceConfig(), think_backend=FakeLlm(), stt_backend=FakeStt())
+    w = build_inference_wiring(_ix(), think_backend=FakeLlm(), stt_backend=FakeStt())
     assert w.speak is not None
 
 
@@ -128,11 +134,11 @@ def test_tts_不需路徑_設了會被忽略並警告一次(caplog, tmp_path):
     import uep.echo.inference_wiring as iw
 
     iw._TTS_REPO_WARNED = False
-    cfg = InferenceConfig(tts_repo=Path("Z:/不存在的路徑"))
+    cfg = _ix(tts_repo=Path("Z:/不存在的路徑"))
     with caplog.at_level(logging.WARNING, logger="uep.echo.inference_wiring"):
         build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm(), stt_backend=FakeStt())
         build_inference_wiring(
-            InferenceConfig(tts_engine="vox", tts_repo=tmp_path), think_backend=FakeLlm(), stt_backend=FakeStt(),
+            _ix(tts_engine="vox", tts_repo=tmp_path), think_backend=FakeLlm(), stt_backend=FakeStt(),
         )
     assert len([r for r in caplog.records if "UEP_INFER_TTS_REPO" in r.getMessage()]) == 1
 
@@ -143,12 +149,12 @@ def test_stt_不需路徑_設了會被忽略並警告一次(caplog, tmp_path):
     import uep.echo.inference_wiring as iw
 
     # 沒設路徑、沒注入 backend：可組裝（backend 在 prepare 才建，這裡不載模型）
-    w = build_inference_wiring(InferenceConfig(), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
+    w = build_inference_wiring(_ix(), tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
     assert w.input_stage is not None
     assert not hasattr(w.input_stage, "_stt_repo")
     # 設了舊路徑：忽略，且行程內只警告一次
     iw._STT_REPO_WARNED = False
-    cfg = InferenceConfig(stt_repo=Path("Z:/不存在的路徑"))
+    cfg = _ix(stt_repo=Path("Z:/不存在的路徑"))
     with caplog.at_level(logging.WARNING, logger="uep.echo.inference_wiring"):
         build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
         build_inference_wiring(cfg, tts_backend=FakeTtsBackend(), think_backend=FakeLlm())
@@ -160,9 +166,9 @@ def test_think_backend_預設不需_session_路徑(monkeypatch, tmp_path):
 
     seen: dict = {}
     monkeypatch.setattr(think_llm, "build_backend", lambda provider, **kw: seen.update(provider=provider, **kw) or "backend")
-    assert default_think_backend(InferenceConfig(llm_provider="openai")) == "backend"
+    assert default_think_backend(_ix(llm_provider="openai")) == "backend"
     assert seen["session_repo"] is None  # 交給環境（Core 的 editable）解析 echo_thought_core
-    default_think_backend(InferenceConfig(llm_provider="openai", session_repo=tmp_path))
+    default_think_backend(_ix(llm_provider="openai", session_repo=tmp_path))
     assert seen["session_repo"] == str(tmp_path)  # 明確指定仍可覆寫
 
 
@@ -236,7 +242,7 @@ def test_speak_載入失敗_降級為無聲_不讓啟動失敗():
 def test_speak_載入逾時_降級():
     gate = threading.Event()
     tts = FakeTtsBackend(block=gate)
-    w = build(tts=tts, cfg=InferenceConfig(stt_mode="single", speak_prepare_timeout_s=0.05))
+    w = build(tts=tts, cfg=_ix(stt_mode="single", speak_prepare_timeout_s=0.05))
 
     async def go():
         try:
@@ -254,7 +260,7 @@ def test_speak_載入逾時_降級():
 def test_關閉降級_沿用原行為_例外上拋():
     w = build(
         tts=FakeTtsBackend(load_error=RuntimeError("boom")),
-        cfg=InferenceConfig(stt_mode="single", degrade_on_failure=False),
+        cfg=_ix(stt_mode="single", degrade_on_failure=False),
     )
     with pytest.raises(RuntimeError, match="boom"):
         run(w.speak.prepare())
@@ -368,25 +374,30 @@ def _block_vox_import(monkeypatch):
     monkeypatch.setitem(sys.modules, "uep.stream.adapters.speak_vox", None)  # None＝import 會拋 ImportError
 
 
-def test_tts_engine_預設_indextts2_且逾時_40():
+def test_tts_engine_預設_vox_且逾時_240():
+    cfg = InferenceConfig(stt_mode="single")
+    assert cfg.tts_engine == "vox" and cfg.speak_prepare_timeout_s == 240.0
+
+
+def test_tts_engine_indextts2_可選_逾時_40():
     from uep.stream.adapters.speak_indextts import IndexTTS2SpeakStage
 
-    cfg = InferenceConfig(stt_mode="single")
+    cfg = _ix(stt_mode="single")
     assert cfg.tts_engine == "indextts2" and cfg.speak_prepare_timeout_s == 40.0
     assert isinstance(build(cfg=cfg).speak, IndexTTS2SpeakStage)
     with pytest.raises(InferenceWiringError, match="tts_engine"):
-        InferenceConfig(tts_engine="bogus")
+        _ix(tts_engine="bogus")
 
 
 def test_vox_引擎_逾時預設_240_可覆寫():
-    assert InferenceConfig(tts_engine="vox").speak_prepare_timeout_s == 240.0
-    assert InferenceConfig(tts_engine="vox", speak_prepare_timeout_s=400.0).speak_prepare_timeout_s == 400.0
+    assert _ix(tts_engine="vox").speak_prepare_timeout_s == 240.0
+    assert _ix(tts_engine="vox", speak_prepare_timeout_s=400.0).speak_prepare_timeout_s == 400.0
 
 
 def test_vox_引擎_參數映射_不傳_lora_與_warmup(monkeypatch, tmp_path):
     captured: dict = {}
     fake_cls = _install_fake_vox(monkeypatch, captured)
-    cfg = InferenceConfig(
+    cfg = _ix(
         stt_mode="single", tts_engine="vox", tts_repo=tmp_path, tts_lora_scale=0.5, tts_warmup=False,
         vox_config={"cache_dir": "x"},
     )
@@ -402,14 +413,14 @@ def test_vox_引擎_參數映射_不傳_lora_與_warmup(monkeypatch, tmp_path):
     assert "lora_scale" not in captured and "warmup" not in captured
     # tts_speed／language 明確設定才傳
     captured.clear()
-    cfg2 = InferenceConfig(stt_mode="single", tts_engine="vox", tts_speed=1.1, tts_language="zh")
+    cfg2 = _ix(stt_mode="single", tts_engine="vox", tts_speed=1.1, tts_language="zh")
     build_inference_wiring(cfg2, think_backend=FakeLlm(), stt_backend=FakeStt())
     assert captured == {"speed": 1.1, "language": "zh"}
 
 
 def test_vox_adapter_缺失_降級為_not_ready_不拋出(monkeypatch):
     _block_vox_import(monkeypatch)
-    cfg = InferenceConfig(stt_mode="single", tts_engine="vox")
+    cfg = _ix(stt_mode="single", tts_engine="vox")
     w = build_inference_wiring(cfg, think_backend=FakeLlm(), stt_backend=FakeStt())  # 組裝不拋出
 
     async def go():
@@ -424,7 +435,7 @@ def test_vox_adapter_缺失_降級為_not_ready_不拋出(monkeypatch):
 
 def test_vox_adapter_缺失_關閉降級時_prepare_上拋(monkeypatch):
     _block_vox_import(monkeypatch)
-    cfg = InferenceConfig(stt_mode="single", tts_engine="vox", degrade_on_failure=False)
+    cfg = _ix(stt_mode="single", tts_engine="vox", degrade_on_failure=False)
     w = build_inference_wiring(cfg, think_backend=FakeLlm(), stt_backend=FakeStt())
     with pytest.raises(StageNotReady, match="vox_adapter_missing"):
         run(w.speak.prepare())
@@ -454,19 +465,22 @@ def test_from_settings_引擎與三個_prepare_逾時環境變數(monkeypatch):
     monkeypatch.delenv("UEP_INFER_TTS_ENGINE")
     monkeypatch.delenv("UEP_INFER_SPEAK_PREPARE_TIMEOUT_S")
     cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.tts_engine == "vox" and cfg.speak_prepare_timeout_s == 240.0
+    monkeypatch.setenv("UEP_INFER_TTS_ENGINE", "indextts2")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
     assert cfg.tts_engine == "indextts2" and cfg.speak_prepare_timeout_s == 40.0
 
 
 # ---- Host 啟動總上限 ----
 
 def test_host_start_timeout_預設由加總推得_vox_240_能過():
-    c = InferenceConfig(stt_mode="single")
+    c = _ix(stt_mode="single")
     assert c.host_start_timeout_s == 68.0  # 40+8+10 加餘裕 10
-    v = InferenceConfig(stt_mode="single", tts_engine="vox")
+    v = _ix(stt_mode="single", tts_engine="vox")
     assert v.host_start_timeout_s == 240 + 8 + 10 + 10 >= v.speak_prepare_timeout_s + 18
     assert build(cfg=v).host_kwargs()["start_timeout_s"] == v.host_start_timeout_s
     # 加總很小時不低於原固定上限 60
-    s = InferenceConfig(speak_prepare_timeout_s=1, think_prepare_timeout_s=1, input_prepare_timeout_s=1)
+    s = _ix(speak_prepare_timeout_s=1, think_prepare_timeout_s=1, input_prepare_timeout_s=1)
     assert s.host_start_timeout_s == 60.0
 
 
@@ -476,7 +490,7 @@ def test_host_start_timeout_環境變數覆寫與不足警告(monkeypatch, caplo
         cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
     assert cfg.host_start_timeout_s == 30.0 and "host_start_timeout_s" in caplog.text
     with pytest.raises(InferenceWiringError):
-        InferenceConfig(host_start_timeout_s=0)
+        _ix(host_start_timeout_s=0)
 
 
 def test_host_start_走設定的上限而非固定_60():
@@ -494,7 +508,7 @@ def test_vox_有建議值_傳到_think_的_split_policy(monkeypatch):
     fake_cls = _install_fake_vox(monkeypatch, {})
     fake_cls.recommended_split_policy = classmethod(lambda cls: recommended)
     w = build_inference_wiring(
-        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+        _ix(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
     )
     assert w.think.split_policy is recommended
 
@@ -504,7 +518,7 @@ def test_vox_無建議值方法_維持預設_split_policy(monkeypatch):
 
     _install_fake_vox(monkeypatch, {})  # 假 stage 沒有 recommended_split_policy
     w = build_inference_wiring(
-        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+        _ix(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
     )
     assert w.think.split_policy == SplitPolicy()
 
@@ -514,7 +528,7 @@ def test_vox_佔位_stage_不取建議值(monkeypatch):
 
     _block_vox_import(monkeypatch)
     w = build_inference_wiring(
-        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+        _ix(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
     )
     assert w.think.split_policy == SplitPolicy()
 

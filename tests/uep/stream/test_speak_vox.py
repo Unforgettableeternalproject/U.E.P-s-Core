@@ -46,8 +46,8 @@ class FakeVoxBackend:
     def unload(self) -> None:
         self.closed += 1
 
-    def stream(self, text, lang=None, speed=None):
-        self.calls.append({"text": text, "lang": lang, "speed": speed})
+    def stream(self, text, lang=None, speed=None, **kwargs):
+        self.calls.append({"text": text, "lang": lang, "speed": speed, **kwargs})
         return self._gen()
 
     def _gen(self):
@@ -408,6 +408,57 @@ async def test_停頓未設定時行為不變():
     assert sum(c.duration_s for c in chunks if c.sentence_index == 0) == pytest.approx(
         0.16 + 0.015, abs=0.002
     )
+
+
+# ---- 情緒映射 ----
+
+_HAPPY = SpeechStyle(emotion={"happy": 1.0}, intensity=0.8, style="happy")
+_EXCITED = SpeechStyle(emotion={"happy": 0.7, "surprised": 0.3}, intensity=0.3, style="excited")
+
+
+async def test_情緒_預設對照表全_neutral_開關開了也不帶參數():
+    plain, enabled = FakeVoxBackend(chunks_per_call=1), FakeVoxBackend(chunks_per_call=1)
+    await _collect(VoxSpeakStage(backend=plain), ["你好。"], style=_HAPPY)
+    await _collect(VoxSpeakStage(backend=enabled, emotion_enabled=True), ["你好。"], style=_HAPPY)
+    assert plain.calls == enabled.calls
+    assert "emotion" not in enabled.calls[0] and "intensity" not in enabled.calls[0]
+
+
+async def test_情緒_開關關閉時即使對照表非預設也不帶參數():
+    backend = FakeVoxBackend(chunks_per_call=1)
+    stage = VoxSpeakStage(backend=backend, emotion_map={"happy": "happy"})
+    await _collect(stage, ["你好。"], style=_HAPPY)
+    assert "emotion" not in backend.calls[0]
+
+
+async def test_情緒_非預設對照表帶出_emotion_與_intensity():
+    backend = FakeVoxBackend(chunks_per_call=1)
+    stage = VoxSpeakStage(
+        backend=backend,
+        emotion_enabled=True,
+        emotion_map={"happy": "happy", "excited": {"emotion": "surprised", "intensity": 0.9}},
+    )
+    await _collect(stage, ["開心。"], style=_HAPPY)
+    await _collect(stage, ["興奮。"], style=_EXCITED)
+    await _collect(stage, ["中性。"], style=SpeechStyle())
+    await _collect(stage, ["沒風格。"])
+    assert backend.calls[0]["emotion"] == "happy" and backend.calls[0]["intensity"] == 0.8  # 沿用 style.intensity
+    assert backend.calls[1]["emotion"] == "surprised" and backend.calls[1]["intensity"] == 0.9  # 表內覆寫
+    assert "emotion" not in backend.calls[2] and "emotion" not in backend.calls[3]
+
+
+async def test_情緒_沒有_preset_名時改查主導維度():
+    backend = FakeVoxBackend(chunks_per_call=1)
+    stage = VoxSpeakStage(backend=backend, emotion_enabled=True, emotion_map={"sad": "sad"})
+    await _collect(stage, ["難過。"], style=SpeechStyle(emotion={"sad": 0.9}, intensity=0.4))
+    assert (backend.calls[0]["emotion"], backend.calls[0]["intensity"]) == ("sad", 0.4)
+
+
+def test_情緒_對照表值域錯誤_fail_closed():
+    with pytest.raises(ValueError):
+        VoxSpeakStage(backend=FakeVoxBackend(), emotion_map={"happy": "joyful"})
+    with pytest.raises(ValueError):
+        VoxSpeakStage(backend=FakeVoxBackend(), emotion_map={"happy": {"emotion": "happy", "intensity": 1.5}})
 
 
 def test_build_backend_預設權重目錄依_UEP_TTS_MODELS_DIR(monkeypatch, tmp_path):

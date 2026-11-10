@@ -36,12 +36,12 @@ import contextlib
 import logging
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 
 from ..contracts.cancellation import CancellationToken, CancelledError, CancelReason
-from ..contracts.style import SpeechStyle
+from ..contracts.style import EMOTION_DIMENSIONS, SpeechStyle
 from ..contracts.types import AudioChunk, Sentence
 from ..channel import ChannelClosed, StreamChannel
 from ..splitter import SplitPolicy
@@ -58,6 +58,52 @@ VOX_SPLIT_FIRST_MIN = 10.0
 VOX_SPLIT_FIRST_MAX = 24.0
 VOX_SPLIT_MIN = 30.0
 VOX_SPLIT_MAX = 80.0
+
+NEUTRAL_EMOTION = "neutral"
+"""對照表的「不帶情緒」值：不傳 emotion／intensity 給 backend，行為與未接情緒時完全相同。"""
+
+VOX_EMOTION_LABELS: tuple[str, ...] = (*EMOTION_DIMENSIONS, NEUTRAL_EMOTION)
+"""Vox backend 接受的情緒標籤（僅 zh 生效，其餘語言由 backend 忽略）：八維標籤加 neutral。"""
+
+DEFAULT_VOX_EMOTION_MAP: dict[str, tuple[str, float | None]] = {
+    # SpeechStyle.style（preset 名；空字串時改用主導維度名）→ (Vox 情緒標籤, intensity)
+    # intensity 為 None＝沿用 SpeechStyle.intensity。對照表尚待 Bernie 裁決，
+    # 預設全部指向 neutral（不帶情緒）；定案後以 UEP_INFER_VOX_EMOTION_MAP 覆寫並開啟開關。
+    **{name: (NEUTRAL_EMOTION, None) for name in EMOTION_DIMENSIONS},
+    **{
+        name: (NEUTRAL_EMOTION, None)
+        for name in ("excited", "gentle", "stern", "wistful", "flustered", "tsundere", "anticipated")
+    },
+}
+"""SpeechStyle → Vox 情緒對照表預設值（全 neutral）。"""
+
+
+def normalize_emotion_map(
+    raw: Mapping[str, Any] | None,
+) -> dict[str, tuple[str, float | None]]:
+    """把設定的對照表疊在預設表上，並檢查值域（fail-closed）。
+
+    每個值可寫成標籤字串（``"happy"``）或 ``{"emotion": "happy", "intensity": 0.6}``；
+    標籤須在 :data:`VOX_EMOTION_LABELS`，intensity 須落在 0~1，否則丟 ValueError。
+    """
+    table = dict(DEFAULT_VOX_EMOTION_MAP)
+    for key, value in (raw or {}).items():
+        if isinstance(value, str):
+            label, intensity = value, None
+        elif isinstance(value, Mapping):
+            label, intensity = value.get("emotion", NEUTRAL_EMOTION), value.get("intensity")
+        else:
+            raise TypeError(f"情緒對照表 {key!r} 的值必須是字串或物件：{value!r}")
+        label = str(label).strip().lower()
+        if label not in VOX_EMOTION_LABELS:
+            raise ValueError(f"情緒對照表 {key!r} 的標籤 {label!r} 不在 {VOX_EMOTION_LABELS}")
+        if intensity is not None:
+            intensity = float(intensity)
+            if not 0.0 <= intensity <= 1.0:
+                raise ValueError(f"情緒對照表 {key!r} 的 intensity 必須在 0~1：{intensity}")
+        table[str(key).strip().lower()] = (label, intensity)
+    return table
+
 
 DEFAULT_QUEUE_SIZE = 12
 """音訊通道上限（chunk 數）預設值；M5 前由 ES 的 ``ECHO_STREAM_VOX_QUEUE`` 環境變數覆寫，已移除，改由建構參數 ``queue_size`` 指定。"""
@@ -86,6 +132,8 @@ class VoxSpeakStage:
         segment_silence_ms: float = 15.0,
         terminal_pause_ms: float | None = None,
         secondary_pause_ms: float | None = None,
+        emotion_enabled: bool = False,
+        emotion_map: Mapping[str, Any] | None = None,
     ) -> None:
         self._backend = backend
         self.backend_config = backend_config
@@ -109,6 +157,10 @@ class VoxSpeakStage:
 
         兩者都是「換氣感」的旋鈕（11/01 聽感：太快、沒有呼吸感）：句間的停頓
         依切點性質給，硬切／flush 與整個 turn 的最後一句一律只用 segment_silence_ms。"""
+        self.emotion_enabled = emotion_enabled
+        """情緒開關：False 時完全不傳 emotion／intensity（行為同未接情緒）。"""
+        self.emotion_map = normalize_emotion_map(emotion_map)
+        """SpeechStyle → Vox 情緒對照表（已疊上預設）；預設全 neutral，開關打開也不會帶情緒。"""
         self._backend_lock = threading.Lock()
         """backend 同時只能處理一個請求；跨 turn 也要串行。"""
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -261,6 +313,22 @@ class VoxSpeakStage:
             return style.speed
         return self.speed
 
+    def _resolve_emotion(self, style: SpeechStyle | None) -> tuple[str, float] | None:
+        """SpeechStyle → (Vox 情緒標籤, intensity)；不需帶情緒時回 None。
+
+        查表順序：``style.style``（preset 名）→ 主導維度名；查不到或對到 neutral 都回 None。
+        表內 intensity 為 None 時沿用 ``style.intensity``。
+        """
+        if not self.emotion_enabled or style is None or style.is_neutral:
+            return None
+        entry = self.emotion_map.get(style.style.strip().lower())
+        dominant = style.dominant()
+        if entry is None and dominant is not None:
+            entry = self.emotion_map.get(dominant[0])
+        if entry is None or entry[0] == NEUTRAL_EMOTION:
+            return None
+        return entry[0], entry[1] if entry[1] is not None else style.intensity
+
     def _synthesize_one(
         self,
         sentence: Sentence,
@@ -277,6 +345,11 @@ class VoxSpeakStage:
             return  # 整句都是符號——沒東西可唸
 
         speed = self._resolve_speed(sentence.style)
+        emotion = self._resolve_emotion(sentence.style)
+        # 沒有情緒時不帶這兩個參數，呼叫形狀與未接情緒時一致
+        emotion_kwargs: dict[str, Any] = (
+            {"emotion": emotion[0], "intensity": emotion[1]} if emotion is not None else {}
+        )
         tail_silence_ms = self._tail_silence_ms(sentence)
         # smooth_segment_edges 的淡化長度上限是段長的一半，尾端留兩倍才淡得滿 edge_fade_ms
         n_hold = 2 * int(self.sample_rate * self.edge_fade_ms / 1000)
@@ -332,7 +405,9 @@ class VoxSpeakStage:
             raw_samples = 0
             n_raw = 0
             try:
-                gen = self._backend.stream(speak_text, lang=self.language, speed=speed)
+                gen = self._backend.stream(
+                    speak_text, lang=self.language, speed=speed, **emotion_kwargs
+                )
                 while True:
                     # 只計 next() 的耗時：emit 的背壓等待不是合成時間
                     t_req = time.perf_counter()
@@ -492,4 +567,10 @@ class VoxSpeakStage:
         return resampler.resample_chunk(arr, last=last).astype("float32", copy=False)
 
 
-__all__ = ["VoxSpeakStage", "VOX_SAMPLE_RATE"]
+__all__ = [
+    "VoxSpeakStage",
+    "VOX_SAMPLE_RATE",
+    "DEFAULT_VOX_EMOTION_MAP",
+    "VOX_EMOTION_LABELS",
+    "normalize_emotion_map",
+]

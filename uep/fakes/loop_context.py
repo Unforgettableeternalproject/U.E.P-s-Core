@@ -66,6 +66,22 @@ class InMemoryLoopContextStore:
             self.parent_entries[parent_id].append(ParentEntry(key, "status", state=state, reason_code=reason_code))
             return True
 
+    def discard_run(self, run_id: str, parent_id: str | None = None) -> None:
+        """Run 終態時清掉該 Run 的 child 與 parent 寫入（production 暫用本類別時不得無限增長）。
+        child 的 ref 與冪等鍵都含 run_id；parent 的條目以 key 比對。"""
+        with self._lock:
+            for ref in [r for r in self.children if run_id in r]:
+                self.children.pop(ref, None)
+                self.revisions.pop(ref, None)
+                self.manifests.pop(ref, None)
+            for pid in ([parent_id] if parent_id is not None else list(self.parent_entries)):
+                kept = [e for e in self.parent_entries.get(pid, []) if run_id not in e.key]
+                if kept:
+                    self.parent_entries[pid] = kept
+                else:
+                    self.parent_entries.pop(pid, None)
+            self._keys = {k for k in self._keys if run_id not in k}
+
     # ---- 測試用 ----
     def lose(self, ref: str) -> None:
         with self._lock:

@@ -215,6 +215,12 @@ class Console:
             self.out(f"turn {turn_id} 逾時未結束（{self.wait_s:.0f} 秒），事件：{' > '.join(kinds)}")
             return
         self.out(f"turn {turn_id}：{kinds[-1]}（{time.perf_counter() - started:.2f} 秒）")
+        claimed = getattr(rt.host.orchestrator, "loop_claimed", None)
+        if callable(claimed) and claimed(turn_id):
+            # agent_loop 回合：沒有走 Think／Speak，回覆是端點在 Output Gate 放行後渲染的文字（系統訊息另標示）
+            for item in getattr(rt.host.endpoint, "rendered_texts", lambda _t: [])(turn_id):
+                self.out(f"{'系統訊息' if item.system else '回應'}：{item.text}")
+            return
         reply = self._reply_text(turn_id) if kinds[-1] == "turn.completed" else None  # 被取消的輪沒有（完整）回應
         if reply:
             self.out(f"回應：{reply}")

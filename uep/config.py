@@ -40,6 +40,9 @@ class UepSettings(BaseSettings):
     supervisor_orphan_older_than_s: float = Field(default=1800.0, gt=0, validation_alias="UEP_SUPERVISOR_ORPHAN_OLDER_THAN_S")
     # 工具路徑分流（切片 C）：legacy＝舊衍生路徑（預設，位元組不變）；agent＝註冊表 ``project``＋ActionIntent 的曝光
     tool_path: Literal["legacy", "agent"] = Field(default="legacy", validation_alias="UEP_TOOL_PATH")
+    # route=agent_loop 的 production 入口（DL-4 PR4）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效，開啟後
+    # route=agent_loop 的回合由 AgentLoop 處理（不再走 direct_chat 回覆）
+    agent_loop_entry: bool = Field(default=False, validation_alias="UEP_AGENT_LOOP_ENTRY")
     # 平台脈絡 shadow（平台宣告注入端 R0 第 3、4 步）：預設關閉；開啟時每個簽出的 turn 多一次唯讀 Presence SELECT（鎖外）
     platform_shadow: bool = Field(default=False, validation_alias="UEP_PLATFORM_SHADOW")
     # V18 缺席端輸入 fail-closed：開啟後 UtteranceFact 缺 source_location 即否決（預設關＝缺失放行並計數）。

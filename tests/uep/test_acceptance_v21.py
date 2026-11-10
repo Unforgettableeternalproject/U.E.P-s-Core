@@ -31,9 +31,10 @@ from uep.tasks.manager import (
     ApprovalRequired,
     AuthenticatedPrincipal,
     IllegalTransition,
+    PolicyViolation,
     params_hash,
 )
-from uep.tasks.models import ReceiptRow
+from uep.tasks.models import ActionIntentRow, ReceiptRow
 from uep.tasks.states import RunStatus
 
 pytestmark = pytest.mark.usefixtures("session_factory")
@@ -116,6 +117,110 @@ def test_v21c_idempotency_none_never_retried_even_if_authoritative(session_facto
     with pytest.raises(ActionBlocked):
         tm.execute_action(item.action_id, item.params, worker_epoch=run.worker_epoch)
     assert ex.call_count(item.action_id) == 1
+
+
+# ---- (c2) 人工解決 UNKNOWN（SA-11、D52） ----
+
+def _receipt(session_factory, action_id):
+    with session_factory() as s:
+        return s.scalar(select(ReceiptRow).where(ReceiptRow.action_id == action_id))
+
+
+@pytest.mark.parametrize("outcome,status,succeeded", [
+    ("succeeded", "SUCCEEDED", True), ("failed", "FAILED", False), ("retry", "FAILED", False),
+])
+def test_v21c2_manual_resolve_outcomes(session_factory, outcome, status, succeeded):
+    """SA-11：三種 outcome 轉終態，記一筆 Core 簽發 receipt（source_verified、meta.origin=manual）；executor 不再被呼叫。"""
+    tm, ex, item, run, _ = _lost(session_factory, "lose_before_exec")
+    ex.lookup_outcome(item.action_id, "undetermined")
+    assert tm.resolve_unknown(item.action_id).status.value == "UNKNOWN"
+    out = tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome=outcome)
+    assert out.status.value == status and not out.executed
+    rec = _receipt(session_factory, item.action_id)
+    assert rec.succeeded is succeeded and rec.source_verified is True
+    assert rec.meta["origin"] == "manual" and rec.meta["principal"] == "owner" and rec.meta["decision"] == outcome
+    assert receipt_count(session_factory, item.action_id) == 1
+    assert ex.call_count(item.action_id) == 1  # 人工路徑不碰 executor
+    assert event_types(session_factory).count("action.executed") == 1
+    # 終態後 execute_action 冪等回既有結果，不再執行
+    assert tm.execute_action(item.action_id, item.params, worker_epoch=run.worker_epoch).executed is False
+    assert ex.call_count(item.action_id) == 1
+
+
+def test_v21c2_manual_resolve_rejects_non_human_unverified_and_non_approver(session_factory):
+    """SA-11：agent／system／未驗證／非 approver／裸字串一律被拒，action 維持 UNKNOWN、無 receipt。"""
+    tm, _ex, item, _run, _ = _lost(session_factory)
+    bad = [
+        AuthenticatedPrincipal(actor_id="owner", kind="agent", verified=True),
+        AuthenticatedPrincipal(actor_id="owner", kind="system", verified=True),
+        AuthenticatedPrincipal(actor_id="owner", kind="human", verified=False),
+        AuthenticatedPrincipal(actor_id="stranger", kind="human", verified=True),
+        "owner",
+    ]
+    for principal in bad:
+        with pytest.raises(PolicyViolation):
+            tm.resolve_unknown_manual(item.action_id, principal=principal, outcome="succeeded")
+    with pytest.raises(PolicyViolation):
+        tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="bogus")
+    assert status_of(tm, item) == "UNKNOWN" and receipt_count(session_factory, item.action_id) == 0
+
+
+def test_v21c2_manual_resolve_rejects_non_unknown(session_factory):
+    """SA-11：只收 UNKNOWN；INTENDED／終態都拒絕，且不改變狀態。"""
+    ex = FakeToolExecutor()
+    tm = make_tm(session_factory, ex)
+    _task, run, _step, (item,) = setup_run(tm, 1)
+    with pytest.raises(IllegalTransition):
+        tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="failed")
+    tm.execute_action(item.action_id, item.params, worker_epoch=run.worker_epoch)
+    assert status_of(tm, item) == "SUCCEEDED"
+    with pytest.raises(IllegalTransition):
+        tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="failed")
+    assert status_of(tm, item) == "SUCCEEDED" and receipt_count(session_factory, item.action_id) == 1
+
+
+def test_v21c2_manual_resolve_does_not_override_verified_receipt(session_factory):
+    """SA-11：UNKNOWN 若已有已驗證 receipt，人工不可覆寫（走 resolve_unknown）。"""
+    from uep.ids import new_id
+
+    tm, _ex, item, _run, _ = _lost(session_factory)
+    with session_factory() as s, s.begin():
+        s.add(ReceiptRow(
+            receipt_id=new_id("rcpt"), action_id=item.action_id, succeeded=True, source_verified=True,
+            recorded_at=datetime.now(UTC),
+        ))
+    with pytest.raises(ActionBlocked):
+        tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="failed")
+    assert tm.resolve_unknown(item.action_id).status.value == "SUCCEEDED"
+
+
+def test_v21c2_manual_retry_allows_new_action_with_retry_of(session_factory):
+    """SA-11：retry 後以新 action_id（retry_of 指向原 UNKNOWN）重建並執行；原 UNKNOWN 不再擋後續 action。"""
+    tm, ex, item, run, _ = _lost(session_factory, "lose_after_exec")
+    step = tm.begin_step(run.run_id, "retry", worker_epoch=run.worker_epoch)
+    # UNKNOWN 未解決前：非 internal_read 的 UNKNOWN 擋住同 Run 的新副作用（D62），不能靠新 action_id 繞過
+    blocked = tm.create_action(run_id=run.run_id, step_id=step.step_id, tool="files.write", params=item.params,
+                               worker_epoch=run.worker_epoch)
+    with pytest.raises(ActionBlocked):
+        tm.execute_action(blocked.action_id, item.params, worker_epoch=run.worker_epoch)
+    assert ex.call_count(blocked.action_id) == 0
+    # 尚未 FAILED 的 action 不可作為 retry_of
+    with pytest.raises(PolicyViolation):
+        tm.create_action(run_id=run.run_id, step_id=step.step_id, tool="files.write", params=item.params,
+                         worker_epoch=run.worker_epoch, retry_of=item.action_id)
+    tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="retry")
+    new = tm.create_action(run_id=run.run_id, step_id=step.step_id, tool="files.write", params=item.params,
+                           worker_epoch=run.worker_epoch, retry_of=item.action_id)
+    assert new.action_id != item.action_id and new.retry_of == item.action_id
+    out = tm.execute_action(new.action_id, item.params, worker_epoch=run.worker_epoch)
+    assert out.status.value == "SUCCEEDED" and out.executed
+    with session_factory() as s:
+        assert s.get(ActionIntentRow, new.action_id).retry_of == item.action_id
+        assert s.get(ActionIntentRow, item.action_id).retry_of is None
+    # retry_of 必須同 Run 且存在
+    with pytest.raises(PolicyViolation):
+        tm.create_action(run_id=run.run_id, step_id=step.step_id, tool="files.write", params=item.params,
+                         worker_epoch=run.worker_epoch, retry_of="act_missing")
 
 
 @pytest.mark.parametrize("idem", ["native", "via_action_id"])

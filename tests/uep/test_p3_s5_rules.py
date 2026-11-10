@@ -945,3 +945,12 @@ def test_pass_marker_filter(sentences, spoken, passed):
     flt = PassMarkerFilter()
     assert [flt.feed(s) for s in sentences] == spoken
     assert flt.passed is passed
+
+
+@pytest.mark.parametrize("text", ["Please summarise the meeting notes", "請幫我整理會議紀錄"])
+def test_unknown_headcount_is_treated_as_private_chat_and_explicit_request_responds(text):
+    """人數未知（None）比照私聊（1:1）：明確請求不得被吞（en-edge-01／zh-edge-01）。"""
+    p = RuleProposer(rules_cfg(), clock=Clock())
+    proposal = p.propose(cand(text, count=None))
+    assert (proposal.reply_mode, proposal.reason_code) == (ReplyMode.RESPOND, "active")
+    assert p.channel_mode is ChannelMode.ACTIVE

@@ -59,6 +59,8 @@ class UepSettings(BaseSettings):
     decision_proposer: str | None = Field(default=None, validation_alias="UEP_DECISION_PROPOSER")
     decision_shadow_proposers: str | None = Field(default=None, validation_alias="UEP_DECISION_SHADOW_PROPOSERS")
     # laya.shadow（決策模型 shadow proposer）的模型設定；只有把 laya.shadow 放進 shadow 清單才會用到
+    # UEP_LAYA_MODEL 未設時用 <UEP_LAYA_MODELS_DIR>/laya-multilingual（預設 ~/.uep/models/laya）；明確設值照原樣傳給 laya.load
+    laya_models_dir: str | None = Field(default=None, validation_alias="UEP_LAYA_MODELS_DIR")
     laya_model: str | None = Field(default=None, validation_alias="UEP_LAYA_MODEL")
     laya_revision: str | None = Field(default=None, validation_alias="UEP_LAYA_REVISION")
     laya_device: str | None = Field(default=None, validation_alias="UEP_LAYA_DEVICE")

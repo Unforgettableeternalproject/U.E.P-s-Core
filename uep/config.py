@@ -32,6 +32,8 @@ class UepSettings(BaseSettings):
     database_url: SecretStr | None = Field(default=None, validation_alias="UEP_DATABASE_URL")
     # 工具路徑分流（切片 C）：legacy＝舊衍生路徑（預設，位元組不變）；agent＝註冊表 ``project``＋ActionIntent 的曝光
     tool_path: Literal["legacy", "agent"] = Field(default="legacy", validation_alias="UEP_TOOL_PATH")
+    # 平台脈絡 shadow（平台宣告注入端 R0 第 3、4 步）：預設關閉；開啟時每個簽出的 turn 多一次唯讀 Presence SELECT（鎖外）
+    platform_shadow: bool = Field(default=False, validation_alias="UEP_PLATFORM_SHADOW")
     # 決策中樞 proposer 選擇（DL-1b）：primary 的 proposer_id（未設＝rules.default）；shadow 清單以逗號分隔
     # （未設＝respond.minimal，設為空字串＝關閉 shadow）。未註冊的 id 於 Host 組裝時 fail-fast
     decision_proposer: str | None = Field(default=None, validation_alias="UEP_DECISION_PROPOSER")

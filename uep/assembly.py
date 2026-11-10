@@ -417,6 +417,7 @@ def assemble_core(
     model_port: Any | None = None,
     loop_entry: Callable[[Any, Any], object] | None = None,
     decision_log: bool | None = None,
+    platform_shadow: bool | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -531,8 +532,9 @@ def assemble_core(
             delivery=delivery, gate=gate,
             presence_audience=None if presence_audience is ALLOW_ALL else presence_audience,
         ))
-    if echo is not None and hasattr(echo, "bind_platform_shadow"):
-        # 平台脈絡 shadow：只記錄與比對，不改任何消費點的輸入；Presence 走唯讀 peek，不進寫入交易
+    shadow_on = get_settings().platform_shadow if platform_shadow is None else platform_shadow
+    if shadow_on and echo is not None and hasattr(echo, "bind_platform_shadow"):
+        # 平台脈絡 shadow（UEP_PLATFORM_SHADOW，預設關）：只記錄與比對，不改任何消費點的輸入；Presence 走唯讀 peek
         echo.bind_platform_shadow(PlatformShadow(PlatformContextProvider(presence), echo.metrics))
     stop = GlobalStop(session_factory, presence, control, publisher=publisher, token=stop_token, **clock_kw)
     bridge = PresenceTaskBridge(bus, tasks, lambda: presence.current().status, persona_id=persona_id)

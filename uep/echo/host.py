@@ -579,6 +579,7 @@ class EchoPipelineHost:
                 # 先讓舊的輪讓位、再交出這次完成的 turn：順序顛倒會把剛簽的新輪也作廢（bot 也是先讓位再餵 middleware）
                 self._yield_speaker(result.yield_for)
             self._dispatch_results(result.all_results(), fact)
+        self._observe_platform(result.all_results(), fact)  # intake 鎖已釋放：shadow 的 SELECT 不占鎖
         return result
 
     def submit_tick(self) -> list[IntakeResult]:
@@ -596,7 +597,18 @@ class EchoPipelineHost:
             self._dispatch_results(results, None)
         finally:
             self._intake_lock.release()
+        self._observe_platform(results, None)  # intake 鎖已釋放
         return results
+
+    def _observe_platform(self, results: Sequence[IntakeResult], fallback: UtteranceFact | None) -> None:
+        """平台脈絡 shadow：對每個實際派出的 ticket 恰好觀察一次；未掛 shadow（預設）時什麼都不做。
+        在 intake 鎖外執行，shadow 內部吞掉所有例外。"""
+        shadow = self._platform_shadow
+        if shadow is None:
+            return
+        for item in results:
+            if item.ticket is not None and (item.fact or fallback) is not None:
+                shadow.observe(item.ticket.turn_id, self._session.platform)
 
     def _dispatch_results(self, results: Sequence[IntakeResult], fallback: UtteranceFact | None) -> None:
         for item in results:
@@ -604,8 +616,6 @@ class EchoPipelineHost:
             fact = item.fact or fallback
             if ticket is None or fact is None:
                 continue
-            if self._platform_shadow is not None:
-                self._platform_shadow.observe(ticket.turn_id, self._session.platform)
             try:
                 self._es.call_soon(self._start_turn, ticket, fact)
             except RuntimeError:

@@ -376,7 +376,7 @@ class PresenceManager:
 
     def peek(self) -> PresenceView:
         """純唯讀快照：只做無鎖 SELECT，不進寫入交易、不處理過期轉換（過期的 ACTIVE 仍原樣回傳，
-        由呼叫端依 ``expires_at`` 自行判斷）。給熱路徑的旁路觀察者用（例如平台脈絡 shadow）。"""
+        由呼叫端依 ``expires_at`` 自行判斷）。只供平台快照與 shadow 使用；不處理過期，不可作為 Lease 或授權判斷的依據。"""
         with self._sf() as s:
             row = s.get(PresenceCurrentRow, self._persona)
             if row is None:

@@ -17,6 +17,7 @@ from uep.console.rig import CONSOLE_ACTOR, CONSOLE_SPEAKER, PRIVATE_SCOPE, Conso
 from uep.events.models import EventRow
 from uep.log import describe_levels, set_console_level, set_namespace_level
 from uep.state.coordinator import Axis
+from uep.tasks.models import ActionIntentRow, RunRow, TaskRow
 from uep.turn.models import UtteranceFact
 
 TERMINAL_EVENTS = ("turn.completed", "turn.cancelled", "turn.skipped")
@@ -35,7 +36,8 @@ SUBSYSTEM_NAMESPACES = ("check",)
 HELP_TEXT = """\
 指令：
   /say <文字>        送出一句話（無指令的輸入行等同 /say），等該 turn 結束並顯示結果
-  /wav <路徑>        以音檔當輸入；real 模式經真實 STT（餵進 Host）跑整條 turn，fake 模式由 fake STT 產 utterance
+  /loop <文字>       agent 路徑（UEP_TOOL_PATH=agent）：這一句導向 agent_loop，顯示 Run 狀態與工具呼叫（需 UEP_AGENT_LOOP_ENTRY=1）
+  /wav <路徑>       以音檔當輸入；real 模式經真實 STT（餵進 Host）跑整條 turn，fake 模式由 fake STT 產 utterance
   /cancel            取消進行中的 turn（宿主取消）
   /status            Presence／Interaction 軸、turn 狀態、host 健康
   /trace [all]       最近 turn 的 tracer 事件與延遲（all＝全部 turn 摘要）
@@ -73,7 +75,7 @@ class Console:
         self.settle_s = settle_s
         self.last_turn_id: str | None = None
         self._commands: dict[str, Callable[[str], None]] = {
-            "say": self._say, "wav": self._wav, "cancel": self._cancel, "status": self._status,
+            "say": self._say, "loop": self._loop, "wav": self._wav, "cancel": self._cancel, "status": self._status,
             "trace": self._trace, "mem": self._mem, "session": self._session, "mic": self._mic, "help": self._help, "log": self._log, "stt": self._stt, "llm": self._llm, "tts": self._tts,
         }
 
@@ -129,6 +131,22 @@ class Console:
             self.out("用法：/say <文字>")
             return
         self._submit(text)
+
+    def _loop(self, text: str) -> None:
+        rt = self.rt
+        if rt.loop_switch is None:
+            self.out("/loop 只在 UEP_TOOL_PATH=agent 下可用（需 --think real）。")
+            return
+        if not text:
+            self.out("用法：/loop <文字>")
+            return
+        if rt.core.loop_launcher is None:
+            self.out("提醒：未啟用 UEP_AGENT_LOOP_ENTRY=1，這句會退回一般 direct_chat 回覆（不會跑 agent_loop）。")
+        rt.loop_switch.arm()
+        try:
+            self._submit(text)
+        finally:
+            rt.loop_switch.disarm()  # 這句沒被採用（例如 pass、未開 turn）時不留到下一句
 
     def _wav(self, arg: str) -> None:
         if not arg:
@@ -220,6 +238,7 @@ class Console:
             # agent_loop 回合：沒有走 Think／Speak，回覆是端點在 Output Gate 放行後渲染的文字（系統訊息另標示）
             for item in getattr(rt.host.endpoint, "rendered_texts", lambda _t: [])(turn_id):
                 self.out(f"{'系統訊息' if item.system else '回應'}：{item.text}")
+            self._report_loop(turn_id)
             return
         reply = self._reply_text(turn_id) if kinds[-1] == "turn.completed" else None  # 被取消的輪沒有（完整）回應
         if reply:
@@ -229,6 +248,22 @@ class Console:
             self.out(f"TTFA：{trace.ttfa_ms:.0f} ms")
         for wav in rt.wavs.get(turn_id, []):
             self.out(f"音訊：{wav}（{_wav_seconds(wav):.1f} 秒）")
+
+    def _report_loop(self, turn_id: str) -> None:
+        """agent_loop 回合的 Task／Run 狀態與工具呼叫（action_intents：工具名稱與狀態）。"""
+        with self.rt.session_factory() as s:
+            tasks = list(s.scalars(select(TaskRow).where(TaskRow.origin_ref["ref"].astext == turn_id)))
+            if not tasks:
+                self.out("agent_loop：沒有對應的 Task。")
+                return
+            for task in tasks:
+                for run in s.scalars(select(RunRow).where(RunRow.task_id == task.task_id).order_by(RunRow.attempt)):
+                    self.out(f"Run {run.run_id}：{run.status}（Task {task.status}）")
+                    actions = s.scalars(
+                        select(ActionIntentRow).where(ActionIntentRow.run_id == run.run_id).order_by(ActionIntentRow.created_at)
+                    )
+                    calls = [f"{a.tool}[{a.status}]" for a in actions]
+                    self.out("工具呼叫：" + (" > ".join(calls) if calls else "（無）"))
 
     def _reply_text(self, turn_id: str) -> str | None:
         """該 turn 的回應文字：fake Think 有 ``committed``；真實 Think 取歷史中最後一則 assistant（turn 已結束，輪是序列的）。"""

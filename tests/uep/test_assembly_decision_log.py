@@ -156,7 +156,7 @@ def test_shutdown_order_echo_memory_then_decision_log(tmp_path, sinks, cores):
     bus = EventBus()
     publisher = EventPublisher(MagicMock(), bus)
     host = _host(publisher)
-    memory = SimpleNamespace(publisher=publisher, start=lambda: None, stop=lambda: None)
+    memory = SimpleNamespace(publisher=publisher, start=lambda: None, stop=lambda: None, dream_enabled=False, dream_probe=None)
     core = assemble_core(MagicMock(), **_kw(tmp_path, publisher, bus, host, memory=memory))
     cores.append(core)
     core.shutdown()

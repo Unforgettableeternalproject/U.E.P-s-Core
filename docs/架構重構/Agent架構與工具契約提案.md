@@ -113,6 +113,8 @@ LLMThinkStage(think_llm.py)._tokens ──► backends/openai.py (chat / respons
                                   text → 「想」:thought_delta 不進 Output Gate；「說」:result/say → OutputIntent → Output Gate
 ```
 
+> 註（DL-4）：公式中的「快照 capabilities／政策快照.capabilities」在程式中是 `FrozenMap`（`uep/context/snapshot.py:192`），不是標籤集合；計算時使用的是另行提供的標籤集合（短期取已註冊且 enabled 的標籤，等同不收窄；長期由工具層 `enabled_tags()` 提供）。見 [Capability收窄ADR](Capability收窄ADR.md)。
+
 依賴方向（單向）：決策層 → Agent 層 → 工具層 → CC-6 TaskManager；Task Manager 只依賴 `ToolSpecResolver` 協定（SYS 草案 §0.3 的依賴反轉保留）。工具層不 import Agent 層；Agent 層不 import 決策層型別（只收 `LoopTrigger`）。
 
 | 模組 | 職責 | 對外介面 |

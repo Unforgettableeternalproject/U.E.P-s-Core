@@ -21,7 +21,7 @@ class DecisionPointSpec:
     on_invalid_reason: str = ""  # 輸出驗證失敗時的預設 reason_code
     allow_native: bool = False  # 是否接受 DecisionRequest.native（同行程原生物件；P0 只有 turn.reply）
     shadow: bool = False  # 是否支援 shadow 並行
-    plan_sections: tuple[str, ...] = ()  # 允許額外帶的 plan 區段白名單；目前只管 "policy"（僅 policy.snapshot／channel.mode 宣告）
+    plan_sections: tuple[str, ...] = ()  # 允許額外帶的 plan 區段白名單；目前管 "policy"（僅 policy.snapshot／channel.mode 宣告）與 "capability"（僅 turn.reply 宣告）
 
 
 class DecisionPointRegistry:

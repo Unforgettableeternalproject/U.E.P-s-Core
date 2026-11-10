@@ -127,6 +127,9 @@ def validate_proposal(proposal: object) -> str | None:
     confidence = proposal.confidence
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0.0 <= confidence <= 1.0:
         return "confidence"
+    hint = proposal.capability_hint
+    if hint is not None and (not isinstance(hint, (tuple, list)) or not all(isinstance(t, str) for t in hint)):
+        return "capability_hint"  # 單一字串或含非字串元素：整個 Proposal 無效（表外標籤則由 narrow_capability 丟棄並計數）
     for value in (proposal.reason_code, proposal.proposer_id, proposal.proposer_version):
         if not isinstance(value, str) or not _SAFE_CODE.fullmatch(value):
             return "identifier"

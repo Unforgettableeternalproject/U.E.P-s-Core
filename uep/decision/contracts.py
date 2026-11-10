@@ -2,6 +2,7 @@
 
 P0 的 ``DecisionPlan`` 只有 ``route`` 與 ``reply``（``reply.mode``、``interaction_to``）；其餘區段
 （output、capability、provisioning、placement、model、loop、followups）P2 之後依提案 §3.3 命名擴充。
+``capability`` 區段（DL-4）只放「要求收窄到哪些標籤」的提議，不放解出來的最終標籤。
 所有欄位是英文列舉／ID，使用者可見字串不進 plan。
 """
 from __future__ import annotations
@@ -101,6 +102,28 @@ class DecisionPolicy:
 
 
 @dataclass(frozen=True)
+class DecisionCapability:
+    """``DecisionPlan.capability``：只是「要求收窄到哪些標籤」的提議（DL-4），不是最終標籤、也不是授權。
+
+    ``capability_hint`` 為 None 表示不收窄（走預設表）；``()`` 表示明確要求空集合（結果走 ``capability_empty``），
+    兩者語意不同、不得互換。hint 只能收窄：最終標籤由 ``uep.decision.capability.narrow_capability`` 計算，
+    恆為預設表的子集。非 tuple／list（含單一字串）或含非字串元素時建構失敗（``ValueError``），區段視為無效。
+    """
+
+    capability_hint: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        hint = self.capability_hint
+        if hint is None:
+            return
+        if not isinstance(hint, (tuple, list)):
+            raise ValueError("capability_hint 必須是 tuple／list（單一字串或其他型別無效）")  # noqa: TRY004 - 區段無效統一 ValueError
+        if not all(isinstance(tag, str) for tag in hint):
+            raise ValueError("capability_hint 的元素必須全為字串")
+        object.__setattr__(self, "capability_hint", tuple(hint))
+
+
+@dataclass(frozen=True)
 class DecisionFollowup:
     """``DecisionPlan.followups`` 的一項：後續請求（如完成後回報）。"""
 
@@ -119,8 +142,8 @@ class Escalate:
 
 @dataclass(frozen=True)
 class DecisionPlan:
-    """提議的集合（不是命令）；所有區段選填，預設 None。已實作 ``route``、``reply`` 與 consult 用的
-    ``output``／``placement``／``loop``／``followups``；其餘區段（capability、provisioning、model）之後依提案 §3.3 擴充。
+    """提議的集合（不是命令）；所有區段選填，預設 None。已實作 ``route``、``reply``、``capability`` 與 consult 用的
+    ``output``／``placement``／``loop``／``followups``；其餘區段（provisioning、model）之後依提案 §3.3 擴充。
     """
 
     route: str | None = None  # direct_chat | agent_loop | task_request | ignore
@@ -130,6 +153,7 @@ class DecisionPlan:
     loop: DecisionLoop | None = None
     followups: tuple[DecisionFollowup, ...] | None = None
     policy: DecisionPolicy | None = None  # 僅記錄（policy.snapshot／channel.mode），不被套用
+    capability: DecisionCapability | None = None  # 只收窄的 hint 提議（DL-4）；最終標籤由純函式計算
 
 
 def plan_to_dict(plan: DecisionPlan) -> dict[str, Any]:
@@ -148,7 +172,7 @@ def plan_from_dict(data: dict[str, Any]) -> DecisionPlan:
     """反序列化；缺少的區段為 None（相容只含 route／reply 的舊資料），頂層與區段內的未知鍵一律忽略。"""
     reply, output, placement = data.get("reply"), data.get("output"), data.get("placement")
     loop, followups = data.get("loop"), data.get("followups")
-    policy = data.get("policy")
+    policy, capability = data.get("policy"), data.get("capability")
     return DecisionPlan(
         route=data.get("route"),
         reply=_build(DecisionReply, reply) if reply is not None else None,
@@ -163,6 +187,8 @@ def plan_from_dict(data: dict[str, Any]) -> DecisionPlan:
         loop=_build(DecisionLoop, loop, reeval_on=tuple(loop.get("reeval_on", ()))) if loop is not None else None,
         followups=tuple(_build(DecisionFollowup, f) for f in followups) if followups is not None else None,
         policy=_build(DecisionPolicy, policy) if policy is not None else None,
+        # capability_hint 的型別驗證在 DecisionCapability.__post_init__（無效即 ValueError）；None 與 [] 保持區分
+        capability=_build(DecisionCapability, capability) if capability is not None else None,
     )
 
 

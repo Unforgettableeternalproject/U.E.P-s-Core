@@ -79,6 +79,7 @@ from uep.endpoint.service import EndpointService
 from uep.events.bus import EventBus
 from uep.events.payload_hash import MIN_KEY_BYTES
 from uep.events.publisher import EventPublisher
+from uep.memory.foreground import StateBusForegroundProbe
 from uep.memory.host import MemoryHost
 from uep.output.manager import DeliveryManager
 from uep.presence.epoch import HostEpochStore
@@ -199,6 +200,7 @@ class CoreAssembly:
     supervisor_loop: SupervisorLoop | None = None  # Supervisor 啟用且 supervisor_interval 不為 0 時建立（與維護迴圈各自獨立）
     loop_launcher: Any = None  # agent_loop 的 production 啟動器（UEP_AGENT_LOOP_ENTRY）；入口停止段先關閉，早於 Supervisor 關機暫停
     module_events_unsubscribe: Callable[[], None] | None = None  # module.* 就緒事件訂閱的取消函式（暫定；UEP_TOOL_MODULE_EVENTS）
+    dream_probe: StateBusForegroundProbe | None = None  # 做夢迴圈的前景 Probe（memory 啟用 dream_loop 且未自帶 Probe 時由組裝層建立）
 
     def start(self) -> None:
         """依上述順序啟動；冪等。失敗時關閉已綁定的入口（stop API、endpoint socket）、訂閱與 Bus 後上拋。"""
@@ -232,6 +234,9 @@ class CoreAssembly:
         if self.supervisor_loop is not None:
             self.supervisor_loop.start()
             self.start_log.append("supervisor.start")
+        if self.dream_probe is not None:
+            self.dream_probe.start()  # 訂閱 Bus：須早於 memory.start（迴圈啟動後第一個 tick 就會讀 Probe）
+            self.start_log.append("dream_probe.start")
         if self.memory is not None:
             self.memory.start()  # 記憶 Host 在 Presence／Bus 之後（事件才有地方落）；ES Host（S3）將在它之後
             self.start_log.append("memory.start")
@@ -282,6 +287,9 @@ class CoreAssembly:
             except Exception:
                 logger.exception("MemoryHost 停止失敗")
             self.start_log.append("memory.stop")
+        if self.dream_probe is not None:
+            self.dream_probe.close()  # 迴圈已隨 memory.stop 停止；之後才退訂 Bus（冪等）
+            self.start_log.append("dream_probe.close")
         if self.endpoint_server is not None:
             self.endpoint_server.close()
 
@@ -724,6 +732,11 @@ def assemble_core(
         if api is not None:
             api.stop()  # 已 bind 的 stop API 不能留著
         raise
+    dream_probe: StateBusForegroundProbe | None = None
+    if memory is not None and memory.dream_enabled and memory.dream_probe is None:
+        # 沒有 Probe 的迴圈永遠是 runtime_not_ready（planner 不會被呼叫）；Probe 需要 state／bus／GlobalStop，只能在這裡建
+        dream_probe = StateBusForegroundProbe(state, bus, global_stop_fn=stop.is_engaged)
+        memory.attach_dream_probe(dream_probe)
     writer: DecisionLogWriter | None = None
     if echo is not None and _decision_log_enabled(decision_log):
         writer = DecisionLogWriter(DbSink(session_factory))
@@ -738,5 +751,5 @@ def assemble_core(
         stop_api=api,
         endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory, echo=echo,
         decision_log=writer, supervisor=supervisor_obj, supervisor_loop=supervisor_loop, loop_launcher=loop_launcher,
-        module_events_unsubscribe=module_events_unsubscribe,
+        module_events_unsubscribe=module_events_unsubscribe, dream_probe=dream_probe,
     )

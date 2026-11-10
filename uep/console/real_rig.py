@@ -150,12 +150,13 @@ def build_memory_host(
     warmups: MutableMapping[str, float],
 ) -> MemoryHost:
     """真實記憶 Host（EM engine、bge-m3、assess 關閉以免額外 LLM 呼叫）；資料根由呼叫端決定。"""
-    from uep.echo.memory_wiring import build_memory_wiring
+    from uep.echo.memory_wiring import build_dream_loop_config, build_memory_wiring
 
+    dream_loop, dream_rest_policy = build_dream_loop_config(settings)
     wiring = build_memory_wiring(
         device=memory_device(settings), embedding_backend=settings.memory_embedding_backend,
         embedding_model=settings.memory_embedding_model, min_similarity=settings.memory_min_similarity,
-        assess_mode="off",
+        assess_mode="off", dream_loop=dream_loop, dream_rest_policy=dream_rest_policy,
     )
     kwargs = wiring.host_kwargs()
     kwargs["engine_factory"] = WarmEngineFactory(
@@ -181,4 +182,14 @@ def memory_status_lines(host: MemoryHost, root: Path) -> list[str]:
         lines.append(f"  - {ep.timestamp:%H:%M:%S}　session={str(ep.session_id)[-8:]}　{summary[:40]}")
     if not recent:
         lines.append("  （尚無寫入）")
+    status = host.dream_status()
+    if not status.get("enabled"):
+        lines.append("做夢迴圈：未啟用")
+    else:
+        last = status.get("last_decision") or {}
+        would_run = sum(v for k, v in host.metrics.snapshot().items() if k.startswith("memory.dream.shadow_would_run."))
+        lines.append(
+            f"做夢迴圈：running={status.get('running')}　shadow={status.get('shadow')}　paused={status.get('paused')}"
+            f"　最近決策={last.get('action')}/{last.get('trigger')}/{last.get('reason')}　shadow would_run={would_run}"
+        )
     return lines

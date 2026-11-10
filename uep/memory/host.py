@@ -339,6 +339,24 @@ class MemoryHost:
     def dream_loop(self) -> DreamLoop | None:
         return self._dream_loop
 
+    @property
+    def dream_enabled(self) -> bool:
+        """設定上是否要啟動全域做夢迴圈（``start()`` 之後 ``dream_loop`` 才有實例）。"""
+        return self._dream_config is not None and self._dream_config.enabled
+
+    @property
+    def dream_probe(self) -> ForegroundProbe | None:
+        return self._dream_probe
+
+    def attach_dream_probe(self, probe: ForegroundProbe) -> None:
+        """組裝層在 ``start()`` 之前補上前景 Probe（Probe 需要 State 與 Bus，兩者晚於 Host 建立）。已有 Probe 或已啟動即拒絕。"""
+        with self._state_lock:
+            if self.started:
+                raise MemoryHostError("MemoryHost 已啟動，不能再掛前景 Probe")
+            if self._dream_probe is not None:
+                raise MemoryHostError("MemoryHost 已有前景 Probe")
+            self._dream_probe = probe
+
     def dream_status(self) -> Mapping[str, Any]:
         """診斷用：迴圈狀態（未啟用時只回 ``{"enabled": False}``）。"""
         loop = self._dream_loop

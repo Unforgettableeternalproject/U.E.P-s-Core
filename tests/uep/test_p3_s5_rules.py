@@ -387,7 +387,7 @@ def test_aggregator_active_mode_uses_short_thresholds_and_applies_to_waiting_tur
     [turn] = agg.tick()
     assert turn.state is AggregateState.TIMEOUT
     agg.feed(seg("第一句"))
-    clock.advance(0.26)
+    clock.advance(3.5)  # 停頓超過 narrative_gap_s：斷串（連續兩段會進敘述中，見 test_narrating_hold）
     [prev] = agg.feed(seg("第二句"))  # 主動模式 merge_gap 0.25：超過就切開
     assert prev.text == "第一句"
 

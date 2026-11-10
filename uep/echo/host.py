@@ -770,13 +770,28 @@ class EchoPipelineHost:
     def on_voice_event(self, ev: Any) -> None:
         """輸入 stage 的有聲事件（STT 執行緒）：Presence 非 ACTIVE 或尚未啟動時丟棄，其餘交 coordinator。"""
         coordinator = self.coordinator
-        if coordinator is None or self._closed or not self.presence_active:
+        if self._closed or not self.presence_active:
+            return
+        self._note_voice_activity(ev)
+        if coordinator is None:
             return
         # 與 coordinator 的篩選一致（未 done 且未 play_done）：它不會呼叫策略時，由宿主補餵讓累積不中斷
         live = [t for t in coordinator.live_turns() if not _play_done(t)]
         if not live:
             self._yield_policy.on_voiced(ev, [])  # 沒有進行中的輪：coordinator 不會呼叫策略，補餵讓累積不中斷
         coordinator.on_voice_event(ev)
+
+    def _note_voice_activity(self, ev: Any) -> None:
+        """有聲事件回報給 aggregator（敘述中保持聆聽以「最後出聲」判斷說話者是否講完）；單聲道事件沒有 speaker_id，
+        對應輸入 stage 產生 utterance 時的 ``unknown``。"""
+        if not getattr(ev, "is_voiced", False):
+            return
+        note = getattr(self.orchestrator.aggregator, "note_voice", None)
+        if callable(note):
+            try:
+                note(getattr(ev, "speaker_id", None) or "unknown")
+            except Exception:  # 聲音活動回報失敗不得影響 coordinator 的讓位／插話
+                logger.exception("aggregator.note_voice 失敗")
 
     async def _consume_input(self) -> None:
         loop = asyncio.get_running_loop()
@@ -819,9 +834,11 @@ class EchoPipelineHost:
     def _intake_stage_utterance(self, utt: Utterance) -> None:
         """執行緒池（單一 worker，保序）：ES 的 Utterance -> UtteranceFact -> submit_utterance。"""
         self._seq += 1
+        spoken_s = (utt.ended_at or 0.0) - (utt.started_at or 0.0)  # 音訊長度：敘述中偵測累積說話秒數用
         fact = UtteranceFact(
             speaker_ref=utt.speaker_id or "unknown", text=utt.text, seq=self._seq, language=utt.language,
             confidence=utt.confidence, legacy_ref=utt.turn_id,
+            duration_ms=int(spoken_s * 1000) if spoken_s > 0 else None,
             # V18：來源由輸入 stage 自己宣告；Host 不用自己的 location 代簽（否則缺席端輸入會被蓋成本機而放行）
             source_location=getattr(self._input_stage, "source_location", None),
             source_endpoint_id=getattr(self._input_stage, "source_endpoint_id", None),

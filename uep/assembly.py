@@ -65,7 +65,7 @@ from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
 from uep.decision.db import DbSink
 from uep.decision.log import DecisionLogWriter
 from uep.decision.policy_publish import register_policy_publish
-from uep.echo.agent_wiring import attach_agent_tools
+from uep.echo.agent_wiring import attach_agent_tools, build_loop_entry
 from uep.echo.platform_context import PlatformContextProvider, PlatformShadow
 from uep.echo.services import EchoServices
 from uep.endpoint.auth import (
@@ -106,7 +106,7 @@ from uep.tasks.presence_bridge import (
 from uep.tasks.states import RunStatus
 from uep.tasks.supervisor import Supervisor, SupervisorLoop
 from uep.tools.cancel import ActionCanceller
-from uep.tools.catalog.memory import MEMORY_EXECUTOR
+from uep.tools.catalog.memory import MEMORY_EXECUTOR, memory_registry
 
 if TYPE_CHECKING:  # 組裝層不得硬依賴 uep.stream：只有 uep/echo/host 會 import 它
     from uep.echo.host import EchoPipelineHost
@@ -474,6 +474,7 @@ def assemble_core(
     tool_path: str | None = None,
     model_port: Any | None = None,
     loop_entry: Callable[[Any, Any], object] | None = None,
+    agent_loop_entry: bool | None = None,
     decision_log: bool | None = None,
     supervisor: bool | None = None,
     supervisor_interval: float | None = None,
@@ -489,6 +490,9 @@ def assemble_core(
     不會退回 legacy。``legacy`` 時組裝結果與先前完全相同。
     ``loop_entry``（``route=agent_loop`` -> ``LoopTrigger`` 的入口，見 ``uep.echo.agent_wiring.LoopEntry``）只在
     ``tool_path == "agent"`` 且有 ``echo`` 時可給，綁到 ``echo.orchestrator``；legacy 下給了即 ``AssemblyError``（不可達）。
+    ``agent_loop_entry``：None 依 ``UEP_AGENT_LOOP_ENTRY``（預設關閉）。為 True 且 ``tool_path == "agent"``、有 ``echo``、
+    未另給 ``loop_entry`` 時，組裝 production 的 ``LoopEntry``（``uep.echo.agent_wiring.build_loop_entry``）：``route=agent_loop`` 的
+    回合由 ``AgentLoop`` 處理、交付只經 Output Gate，宿主不再為該回合啟動 direct_chat 回覆。legacy 下開啟即 ``AssemblyError``。
     ``decision_log``：None 依 ``UEP_DECISION_LOG``（預設啟用）；False 停用；True 啟用（覆寫 env 的停用）。僅在有 ``echo``
     且啟用時，用本函式的 ``session_factory`` 建 DB sink 與寫入器並掛到 ``echo.decision_hub``（連同政策發布記錄）；
     於所有驗證之後才建立，任何 ``AssemblyError`` 都不會留下寫入器，關閉由 ``CoreAssembly.shutdown`` 負責。
@@ -538,6 +542,9 @@ def assemble_core(
     _check_tool_path_consistency(tool_path, echo)
     if loop_entry is not None and (tool_path != "agent" or echo is None):
         raise AssemblyError("loop_entry 只能在 UEP_TOOL_PATH=agent 且有 echo 時使用（legacy 下 agent_loop 不可達）")
+    loop_entry_on = get_settings().agent_loop_entry if agent_loop_entry is None else agent_loop_entry
+    if loop_entry_on and loop_entry is None and (tool_path != "agent" or echo is None):
+        raise AssemblyError("UEP_AGENT_LOOP_ENTRY 只能在 UEP_TOOL_PATH=agent 且有 echo 時啟用（legacy 下 agent_loop 不可達）")
     if tool_path == "agent":
         memory_executor, agent_cache = _prepare_agent_tools(echo, model_port)
         executors = {**executors, MEMORY_EXECUTOR: memory_executor}
@@ -582,6 +589,11 @@ def assemble_core(
     if agent_cache is not None:
         assert echo is not None
         attach_agent_tools(echo.think, tasks, agent_cache)
+        if loop_entry is None and loop_entry_on:
+            loop_entry = build_loop_entry(
+                tool_path=tool_path, tasks=tasks, delivery=delivery, orchestrator=echo.orchestrator,
+                registry=memory_registry(), model_port=model_port, cache=agent_cache, persona_id=persona_id,
+            )
         if loop_entry is not None:
             echo.orchestrator.bind_loop_entry(loop_entry)
     if echo is not None:

@@ -342,7 +342,7 @@ def test_decision_layer_does_not_import_tools_layer():
         assert not bad, f"{path.name} 不得 import 工具層：{sorted(bad)}"
 
 
-# 收窄相關符號：到 PR4（工具層接線）前 production 不得引用（capability.py 本體除外）
+# 收窄相關符號：PR4 起只有 agent 工具路徑的 wiring（echo/agent_wiring.py）可以引用（capability.py 本體除外）
 _NARROW_SYMBOLS = {"narrow_capability", "route_base", "record_narrow", "NarrowResult"}
 # route 表：PR3 起只有組裝驗證與 Host 可以引用
 _ROUTE_TABLE_SYMBOLS = {"ROUTE_DEFAULT_CAPABILITIES"}
@@ -365,9 +365,16 @@ def _symbol_hits(skip: set[str], symbols: set[str]) -> list[str]:
     return problems
 
 
-def test_narrow_has_no_production_consumer_until_pr4():
-    """narrow_capability 等收窄符號在 PR4 接線前沒有 production 消費者；route 表的消費不算在內（見下一個測試）。"""
-    assert _symbol_hits({"decision/capability.py"}, _NARROW_SYMBOLS) == []
+_NARROW_CONSUMERS = {"echo/agent_wiring.py"}
+
+
+def test_narrow_production_consumer_is_only_agent_wiring():
+    """PR4：narrow_capability 等收窄符號的 production 消費者只有 ``echo/agent_wiring.py``（capability_tags_for）；
+    route 表的消費不算在內（見下一個測試）。"""
+    assert _symbol_hits({"decision/capability.py", *_NARROW_CONSUMERS}, _NARROW_SYMBOLS) == []
+    every = {p.relative_to(_UEP).as_posix() for p in _UEP.rglob("*.py")}
+    for rel in _NARROW_CONSUMERS:
+        assert _symbol_hits(every - {rel}, _NARROW_SYMBOLS), f"{rel} 應引用收窄符號"
 
 
 def test_route_table_consumers_are_only_assembly_and_host():

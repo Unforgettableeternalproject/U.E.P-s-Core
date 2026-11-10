@@ -616,6 +616,10 @@ class EchoPipelineHost:
             fact = item.fact or fallback
             if ticket is None or fact is None:
                 continue
+            if self.orchestrator.loop_claimed(ticket.turn_id):
+                # route=agent_loop 已由 AgentLoop 認領：不送 ES 生成（避免雙重回覆），交付與 turn 終結都由 Run 的 worker 負責
+                self.metrics.inc("echo.loop_claimed_skip_es")
+                continue
             try:
                 self._es.call_soon(self._start_turn, ticket, fact)
             except RuntimeError:

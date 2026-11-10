@@ -37,10 +37,16 @@ COLUMNS: tuple[str, ...] = (
 
 # 新增四欄只收 ID／列舉類的安全字元短字串，原文般的內容一律記 None（不存原文原則）
 _SAFE_TOKEN = re.compile(r"^[a-z0-9_.:-]{1,64}$")
+# subject 帶入的 candidate_id 為 ID（含大寫 ULID），比照 events.envelope 的安全參考字元集
+_SAFE_CANDIDATE_REF = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 def _safe_token(value: Any) -> str | None:
     return value if isinstance(value, str) and _SAFE_TOKEN.fullmatch(value) else None
+
+
+def _safe_candidate_ref(value: Any) -> str | None:
+    return value if isinstance(value, str) and _SAFE_CANDIDATE_REF.fullmatch(value) else None
 
 
 def _safe_version(value: Any) -> int | None:
@@ -82,7 +88,8 @@ def primary_row(
         engine=result.engine.tier, proposer_id=result.engine.id, version=result.engine.version,
         outcome=result.outcome, reason_code=result.reason_code, confidence=result.confidence,
         elapsed_ms=elapsed_ms, status=_primary_status(result, spec), fallback=result.fallback,
-        candidate_id=getattr(native, "candidate_id", None),
+        # 沒有 native 的決策點（如 proactive.initiate）改取 subject["candidate_id"]，並過安全字元檢查
+        candidate_id=getattr(native, "candidate_id", None) or _safe_candidate_ref(request.subject.get("candidate_id")),
         participant_count=getattr(native, "participant_count", None),
         addressed_hint=getattr(native, "addressed_hint", None),
         utterance_refs=list(refs) if refs is not None else (list(request.text_refs) or None),
@@ -191,10 +198,10 @@ class DecisionLogWriter:
     def attach(self, hub: DecisionHub, kind: str | None = None) -> None:
         """掛到中樞：登記結果觀察者；並串接 engine 的 ``on_shadow``（保留原回呼）。不需改 Host。
 
-        ``kind`` 預設為所有有 shadow 回呼的內建決策點（turn.reply、turn.interject、memory.dream）；指定時只串接該 kind。
+        ``kind`` 預設為所有有 shadow 回呼的內建決策點（turn.reply、turn.interject、memory.dream、proactive.initiate）；指定時只串接該 kind。
         """
         hub.add_observer(self.on_decision)
-        for name in (kind,) if kind is not None else ("turn.reply", "turn.interject", "memory.dream"):
+        for name in (kind,) if kind is not None else ("turn.reply", "turn.interject", "memory.dream", "proactive.initiate"):
             engine = hub.engine(name)
             if engine is not None and callable(getattr(engine, "log_quiet", None)):
                 self._quiet[name] = engine.log_quiet

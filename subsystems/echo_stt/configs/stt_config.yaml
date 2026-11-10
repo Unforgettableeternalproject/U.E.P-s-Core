@@ -44,7 +44,7 @@ recognition:
     speech_pad_ms: 200
     threshold: 0.5
   hotwords_max: 30                       # ✅ 熱詞上限，超過截斷
-  hotwords: ["UEP", "U.E.P", "小U"]      # ✅ 只放人名與喚醒詞；詞表整串被念出會被 hotword_leak 擋下
+  hotwords: ["UEP", "U.E.P", "小U", "Bernie"]      # ✅ 只放人名與喚醒詞；詞表整串被念出會被 hotword_leak 擋下
   initial_prompt: ""                     # ✅ 預設空——Whisper 不適合一般用途 prompt（易外洩）
   # beam_size: 5                         # ✅ 可選，預設 5
   # best_of: 5                           # ✅ 可選，預設 5

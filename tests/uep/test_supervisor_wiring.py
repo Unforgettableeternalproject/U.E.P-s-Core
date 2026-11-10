@@ -363,3 +363,22 @@ def test_loop_stop_timeout_keeps_thread_reference_and_does_not_double_start():
         gate.set()
         loop.stop(timeout=5)
     assert loop._thread is None
+
+def test_turn_task_and_run_never_carry_a_deadline(session_factory):
+    """鎖住 A 的地雷：回合 Task／Run（``get_or_create_turn_task`` 實際建立路徑）的 deadline 一律為 None。
+
+    回合 Run 只在建立時寫一次心跳，之後不再更新；若有人替它設 ``run_deadline``（或 Task.deadline），
+    心跳很快過期，Supervisor 到期時會立刻 force 一個仍在進行的回合。要給回合加 deadline，須先讓回合 Run 持續送心跳。"""
+    mgr = make_manager(session_factory, StubExecutor())
+    for turn_id, extra in (("turn_dl1", {}), ("turn_dl2", {"conversation_id": "conv_1", "segment_id": "seg_1"})):
+        task, run = mgr.get_or_create_turn_task(
+            turn_id, persona_id="uep", owner_actor_id="o", scope_ref=SCOPE, policy_ref="pol_t",
+            persona_version=1, policy_version=1, **extra,
+        )
+        assert run.run_deadline is None and task.deadline is None
+        again_task, again_run = mgr.get_or_create_turn_task(  # 冪等回讀的路徑同樣沒有 deadline
+            turn_id, persona_id="uep", owner_actor_id="o", scope_ref=SCOPE, policy_ref="pol_t",
+            persona_version=1, policy_version=1,
+        )
+        assert again_run.run_deadline is None and again_task.deadline is None
+        assert mgr.get_run(run.run_id).run_deadline is None and mgr.get_task(task.task_id).deadline is None

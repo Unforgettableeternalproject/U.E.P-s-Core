@@ -12,6 +12,7 @@ from sqlalchemy import select
 from tests.uep.acceptance_support import (
     HookedExecutor,
     LyingExecutor,
+    declare_tool,
     drive,
     event_types,
     make_tm,
@@ -31,9 +32,10 @@ from uep.tasks.manager import (
     ApprovalRequired,
     AuthenticatedPrincipal,
     IllegalTransition,
+    PolicyViolation,
     params_hash,
 )
-from uep.tasks.models import ReceiptRow
+from uep.tasks.models import ActionIntentRow, ReceiptRow
 from uep.tasks.states import RunStatus
 
 pytestmark = pytest.mark.usefixtures("session_factory")
@@ -116,6 +118,197 @@ def test_v21c_idempotency_none_never_retried_even_if_authoritative(session_facto
     with pytest.raises(ActionBlocked):
         tm.execute_action(item.action_id, item.params, worker_epoch=run.worker_epoch)
     assert ex.call_count(item.action_id) == 1
+
+
+# ---- (c2) 人工解決 UNKNOWN（SA-11、D52） ----
+
+def _receipt(session_factory, action_id):
+    with session_factory() as s:
+        return s.scalar(select(ReceiptRow).where(ReceiptRow.action_id == action_id))
+
+
+@pytest.mark.parametrize("outcome,status,succeeded", [
+    ("succeeded", "SUCCEEDED", True), ("failed", "FAILED", False), ("retry", "FAILED", False),
+])
+def test_v21c2_manual_resolve_outcomes(session_factory, outcome, status, succeeded):
+    """SA-11：三種 outcome 轉終態，記一筆 Core 簽發 receipt（source_verified、meta.origin=manual）；executor 不再被呼叫。"""
+    tm, ex, item, run, _ = _lost(session_factory, "lose_before_exec")
+    ex.lookup_outcome(item.action_id, "undetermined")
+    assert tm.resolve_unknown(item.action_id).status.value == "UNKNOWN"
+    out = tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome=outcome)
+    assert out.status.value == status and not out.executed
+    rec = _receipt(session_factory, item.action_id)
+    assert rec.succeeded is succeeded and rec.source_verified is True
+    assert rec.meta["origin"] == "manual" and rec.meta["principal"] == "owner" and rec.meta["decision"] == outcome
+    assert receipt_count(session_factory, item.action_id) == 1
+    assert ex.call_count(item.action_id) == 1  # 人工路徑不碰 executor
+    assert event_types(session_factory).count("action.executed") == 1
+    # 終態後 execute_action 冪等回既有結果，不再執行
+    assert tm.execute_action(item.action_id, item.params, worker_epoch=run.worker_epoch).executed is False
+    assert ex.call_count(item.action_id) == 1
+
+
+def test_v21c2_manual_resolve_rejects_non_human_unverified_and_non_approver(session_factory):
+    """SA-11：agent／system／未驗證／非 approver／裸字串一律被拒，action 維持 UNKNOWN、無 receipt。"""
+    tm, _ex, item, _run, _ = _lost(session_factory)
+    bad = [
+        AuthenticatedPrincipal(actor_id="owner", kind="agent", verified=True),
+        AuthenticatedPrincipal(actor_id="owner", kind="system", verified=True),
+        AuthenticatedPrincipal(actor_id="owner", kind="human", verified=False),
+        AuthenticatedPrincipal(actor_id="stranger", kind="human", verified=True),
+        "owner",
+    ]
+    for principal in bad:
+        with pytest.raises(PolicyViolation):
+            tm.resolve_unknown_manual(item.action_id, principal=principal, outcome="succeeded")
+    with pytest.raises(PolicyViolation):
+        tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="bogus")
+    assert status_of(tm, item) == "UNKNOWN" and receipt_count(session_factory, item.action_id) == 0
+
+
+def test_v21c2_manual_resolve_rejects_non_unknown(session_factory):
+    """SA-11：只收 UNKNOWN；INTENDED／終態都拒絕，且不改變狀態。"""
+    ex = FakeToolExecutor()
+    tm = make_tm(session_factory, ex)
+    _task, run, _step, (item,) = setup_run(tm, 1)
+    with pytest.raises(IllegalTransition):
+        tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="failed")
+    tm.execute_action(item.action_id, item.params, worker_epoch=run.worker_epoch)
+    assert status_of(tm, item) == "SUCCEEDED"
+    with pytest.raises(IllegalTransition):
+        tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="failed")
+    assert status_of(tm, item) == "SUCCEEDED" and receipt_count(session_factory, item.action_id) == 1
+
+
+def test_v21c2_manual_resolve_does_not_override_verified_receipt(session_factory):
+    """SA-11：UNKNOWN 若已有已驗證 receipt，人工不可覆寫（走 resolve_unknown）。"""
+    from uep.ids import new_id
+
+    tm, _ex, item, _run, _ = _lost(session_factory)
+    with session_factory() as s, s.begin():
+        s.add(ReceiptRow(
+            receipt_id=new_id("rcpt"), action_id=item.action_id, succeeded=True, source_verified=True,
+            recorded_at=datetime.now(UTC),
+        ))
+    with pytest.raises(ActionBlocked):
+        tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="failed")
+    assert tm.resolve_unknown(item.action_id).status.value == "SUCCEEDED"
+
+
+def test_v21c2_manual_retry_allows_new_action_with_retry_of(session_factory):
+    """SA-11：retry 後以新 action_id（retry_of 指向原 UNKNOWN）重建並執行；原 UNKNOWN 不再擋後續 action。"""
+    tm, ex, item, run, _ = _lost(session_factory, "lose_after_exec")
+    step = tm.begin_step(run.run_id, "retry", worker_epoch=run.worker_epoch)
+    # UNKNOWN 未解決前：非 internal_read 的 UNKNOWN 擋住同 Run 的新副作用（D62），不能靠新 action_id 繞過
+    blocked = tm.create_action(run_id=run.run_id, step_id=step.step_id, tool="files.write", params=item.params,
+                               worker_epoch=run.worker_epoch)
+    with pytest.raises(ActionBlocked):
+        tm.execute_action(blocked.action_id, item.params, worker_epoch=run.worker_epoch)
+    assert ex.call_count(blocked.action_id) == 0
+    # 尚未 FAILED 的 action 不可作為 retry_of
+    with pytest.raises(PolicyViolation):
+        tm.create_action(run_id=run.run_id, step_id=step.step_id, tool="files.write", params=item.params,
+                         worker_epoch=run.worker_epoch, retry_of=item.action_id)
+    tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="retry")
+    new = tm.create_action(run_id=run.run_id, step_id=step.step_id, tool="files.write", params=item.params,
+                           worker_epoch=run.worker_epoch, retry_of=item.action_id)
+    assert new.action_id != item.action_id and new.retry_of == item.action_id
+    out = tm.execute_action(new.action_id, item.params, worker_epoch=run.worker_epoch)
+    assert out.status.value == "SUCCEEDED" and out.executed
+    with session_factory() as s:
+        assert s.get(ActionIntentRow, new.action_id).retry_of == item.action_id
+        assert s.get(ActionIntentRow, item.action_id).retry_of is None
+    # retry_of 必須同 Run 且存在
+    with pytest.raises(PolicyViolation):
+        tm.create_action(run_id=run.run_id, step_id=step.step_id, tool="files.write", params=item.params,
+                         worker_epoch=run.worker_epoch, retry_of="act_missing")
+
+
+def _second_run(tm, task, run):
+    """Run#1 帶著 UNKNOWN 結束（FAILED）後，同一 Task 啟動 Run#2；回傳 (run2, step2)。"""
+    tm.transition_run(run.run_id, RunStatus.FAILED, worker_epoch=run.worker_epoch)
+    run2 = tm.start_run(task.task_id, persona_version=1, policy_version=1)
+    return run2, tm.begin_step(run2.run_id, "again", worker_epoch=run2.worker_epoch)
+
+
+def test_v21c2_unknown_in_previous_run_blocks_new_run_until_resolved(session_factory):
+    """SA-11／M1：Run#1 留下 UNKNOWN，Run#2 以新 action_id 執行同類操作被擋；人工 retry 後才放行，retry_of 可跨 Run。"""
+    tm, ex, item, run, task = _lost(session_factory)
+    run2, step2 = _second_run(tm, task, run)
+    new = tm.create_action(run_id=run2.run_id, step_id=step2.step_id, tool="files.write", params=item.params,
+                           worker_epoch=run2.worker_epoch)
+    with pytest.raises(ActionBlocked):
+        tm.execute_action(new.action_id, item.params, worker_epoch=run2.worker_epoch)
+    assert ex.call_count(new.action_id) == 0
+    tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="retry")
+    retried = tm.create_action(run_id=run2.run_id, step_id=step2.step_id, tool="files.write", params=item.params,
+                              worker_epoch=run2.worker_epoch, retry_of=item.action_id)
+    assert retried.retry_of == item.action_id
+    assert tm.execute_action(retried.action_id, item.params, worker_epoch=run2.worker_epoch).status.value == "SUCCEEDED"
+
+
+def test_v21c2_retry_of_is_one_to_one_same_tool_same_task(session_factory):
+    """SA-11／M2、m3：同一 retry_of 只能用一次（含並發由唯一索引擋下）；tool 須相同、須同 Task。"""
+    tm, _ex, item, run, _task = _lost(session_factory)
+    step = tm.begin_step(run.run_id, "retry", worker_epoch=run.worker_epoch)
+    tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="failed")  # manual_failed 亦可作 retry 來源
+    kw = {"run_id": run.run_id, "step_id": step.step_id, "params": item.params, "worker_epoch": run.worker_epoch}
+    declare_tool(tm, "files.read")
+    with pytest.raises(PolicyViolation) as err:
+        tm.create_action(tool="files.read", retry_of=item.action_id, **kw)
+    assert err.value.code == "retry_of_tool_mismatch"
+    first = tm.create_action(tool="files.write", retry_of=item.action_id, **kw)
+    with pytest.raises(PolicyViolation) as err:
+        tm.create_action(tool="files.write", retry_of=item.action_id, **{**kw, "params": {"path": "other"}})
+    assert err.value.code == "retry_of_already_used"
+    # 同 action_id 重呼叫：retry_of 必須完全一致（含 None）
+    assert tm.create_action(tool="files.write", retry_of=item.action_id, action_id=first.action_id, **kw).action_id == first.action_id
+    with pytest.raises(PolicyViolation):
+        tm.create_action(tool="files.write", action_id=first.action_id, **kw)
+    # 別的 Task 的 action 不可作 retry_of
+    _t2, _r2, _s2, (other,) = setup_run(tm, 1)
+    with pytest.raises(PolicyViolation) as err:
+        tm.create_action(tool="files.write", retry_of=other.action_id, **kw)
+    assert err.value.code == "retry_of_invalid"
+    # 並發第二筆（繞過預檢）由唯一索引擋下，轉為 retry_of_already_used 而非 IntegrityError 外漏
+    from sqlalchemy.exc import IntegrityError
+    with session_factory() as s, pytest.raises(IntegrityError):
+        s.add(ActionIntentRow(
+            action_id="act_dup", run_id=run.run_id, step_id=step.step_id, tool="files.write", executor="fake",
+            params_hash="x", side_effect_class="reversible_local", idempotency="via_action_id", presence_bound=False,
+            status="INTENDED", retry_of=item.action_id,
+        ))
+        s.flush()
+
+
+def test_v21c2_manual_receipt_meta_keeps_origin_when_actor_id_unsafe(session_factory):
+    """SA-11／M3：actor_id 含 @ 不合規時 principal 改存雜湊，origin／decision 不被脫敏；人工覆寫未驗證 receipt 記 prior_receipt_id。"""
+    from uep.ids import new_id
+
+    _tm, _ex, item, _run, _ = _lost(session_factory)
+    prior_id = new_id("rcpt")
+    with session_factory() as s, s.begin():
+        s.add(ReceiptRow(receipt_id=prior_id, action_id=item.action_id, succeeded=True, source_verified=False,
+                         recorded_at=datetime.now(UTC)))
+    tm2 = make_tm(session_factory, FakeToolExecutor(), approvers=lambda task: frozenset({"me@example.com"}))
+    who = AuthenticatedPrincipal(actor_id="me@example.com", kind="human", verified=True)
+    tm2.resolve_unknown_manual(item.action_id, principal=who, outcome="succeeded")
+    meta = _receipt(session_factory, item.action_id).meta
+    assert meta["origin"] == "manual" and meta["decision"] == "succeeded" and "redacted" not in meta
+    assert meta["principal"].startswith("h:") and "@" not in meta["principal"]
+    assert meta["prior_receipt_id"] == prior_id
+
+
+def test_v21c2_manual_resolve_is_idempotent_for_same_decision(session_factory):
+    """SA-11／m4：同一裁決重送回傳既有結果（不新增 receipt／事件）；不同裁決仍被拒。"""
+    tm, _ex, item, _run, _ = _lost(session_factory)
+    first = tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="failed")
+    again = tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome="failed")
+    assert again.status == first.status and again.receipt.receipt_id == first.receipt.receipt_id
+    assert receipt_count(session_factory, item.action_id) == 1 and event_types(session_factory).count("action.executed") == 1
+    for other in ("retry", "succeeded"):
+        with pytest.raises(IllegalTransition):
+            tm.resolve_unknown_manual(item.action_id, principal=HUMAN, outcome=other)
 
 
 @pytest.mark.parametrize("idem", ["native", "via_action_id"])

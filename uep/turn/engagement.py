@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -26,6 +27,12 @@ _BUFFER_MAX = 20  # 滾動對話 buffer 上限
 # 純語氣詞與感嘆詞：主動模式不查詢 LLM
 _FILLER_WORDS = frozenset({"嗯", "啊", "哦", "呃", "唔", "嘿", "哈", "喔", "欸", "誒", "唉", "哼", "嗚", "咦"})
 _EXCLAMATION_WORDS = frozenset({"哇", "天啊", "靠", "幹", "臥槽", "我的天", "好棒", "不會吧", "真的假的", "太誇張了"})
+# 純應答詞：CJK 門檻降為 2 後，兩字應答不能再靠長度擋掉（英文以小寫比對）
+_ACK_WORDS = frozenset({
+    "好的", "嗯嗯", "對啊", "是喔", "好喔", "喔喔", "對對", "是的", "沒錯", "了解", "知道",
+    "ok", "okay", "okey", "kk",
+})
+_CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 
 
 class ChannelMode(StrEnum):
@@ -248,9 +255,11 @@ class EngagementMonitor:
     def is_meaningful(self, text: str) -> bool:
         """主動模式的意義性過濾：過短、純語氣詞、純感嘆詞不查詢。"""
         text = text.strip()
-        if len(text) < self._cfg.solo.meaningfulness_min_length:
+        solo = self._cfg.solo
+        min_length = solo.meaningfulness_min_length_cjk if _CJK_RE.search(text) else solo.meaningfulness_min_length
+        if len(text) < min_length:
             return False
-        return text not in _FILLER_WORDS and text not in _EXCLAMATION_WORDS
+        return text not in _FILLER_WORDS and text not in _EXCLAMATION_WORDS and text.lower() not in _ACK_WORDS
 
     def tick(self) -> None:
         """被動模式：context_confidence 的時間衰減。"""

@@ -52,6 +52,7 @@ class ContextConfidenceConfig:
 @dataclass(frozen=True)
 class SoloEngagementConfig:
     meaningfulness_min_length: int = 3
+    meaningfulness_min_length_cjk: int = 2  # 含 CJK 字元的文字（中文一個字的資訊量高於英文字母）
 
 
 @dataclass(frozen=True)

@@ -298,6 +298,10 @@ def test_decision_package_boundary():
             # DL-P1c：memory.dream 包裝 DreamPlanner.decide（memory 端不反向 import decision）
             "memory_dream.py": {"uep.ids", "uep.memory.dream_planner"},
             "policy_publish.py": {"uep.ids"},  # DL-P1d：policy.snapshot／channel.mode（鴨子型別接 HostPolicySource）
+            # DL-6a：proactive.initiate（Agent 層只認 trigger；scope 驗證與 Presence 共用型別）
+            "proactive.py": {
+                "uep.agent.trigger", "uep.context.snapshot", "uep.contracts.presence", "uep.events.envelope", "uep.ids",
+            },
         }
         if path.name in allowed_outside:
             allowed = allowed_outside[path.name]

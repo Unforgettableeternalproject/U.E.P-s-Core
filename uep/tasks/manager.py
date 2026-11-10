@@ -383,18 +383,19 @@ def _is_safe(value: Any) -> bool:
 
 
 CONCURRENCY_VALUES = frozenset({"parallel_safe", "parallel_one_shot", "serial"})
+PARALLEL_CONCURRENCY = frozenset({"parallel_safe", "parallel_one_shot"})
 
 
 def executing_set_allowed(incoming: str, executing: Iterable[str]) -> bool:
-    """TC-3 規則（D1b）：EXECUTING 集合（含 incoming）要麼恰好一個 serial，要麼全部 parallel_safe。
+    """TC-3 規則（D1b）：EXECUTING 集合（含 incoming）要麼恰好一個 serial，要麼全部可並行（``parallel_safe``／``parallel_one_shot``）。
 
-    非 ``parallel_safe`` 的值一律視同 serial（含本期尚未放行的 ``parallel_one_shot``，以及任何未知值）。
+    非可並行的值一律視同 serial（含任何未知值）。資源鍵兩兩不交由排程器在同一波內保證（``plan_waves``），DB 不存資源鍵。
     FakeTasks 與真實 Manager 共用這個函式，守衛規則不會分歧。
     """
     current = list(executing)
     if not current:
         return True
-    return incoming == "parallel_safe" and all(c == "parallel_safe" for c in current)
+    return incoming in PARALLEL_CONCURRENCY and all(c in PARALLEL_CONCURRENCY for c in current)
 
 
 def _utcnow() -> datetime:
@@ -1648,6 +1649,28 @@ class TaskManager:
         self._set_action_status(s, pending, task, action, to, "action.executed")
         return stored
 
+    def mark_action_unknown(
+        self, action_id: str, *, worker_epoch: int, reason: Literal["timeout", "run_cancelled"],
+    ) -> bool:
+        """worker 專用：把仍為 EXECUTING 的 action 轉 UNKNOWN，``reason`` 明示呼叫原因並寫入事件的 ``reason_code``。
+
+        - ``timeout``（§6.4 ``parallel_one_shot`` 逾時、executor 無法確認已停止）：只限 ``concurrency=parallel_one_shot`` 的 action。
+        - ``run_cancelled``（Run 取消、寬限後在途項仍未收尾）：``parallel_safe``／``parallel_one_shot`` 皆可，serial 不可。
+        不符的 concurrency、或 action 已不是 EXECUTING（執行緒剛好收尾）⇒ 不動作、回 False；未知 ``reason`` 拋 ``PolicyViolation``。
+        舊 ``worker_epoch`` 拋 ``StaleWorkerEpoch``。之後晚到的 receipt 只入庫存證、不推進狀態（T-9／``_finish_execution``），
+        由 ``resolve_unknown`` 據此解決（不重送）。
+        """
+        allowed = {"timeout": {"parallel_one_shot"}, "run_cancelled": set(PARALLEL_CONCURRENCY)}.get(reason)
+        if allowed is None:
+            raise PolicyViolation(f"mark_action_unknown 不認得的 reason：{reason!r}")
+        with self._tx() as (s, pending):
+            task, run, action = self._lock_action(s, action_id)
+            self._require_epoch(run, worker_epoch)
+            if ActionStatus(action.status) is not ActionStatus.EXECUTING or action.concurrency not in allowed:
+                return False
+            self._set_action_status(s, pending, task, action, ActionStatus.UNKNOWN, "action.unknown", reason)
+            return True
+
     def _force_unknown(self, action_id: str) -> None:
         """階段 3 入庫失敗的保底：在全新交易內把仍為 EXECUTING 的 action 轉 UNKNOWN 並落地。"""
         with self._tx() as (s, pending):
@@ -1803,7 +1826,7 @@ class TaskManager:
     @staticmethod
     def _check_single_executing(s: Session, action: ActionIntentRow) -> None:
         """TC-3（D1b 修訂，Agent 架構提案 §6.5）：同一 Run 的 EXECUTING 集合（含即將進入的這一筆）要麼恰好一個
-        serial，要麼全部 parallel_safe；``parallel_one_shot`` 本期視同 serial。另有同一 Task（含其他 Run）內非 internal_read 的 UNKNOWN 一律擋。
+        serial，要麼全部可並行（``parallel_safe``／``parallel_one_shot``）。另有同一 Task（含其他 Run）內非 internal_read 的 UNKNOWN 一律擋。
 
         併發安全依據（0012 移除部分唯一索引後，不變量只剩這裡在守）：本函式只在 ``execute_action`` 階段 1 呼叫，
         該交易（單一 ``_tx``）以 ``_lock_action`` 先鎖 task 再鎖 run（``FOR UPDATE``），同 Run 的其他
@@ -1891,7 +1914,10 @@ class TaskManager:
                 stored = self._record_receipt(s, action_id, receipt_in, worker_epoch) if matched else None
                 return ActionOutcome(action_id, ActionStatus(action.status), True, stored), failure
             if ActionStatus(action.status) is not ActionStatus.EXECUTING:
-                return ActionOutcome(action_id, ActionStatus(action.status), True, None), failure
+                # 比照 T-9：action 已被轉走（例如逾時轉 UNKNOWN）時，晚到的 receipt 只入庫存證、不推進狀態，
+                # 讓 resolve_unknown 能據已驗證 receipt 解決
+                stored = self._record_receipt(s, action_id, receipt_in, worker_epoch) if matched else None
+                return ActionOutcome(action_id, ActionStatus(action.status), True, stored), failure
             if matched:
                 rec = self._apply_receipt(s, pending, task, action, receipt_in, worker_epoch)
                 outcome = ActionOutcome(action_id, ActionStatus(action.status), True, rec)

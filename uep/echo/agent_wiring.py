@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -217,7 +217,10 @@ class LoopLauncher:
         persona_id: str = "uep", persona_version: int = 1, policy_version: int = 1, budget: LoopBudget | None = None,
         system_text: Callable[[Any], str] = lambda ticket: DEFAULT_LOOP_SYSTEM_TEXT,
         max_concurrent: int | None = None, close_timeout_s: float | None = None,
+        executors: Mapping[str, Any] | None = None,
     ) -> None:
+        # executor 名稱 -> ToolExecutor：``AgentLoop`` 對 parallel_one_shot 逾時／取消呼叫 ``executor.cancel`` 用（組裝層已檢查齊備）
+        self._executors = dict(executors) if executors is not None else {}
         max_concurrent = DEFAULT_MAX_CONCURRENT_LOOPS if max_concurrent is None else max_concurrent
         if max_concurrent < 1:
             raise ValueError("max_concurrent 必須 >= 1")
@@ -454,6 +457,7 @@ class LoopLauncher:
             deliver_result=lambda text: self._deliver(ctx, text),
             content_lookup=self._cache.text if self._cache is not None else None,
             run_cleanup=self._cache.discard_about_refs_run if self._cache is not None else None,
+            executors=self._executors,
         )
 
     # ---- 交付（只經 Output Gate） ----

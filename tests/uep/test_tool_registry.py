@@ -327,6 +327,10 @@ def test_ra11_concurrency_eligibility():
     ok_spec = {**_WRITE, "idempotency": "via_action_id"}
     ToolRegistry.build([make_entry(**one_shot, spec=ok_spec)])
     assert rule_of(make_entry(**{**one_shot, "cancellable": False}, spec=ok_spec)) == "RA-11"
+    assert rule_of(make_entry(**{**one_shot, "timeout_s": None}, spec=ok_spec)) == "RA-11"  # 缺 timeout_s
+    assert rule_of(make_entry(**{**one_shot, "timeout_s": 0}, spec=ok_spec)) == "RA-11"
+    assert rule_of(make_entry(**one_shot, spec={**ok_spec, "approval_level": "per_action"})) == "RA-11"
+    assert rule_of(make_entry(**one_shot, spec=ok_spec, composite=object())) == "RA-11"  # composite
     assert rule_of(make_entry(**one_shot, spec={**_WRITE, "idempotency": "none"})) == "RA-11"
     assert rule_of(make_entry(**one_shot, spec={**_POST, "idempotency": "via_action_id"})) == "RA-11"
 

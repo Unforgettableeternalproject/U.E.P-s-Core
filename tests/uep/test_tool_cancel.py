@@ -308,3 +308,33 @@ def test_stuck_cancel_does_not_keep_the_process_alive():
     """)
     proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60, check=False)
     assert proc.returncode == 0 and "done" in proc.stdout, proc.stderr
+
+
+def test_parallel_one_shot_entry_requires_executor_cancel_at_assembly():
+    from tests.uep.test_tool_registry import make_entry
+    from uep.tools.registry import ToolRegistry
+
+    registry = ToolRegistry.build([make_entry(
+        spec={"executor": "x", "idempotency": "native"}, concurrency="parallel_one_shot", timeout_s=5.0,
+        cancellable=True, conflict_keys=("tool:{name}",),
+    )])
+    with pytest.raises(AssemblyError, match="demo.tool"):
+        _check_registry_executors(registry, {"x": NoCancelExecutor()}, ())
+    _check_registry_executors(registry, {"x": FakeToolExecutor()}, ())
+
+
+def test_cancel_executors_reports_per_action_and_treats_hang_as_isolated():
+    from uep.tools.cancel import cancel_executors
+
+    ok, bad, hang = FakeToolExecutor(), FakeToolExecutor(), FakeToolExecutor()
+    bad.cancel_behavior("a2", "raise")
+    release = threading.Event()
+    hang.cancel = lambda action_id: release.wait(5) and "stopped"  # type: ignore[method-assign]
+    try:
+        result = cancel_executors([("a1", ok), ("a2", bad), ("a3", hang), ("a4", NoCancelExecutor())], timeout_s=0.2)
+    finally:
+        release.set()
+    assert result == {"a1": "stopped", "a2": "error", "a3": "isolated", "a4": "skipped"}
+    assert ok.cancels == ["a1"] and bad.cancels == ["a2"]
+    with pytest.raises(ValueError):
+        cancel_executors([], timeout_s=0)

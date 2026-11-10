@@ -393,3 +393,28 @@ def test_endpoint_send_replay_is_idempotent_before_resolving_content_ref():
     )
     assert endpoint.send(intent, "d1") is previous and calls == [] and len(endpoint._texts) == 0
     assert GateDecision.ADMIT  # 僅確認匯入可用
+
+
+# ---- parallel_one_shot：executors 傳進 AgentLoop（逾時／取消要能 cancel）----
+
+def test_launcher_passes_executors_to_agent_loop():
+    from uep.echo.agent_wiring import _RunCtx
+
+    sentinel = object()
+    launcher = _stub_launcher(executors={"x": sentinel})
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1))
+    assert launcher._build_loop(ctx)._executors == {"x": sentinel}
+
+
+def test_assembly_rejects_one_shot_registry_without_cancellable_executor():
+    from tests.uep.test_agent_loop import one_shot_registry
+    from uep.assembly import AssemblyError, _check_loop_one_shot_executors
+    from uep.fakes.tool import FakeToolExecutor
+
+    registry = one_shot_registry()
+    with pytest.raises(AssemblyError, match="once.a"):
+        _check_loop_one_shot_executors(registry, {})  # AgentLoop 拿不到 executor
+    with pytest.raises(AssemblyError, match="once.b"):
+        _check_loop_one_shot_executors(registry, {"fake": object()})  # 沒有 cancel
+    _check_loop_one_shot_executors(registry, {"fake": FakeToolExecutor()})
+    _check_loop_one_shot_executors(memory_registry(), {})  # production 目錄沒有 one_shot：不要求

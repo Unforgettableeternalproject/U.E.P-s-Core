@@ -355,7 +355,7 @@ def _check_registry_executors(
 def _check_cancel_support(
     resolver: ToolSpecResolver, specs: Mapping[str, Any], executors: Mapping[str, ToolExecutor]
 ) -> None:
-    """D69／RA-5：宣告 interruptible／checkpoint_only 或 cancellable 的工具，其 executor 必須實作 ``cancel``；fail-closed。
+    """D69／RA-5／RA-11：宣告 interruptible／checkpoint_only、cancellable 或 parallel_one_shot 的工具，其 executor 必須實作 ``cancel``；fail-closed。
     executor 不在映射內的情形由 TG-5 另行回報，這裡略過。"""
     entries = resolver.entries() if callable(getattr(resolver, "entries", None)) else {}
     bad: list[str] = []
@@ -364,10 +364,24 @@ def _check_cancel_support(
         if executor is None or supports_cancel(executor):
             continue
         entry = entries.get(name)
-        if spec.interruptible != "non_interruptible" or (entry is not None and entry.cancellable):
+        if spec.interruptible != "non_interruptible" or (
+            entry is not None and (entry.cancellable or entry.concurrency == "parallel_one_shot")
+        ):
             bad.append(name)
     if bad:
         raise AssemblyError(f"工具宣告可中斷或 cancellable，但其 executor 未實作 cancel：{', '.join(sorted(bad))}（D69、RA-5）")
+
+
+def _check_loop_one_shot_executors(registry: Any, executors: Mapping[str, ToolExecutor]) -> None:
+    """§6.4：AgentLoop 使用的註冊表若有 ``parallel_one_shot`` 條目，其 executor 必須在傳給 AgentLoop 的映射內且實作 ``cancel``，
+    否則逾時／取消時無法 cancel；fail-closed。"""
+    bad = sorted(
+        name for name, entry in registry.entries().items()
+        if entry.concurrency == "parallel_one_shot"
+        and not supports_cancel(executors.get(entry.spec.executor) or object())
+    )
+    if bad:
+        raise AssemblyError(f"parallel_one_shot 工具的 executor 不在 AgentLoop 的 executors 內或未實作 cancel：{', '.join(bad)}（RA-11、D69）")
 
 
 def build_request_verifier(
@@ -619,10 +633,12 @@ def assemble_core(
         assert echo is not None
         attach_agent_tools(echo.think, tasks, agent_cache)
         if loop_entry is None and loop_entry_on:
+            loop_registry = memory_registry()
+            _check_loop_one_shot_executors(loop_registry, executors)
             loop_entry, loop_launcher = build_loop_entry(
                 tool_path=tool_path, tasks=tasks, delivery=delivery, orchestrator=echo.orchestrator,
-                registry=memory_registry(), model_port=model_port, cache=agent_cache,
-                text_store=getattr(echo, "loop_text", None), persona_id=persona_id,
+                registry=loop_registry, model_port=model_port, cache=agent_cache,
+                text_store=getattr(echo, "loop_text", None), persona_id=persona_id, executors=executors,
             )
         if loop_entry is not None:
             echo.orchestrator.bind_loop_entry(loop_entry)

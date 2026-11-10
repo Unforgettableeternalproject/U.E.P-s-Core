@@ -34,7 +34,13 @@ from typing import Any, Literal, Protocol
 
 from uep.adapters.runtime import Runtime, RuntimeRequest
 from uep.agent.budget import BudgetCounters, LoopBudget, exhausted, observe_call
-from uep.agent.core import AgentCore, IntentResult, ScreenedIntent, stable_action_id
+from uep.agent.core import (
+    AgentCore,
+    IntentRecord,
+    IntentResult,
+    ScreenedIntent,
+    stable_action_id,
+)
 from uep.agent.loop_context import (
     ContextLost,
     LoopContextStore,
@@ -70,11 +76,13 @@ from uep.tasks.manager import (
     PolicyViolation,
     StaleWorkerEpoch,
 )
-from uep.tasks.states import RunStatus
+from uep.tasks.states import ActionStatus, RunStatus
+from uep.tools.cancel import cancel_executors
 from uep.tools.catalog.decision import CONSULT_TAG, CONSULT_TOOL, INJECTED_CONSULT
 from uep.tools.gateway import (
     INVALID_TOOL_ARGS,
     TOOL_NOT_READY,
+    TOOL_TIMEOUT,
     ToolGateway,
     visible_tools,
 )
@@ -85,6 +93,7 @@ LoopState = Literal["completed", "failed", "awaiting_approval", "cancelled", "st
 Projector = Callable[[frozenset[str], frozenset[str] | None], Mapping[str, Any]]
 
 TOOL_NOT_IN_SNAPSHOT = "tool_not_in_snapshot"
+CANCEL_ERROR_CODES = frozenset({"timeout", "cancelled"})  # executor 因 cancel 而失敗時簽回的 receipt error_code（§6.4 stopped）
 RESUME_REQUIRED_KEYS = (
     "child_context_ref", "history_hash", "frozen_tools", "frozen_tags", "visible_tools", "budget_counters", "step_id",
     "frozen_modalities", "frozen_platforms",
@@ -212,7 +221,13 @@ class AgentLoop:
         consult_scope: Callable[[], Mapping[str, Collection[str]]] | None = None,
         on_escalate: Callable[[EscalationCandidate], None] | None = None,
         run_cleanup: Callable[[str], None] | None = None,
+        executors: Mapping[str, Any] | None = None, cancel_timeout_s: float = 5.0, cancel_grace_s: float = 2.0,
     ) -> None:
+        # ``executors``（executor 名稱 -> ToolExecutor）只用於 ``parallel_one_shot`` 的逾時／取消路徑呼叫 ``executor.cancel``；
+        # 沒給或該 executor 不支援 cancel ⇒ 逾時視為結果未明（unknown），不推定已停止（§6.4）
+        self._executors = dict(executors) if executors is not None else {}
+        self._cancel_timeout_s = cancel_timeout_s
+        self._cancel_grace_s = cancel_grace_s
         self._run_cleanup = run_cleanup  # Run 終態（非 park）時清除以 run_id 為鍵的回合範圍暫存（例如旁證編號）
         self._consults = consults
         self._consult_scope = consult_scope
@@ -919,7 +934,7 @@ class AgentLoop:
                     views[m.ordinal] = self._blocked(UNKNOWN_UNRESOLVED)
                 continue
             self._gate(st)
-            for m, res in self._execute_wave(wave, members):
+            for m, res in self._execute_wave(wave, members, st):
                 views[m.ordinal], observed[m.ordinal] = res.view, str(res.view.get("status", "unknown"))
                 st.counters.tool_calls += 1
                 if res.view.get("status") == "unknown":
@@ -978,8 +993,13 @@ class AgentLoop:
         self._checkpoint(st, "think")
         return None
 
-    def _execute_wave(self, wave: Wave, members: list[ScreenedIntent]) -> list[tuple[ScreenedIntent, IntentResult]]:
-        """波內先全部 create_action，再執行（並行波用執行緒）；單一失敗不影響兄弟。結果依序號排列。"""
+    def _execute_wave(
+        self, wave: Wave, members: list[ScreenedIntent], st: _State,
+    ) -> list[tuple[ScreenedIntent, IntentResult]]:
+        """波內先全部 create_action，再執行（並行波用執行緒）；單一失敗不影響兄弟。結果依序號排列。
+
+        波內有 ``parallel_one_shot`` 項時改走 ``_run_watched``：每項有自己的逾時，逾時／取消／StaleWorkerEpoch 時對在途的
+        one_shot 項呼叫 ``executor.cancel``（§6.4）。其餘波（只有 ``parallel_safe`` 或 serial）行為不變。"""
         out: dict[int, IntentResult] = {}
         runnable: list[ScreenedIntent] = []
         for m in members:
@@ -996,7 +1016,10 @@ class AgentLoop:
             except StaleWorkerEpoch as exc:
                 stale.append(exc)
 
-        if wave.parallel and len(runnable) > 1:
+        timeouts = {m.ordinal: t for m in runnable if wave.parallel and (t := self._one_shot_timeout(m.tool)) is not None}
+        if timeouts:
+            self._run_watched(runnable, timeouts, out, stale, st)
+        elif wave.parallel and len(runnable) > 1:
             with ThreadPoolExecutor(max_workers=len(runnable)) as pool:
                 list(pool.map(run_one, runnable))
         else:
@@ -1007,6 +1030,196 @@ class AgentLoop:
         if stale:
             raise stale[0]
         return [(m, out[m.ordinal]) for m in members if m.ordinal in out]
+
+    # ───────────────────────── 內部：parallel_one_shot 的逾時與取消（§6.4） ─────────────────────────
+
+    def _one_shot_timeout(self, tool: str) -> float | None:
+        """``parallel_one_shot`` 工具的 ``timeout_s``；其他工具（含查不到）回 None。parallel_safe 的 ``timeout_s`` 本期不強制。"""
+        try:
+            entry = self._registry.entry(tool)
+        except Exception:  # noqa: BLE001  查不到就當一般項
+            return None
+        if entry.concurrency != "parallel_one_shot" or not entry.timeout_s:
+            return None
+        return float(entry.timeout_s)
+
+    def _cancel_targets(self, items: Sequence[ScreenedIntent]) -> dict[str, str]:
+        """對在途 one_shot 項呼叫 ``executor.cancel``（平行、有總逾時）；回傳 action_id -> 結果。"""
+        targets = []
+        for m in items:
+            executor = self._executors.get(self._registry.entry(m.tool).spec.executor)
+            if executor is not None:
+                targets.append((m.action_id, executor))
+        return dict(cancel_executors(targets, timeout_s=self._cancel_timeout_s)) if targets else {}
+
+    def _run_watched(
+        self, runnable: list[ScreenedIntent], timeouts: Mapping[int, float], out: dict[int, IntentResult],
+        stale: list[StaleWorkerEpoch], st: _State,
+    ) -> None:
+        """並行執行整波（daemon 執行緒，不 join 卡住的 worker），one_shot 項各有 ``timeout_s`` 期限。
+
+        - 逾時：``_settle_timeouts``（同時到期的項一起處理，總耗時有上限）。同波兄弟照常。
+        - 任一項 ``StaleWorkerEpoch``：對其餘在途 one_shot 項 cancel 後結束等待，由呼叫端拋出。
+        - Run 被取消（``cancelled()``）：對在途 one_shot 項 cancel，限時等它們收尾（已簽回的 receipt 照常入庫，R-2）；
+          寬限後仍在途的項（含同波 ``parallel_safe``）一律轉 UNKNOWN（``run_cancelled``），不留在 EXECUTING；然後以
+          ``_Stop(cancelled)`` 結束。"""
+        lock = threading.Lock()
+        wake = threading.Event()
+        by = {m.ordinal: m for m in runnable}
+        finished = {o: threading.Event() for o in by}
+        settled: set[int] = set()  # 已由逾時／取消路徑接手的序號：晚到的結果與 StaleWorkerEpoch 都不再寫入
+        errors: list[BaseException] = []
+
+        def work(m: ScreenedIntent) -> None:
+            try:
+                res = self._core.execute_screened(m)
+                with lock:
+                    if m.ordinal not in settled:
+                        out[m.ordinal] = res
+            except StaleWorkerEpoch as exc:
+                with lock:
+                    if m.ordinal not in settled:
+                        stale.append(exc)
+            except Exception as exc:  # noqa: BLE001  與 pool.map 相同：其他例外在等待結束後上拋
+                with lock:
+                    errors.append(exc)
+            finally:
+                finished[m.ordinal].set()
+                wake.set()
+
+        start = time.monotonic()
+        deadline = {o: start + t for o, t in timeouts.items()}
+        for m in runnable:
+            threading.Thread(target=work, args=(m,), name="tool-wave", daemon=True).start()
+        pending = set(by)
+        halted: Literal["stale", "cancel"] | None = None
+        while pending:
+            wake.wait(0.02)
+            wake.clear()
+            pending = {o for o in pending if not finished[o].is_set()}
+            with lock:
+                has_stale = bool(stale)
+            if has_stale:
+                halted = "stale"
+                break
+            if not pending:
+                break
+            if self._cancelled():
+                halted = "cancel"
+                break
+            now = time.monotonic()
+            due = sorted(o for o in pending if o in deadline and now >= deadline[o])
+            if due:
+                self._settle_timeouts([by[o] for o in due], finished, out, stale, lock, settled)
+                pending.difference_update(due)
+        if halted is not None:
+            inflight = [by[o] for o in sorted(pending) if o in timeouts]
+            results = self._cancel_targets(inflight)
+            logger.info("波內中止（%s），對 %d 個在途 one_shot 項呼叫 cancel：%s", halted, len(inflight), results)
+            if halted == "cancel":
+                grace_end = time.monotonic() + self._cancel_grace_s
+                for o in sorted(pending):
+                    finished[o].wait(max(0.0, grace_end - time.monotonic()))
+                for o in sorted(o for o in pending if not finished[o].is_set()):
+                    with lock:
+                        settled.add(o)
+                    self._tasks.mark_action_unknown(by[o].action_id, worker_epoch=self._epoch, reason="run_cancelled")
+                raise _Stop(LoopOutcome("cancelled", st.run_id, LoopReason.CANCELLED, steps=st.counters.steps))
+        if errors and not stale:
+            raise errors[0]
+
+    def _settle_timeouts(
+        self, items: list[ScreenedIntent], finished: Mapping[int, threading.Event], out: dict[int, IntentResult],
+        stale: list[StaleWorkerEpoch], lock: threading.Lock, settled: set[int],
+    ) -> None:
+        """one_shot 項逾時：先 ``executor.cancel``（同時到期的項一起 cancel、共用寬限，總耗時 ≤ cancel 逾時＋寬限）。
+
+        - execute 已收尾（逾時當下或 cancel 期間）⇒ 一律以真實結果為準。``stopped`` 且該項確實因取消而失敗（receipt 的
+          ``error_code`` 是 ``timeout``／``cancelled``）⇒ 回餵加 ``reason_code=timeout``；其他真實錯誤保留原樣。
+        - 仍未收尾（``isolated``／例外／cancel 逾時／無可用 cancel／``stopped`` 卻沒收尾）⇒ ``mark_action_unknown(timeout)``：
+          回 True 才回報 ``unknown``＋``reason_code=timeout``，並嘗試一次 ``resolve_unknown``；回 False 代表 action 已不是 EXECUTING
+          （execute 剛好收尾），改用真實結果。"""
+        due = [m for m in items if not finished[m.ordinal].is_set()]
+        if not due:
+            return
+        results = self._cancel_targets(due)
+        grace_end = time.monotonic() + self._cancel_grace_s
+        for m in due:
+            outcome = results.get(m.action_id, "skipped")
+            logger.info("one_shot 逾時：action=%s tool=%s cancel=%s", m.action_id, m.tool, outcome)
+            done = finished[m.ordinal]
+            if outcome == "stopped":
+                done.wait(max(0.0, grace_end - time.monotonic()))
+            try:
+                if done.is_set():
+                    self._overlay_timeout(m, out, lock, only_if_stopped=outcome == "stopped")
+                else:
+                    self._unknown_after_timeout(m, done, out, lock, settled, grace_end)
+            except StaleWorkerEpoch as exc:
+                with lock:
+                    stale.append(exc)
+
+    def _is_cancel_failure(self, m: ScreenedIntent) -> bool:
+        receipt = self._tasks.get_receipt(m.action_id)
+        return receipt is not None and receipt.error_code in CANCEL_ERROR_CODES
+
+    def _overlay_timeout(self, m: ScreenedIntent, out: dict[int, IntentResult], lock: threading.Lock, *, only_if_stopped: bool) -> None:
+        with lock:
+            res = out.get(m.ordinal)
+        if not only_if_stopped or res is None or res.view.get("status") != "failed" or not self._is_cancel_failure(m):
+            return  # 真實結果（含真實錯誤）原樣保留；res 為 None 是 StaleWorkerEpoch（已記入 stale）
+        with lock:
+            out[m.ordinal] = IntentResult(
+                IntentRecord(m.ordinal, m.tool, m.action_id, "failed", TOOL_TIMEOUT), {**res.view, "reason_code": TOOL_TIMEOUT},
+            )
+
+    def _unknown_after_timeout(
+        self, m: ScreenedIntent, done: threading.Event, out: dict[int, IntentResult], lock: threading.Lock,
+        settled: set[int], grace_end: float,
+    ) -> None:
+        marked = self._tasks.mark_action_unknown(m.action_id, worker_epoch=self._epoch, reason="timeout")
+        if not marked:
+            # action 已不是 EXECUTING：execute 剛好收尾，等它把真實結果交出來
+            done.wait(max(0.0, grace_end - time.monotonic()))
+            with lock:
+                res = out.get(m.ordinal)
+                if res is None and not done.is_set():
+                    settled.add(m.ordinal)
+            if res is not None:
+                return
+            logger.warning("逾時後 action 已非 EXECUTING 但結果未到：action=%s status=%s", m.action_id, self._tasks.get_action(m.action_id).status)
+            if done.is_set():
+                return  # StaleWorkerEpoch
+        unknown = IntentResult(
+            IntentRecord(m.ordinal, m.tool, m.action_id, "unknown", TOOL_TIMEOUT),
+            self._gateway.result_view("unknown", reason_code=TOOL_TIMEOUT),
+        )
+        with lock:
+            settled.add(m.ordinal)
+            out[m.ordinal] = unknown
+        self._try_resolve(m, out, lock)
+
+    def _try_resolve(self, m: ScreenedIntent, out: dict[int, IntentResult], lock: threading.Lock) -> None:
+        """轉 UNKNOWN 後試一次 ``resolve_unknown``，**僅在已有已驗證 receipt 時**（此時不會呼叫 executor 查核）；
+        沒有 receipt 就維持 UNKNOWN。不在沒有證據時呼叫：``resolve_unknown`` 對 ``confirmed_not_executed`` 會把 action 退回
+        INTENDED，而逾時的 execute 可能仍在跑，退回會有重送風險。"""
+        try:
+            receipt = self._tasks.get_receipt(m.action_id)
+            if receipt is None or not receipt.source_verified:
+                return
+            outcome = self._tasks.resolve_unknown(m.action_id)
+            if outcome.status not in (ActionStatus.SUCCEEDED, ActionStatus.FAILED):
+                return
+            res = self._core.outcome_result(m, outcome)
+            if res.view.get("status") == "failed" and receipt.error_code in CANCEL_ERROR_CODES:
+                res = IntentResult(
+                    IntentRecord(m.ordinal, m.tool, m.action_id, "failed", TOOL_TIMEOUT), {**res.view, "reason_code": TOOL_TIMEOUT},
+                )
+        except Exception:  # 解決失敗就維持 UNKNOWN
+            logger.exception("逾時後 resolve_unknown 失敗，維持 UNKNOWN：action=%s", m.action_id)
+            return
+        with lock:
+            out[m.ordinal] = res
 
     # ───────────────────────── 內部：resume 補齊 ─────────────────────────
 

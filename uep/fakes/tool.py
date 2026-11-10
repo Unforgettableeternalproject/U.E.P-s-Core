@@ -11,10 +11,14 @@
     對已執行的 action 強制後兩者即「已執行但查核遺失紀錄」（誤報），用以驗證 idempotency=none 不重做。
   * ``unverified_receipt(action_id)``：該 action 的 receipt 以 source_verified=False 簽回。
   * ``cancel_behavior(action_id, mode)``：``stopped`` / ``isolated`` / ``raise``（cancel 拋 RuntimeError）；預設 ``stopped``。
+  * ``block_execution(action_id)``：該 action 的 ``execute`` 卡住（模擬逾時的慢工具）直到 ``release`` 或 ``cancel``；
+    ``cancel`` 回 ``stopped`` ⇒ 解除卡住並簽回失敗 receipt（``error_code=timeout``，副作用未發生）；回 ``isolated`` ⇒ 不解除
+    （測試結束務必 ``release``，卡住的執行緒最久 ``block_timeout_s`` 後自行結束）。
   * crash 點：``tool.before_execute``、``tool.after_execute``（已執行記帳、尚未回傳）。
 """
 from __future__ import annotations
 
+import threading
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Literal
@@ -35,7 +39,12 @@ LookupResult = Literal["found", "confirmed_not_executed", "undetermined"]
 
 
 class FakeToolExecutor:
-    def __init__(self, crash: CrashInjector | None = None, *, lookup_authoritative: bool = True) -> None:
+    def __init__(
+        self, crash: CrashInjector | None = None, *, lookup_authoritative: bool = True, block_timeout_s: float = 10.0,
+    ) -> None:
+        self._block_timeout_s = block_timeout_s
+        self._blocks: dict[str, threading.Event] = {}
+        self._stopped: set[str] = set()
         self.crash = crash or CrashInjector()
         self._authoritative = lookup_authoritative
         self.calls: list[ToolCall] = []
@@ -69,6 +78,15 @@ class FakeToolExecutor:
     def cancel_behavior(self, action_id: str, mode: CancelMode) -> None:
         self._cancel_modes[action_id] = mode
 
+    def block_execution(self, action_id: str) -> None:
+        self._blocks[action_id] = threading.Event()
+
+    def release(self, action_id: str) -> None:
+        """解除卡住（不標記 stopped：卡住的 execute 照常成功簽回，等同「取消不及、工作其實做完」）。"""
+        gate = self._blocks.get(action_id)
+        if gate is not None:
+            gate.set()
+
     # ---- 查詢 ----
     def execution_count(self, action_id: str) -> int:
         return self.executions[action_id]
@@ -86,15 +104,22 @@ class FakeToolExecutor:
         if existing is not None and call.idempotency in ("native", "via_action_id"):
             return existing
         self.crash.hit("tool.before_execute")
-        self.executions[call.action_id] += 1
+        gate = self._blocks.get(call.action_id)
+        stopped = False
+        if gate is not None:
+            gate.wait(timeout=self._block_timeout_s)
+            stopped = call.action_id in self._stopped
+        if not stopped:
+            self.executions[call.action_id] += 1
+        failed = mode == "fail" or stopped
         receipt = ToolReceipt(
             receipt_id=new_id("rcpt"),
             action_id=call.action_id,
-            succeeded=mode != "fail",
-            result_ref=None if mode == "fail" else f"blob_fake_{call.action_id}",
+            succeeded=not failed,
+            result_ref=None if failed else f"blob_fake_{call.action_id}",
             recorded_at=datetime.now(UTC),
             source_verified=call.action_id not in self._unverified,
-            error_code="FAKE_FAILURE" if mode == "fail" else None,
+            error_code="timeout" if stopped else ("FAKE_FAILURE" if mode == "fail" else None),
         )
         self._receipts[call.action_id] = receipt
         self.crash.hit("tool.after_execute")
@@ -122,4 +147,8 @@ class FakeToolExecutor:
         mode = self._cancel_modes.get(action_id, "stopped")
         if mode == "raise":
             raise RuntimeError(f"{action_id}: cancel 失敗")
+        gate = self._blocks.get(action_id)
+        if mode == "stopped" and gate is not None:
+            self._stopped.add(action_id)
+            gate.set()
         return mode

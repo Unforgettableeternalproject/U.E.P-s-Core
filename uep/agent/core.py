@@ -300,6 +300,11 @@ class AgentCore:
         view = self._gateway.outcome_view(outcome, content_lookup=self._content_lookup)
         return IntentResult(IntentRecord(item.ordinal, item.tool, item.action_id, view["status"]), view)
 
+    def outcome_result(self, item: ScreenedIntent, outcome: Any) -> IntentResult:
+        """把已落定的 ``ActionOutcome``（例如 ``resolve_unknown`` 的結果）轉成要交給模型的 ``IntentResult``。"""
+        view = self._gateway.outcome_view(outcome, content_lookup=self._content_lookup)
+        return IntentResult(IntentRecord(item.ordinal, item.tool, item.action_id, view["status"]), view)
+
     def _status_result(
         self, item: ScreenedIntent, status: ResultStatus, reason: str, *, created: bool = True,
     ) -> IntentResult:

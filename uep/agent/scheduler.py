@@ -2,8 +2,9 @@
 
 ``plan_waves`` 把同一則模型訊息內、已通過逐項前置（capability／readiness／schema／注入）的 ``tool_intent`` 分成「波」：
 
-- 資格：``concurrency == "parallel_safe"`` 且 ``approval_level == "none"``。**只看註冊表欄位，不看工具名稱，也不看模型的
-  side_effect_hint**（TG-2）。``parallel_one_shot`` 的啟用條件（需 ``cancellable``＋``timeout_s``）屬切片 F，D1 一律當 serial。
+- 資格：``concurrency`` 為 ``parallel_safe`` 或 ``parallel_one_shot`` 且 ``approval_level == "none"``。**只看註冊表欄位，不看工具名稱，也不看模型的
+  side_effect_hint**（TG-2）。``parallel_one_shot`` 的啟用條件（``cancellable``＋``timeout_s`` 等）由註冊表 RA-11／RA-12 與組裝層檢查把關，
+  這裡只信任已通過驗證的欄位；逾時與取消的執行語意在 ``AgentLoop``（§6.4）。
 - ``serial`` 項（含需核准者、composite、未知工具、``conflict_keys`` 無法代入者）自成單獨一波，前後各為屏障。
 - 可並行項依 ``index`` 貪婪加入當前波；資源鍵與當前波任一成員相交（同鍵互斥）就關閉當前波、以它開新波。
   所以衝突項依 ``index`` 先後序列化，不會被重排到更前面。
@@ -55,7 +56,10 @@ class Wave:
 
 
 def parallel_eligible(entry: ToolEntry) -> bool:
-    return entry.concurrency == "parallel_safe" and entry.spec.approval_level == "none" and entry.composite is None
+    return (
+        entry.concurrency in ("parallel_safe", "parallel_one_shot")
+        and entry.spec.approval_level == "none" and entry.composite is None
+    )
 
 
 def resource_keys(entry: ToolEntry, params: Mapping[str, Any]) -> frozenset[str] | None:

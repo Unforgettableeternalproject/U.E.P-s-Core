@@ -37,6 +37,7 @@ ARGS_NOT_MAPPING = "args_not_mapping"
 INVALID_TOOL_ARGS = "invalid_tool_args"
 TOOL_UNKNOWN = "tool_unknown"
 INJECTED_PARAM_MISSING = "injected_param_missing"  # Core 組裝錯誤：宣告了 injected_params 卻沒提供值
+TOOL_TIMEOUT = "timeout"  # §6.4：parallel_one_shot 逾時，executor 回報 stopped ⇒ failed(reason_code=timeout)；isolated ⇒ unknown(timeout)
 TOOL_NOT_READY = "tool_not_ready"  # §5.8：已投出的工具在執行前轉為非 ready（warming／unavailable）
 
 

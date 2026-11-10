@@ -656,6 +656,7 @@ class TaskManager:
         pause_reason: PauseReason | None, *, reason_code: str | None = None,
     ) -> None:
         current = self._check_transition("task", task, to, pause_reason)
+        task.paused_from = _paused_from_value(current, to)
         if to is RunStatus.SUCCEEDED:
             # T-13：Task 完成前，所有 Run（含先前失敗或取消的）都不得留有結果未明的 action
             all_runs = list(s.scalars(select(RunRow.run_id).where(RunRow.task_id == task.task_id)))
@@ -685,7 +686,8 @@ class TaskManager:
         self, s: Session, pending: list[RecordedEvent], task: TaskRow, run: RunRow, to: RunStatus,
         pause_reason: PauseReason | None,
     ) -> None:
-        self._check_transition("run", run, to, pause_reason)
+        current = self._check_transition("run", run, to, pause_reason)
+        run.paused_from = _paused_from_value(current, to)
         if to is RunStatus.SUCCEEDED:
             self._assert_no_inflight(s, [run.run_id])
         run.status = to.value
@@ -709,6 +711,18 @@ class TaskManager:
                 s, pending, "run.ended", task, aggregate=("run", run.run_id, run.version),
                 run_id=run.run_id, payload=payload,
             )
+
+    @staticmethod
+    def _resume_target(kind: str, row: TaskRow | RunRow) -> RunStatus:
+        """PAUSED 恢復後的目標狀態（SA-7）：回到該列自己的 ``paused_from``。
+
+        舊資料（PAUSED 但 paused_from 為 NULL，或值不合法）維持舊行為回 RUNNING 並記 warning。"""
+        raw = row.paused_from
+        if raw is not None and raw in _PAUSED_FROM_VALUES:
+            return RunStatus(raw)
+        ident = row.task_id if kind == "task" else row.run_id
+        logger.warning("%s %s 為 PAUSED 但 paused_from 缺失或不合法（%r），恢復時回 RUNNING", kind, ident, raw)
+        return RunStatus.RUNNING
 
     def _lock_task(self, s: Session, task_id: str, expected_version: int | None) -> TaskRow:
         task = self._need(
@@ -739,7 +753,12 @@ class TaskManager:
                 # （終態由 _set_task_status 負責收尾）
                 for run in self._live_runs(s, task_id):
                     if run.status != to.value:
-                        self._set_run_status(s, pending, task, run, to, pause_reason)
+                        # SA-7：從 PAUSED 恢復（to=RUNNING）時，Run 與 Task 各依自己的 paused_from 回原狀態
+                        target = self._resume_target("run", run) if (
+                            to is RunStatus.RUNNING and run.status == RunStatus.PAUSED.value) else to
+                        self._set_run_status(s, pending, task, run, target, pause_reason)
+            if to is RunStatus.RUNNING and task.status == RunStatus.PAUSED.value:
+                to = self._resume_target("task", task)
             self._set_task_status(s, pending, task, to, pause_reason)
             return task
 
@@ -2015,10 +2034,11 @@ class TaskManager:
             for action in actions:
                 if action.status == ActionStatus.EXECUTING.value:
                     self._set_action_status(s, pending, task, action, ActionStatus.UNKNOWN, "action.unknown")
+            # SA-7：Run 與 Task 各依自己的 paused_from 回到暫停前狀態
             if run.status == RunStatus.PAUSED.value:
-                self._set_run_status(s, pending, task, run, RunStatus.RUNNING, None)
+                self._set_run_status(s, pending, task, run, self._resume_target("run", run), None)
             if task.status == RunStatus.PAUSED.value:
-                self._set_task_status(s, pending, task, RunStatus.RUNNING, None)
+                self._set_task_status(s, pending, task, self._resume_target("task", task), None)
             steps = list(
                 s.scalars(
                     select(StepRow).where(
@@ -2041,6 +2061,20 @@ class TaskManager:
 _LEGACY_ACTION_STATUS: dict[ActionStatus, str] = {
     ActionStatus.SUCCEEDED: "executed", ActionStatus.FAILED: "failed", ActionStatus.UNKNOWN: "unknown",
 }
+
+# SA-7：paused_from 的合法值域（暫停前的狀態；PAUSED 只能從這四種進入）
+_PAUSED_FROM_VALUES = frozenset({
+    RunStatus.PENDING.value, RunStatus.RUNNING.value,
+    RunStatus.WAITING_INPUT.value, RunStatus.WAITING_APPROVAL.value,
+})
+
+
+def _paused_from_value(current: RunStatus, to: RunStatus) -> str | None:
+    """轉入 PAUSED 時記下暫停前狀態；其餘轉移（含恢復）一律清除。"""
+    if to is RunStatus.PAUSED and current.value in _PAUSED_FROM_VALUES:
+        return current.value
+    return None
+
 
 _TASK_EVENT: dict[tuple[RunStatus | None, RunStatus], str] = {
     (None, RunStatus.SUCCEEDED): "task.completed",

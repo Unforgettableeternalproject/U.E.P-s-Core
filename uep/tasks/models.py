@@ -83,6 +83,11 @@ class TaskRow(Base):
         CheckConstraint(
             "(status = 'PAUSED') = (pause_reason IS NOT NULL)", name="pause_reason_iff_paused"
         ),
+        CheckConstraint(
+            "paused_from IS NULL OR paused_from IN ('PENDING', 'RUNNING', 'WAITING_INPUT', 'WAITING_APPROVAL')",
+            name="paused_from",
+        ),
+        CheckConstraint("status = 'PAUSED' OR paused_from IS NULL", name="paused_from_only_paused"),
         Index("ix_tasks_status", "status"),
     )
 
@@ -97,6 +102,8 @@ class TaskRow(Base):
     presence_bound: Mapped[bool] = mapped_column(Boolean, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
     pause_reason: Mapped[str | None] = mapped_column(String)
+    # SA-7：暫停前狀態，恢復後清除；Task 與 Run 各存各的
+    paused_from: Mapped[str | None] = mapped_column(String)
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     interrupt_policy: Mapped[str] = mapped_column(String, nullable=False)
     origin_ref: Mapped[dict | None] = mapped_column(JSONB)
@@ -118,6 +125,11 @@ class RunRow(Base):
             "(status = 'PAUSED') = (pause_reason IS NOT NULL)", name="pause_reason_iff_paused"
         ),
         CheckConstraint(
+            "paused_from IS NULL OR paused_from IN ('PENDING', 'RUNNING', 'WAITING_INPUT', 'WAITING_APPROVAL')",
+            name="paused_from",
+        ),
+        CheckConstraint("status = 'PAUSED' OR paused_from IS NULL", name="paused_from_only_paused"),
+        CheckConstraint(
             "cancel_reason IS NULL OR " + in_list("cancel_reason", CancelReason), name="cancel_reason"
         ),
         Index("ix_runs_task_id", "task_id"),
@@ -134,6 +146,8 @@ class RunRow(Base):
     worker_epoch: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     status: Mapped[str] = mapped_column(String, nullable=False)
     pause_reason: Mapped[str | None] = mapped_column(String)
+    # SA-7：暫停前狀態，恢復後清除；Task 與 Run 各存各的
+    paused_from: Mapped[str | None] = mapped_column(String)
     run_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     step_timeout: Mapped[timedelta | None] = mapped_column(Interval)
     approval_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

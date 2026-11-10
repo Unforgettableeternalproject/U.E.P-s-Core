@@ -175,6 +175,8 @@ Agent Core（**新增**）是 Core 內「worker」的實作：持有 `worker_epo
 
 建議 **A**。`transition_guard` 的適用性：現行 guard 只攔「轉入 `RUNNING`」（`uep/assembly.py` 的 `transition_guard` 僅檢查 `to_status is RUNNING` 時的 `task_entry_blocked()`），因此**還原到 `WAITING_*`／`PENDING` 不被 guard 攔截**，全域停止期間也可還原到等待態。這是可接受的（等待態不執行工具），之後 `task.input_provided`／核准後轉 `RUNNING` 時 guard 照常生效；還原到 `RUNNING` 者仍被 guard 攔。保留此語意並寫入測試。
 
+- **實作註記（2026-11-10，D49）**：已實作選項 A（migration 0017：`tasks`／`runs` 新增 `paused_from`，CHECK 限四值域且只有 `status='PAUSED'` 列可有值）。取捨：(1) `_set_task_status`／`_set_run_status` 轉入 PAUSED 時記下當下狀態、任何其他轉移一律清除，Task 與 Run 各存各的；`RUN_TRANSITIONS[PAUSED]` 補 `PENDING／WAITING_INPUT／WAITING_APPROVAL`。(2) `resume_run` 與 `transition_task(to=RUNNING)` 對 PAUSED 的列（含連動的 live Run）各依自己的 `paused_from` 還原，因此 Task 層以 RUNNING 恢復 PAUSED(PENDING) 的 Task 會回 PENDING；`transition_task` 對非 PAUSED 列的連動行為不變。(3) 舊資料（PAUSED 但 `paused_from` 為 NULL）恢復時回 RUNNING 並記 warning（Task、Run 各一筆）。(4) 還原到 `WAITING_INPUT` 時依一般規則發出 `task.input_requested`（`(None, WAITING_INPUT)` 事件對應），SA-8 的恢復時重驗／重發通知 intent 未做。
+
 **SA-8**（對 T-7）：恢復 `WAITING_APPROVAL` 時重驗 `approval_expiry` 與 approval 有效性；已過期維持等待並產生新的核准請求。恢復 `WAITING_INPUT` 時重新發出輸入請求的通知 intent（T-8）。
 
 ### 2.5 UNKNOWN 與未驗證 receipt（T-24 移出項 4）

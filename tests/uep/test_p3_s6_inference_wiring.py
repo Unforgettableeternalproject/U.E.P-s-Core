@@ -625,3 +625,45 @@ def test_tool_lead_in_預設_model_then_fixed_可由環境變數覆寫(monkeypat
     assert build(cfg=_ix(stt_mode="single", tool_lead_in="off")).think.tool_lead_in == "off"
     with pytest.raises(InferenceWiringError, match="tool_lead_in"):
         _ix(tool_lead_in="bogus")
+
+
+# ---- VOX 語速與停頓 ----
+
+def test_vox_語速停頓_預設全為_None_不傳(monkeypatch, tmp_path):
+    for name in ("SPEED", "SEGMENT_SILENCE_MS", "TERMINAL_PAUSE_MS", "SECONDARY_PAUSE_MS"):
+        monkeypatch.delenv(f"UEP_INFER_VOX_{name}", raising=False)
+    monkeypatch.delenv("UEP_INFER_TTS_SPEED", raising=False)
+    captured: dict = {}
+    _install_fake_vox(monkeypatch, captured)
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert (cfg.vox_speed, cfg.vox_segment_silence_ms, cfg.vox_terminal_pause_ms, cfg.vox_secondary_pause_ms) == (
+        None, None, None, None)
+    build_inference_wiring(
+        InferenceConfig(stt_mode="single", tts_engine="vox"), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert captured == {}
+
+
+def test_vox_語速停頓_環境變數接線到_VoxSpeakStage(monkeypatch):
+    monkeypatch.setenv("UEP_INFER_VOX_SPEED", "1.1")
+    monkeypatch.setenv("UEP_INFER_VOX_SEGMENT_SILENCE_MS", "30")
+    monkeypatch.setenv("UEP_INFER_VOX_TERMINAL_PAUSE_MS", "250")
+    monkeypatch.setenv("UEP_INFER_VOX_SECONDARY_PAUSE_MS", "120")
+    captured: dict = {}
+    _install_fake_vox(monkeypatch, captured)
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    build_inference_wiring(
+        InferenceConfig(**{**cfg.__dict__, "stt_mode": "single"}), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert captured == {
+        "speed": 1.1, "segment_silence_ms": 30.0, "terminal_pause_ms": 250.0, "secondary_pause_ms": 120.0,
+    }
+
+
+def test_vox_語速_未設_vox_speed_時退回_tts_speed(monkeypatch):
+    captured: dict = {}
+    _install_fake_vox(monkeypatch, captured)
+    build_inference_wiring(
+        InferenceConfig(stt_mode="single", tts_engine="vox", tts_speed=1.3), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert captured == {"speed": 1.3}

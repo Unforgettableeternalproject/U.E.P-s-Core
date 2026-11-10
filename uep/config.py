@@ -122,6 +122,11 @@ class UepSettings(BaseSettings):
     infer_tts_engine: str = Field(default="vox", validation_alias="UEP_INFER_TTS_ENGINE")
     # VOX backend 設定：JSON 物件字串（原樣轉給 VoxBackend(config)）；空值＝不傳
     infer_vox_config: str | None = Field(default=None, validation_alias="UEP_INFER_VOX_CONFIG")
+    # VOX 語速與停頓（bot 預設皆為 None＝交給 backend／adapter 預設；未設就不傳）。speed 未設時退回 UEP_INFER_TTS_SPEED
+    infer_vox_speed: float | None = Field(default=None, validation_alias="UEP_INFER_VOX_SPEED")
+    infer_vox_segment_silence_ms: float | None = Field(default=None, ge=0, validation_alias="UEP_INFER_VOX_SEGMENT_SILENCE_MS")
+    infer_vox_terminal_pause_ms: float | None = Field(default=None, ge=0, validation_alias="UEP_INFER_VOX_TERMINAL_PAUSE_MS")
+    infer_vox_secondary_pause_ms: float | None = Field(default=None, ge=0, validation_alias="UEP_INFER_VOX_SECONDARY_PAUSE_MS")
     infer_tts_device: str = Field(default="cuda", validation_alias="UEP_INFER_TTS_DEVICE")
     infer_tts_fp16: bool = Field(default=True, validation_alias="UEP_INFER_TTS_FP16")
     infer_tts_use_accel: bool = Field(default=False, validation_alias="UEP_INFER_TTS_USE_ACCEL")

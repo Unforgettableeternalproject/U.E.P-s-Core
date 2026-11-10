@@ -93,6 +93,10 @@ class InferenceConfig:
     think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
     tts_engine: str = "vox"
     vox_config: Mapping[str, Any] | None = None  # 原樣轉給 VoxBackend(config)；None＝不傳
+    vox_speed: float | None = None  # None：退回 tts_speed；再 None 就不傳（交 backend，zh 1.2、en／ja 1.0）
+    vox_segment_silence_ms: float | None = None  # 整輪最後一句／硬切處尾端靜音；None＝adapter 預設 15ms
+    vox_terminal_pause_ms: float | None = None  # 句號／問號／驚嘆號切開處的停頓；None＝沿用 segment_silence_ms
+    vox_secondary_pause_ms: float | None = None  # 逗號切開處的停頓；None＝沿用 segment_silence_ms
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
     think_prepare_timeout_s: float = 8.0
     input_prepare_timeout_s: float = 10.0
@@ -135,6 +139,9 @@ class InferenceConfig:
             settings = get_settings()
         return cls(
             tts_engine=settings.infer_tts_engine, vox_config=_parse_vox_config(settings.infer_vox_config),
+            vox_speed=settings.infer_vox_speed, vox_segment_silence_ms=settings.infer_vox_segment_silence_ms,
+            vox_terminal_pause_ms=settings.infer_vox_terminal_pause_ms,
+            vox_secondary_pause_ms=settings.infer_vox_secondary_pause_ms,
             tts_repo=settings.infer_tts_repo, stt_repo=settings.infer_stt_repo,
             session_repo=settings.infer_session_repo, tts_device=settings.infer_tts_device,
             tts_fp16=settings.infer_tts_fp16, tts_use_accel=settings.infer_tts_use_accel,
@@ -383,8 +390,17 @@ def _build_vox_speak(cfg: InferenceConfig, extra: Mapping[str, Any]) -> Any:
         vox_kwargs["backend_config"] = dict(cfg.vox_config)
     if cfg.tts_language is not None:
         vox_kwargs["language"] = cfg.tts_language
-    if cfg.tts_speed is not None:
-        vox_kwargs["speed"] = cfg.tts_speed
+    speed = cfg.vox_speed if cfg.vox_speed is not None else cfg.tts_speed
+    if speed is not None:
+        vox_kwargs["speed"] = speed
+    # 停頓參數同 bot：None 不傳，沿用 adapter 預設
+    for key, value in (
+        ("segment_silence_ms", cfg.vox_segment_silence_ms),
+        ("terminal_pause_ms", cfg.vox_terminal_pause_ms),
+        ("secondary_pause_ms", cfg.vox_secondary_pause_ms),
+    ):
+        if value is not None:
+            vox_kwargs[key] = float(value)
     vox_kwargs.update(extra)
     return VoxSpeakStage(**vox_kwargs)
 

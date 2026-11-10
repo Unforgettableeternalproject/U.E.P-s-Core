@@ -56,6 +56,20 @@ class StageNotReady(RuntimeError):
     """stage 的 prepare 失敗或逾時，之後的使用一律明確失敗。"""
 
 
+_ECOQOS_APPLIED = False
+
+
+def _apply_ecoqos_once(cfg: InferenceConfig) -> None:
+    """真實推理組裝是 Core 主機的啟動點：每個行程只套用一次 EcoQoS 關閉（非 Windows 為 no-op）。"""
+    global _ECOQOS_APPLIED
+    if _ECOQOS_APPLIED or not cfg.disable_ecoqos:
+        return
+    _ECOQOS_APPLIED = True
+    from uep.ecoqos import disable_ecoqos
+
+    disable_ecoqos()
+
+
 def _parse_vox_config(raw: str | None) -> dict[str, Any] | None:
     """``UEP_INFER_VOX_CONFIG`` 為 JSON 物件字串；空值回 None，格式錯誤 fail-closed。"""
     if raw is None or not raw.strip():
@@ -90,6 +104,7 @@ class InferenceConfig:
     system_prompt: str = ""
     tool_lead_in: str = "model_then_fixed"  # 工具呼叫墊話模式（UEP_THINK_FILLER_MODE）
     voice_retrieve_timeout_s: float | None = 1.5  # 語音路徑記憶檢索逾時（bot 驗證值）；None＝沿用 Access Layer 預設
+    disable_ecoqos: bool = True  # Windows 關閉 EcoQoS（UEP_DISABLE_ECOQOS）；非 Windows 無作用
     prewarm: bool = True  # Host 啟動時以 system_prompt 預熱 LLM prompt cache（host_kwargs 帶 prewarm_prompt）
     think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
     tts_engine: str = "vox"
@@ -152,7 +167,7 @@ class InferenceConfig:
             stt_job_timeout_s=settings.stt_job_timeout_s or None,
             stt_job_timeout_per_audio_s=settings.stt_job_timeout_per_audio_s,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
-            system_prompt=settings.infer_system_prompt, think=settings.think_config(), prewarm=settings.llm_prewarm,
+            system_prompt=settings.infer_system_prompt, think=settings.think_config(), prewarm=settings.llm_prewarm, disable_ecoqos=settings.disable_ecoqos,
             voice_retrieve_timeout_s=settings.memory_voice_retrieve_timeout_s or None,
             tool_lead_in=settings.think_filler_mode,
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
@@ -476,6 +491,7 @@ def build_inference_wiring(
     時，模型呼叫改由 ``ModelPortBackend``（``ModelPort``）執行；沒給就沿用原 backend。
     """
     cfg = config or InferenceConfig.from_settings()
+    _apply_ecoqos_once(cfg)
     extra = {k: dict(v) for k, v in (stage_kwargs or {}).items()}
     wiring = InferenceWiring(think=None, speak=None, input_stage=None, config=cfg, metrics=metrics or Metrics())
 

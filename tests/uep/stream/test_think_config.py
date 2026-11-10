@@ -39,7 +39,7 @@ def settings() -> UepSettings:
 def test_預設值與舊_ES_一致():
     cfg = settings().think_config()
     assert (cfg.provider, cfg.model, cfg.api, cfg.reasoning_effort, cfg.max_output_tokens) == (
-        "openai", "gpt-5.6-luna", "chat", "high", 1024)
+        "openai", "gpt-6-luna", "chat", "medium", 1024)
     assert cfg.api_key is None and cfg.output_guard_enabled and cfg.output_blocklist_extra == ()
 
 

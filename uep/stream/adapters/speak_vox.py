@@ -11,7 +11,7 @@
 * backend 同時只能處理一個請求：stage 內部句子本來就序列合成，
   另外加一把 lock，連「上一個 turn 被取消、執行緒還在收尾」時
   新 turn 也不會並行呼叫 backend。
-* 輸出取樣率與 IndexTTS2 一致（預設 22050、int16），48kHz 用 soxr
+* 輸出取樣率預設 48kHz 直出（int16，不重採樣；11/11 Bernie 確認不降頻）；明確指定其他取樣率時用 soxr
   的串流重採樣器轉換（狀態跨 chunk 延續，chunk 邊界不會有不連續）。
 
 ## 取消
@@ -42,7 +42,7 @@ from typing import Any
 
 from ..contracts.cancellation import CancellationToken, CancelledError, CancelReason
 from ..contracts.style import SpeechStyle
-from ..contracts.types import TTS_SAMPLE_RATE, AudioChunk, Sentence
+from ..contracts.types import AudioChunk, Sentence
 from ..channel import ChannelClosed, StreamChannel
 from ..splitter import SplitPolicy
 from .speak_indextts import sanitize_for_tts, smooth_segment_edges, tensor_to_pcm16
@@ -77,7 +77,7 @@ class VoxSpeakStage:
         *,
         backend: Any | None = None,
         backend_config: dict | None = None,
-        sample_rate: int = TTS_SAMPLE_RATE,
+        sample_rate: int = VOX_SAMPLE_RATE,
         language: str | None = None,
         speed: float | None = None,
         sentence_buffer: int = 2,

@@ -25,7 +25,7 @@ from uep.memory.protocol import MemoryPort, RetrieveResult
 logger = logging.getLogger("uep.echo.memory")
 
 # 這些鍵由 Core 在提交時寫入 memory_retrieve_kwargs；其餘不認得的鍵一律不轉給 Access Layer
-_FORWARDED = ("present_uids", "shared_turn", "session_id", "top_k", "min_similarity", "max_chars")
+_FORWARDED = ("present_uids", "shared_turn", "session_id", "top_k", "min_similarity", "max_chars", "timeout_s")
 
 
 class MemoryRetrieveBridge:

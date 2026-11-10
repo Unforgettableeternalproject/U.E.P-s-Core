@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
@@ -119,10 +119,15 @@ class UepSettings(BaseSettings):
     infer_stt_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_STT_REPO")
     # Session 已遷入 Core（subsystems/echo_thought_core）：預設不設，由 Core 的 editable 安裝提供；僅作可選覆寫
     infer_session_repo: Path | None = Field(default=None, validation_alias="UEP_INFER_SESSION_REPO")
-    # TTS 引擎：indextts2（預設，V25）或 vox；兩者不能同時常駐，由此單選
-    infer_tts_engine: str = Field(default="indextts2", validation_alias="UEP_INFER_TTS_ENGINE")
+    # TTS 引擎：vox（預設）或 indextts2（V25，可選）；兩者不能同時常駐，由此單選
+    infer_tts_engine: str = Field(default="vox", validation_alias="UEP_INFER_TTS_ENGINE")
     # VOX backend 設定：JSON 物件字串（原樣轉給 VoxBackend(config)）；空值＝不傳
     infer_vox_config: str | None = Field(default=None, validation_alias="UEP_INFER_VOX_CONFIG")
+    # VOX 語速與停頓（bot 預設皆為 None＝交給 backend／adapter 預設；未設就不傳）。speed 未設時退回 UEP_INFER_TTS_SPEED
+    infer_vox_speed: float | None = Field(default=None, validation_alias="UEP_INFER_VOX_SPEED")
+    infer_vox_segment_silence_ms: float | None = Field(default=None, ge=0, validation_alias="UEP_INFER_VOX_SEGMENT_SILENCE_MS")
+    infer_vox_terminal_pause_ms: float | None = Field(default=None, ge=0, validation_alias="UEP_INFER_VOX_TERMINAL_PAUSE_MS")
+    infer_vox_secondary_pause_ms: float | None = Field(default=None, ge=0, validation_alias="UEP_INFER_VOX_SECONDARY_PAUSE_MS")
     infer_tts_device: str = Field(default="cuda", validation_alias="UEP_INFER_TTS_DEVICE")
     infer_tts_fp16: bool = Field(default=True, validation_alias="UEP_INFER_TTS_FP16")
     infer_tts_use_accel: bool = Field(default=False, validation_alias="UEP_INFER_TTS_USE_ACCEL")
@@ -132,11 +137,16 @@ class UepSettings(BaseSettings):
     infer_tts_language: str | None = Field(default=None, validation_alias="UEP_INFER_TTS_LANGUAGE")
     infer_stt_mode: str = Field(default="multichannel", validation_alias="UEP_INFER_STT_MODE")
     infer_stt_language: str | None = Field(default=None, validation_alias="UEP_INFER_STT_LANGUAGE")
+    # STT 單 job 牆鐘逾時（multichannel）：實際上限 = UEP_STT_JOB_TIMEOUT_S + UEP_STT_JOB_TIMEOUT_PER_AUDIO_S × 音訊秒數；
+    # 預設 4.0／0.5（bot 實測值）。UEP_STT_JOB_TIMEOUT_S 設 0 代表停用（不丟棄卡住的 job）
+    stt_job_timeout_s: float = Field(default=4.0, ge=0, validation_alias="UEP_STT_JOB_TIMEOUT_S")
+    stt_job_timeout_per_audio_s: float = Field(default=0.5, ge=0, validation_alias="UEP_STT_JOB_TIMEOUT_PER_AUDIO_S")
     infer_llm_provider: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_PROVIDER")
     infer_llm_model: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_MODEL")
-    infer_system_prompt: str = Field(default="", validation_alias="UEP_INFER_SYSTEM_PROMPT")
+    # 人設 system prompt：留空（含未設）時用 repo 內受版控的預設（uep/persona/persona.yaml）；env 有值以 env 為準
+    infer_system_prompt: str = Field(default="", validate_default=True, validation_alias="UEP_INFER_SYSTEM_PROMPT")
     # 各 stage prepare 的逾時（秒）；Host 啟動總上限目前為 60 秒（EchoPipelineHost.start），三者相加須小於它（未設定 UEP_INFER_HOST_START_TIMEOUT_S 時由組裝自動推得）
-    # speak 未設定（None）時依引擎取預設：indextts2 為 40 秒、vox 為 90 秒（見 inference_wiring）
+    # speak 未設定（None）時依引擎取預設：indextts2 為 40 秒、vox 為 240 秒（見 inference_wiring）
     infer_speak_prepare_timeout_s: float | None = Field(default=None, validation_alias="UEP_INFER_SPEAK_PREPARE_TIMEOUT_S")
     infer_think_prepare_timeout_s: float = Field(default=8.0, validation_alias="UEP_INFER_THINK_PREPARE_TIMEOUT_S")
     infer_input_prepare_timeout_s: float = Field(default=10.0, validation_alias="UEP_INFER_INPUT_PREPARE_TIMEOUT_S")
@@ -158,6 +168,14 @@ class UepSettings(BaseSettings):
     llm_organization: str | None = Field(default=None, validation_alias="UEP_LLM_ORGANIZATION")
     llm_base_url: str | None = Field(default=None, validation_alias="UEP_LLM_BASE_URL")
     llm_prompt_cache_key: str | None = Field(default=None, validation_alias="UEP_LLM_PROMPT_CACHE_KEY")
+    # Host 啟動時預熱 prompt cache（_startup：speak -> think -> prewarm -> 輸入）；預熱用的 effort 即 UEP_LLM_REASONING_EFFORT
+    # 語音路徑記憶檢索逾時（秒）：bot 驗證值 1.5；0＝沿用 Access Layer 預設（3 秒）。逾時本輪不帶記憶
+    memory_voice_retrieve_timeout_s: float = Field(default=1.5, ge=0, validation_alias="UEP_MEMORY_VOICE_RETRIEVE_TIMEOUT_S")
+    # Windows：啟動時關閉本行程 EcoQoS（避免被排到 E 核拖慢 TTS／STT）；非 Windows 無作用
+    disable_ecoqos: bool = Field(default=True, validation_alias="UEP_DISABLE_ECOQOS")
+    llm_prewarm: bool = Field(default=True, validation_alias="UEP_LLM_PREWARM")
+    # 工具呼叫前的墊話模式：model_then_fixed（bot 驗證過的預設）／model／fixed／off
+    think_filler_mode: str = Field(default="model_then_fixed", validation_alias="UEP_THINK_FILLER_MODE")
     llm_output_guard: bool | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_GUARD")
     llm_output_blocklist_extra: str | None = Field(default=None, validation_alias="UEP_LLM_OUTPUT_BLOCKLIST_EXTRA")
     # 長對話壓縮（ContextManager 四層壓縮）：壓縮走 openai 後端，None＝採 CompressConfig 預設
@@ -178,6 +196,16 @@ class UepSettings(BaseSettings):
     legacy_openai_project: str | None = Field(default=None, validation_alias="OPENAI_PROJECT")
     legacy_openai_org: str | None = Field(default=None, validation_alias="OPENAI_ORG")
     legacy_openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
+
+    @field_validator("infer_system_prompt")
+    @classmethod
+    def _default_persona_when_blank(cls, value: str) -> str:
+        """空白（未設或設成空字串）時以受版控的人設檔為預設。"""
+        if value.strip():
+            return value
+        from uep.persona import default_system_prompt
+
+        return default_system_prompt()
 
     def think_config(self) -> "ThinkConfig":
         """解析成 Think adapter 的 ThinkConfig：``UEP_LLM_*`` → ``UEP_INFER_LLM_*`` → 舊名（警告一次）→ 預設。"""

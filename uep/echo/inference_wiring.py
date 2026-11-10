@@ -56,6 +56,20 @@ class StageNotReady(RuntimeError):
     """stage 的 prepare 失敗或逾時，之後的使用一律明確失敗。"""
 
 
+_ECOQOS_APPLIED = False
+
+
+def _apply_ecoqos_once(cfg: InferenceConfig) -> None:
+    """真實推理組裝是 Core 主機的啟動點：每個行程只套用一次 EcoQoS 關閉（非 Windows 為 no-op）。"""
+    global _ECOQOS_APPLIED
+    if _ECOQOS_APPLIED or not cfg.disable_ecoqos:
+        return
+    _ECOQOS_APPLIED = True
+    from uep.ecoqos import disable_ecoqos
+
+    disable_ecoqos()
+
+
 def _parse_vox_config(raw: str | None) -> dict[str, Any] | None:
     """``UEP_INFER_VOX_CONFIG`` 為 JSON 物件字串；空值回 None，格式錯誤 fail-closed。"""
     if raw is None or not raw.strip():
@@ -83,13 +97,23 @@ class InferenceConfig:
     tts_language: str | None = None
     stt_mode: str = "multichannel"
     stt_language: str | None = None
+    stt_job_timeout_s: float | None = 4.0  # multichannel 單 job 逾時（秒）；None 或 0＝停用
+    stt_job_timeout_per_audio_s: float = 0.5  # 每秒音訊追加的逾時額度（秒）
     llm_provider: str | None = None
     llm_model: str | None = None
     system_prompt: str = ""
+    tool_lead_in: str = "model_then_fixed"  # 工具呼叫墊話模式（UEP_THINK_FILLER_MODE）
+    voice_retrieve_timeout_s: float | None = 1.5  # 語音路徑記憶檢索逾時（bot 驗證值）；None＝沿用 Access Layer 預設
+    disable_ecoqos: bool = True  # Windows 關閉 EcoQoS（UEP_DISABLE_ECOQOS）；非 Windows 無作用
+    prewarm: bool = True  # Host 啟動時以 system_prompt 預熱 LLM prompt cache（host_kwargs 帶 prewarm_prompt）
     think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
     compress: Any = None  # CompressConfig（長對話壓縮，由 UepSettings.compress_config() 解析）；None＝停用，沿用 history_limit 截斷
-    tts_engine: str = "indextts2"
+    tts_engine: str = "vox"
     vox_config: Mapping[str, Any] | None = None  # 原樣轉給 VoxBackend(config)；None＝不傳
+    vox_speed: float | None = None  # None：退回 tts_speed；再 None 就不傳（交 backend，zh 1.2、en／ja 1.0）
+    vox_segment_silence_ms: float | None = None  # 整輪最後一句／硬切處尾端靜音；None＝adapter 預設 15ms
+    vox_terminal_pause_ms: float | None = None  # 句號／問號／驚嘆號切開處的停頓；None＝沿用 segment_silence_ms
+    vox_secondary_pause_ms: float | None = None  # 逗號切開處的停頓；None＝沿用 segment_silence_ms
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
     think_prepare_timeout_s: float = 8.0
     input_prepare_timeout_s: float = 10.0
@@ -104,6 +128,10 @@ class InferenceConfig:
             raise InferenceWiringError(f"stt_mode 必須是 {STT_MODES} 之一：{self.stt_mode!r}")
         if self.tts_engine not in TTS_ENGINES:
             raise InferenceWiringError(f"tts_engine 必須是 {TTS_ENGINES} 之一：{self.tts_engine!r}")
+        from uep.stream.adapters.think_llm import TOOL_LEAD_IN_MODES
+
+        if self.tool_lead_in not in TOOL_LEAD_IN_MODES:
+            raise InferenceWiringError(f"tool_lead_in 必須是 {TOOL_LEAD_IN_MODES} 之一：{self.tool_lead_in!r}")
         if self.speak_prepare_timeout_s is None:
             object.__setattr__(self, "speak_prepare_timeout_s", SPEAK_PREPARE_TIMEOUT_DEFAULTS[self.tts_engine])
         for name in ("speak_prepare_timeout_s", "think_prepare_timeout_s", "input_prepare_timeout_s"):
@@ -128,15 +156,22 @@ class InferenceConfig:
             settings = get_settings()
         return cls(
             tts_engine=settings.infer_tts_engine, vox_config=_parse_vox_config(settings.infer_vox_config),
+            vox_speed=settings.infer_vox_speed, vox_segment_silence_ms=settings.infer_vox_segment_silence_ms,
+            vox_terminal_pause_ms=settings.infer_vox_terminal_pause_ms,
+            vox_secondary_pause_ms=settings.infer_vox_secondary_pause_ms,
             tts_repo=settings.infer_tts_repo, stt_repo=settings.infer_stt_repo,
             session_repo=settings.infer_session_repo, tts_device=settings.infer_tts_device,
             tts_fp16=settings.infer_tts_fp16, tts_use_accel=settings.infer_tts_use_accel,
             tts_warmup=settings.infer_tts_warmup, tts_lora_scale=settings.infer_tts_lora_scale,
             tts_speed=settings.infer_tts_speed, tts_language=settings.infer_tts_language,
             stt_mode=settings.infer_stt_mode, stt_language=settings.infer_stt_language,
+            stt_job_timeout_s=settings.stt_job_timeout_s or None,
+            stt_job_timeout_per_audio_s=settings.stt_job_timeout_per_audio_s,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
-            system_prompt=settings.infer_system_prompt, think=settings.think_config(),
+            system_prompt=settings.infer_system_prompt, think=settings.think_config(), prewarm=settings.llm_prewarm, disable_ecoqos=settings.disable_ecoqos,
             compress=settings.compress_config(),
+            voice_retrieve_timeout_s=settings.memory_voice_retrieve_timeout_s or None,
+            tool_lead_in=settings.think_filler_mode,
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
             think_prepare_timeout_s=settings.infer_think_prepare_timeout_s,
             input_prepare_timeout_s=settings.infer_input_prepare_timeout_s,
@@ -374,8 +409,17 @@ def _build_vox_speak(cfg: InferenceConfig, extra: Mapping[str, Any]) -> Any:
         vox_kwargs["backend_config"] = dict(cfg.vox_config)
     if cfg.tts_language is not None:
         vox_kwargs["language"] = cfg.tts_language
-    if cfg.tts_speed is not None:
-        vox_kwargs["speed"] = cfg.tts_speed
+    speed = cfg.vox_speed if cfg.vox_speed is not None else cfg.tts_speed
+    if speed is not None:
+        vox_kwargs["speed"] = speed
+    # 停頓參數同 bot：None 不傳，沿用 adapter 預設
+    for key, value in (
+        ("segment_silence_ms", cfg.vox_segment_silence_ms),
+        ("terminal_pause_ms", cfg.vox_terminal_pause_ms),
+        ("secondary_pause_ms", cfg.vox_secondary_pause_ms),
+    ):
+        if value is not None:
+            vox_kwargs[key] = float(value)
     vox_kwargs.update(extra)
     return VoxSpeakStage(**vox_kwargs)
 
@@ -405,6 +449,11 @@ class InferenceWiring:
             "think": self.think, "speak": self.speak, "input_stage": self.input_stage,
             "start_timeout_s": self.config.host_start_timeout_s,
         }
+        if self.config.prewarm:
+            # Host._startup 在 think.prepare 之後呼叫 think.prewarm(prompt)；與 stage 的 system_prompt 同源，前綴與首輪一致
+            kwargs["prewarm_prompt"] = self.config.system_prompt
+        if self.config.voice_retrieve_timeout_s is not None:
+            kwargs["voice_retrieve_timeout_s"] = self.config.voice_retrieve_timeout_s
         if self.tool_path != "legacy":
             kwargs["tool_path"] = self.tool_path  # legacy 時不帶（Host 預設即 legacy；legacy 的鍵集合不變）
         return kwargs
@@ -444,6 +493,7 @@ def build_inference_wiring(
     時，模型呼叫改由 ``ModelPortBackend``（``ModelPort``）執行；沒給就沿用原 backend。
     """
     cfg = config or InferenceConfig.from_settings()
+    _apply_ecoqos_once(cfg)
     extra = {k: dict(v) for k, v in (stage_kwargs or {}).items()}
     wiring = InferenceWiring(think=None, speak=None, input_stage=None, config=cfg, metrics=metrics or Metrics())
 
@@ -467,6 +517,10 @@ def build_inference_wiring(
     if cfg.stt_repo is not None:
         _warn_stt_repo_ignored(cfg.stt_repo)
     input_kwargs: dict[str, Any] = {"backend": stt_backend, "language": cfg.stt_language}
+    if cfg.stt_mode == "multichannel":
+        # 逾時 None／0＝停用；單聲道 SttInputStage 沒有轉錄池，不傳
+        input_kwargs["job_timeout_s"] = cfg.stt_job_timeout_s or None
+        input_kwargs["job_timeout_per_audio_s"] = cfg.stt_job_timeout_per_audio_s
     input_kwargs.update(extra.get("input", {}))
     input_stage = InputCls(**input_kwargs)
 
@@ -474,7 +528,9 @@ def build_inference_wiring(
     from uep.stream.adapters.think_llm import LLMThinkStage
 
     llm = think_backend if think_backend is not None else (think_backend_factory or default_think_backend)(cfg)
-    think_kwargs: dict[str, Any] = {"system_prompt": cfg.system_prompt, "config": cfg.think}
+    think_kwargs: dict[str, Any] = {
+        "system_prompt": cfg.system_prompt, "config": cfg.think, "tool_lead_in": cfg.tool_lead_in,
+    }
     think_kwargs.update(extra.get("think", {}))
     from uep.stream.adapters.think_compress import compression_kwargs
 

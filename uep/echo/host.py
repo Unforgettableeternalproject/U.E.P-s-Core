@@ -180,6 +180,7 @@ class EchoPipelineHost:
         profile_provider: Callable[[SessionContext], str] | None = None,
         output: EchoOutputConfig | None = None,
         prewarm_prompt: str | None = None,
+        voice_retrieve_timeout_s: float | None = None,
         stop_timeout_s: float = _STOP_TIMEOUT_S,
         start_timeout_s: float = _START_TIMEOUT_S,
         endpoint_kwargs: dict[str, Any] | None = None,
@@ -216,6 +217,7 @@ class EchoPipelineHost:
         self._yield_policy = CoreYieldPolicy(self.policy)
         self._profile_provider = profile_provider
         self._prewarm_prompt = prewarm_prompt
+        self._voice_retrieve_timeout_s = voice_retrieve_timeout_s  # None：沿用 Access Layer 預設（3 秒）
         self._stop_timeout_s = stop_timeout_s
         self._start_timeout_s = start_timeout_s
         self._deferred_core = DeferredCoreApi()
@@ -702,6 +704,8 @@ class EchoPipelineHost:
             "actor_id": ticket.actor_id, "audience": ticket.audience_scope, "session_id": ticket.segment_id,
             "shared_turn": guild is not None,
         }
+        if self._voice_retrieve_timeout_s is not None:
+            retrieve_kwargs["timeout_s"] = self._voice_retrieve_timeout_s  # 語音路徑檢索逾時（逾時本輪不帶記憶）
         # D79：每輪各建一個新的 tool_context dict（不可跨輪共用，隱私）。身分與 audience 由 Core 寫入，
         # CoreToolExecutor 只讀這裡（LLM 的引數不能指定範圍）；member_recall 讀回的投影 id 也寫回這個 dict。
         tool_context: dict[str, Any] = {

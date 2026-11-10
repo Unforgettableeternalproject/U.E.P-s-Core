@@ -67,6 +67,18 @@ class FakeVoxBackend:
                 self.active -= 1
 
 
+def test_預設_48k_直出_不建重採樣器():
+    stage = VoxSpeakStage(backend=FakeVoxBackend())
+    assert stage.sample_rate == VOX_SAMPLE_RATE == 48000
+    assert stage._make_resampler() is None
+
+
+async def test_明確指定_22050_仍可重採樣():
+    stage = VoxSpeakStage(backend=FakeVoxBackend(chunks_per_call=3), sample_rate=22050)
+    chunks = await _collect(stage, ["第一句。"])
+    assert chunks and all(c.sample_rate == 22050 for c in chunks)
+
+
 async def _collect(stage, texts, token=None, style=None):
     token = token or CancellationToken()
     return [c async for c in stage.stream(sentence_stream(texts, style=style), token)]
@@ -78,9 +90,9 @@ async def test_正常串流與格式():
     chunks = await _collect(stage, ["第一句。", "第二句。"])
 
     assert len(backend.calls) == 2
-    assert all(c.sample_rate == 22050 and c.channels == 1 for c in chunks)
+    assert all(c.sample_rate == 48000 and c.channels == 1 for c in chunks)
     assert all(len(c.pcm) % 2 == 0 for c in chunks)
-    # 3 × 160ms 重採樣到 22050，加上尾端靜音墊，每句約 480ms + 15ms
+    # 預設 48k 直出（不重採樣）：3 × 160ms，加上尾端靜音墊，每句約 480ms + 15ms
     for idx in (0, 1):
         total = sum(c.duration_s for c in chunks if c.sentence_index == idx)
         assert total == pytest.approx(0.495, abs=0.02)

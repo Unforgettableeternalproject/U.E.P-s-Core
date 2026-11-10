@@ -16,9 +16,9 @@ class ThinkConfigError(RuntimeError):
 @dataclass(frozen=True)
 class ThinkConfig:
     provider: str = "openai"
-    model: str = "gpt-5.6-luna"
+    model: str = "gpt-6-luna"
     api: str = "chat"
-    reasoning_effort: str = "high"
+    reasoning_effort: str = "medium"
     max_output_tokens: int = 1024
     temperature: float | None = None
     api_key: str | None = field(default=None, repr=False)

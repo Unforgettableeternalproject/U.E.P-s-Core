@@ -1,13 +1,13 @@
 {
   "kind": "characterization",
   "note": "現況行為快照，非人工真值，不可用於訓練",
-  "generated_at": "2026-11-10T09:25:40+00:00",
-  "commit": "1e4bd36f9147cdabdff0528e572060c0c65b1dd9",
+  "generated_at": "2026-11-10T10:46:21+00:00",
+  "commit": "c6cd25a19fac5bc602c04abdeedc01e5a44e35af",
   "proposers": {
     "rules.default": "s5-bot-port",
     "respond.minimal": "s3-respond"
   },
-  "records": 59,
+  "records": 64,
   "timed": {
     "generated_at": "2026-11-06T05:54:34+00:00",
     "commit": "b5c821b4c4a94568e51d2d9afe6b854542453497",

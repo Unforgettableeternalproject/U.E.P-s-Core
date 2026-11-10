@@ -70,7 +70,7 @@ def test_ids_are_unique(candidates):
 def test_both_languages_present_and_sized(candidates):
     langs = {c["lang"] for c in candidates}
     assert langs == {"en", "zh"}
-    assert 30 <= len(candidates) <= 60
+    assert 30 <= len(candidates) <= 70
 
 
 def test_golden_covers_main_rule_branches(golden):

@@ -17,6 +17,7 @@ from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass, replace
 
 from uep.decision.contracts import (
+    DecisionCapability,
     DecisionEngineInfo,
     DecisionPlan,
     DecisionReply,
@@ -68,6 +69,7 @@ def turn_reply_spec(budget_ms: int) -> DecisionPointSpec:
         outcomes=tuple(m.value for m in ReplyMode),
         budget_ms=budget_ms, on_timeout_reason=ON_TIMEOUT_REASON, on_busy_reason=ON_BUSY_REASON,
         on_error_reason=ON_ERROR_REASON, on_invalid_reason=ON_INVALID_REASON, shadow=True, allow_native=True,
+        plan_sections=("capability",),
     )
 
 
@@ -85,6 +87,11 @@ def proposal_to_result(proposal: Proposal, request: DecisionRequest, *, fallback
             reply=DecisionReply(
                 mode=proposal.reply_mode.value, interaction_to=proposal.interaction_to, addressed=proposal.addressed
             ),
+            # hint 為 None 時不輸出區段，與包裝前的 plan 位元級相同
+            capability=(
+                DecisionCapability(capability_hint=tuple(proposal.capability_hint))
+                if proposal.capability_hint is not None else None
+            ),
         ),
         confidence=proposal.confidence, reason_code=proposal.reason_code,
         engine=DecisionEngineInfo(
@@ -95,7 +102,7 @@ def proposal_to_result(proposal: Proposal, request: DecisionRequest, *, fallback
 
 
 def result_to_proposal(result: DecisionResult) -> Proposal:
-    """DecisionResult -> Proposal（P0 的 plan 只含 route、reply.mode、interaction_to，另帶 addressed）。"""
+    """DecisionResult -> Proposal（plan 含 route、reply.mode、interaction_to，另帶 addressed 與 capability_hint）。"""
     plan = result.plan
     reply = plan.reply if plan is not None else None
     mode = reply.mode if reply is not None else result.outcome
@@ -107,6 +114,7 @@ def result_to_proposal(result: DecisionResult) -> Proposal:
         interaction_to=reply.interaction_to if reply is not None else None,
         reason_code=result.reason_code,
         proposer_id=result.engine.id, proposer_version=result.engine.version,
+        capability_hint=plan.capability.capability_hint if plan is not None and plan.capability is not None else None,
     )
 
 

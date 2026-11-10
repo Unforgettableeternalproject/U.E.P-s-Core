@@ -18,6 +18,8 @@ logger = logging.getLogger("uep.decision.hub")
 
 # spec 未設 on_invalid_reason 時，非白名單區段被剝除的預設 reason_code
 REASON_PLAN_SECTION_REJECTED = "plan_section_rejected"
+# 需在 spec.plan_sections 宣告才允許帶的區段（policy：僅政策發布事實；capability：DL-4 hint，proactive 不宣告）
+_GUARDED_SECTIONS = ("policy", "capability")
 
 # 觀察者：decide 成功後以（request, result, spec, elapsed_ms）呼叫；必須非阻塞（如只丟進佇列），例外一律吞掉
 DecisionObserver = Callable[[DecisionRequest, DecisionResult, DecisionPointSpec, int], None]
@@ -85,13 +87,15 @@ class DecisionHub:
     def _dispatch(self, kind: str, spec: DecisionPointSpec, request: DecisionRequest) -> DecisionResult:
         started = time.perf_counter()
         result = self._engines[kind].decide(request)
-        if result.plan is not None and result.plan.policy is not None and "policy" not in spec.plan_sections:
-            # 中樞原則：失敗回 fallback、不拋例外；剝除違規區段並照常通知觀察者（只記 kind 與 engine id，不記內容）
-            logger.warning("決策點 %s 的 engine %s 帶了未宣告的 policy 區段，已剝除", kind, result.engine.id)
-            result = replace(
-                result, plan=replace(result.plan, policy=None), fallback=True,
-                reason_code=spec.on_invalid_reason or REASON_PLAN_SECTION_REJECTED,
-            )
+        if result.plan is not None:
+            # 中樞原則：失敗回 fallback、不拋例外；剝除未宣告的區段並照常通知觀察者（只記 kind 與 engine id，不記內容）
+            for section in _GUARDED_SECTIONS:
+                if getattr(result.plan, section) is not None and section not in spec.plan_sections:
+                    logger.warning("決策點 %s 的 engine %s 帶了未宣告的 %s 區段，已剝除", kind, result.engine.id, section)
+                    result = replace(
+                        result, plan=replace(result.plan, **{section: None}), fallback=True,
+                        reason_code=spec.on_invalid_reason or REASON_PLAN_SECTION_REJECTED,
+                    )
         if self._observers:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             for observer in tuple(self._observers):

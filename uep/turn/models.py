@@ -82,6 +82,8 @@ class Proposal:
     reason_code: str = "default_respond"
     proposer_id: str = "unknown"  # 實作識別（稽核用）；CC-7 的提議者身分是 Orchestrator 固定的 core.decision
     proposer_version: str = "0"
+    # DL-4：只能收窄的 capability 提議（None = 不收窄；() = 要求空集合）；最終標籤由決策層純函式計算，不由此欄決定
+    capability_hint: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

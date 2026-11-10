@@ -18,7 +18,7 @@ import copy
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Literal
 
-from uep.tasks.manager import ActionOutcome, PolicyViolation
+from uep.tasks.manager import APPROVAL_DENIED, ActionOutcome, PolicyViolation
 from uep.tasks.states import ActionStatus
 from uep.tools.registry import ToolRegistry
 from uep.tools.schema import validate_args
@@ -172,5 +172,7 @@ class ToolGateway:
                 ]
             return self.result_view("ok", items=items, degraded=not receipt.source_verified)
         if outcome.status is ActionStatus.FAILED:
+            if receipt is not None and getattr(receipt, "error_code", None) == APPROVAL_DENIED:  # 人類否決（E2）：沒有執行，回 rejected
+                return self.result_view("rejected", reason_code=APPROVAL_DENIED)
             return self.result_view("failed")
         return self.result_view("unknown")

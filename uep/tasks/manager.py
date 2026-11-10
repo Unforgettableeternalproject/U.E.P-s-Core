@@ -253,6 +253,7 @@ DEFAULT_PARAMS_LIMITS = ParamsLimits()
 PARAMS_NOT_CANONICAL = "params_not_canonical"
 TOOL_VERSION_CHANGED = "tool_version_changed"
 ACTION_UNRESOLVED = "action_unresolved"  # ActionBlocked.code：action 本身為 UNKNOWN／EXECUTING（副作用可能已發生、尚無定論）
+APPROVAL_DENIED = "approval_denied"  # receipt.error_code：人類否決核准（E2）；action 轉 FAILED，回餵 Agent 為 rejected
 
 
 def _not_canonical(reason: str) -> PolicyViolation:
@@ -1236,6 +1237,59 @@ class TaskManager:
             s.add(row)
             s.flush()
             return row
+
+    def record_rejection(self, *, principal: AuthenticatedPrincipal, action_id: str) -> ActionOutcome:
+        """人類否決等待核准的 action（E2）。只收已驗證、屬於此 task approvers 的人類身分，不呼叫 executor。
+
+        - 只收 INTENDED、需核准（external_effect／high_impact）、且 Run 為 WAITING_APPROVAL 的 action；轉終態
+          ``FAILED``，記一筆 Core 簽發、``source_verified=True`` 的 receipt（``error_code=approval_denied``、
+          ``meta.origin=manual``／``decision=denied``），Run／Task 回 RUNNING 讓 worker 之後能接手收尾。
+        - 重複否決：action 已是被否決的 FAILED ⇒ 回傳既有結果（冪等）。
+        - 衝突：已有未消耗且仍有效、與此 action 的 hash／target／scope 相符的核准 ⇒ 拒絕（``approval_already_granted``）；
+          action 已 APPROVED／執行過／其他原因 FAILED ⇒ ``IllegalTransition``。否決後才到的核准不會被消耗
+          （``execute_action`` 對 FAILED 直接回既有結果）。
+        """
+        if not isinstance(principal, AuthenticatedPrincipal):
+            raise PolicyViolation("否決必須由 AuthenticatedPrincipal 發動")
+        if principal.kind != "human" or not principal.verified:
+            raise PolicyViolation("否決只接受已驗證的人類身分")
+        with self._tx() as (s, pending):
+            task, run, action = self._lock_action(s, action_id)
+            if principal.actor_id not in self._approvers(task):
+                raise PolicyViolation("否決者不屬於此 task 的 approvers", code="unauthorized_approver")
+            prior = s.scalar(
+                select(ReceiptRow).where(ReceiptRow.action_id == action_id).execution_options(populate_existing=True)
+            )
+            status = ActionStatus(action.status)
+            prior_meta = (prior.meta or {}) if prior is not None else {}
+            if status is ActionStatus.FAILED and prior_meta.get("origin") == "manual" and prior_meta.get("decision") == "denied":
+                return ActionOutcome(action_id, status, False, prior)  # 重複否決：冪等
+            if status is not ActionStatus.INTENDED:
+                raise IllegalTransition(f"action 不是等待核准的 INTENDED（{action.status}），不可否決")
+            if action.side_effect_class not in APPROVAL_REQUIRED:
+                raise PolicyViolation("此 action 不需要核准，不可否決", code="approval_not_required")
+            if run.status != RunStatus.WAITING_APPROVAL.value:
+                raise IllegalTransition(f"run 不在等待核准（{run.status}），不可否決")
+            granted = s.scalar(
+                select(ApprovalRow.approval_id).where(
+                    ApprovalRow.action_hash == action.params_hash, ApprovalRow.target == action.tool,
+                    ApprovalRow.scope == task.scope_ref, ApprovalRow.consumed_at.is_(None),
+                    ApprovalRow.expiry > self._clock(),
+                ).limit(1)
+            )
+            if granted is not None:
+                raise PolicyViolation("此 action 已有有效核准，不可再否決", code="approval_already_granted")
+            actor = principal.actor_id
+            if not _SAFE_STR.fullmatch(actor):  # 不合規的 actor_id（如 email）改存雜湊
+                actor = "h:" + hashlib.sha256(actor.encode("utf-8")).hexdigest()[:16]
+            receipt = ToolReceipt(
+                receipt_id=new_id("rcpt"), action_id=action_id, succeeded=False, result_ref=None,
+                recorded_at=self._clock(), source_verified=True, error_code=APPROVAL_DENIED,
+                meta={"origin": "manual", "principal": actor, "decision": "denied"},
+            )
+            stored = self._apply_receipt(s, pending, task, action, receipt)
+            self._back_to_running(s, pending, task, run)
+            return ActionOutcome(action_id, ActionStatus(action.status), False, stored)
 
     def _approval_problem(self, approval: ApprovalRow | None, action: ActionIntentRow, task: TaskRow) -> str | None:
         """回傳不合格原因碼；合格回 None。"""

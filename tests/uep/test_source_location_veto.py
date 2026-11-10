@@ -217,3 +217,46 @@ def test_presence_request_hook_is_replaceable_and_failure_is_isolated(rig):
     r.host.orchestrator._presence_request_hook = boom
     result = r.say("到場", source_location=PresenceLocation.DISCORD)
     assert result.ticket is None and shadow_records(r)[-1].payload["presence_request"] is None
+
+
+def test_default_hook_judges_intent_via_decision_point_and_records_presence_request(rig):
+    from sqlalchemy import select
+
+    from uep.decision.db import DecisionLogRow
+    from uep.decision.presence_absent_intent import KIND_PRESENCE_ABSENT_INTENT
+
+    r = rig(host_kwargs={"proposer": Spy()}, assemble_over={"decision_log": True})
+    assert KIND_PRESENCE_ABSENT_INTENT in r.host.orchestrator.hub.registry.kinds()
+    asked = "請你到 discord 來，這是只有缺席端才會講的秘密句子"
+    result = r.say(asked, source_location=PresenceLocation.DISCORD, source_endpoint_id="ep_discord")
+    assert result.ticket is None and result.reason_code == "absent_platform_input"
+    rec = shadow_records(r)[-1]
+    assert rec.payload["presence_request"] is True  # 意圖：到場請求
+    assert rec.payload["actor_authenticated"] is True  # 授權欄位仍只來自 actor 認證，不受意圖影響
+    r.say("今天天氣如何", source_location=PresenceLocation.DISCORD)
+    assert shadow_records(r)[-1].payload["presence_request"] is None  # other = 未判斷
+    # 判斷不開 turn、不進 proposer，原文不在事件 payload 與 decision_log
+    assert r.core.decision_log.flush()
+    assert all("秘密句子" not in repr(e.payload) for e in r.events())
+    with r.session_factory() as s:
+        rows = list(s.scalars(select(DecisionLogRow).where(DecisionLogRow.kind == KIND_PRESENCE_ABSENT_INTENT)))
+        dumped = [repr({c.name: getattr(x, c.name) for c in DecisionLogRow.__table__.columns}) for x in rows]
+    assert len(rows) == 2 and {x.outcome for x in rows} == {"presence_request", "other"}
+    assert all("秘密句子" not in d and "discord 來" not in d for d in dumped)
+    assert not r.events(types=("turn.started", "input.utterance_final"))
+
+
+def test_default_hook_decision_point_failure_is_isolated_and_recorded_as_none(rig):
+    r = rig(host_kwargs={"proposer": Spy()})
+
+    class Boom:
+        proposer_id = "t.boom"
+        proposer_version = "1"
+
+        def propose(self, inp):
+            raise RuntimeError("x")
+
+    r.host.orchestrator._absent_intent_engine.proposer = Boom()
+    result = r.say("過來", source_location=PresenceLocation.DISCORD)
+    assert result.ticket is None and result.reason_code == "absent_platform_input"
+    assert shadow_records(r)[-1].payload["presence_request"] is None

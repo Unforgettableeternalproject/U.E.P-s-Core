@@ -41,6 +41,13 @@ from secrets import token_hex
 from uep.contracts.presence import AuthorizationTuple, PresenceLocation
 from uep.decision.contracts import DecisionRequest
 from uep.decision.hub import DecisionHub
+from uep.decision.presence_absent_intent import (
+    AbsentIntentEngine,
+    AbsentIntentInput,
+    judge_absent_intent,
+    presence_absent_intent_spec,
+    presence_request_from_result,
+)
 from uep.decision.turn_interject import TurnInterjectEngine, turn_interject_spec
 from uep.decision.turn_reply import (
     KIND_TURN_REPLY,
@@ -111,16 +118,17 @@ REJECTION_REASONS = frozenset({"admission_rejected", "dispatch_refused", "dispat
 # 不受 D82 的 spoken-only 開關影響（開關只管讓位與插話）
 RETRACT_REASONS = REJECTION_REASONS | frozenset({"presence_lost", "global_stop", "control_stop"})
 _SAFE_REF = re.compile(r"[A-Za-z0-9_:.\-]{1,128}")
+_SAFE_ACTOR_REF = re.compile(r"[a-z0-9_.:\-]{1,128}")
 _SAFE_LANGUAGE = re.compile(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8}){0,3}")
 UNKNOWN_SPEAKER = "unknown:invalid"
 INVALID_SOURCE_LOCATION = "invalid"  # _sanitize 對無效 source_location 的標記：視為不一致（不是缺失）
 
 
 def no_presence_request(fact: UtteranceFact) -> bool | None:
-    """缺席端輸入是否為到場／移轉請求的辨識 hook（確定性純函式，不經 LLM）。
+    """明確關閉意圖判斷的 hook：固定回 None（未判斷）。
 
-    只可依明確指令或介面操作判斷；這次不實作仲裁、回條或移轉，固定回 None（未判斷）。
-    ``TurnOrchestrator(presence_request_hook=...)`` 可替換，回傳值只寫進 shadow 紀錄的 ``presence_request``。
+    預設（``presence_request_hook=None``）改由核心決策點 ``presence.absent_intent`` 判斷意圖（可用決策模型，
+    不另外呼叫 LLM）；意圖只寫進 shadow 紀錄，授權只來自已認證 actor 與規則。需要完全不判斷時可傳入本函式。
     """
     return None
 
@@ -188,12 +196,13 @@ class TurnOrchestrator:
         run_id: str | None = None,
         host_location: str | None = None,
         require_source_location: bool = False,
-        presence_request_hook: Callable[[UtteranceFact], bool | None] = no_presence_request,
+        presence_request_hook: Callable[[UtteranceFact], bool | None] | None = None,
     ) -> None:
         self._publisher = publisher
         # V18：本機 Host 持有的 location（比對對象）；None = 未提供，不做來源比對（獨立測試用）
         self._host_location = host_location
         self.require_source_location = require_source_location
+        # None = 預設走核心決策點 presence.absent_intent（見 _presence_request）；傳入 callable 則完全取代
         self._presence_request_hook = presence_request_hook
         # 此次宿主執行的識別：進冪等鍵，避免重啟後 session 內 seq 從頭來而撞鍵（外部傳入的 seq 也在同一命名空間）
         self.run_id = run_id or token_hex(4)
@@ -229,6 +238,15 @@ class TurnOrchestrator:
         )
         try:
             self.hub.register(turn_interject_spec(self._decision.proposer_budget_ms), self._interject_engine)
+        except BaseException:
+            self._reply_engine.close()
+            raise
+        # V18 後續：presence.absent_intent（缺席端輸入的意圖判斷，sync、一律 shadow；proposer 可經 registry 替換）
+        self._absent_intent_engine = AbsentIntentEngine(
+            spec=presence_absent_intent_spec(self._decision.proposer_budget_ms)
+        )
+        try:
+            self.hub.register(self._absent_intent_engine.spec, self._absent_intent_engine)
         except BaseException:
             self._reply_engine.close()
             raise
@@ -497,6 +515,30 @@ class TurnOrchestrator:
             return REASON_ABSENT_PLATFORM_INPUT
         return None
 
+    def _presence_request(
+        self, ref: str, fact: UtteranceFact, actor_id: str, actor_authenticated: bool, is_owner: str,
+    ) -> bool | None:
+        """缺席端輸入是否為到場／移轉請求（只寫 shadow 紀錄，不觸發移轉、仲裁或回條）。
+
+        自訂 hook 完全取代預設；預設走核心決策點 ``presence.absent_intent``（文字只在記憶體，經 native 傳入）。
+        決策點逾時／busy／例外一律記 None（未判斷），不影響否決。意圖不是授權：授權只看已認證 actor 與規則。
+        """
+        hook = self._presence_request_hook
+        try:
+            if hook is not None:
+                return hook(fact)
+            authenticated = bool(actor_authenticated)
+            inp = AbsentIntentInput(
+                text=fact.text, source_platform=str(fact.source_location) if fact.source_location is not None else None,
+                actor_ref=actor_id if _SAFE_ACTOR_REF.fullmatch(actor_id) else None,
+                actor_authenticated=authenticated, is_owner=is_owner == "true" and authenticated,
+            )
+            result = judge_absent_intent(self.hub, inp, request_id=f"{self.run_id}:absent:{fact.seq}", ref=ref)
+            return presence_request_from_result(result)
+        except Exception:
+            logger.exception("presence_request 判斷失敗，記為未判斷")
+            return None
+
     def _record_absent_input(self, ctx: SessionContext, fact: UtteranceFact, reason: str) -> None:
         """寫缺席端輸入的 shadow 紀錄（turn.skipped）：來源、說話者／actor、is_owner、長度；不保存原文。
 
@@ -508,14 +550,10 @@ class TurnOrchestrator:
         is_owner = "unknown" if ident is None else ("false" if ident.guest else "true")
         actor_id = (ident.actor_id if ident is not None else None) or ctx.profile_actor_id or UNVERIFIED_ACTOR
         ref = f"es:{self.run_id}:{ctx.session_ref}:{fact.seq}"
-        try:
-            presence_request = self._presence_request_hook(fact)
-        except Exception:
-            logger.exception("presence_request hook 失敗，記為未判斷")
-            presence_request = None
         # actor_authenticated：只看平台認證 ID。身分映射命中且輸入帶有 ingress 以已驗證 endpoint 簽發的 source_endpoint_id 才算；
         # speaker_ref 在 ingress 簽發落地前是不受信字串，資訊不足一律 False，不比對顯示名稱
         actor_authenticated = bool(ident is not None and ident.actor_id is not None and fact.source_endpoint_id is not None)
+        presence_request = self._presence_request(ref, fact, actor_id, actor_authenticated, is_owner)
         payload: dict[str, object] = {
             "reason_code": reason, "reply_mode": ReplyMode.PASS.value, "proposal_ref": ref, "utterance_ref": ref,
             "speaker_ref": fact.speaker_ref, "actor_id": actor_id, "is_owner": is_owner,

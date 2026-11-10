@@ -210,13 +210,33 @@ _NEW_NAMES = {
 }
 
 
+_GATE_MODULE = "presence/gate.py"
+_GATE_ALLOWED = {"PlatformCapabilities", "InteractionCapability"}
+
+
+def _referenced_names(path, names):
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+        if name in names:
+            found.add(name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "uep.contracts.platform":
+            found |= {a.name for a in node.names if a.name in names}
+    return found
+
+
 def test_capability_types_have_no_production_consumer():
-    """E1 不接線：除定義檔 ``contracts/platform.py`` 外，``uep/`` 內沒有任何程式引用這些型別。
-    E5 之後有消費者時，這個測試要連同契約一起改（刻意讓接線需要明示）。"""
+    """除定義檔 ``contracts/platform.py`` 外，``uep/`` 內只有 E3 的 Output Gate（``presence/gate.py``）可以引用
+    ``PlatformCapabilities``／``InteractionCapability``；其他型別與其他模組仍無消費者。
+    E5 之後有更多消費者時，這個測試要連同契約一起改（刻意讓接線需要明示）。"""
     offenders: list[str] = []
     for path in sorted(_UEP.rglob("*.py")):
         rel = path.relative_to(_UEP).as_posix()
         if rel == "contracts/platform.py":
+            continue
+        if rel == _GATE_MODULE:
+            extra = _referenced_names(path, _NEW_NAMES) - _GATE_ALLOWED
+            offenders += [f"{rel} {n}" for n in sorted(extra)]
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
@@ -225,6 +245,12 @@ def test_capability_types_have_no_production_consumer():
             elif isinstance(node, ast.ImportFrom) and node.module == "uep.contracts.platform":
                 offenders += [f"{rel}:{node.lineno} import {a.name}" for a in node.names if a.name in _NEW_NAMES]
     assert offenders == []
+
+
+def test_output_gate_really_consumes_capability_types():
+    """反向斷言：Gate 真的引用 PlatformCapabilities（E3 前置檢查），放寬不是空白支票。"""
+    refs = _referenced_names(_UEP / "presence" / "gate.py", _NEW_NAMES)
+    assert "PlatformCapabilities" in refs and refs <= _GATE_ALLOWED
 
 
 def test_platform_contract_module_stays_a_leaf():

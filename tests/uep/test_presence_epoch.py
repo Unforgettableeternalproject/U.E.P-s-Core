@@ -68,6 +68,7 @@ def test_default_path_comes_from_setting_or_user_data_dir(monkeypatch, tmp_path)
 def test_gate_decision_codes_are_the_agreed_table():
     assert {d.value for d in contracts.GateDecision} == {
         "ADMIT", "REJECT_STALE", "REJECT_NO_PRESENCE", "REJECT_AUDIENCE", "REJECT_EXPIRED", "REJECT_REVOKED",
+        "REJECT_NOT_INTERACTION",
     }
     assert contracts.GateDecision.ADMIT.admitted and not contracts.GateDecision.REJECT_STALE.admitted
     assert {p.value for p in contracts.TransferPhase} == {

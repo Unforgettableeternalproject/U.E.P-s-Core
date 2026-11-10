@@ -428,7 +428,7 @@ Runtime = 可替換的推理／工具迴圈（直達 LLM、OpenAI Agents SDK、G
 | **授權六元組** `(persona_id, endpoint_id, lease_id, fencing_epoch, core_epoch, presence_generation)` | 各型別同上 | Y | CC-1 `fence`、CC-5 OutputIntent、CC-3 `fence` 皆與此同構。提案 §11.3 未列 `fencing_epoch`，草案補入（P-5） |
 | `activity_id`、`turn_id`、`turn_generation`、`output_id`、`sequence`、`valid_until` | | Y | 其餘欄位（提案 §11.3） |
 | `audience_scope` | ScopeRef | Y | 與當前 Presence audience 比對（INV-07） |
-| `decision` | enum{ADMIT, REJECT_STALE, REJECT_NO_PRESENCE, REJECT_AUDIENCE, REJECT_EXPIRED, REJECT_REVOKED} | Y（結果） | 結果碼（草案補充，D28） |
+| `decision` | enum{ADMIT, REJECT_STALE, REJECT_NO_PRESENCE, REJECT_AUDIENCE, REJECT_EXPIRED, REJECT_REVOKED, REJECT_NOT_INTERACTION} | Y（結果） | 結果碼（草案補充，D28；`REJECT_NOT_INTERACTION` 為平台端點契約 IC-3／Q6 新增：端點未宣告 interaction 能力，強制開關預設關，目前 shadow 只計數） |
 
 ### 4.4 操作與結果碼
 

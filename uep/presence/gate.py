@@ -4,6 +4,10 @@
 Core 接納時（本類別）與平台發送／播放器接納時（端點以同一份結果碼表自行檢查）。
 
 判定順序（先中者先回）：
+-1. 前置（平台端點契約 IC-3、E3）：目標 endpoint 須經 ``capability_resolver`` 取得 ``interaction`` 能力宣告。
+   未宣告（無 resolver、查無宣告、僅 monitor）-> 預設 shadow：只計數與記 log（reason=not_interaction），照常往下判定；
+   ``require_interaction=True`` 才回 ``REJECT_NOT_INTERACTION``。強制開關預設關，開啟時機另行裁決。
+   監控出站（``MonitorFrame``、中性回條，IC-2／Q8）不是 ``OutputIntent``，不經本 Gate，也不在此檢查範圍。
 0. 綁定的 PresenceManager 尚未 ``start``（epoch 未就緒）-> 一律 ``REJECT_NO_PRESENCE``。
 1. 授權的 persona、core_epoch、fencing_epoch 與 Manager 持有值或 DB 不同 -> ``REJECT_STALE``
    （舊 Core／舊還原的輸出不可復活）。
@@ -23,11 +27,13 @@ Gate 只讀不寫 presence 表；到期的轉換由 PresenceManager 處理，Gat
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from uep.contracts.platform import PlatformCapabilities
 from uep.contracts.presence import AuthorizationTuple, GateDecision
 from uep.events.envelope import EventDraft, TrustedContext, scope_rank
 from uep.events.publisher import EventPublisher
@@ -51,6 +57,8 @@ class _AllowAll:
 ALLOW_ALL = _AllowAll()
 TurnGenerationSource = Callable[[str], int | None] | _AllowAll
 AudienceProvider = Callable[[], str | None] | _AllowAll
+# endpoint_id -> 該端點的能力宣告（None＝查無宣告）；由接線方注入，Gate 不持有註冊表
+CapabilityResolver = Callable[[str], PlatformCapabilities | None]
 
 
 def _utcnow() -> datetime:
@@ -67,6 +75,8 @@ class OutputGate:
         presence_audience: AudienceProvider,
         clock: Callable[[], datetime] = _utcnow,
         publisher: EventPublisher | None = None,
+        capability_resolver: CapabilityResolver | None = None,
+        require_interaction: bool = False,
     ) -> None:
         self._sf = session_factory
         self._manager = manager
@@ -75,12 +85,54 @@ class OutputGate:
         self._publisher = publisher
         self._turn_generation = turn_generation_source
         self._audience = presence_audience
+        self._resolver = capability_resolver
+        self._require_interaction = require_interaction
+        self._ni_lock = threading.Lock()
+        self._ni_count = 0
+        self._ni_by_endpoint: dict[str, int] = {}
         for name, value in (("turn_generation_source", turn_generation_source),
                             ("presence_audience", presence_audience)):
             if value is ALLOW_ALL:
                 logger.warning("OutputGate 的 %s 為 ALLOW_ALL：此項檢查已關閉", name)
             elif not callable(value):
                 raise TypeError(f"{name} 必須是 callable 或 ALLOW_ALL")
+
+    @property
+    def not_interaction_count(self) -> int:
+        """shadow 模式下「端點未宣告 interaction 能力」的累計次數（強制模式的拒絕不計入，見 output.rejected）。"""
+        with self._ni_lock:
+            return self._ni_count
+
+    def not_interaction_by_endpoint(self) -> dict[str, int]:
+        with self._ni_lock:
+            return dict(self._ni_by_endpoint)
+
+    def _has_interaction(self, endpoint_id: str) -> bool:
+        if self._resolver is None:
+            return False
+        try:
+            caps = self._resolver(endpoint_id)
+        except Exception:
+            logger.exception("Output Gate 能力 resolver 失敗，視為未宣告：endpoint=%s", endpoint_id)
+            return False
+        return caps is not None and caps.interaction is not None
+
+    def _check_interaction(self, endpoint_id: str) -> GateDecision | None:
+        """前置檢查：通過回 None；未宣告時 shadow 計數＋log 並回 None，強制模式回 REJECT_NOT_INTERACTION。"""
+        if self._has_interaction(endpoint_id):
+            return None
+        if self._require_interaction:
+            return GateDecision.REJECT_NOT_INTERACTION
+        with self._ni_lock:
+            self._ni_count += 1
+            seen = self._ni_by_endpoint.get(endpoint_id, 0)
+            self._ni_by_endpoint[endpoint_id] = seen + 1
+        # 每個端點只在第一次以 warning 記錄，其後降為 debug，避免每則輸出洗版
+        logger.log(
+            logging.WARNING if seen == 0 else logging.DEBUG,
+            "Output Gate shadow：端點未宣告 interaction 能力（照常放行）reason=not_interaction endpoint=%s", endpoint_id,
+        )
+        return None
 
     def admit(
         self,
@@ -113,6 +165,9 @@ class OutputGate:
         self, auth: AuthorizationTuple, turn_id: str | None, turn_generation: int | None,
         audience_scope: str | None, valid_until: datetime | None,
     ) -> GateDecision:
+        denied = self._check_interaction(auth.endpoint_id)
+        if denied is not None:
+            return denied
         if not self._manager.started:
             return GateDecision.REJECT_NO_PRESENCE  # epoch 未就緒：輸出全關
         now = self._clock()

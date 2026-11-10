@@ -45,6 +45,9 @@ class UepSettings(BaseSettings):
     agent_loop_entry: bool = Field(default=False, validation_alias="UEP_AGENT_LOOP_ENTRY")
     # 平台脈絡 shadow（平台宣告注入端 R0 第 3、4 步）：預設關閉；開啟時每個簽出的 turn 多一次唯讀 Presence SELECT（鎖外）
     platform_shadow: bool = Field(default=False, validation_alias="UEP_PLATFORM_SHADOW")
+    # Output Gate 前置「端點須具 interaction 能力」（平台端點契約 IC-3、E3）：預設關＝shadow（只計數與記 log，照常放行）；
+    # 開啟才回 REJECT_NOT_INTERACTION。開啟的時機另行裁決
+    gate_require_interaction: bool = Field(default=False, validation_alias="UEP_GATE_REQUIRE_INTERACTION")
     # V18 缺席端輸入 fail-closed：開啟後 UtteranceFact 缺 source_location 即否決（預設關＝缺失放行並計數）。
     # 註冊任何非 desktop 輸入 adapter 前必須開啟（assembly 強制）
     require_source_location: bool = Field(default=False, validation_alias="UEP_REQUIRE_SOURCE_LOCATION")

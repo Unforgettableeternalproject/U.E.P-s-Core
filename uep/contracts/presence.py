@@ -40,6 +40,7 @@ class GateDecision(StrEnum):
     REJECT_AUDIENCE = "REJECT_AUDIENCE"
     REJECT_EXPIRED = "REJECT_EXPIRED"
     REJECT_REVOKED = "REJECT_REVOKED"
+    REJECT_NOT_INTERACTION = "REJECT_NOT_INTERACTION"  # 端點未宣告 interaction 能力（IC-3、Q6；強制開關預設關）
 
     @property
     def admitted(self) -> bool:

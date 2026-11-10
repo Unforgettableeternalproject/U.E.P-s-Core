@@ -89,6 +89,7 @@ class InferenceConfig:
     llm_model: str | None = None
     system_prompt: str = ""
     tool_lead_in: str = "model_then_fixed"  # 工具呼叫墊話模式（UEP_THINK_FILLER_MODE）
+    voice_retrieve_timeout_s: float | None = 1.5  # 語音路徑記憶檢索逾時（bot 驗證值）；None＝沿用 Access Layer 預設
     prewarm: bool = True  # Host 啟動時以 system_prompt 預熱 LLM prompt cache（host_kwargs 帶 prewarm_prompt）
     think: Any = None  # ThinkConfig（N3，由 UepSettings.think_config() 解析）；None＝adapter 預設值（不讀環境）
     tts_engine: str = "vox"
@@ -152,6 +153,7 @@ class InferenceConfig:
             stt_job_timeout_per_audio_s=settings.stt_job_timeout_per_audio_s,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
             system_prompt=settings.infer_system_prompt, think=settings.think_config(), prewarm=settings.llm_prewarm,
+            voice_retrieve_timeout_s=settings.memory_voice_retrieve_timeout_s or None,
             tool_lead_in=settings.think_filler_mode,
             speak_prepare_timeout_s=settings.infer_speak_prepare_timeout_s,
             think_prepare_timeout_s=settings.infer_think_prepare_timeout_s,
@@ -433,6 +435,8 @@ class InferenceWiring:
         if self.config.prewarm:
             # Host._startup 在 think.prepare 之後呼叫 think.prewarm(prompt)；與 stage 的 system_prompt 同源，前綴與首輪一致
             kwargs["prewarm_prompt"] = self.config.system_prompt
+        if self.config.voice_retrieve_timeout_s is not None:
+            kwargs["voice_retrieve_timeout_s"] = self.config.voice_retrieve_timeout_s
         if self.tool_path != "legacy":
             kwargs["tool_path"] = self.tool_path  # legacy 時不帶（Host 預設即 legacy；legacy 的鍵集合不變）
         return kwargs

@@ -167,6 +167,8 @@ class UepSettings(BaseSettings):
     llm_base_url: str | None = Field(default=None, validation_alias="UEP_LLM_BASE_URL")
     llm_prompt_cache_key: str | None = Field(default=None, validation_alias="UEP_LLM_PROMPT_CACHE_KEY")
     # Host 啟動時預熱 prompt cache（_startup：speak -> think -> prewarm -> 輸入）；預熱用的 effort 即 UEP_LLM_REASONING_EFFORT
+    # 語音路徑記憶檢索逾時（秒）：bot 驗證值 1.5；0＝沿用 Access Layer 預設（3 秒）。逾時本輪不帶記憶
+    memory_voice_retrieve_timeout_s: float = Field(default=1.5, ge=0, validation_alias="UEP_MEMORY_VOICE_RETRIEVE_TIMEOUT_S")
     llm_prewarm: bool = Field(default=True, validation_alias="UEP_LLM_PREWARM")
     # 工具呼叫前的墊話模式：model_then_fixed（bot 驗證過的預設）／model／fixed／off
     think_filler_mode: str = Field(default="model_then_fixed", validation_alias="UEP_THINK_FILLER_MODE")

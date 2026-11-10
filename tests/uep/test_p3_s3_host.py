@@ -585,3 +585,30 @@ def test_each_turn_gets_its_own_tool_context_dict(rig):
     for i in range(2):
         r.wait_terminal(r.say(f"第{i}輪").ticket.turn_id)
     assert len(seen) == 2 and seen[0] is not seen[1]  # 不可跨輪共用（隱私）
+
+
+def test_voice_retrieve_timeout_進入每輪檢索參數(rig):
+    r = rig(host_kwargs={"voice_retrieve_timeout_s": 1.5})
+    seen = []
+    original = r.host._build_request
+
+    def spy(ticket, fact, runtime=None):
+        req = original(ticket, fact, runtime)
+        seen.append(req.utterance.metadata["memory_retrieve_kwargs"])
+        return req
+
+    r.host._build_request = spy  # type: ignore[method-assign]
+    r.wait_terminal(r.say("你好").ticket.turn_id)
+    assert seen and seen[0]["timeout_s"] == 1.5
+    default = rig()  # 未設：不帶 timeout_s，沿用 Access Layer 預設
+    seen2 = []
+    original2 = default.host._build_request
+
+    def spy2(ticket, fact, runtime=None):
+        req = original2(ticket, fact, runtime)
+        seen2.append(req.utterance.metadata["memory_retrieve_kwargs"])
+        return req
+
+    default.host._build_request = spy2  # type: ignore[method-assign]
+    default.wait_terminal(default.say("你好").ticket.turn_id)
+    assert seen2 and "timeout_s" not in seen2[0]

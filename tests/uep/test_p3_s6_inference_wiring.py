@@ -95,7 +95,7 @@ def test_建構不載模型且共用同一個預建_backend():
     assert w.speak._backend is tts  # 預建一次、注入（所有 turn 共用）
     assert w.speak.warmup is True  # 預設在 prepare（Host 啟動）做暖機
     assert {k: r.ready for k, r in w.readiness.items()} == {"speak": None, "think": None, "input": None}
-    assert set(w.host_kwargs()) == {"think", "speak", "input_stage", "start_timeout_s", "prewarm_prompt"}
+    assert set(w.host_kwargs()) == {"think", "speak", "input_stage", "start_timeout_s", "prewarm_prompt", "voice_retrieve_timeout_s"}
     assert not w.voice_ready
 
 
@@ -667,3 +667,14 @@ def test_vox_語速_未設_vox_speed_時退回_tts_speed(monkeypatch):
         InferenceConfig(stt_mode="single", tts_engine="vox", tts_speed=1.3), think_backend=FakeLlm(), stt_backend=FakeStt(),
     )
     assert captured == {"speed": 1.3}
+
+
+def test_語音檢索逾時_預設_1點5_可覆寫_0_沿用_access_預設(monkeypatch):
+    monkeypatch.delenv("UEP_MEMORY_VOICE_RETRIEVE_TIMEOUT_S", raising=False)
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.voice_retrieve_timeout_s == 1.5
+    assert build(cfg=_ix(stt_mode="single")).host_kwargs()["voice_retrieve_timeout_s"] == 1.5
+    monkeypatch.setenv("UEP_MEMORY_VOICE_RETRIEVE_TIMEOUT_S", "0")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.voice_retrieve_timeout_s is None
+    assert "voice_retrieve_timeout_s" not in build(cfg=cfg if cfg.tts_engine == "indextts2" else _ix(voice_retrieve_timeout_s=None)).host_kwargs()

@@ -387,3 +387,11 @@ def test_endpoint_global_stop_signal_notifies_once_and_send_is_idempotent():
     ep.local_tick()
     assert notices == [StopNotice("global_stop")]
     ep.close()
+
+
+@sync
+async def test_bridge_轉送_timeout_s_給_access_layer():
+    port = SpyPort()
+    bridge = MemoryRetrieveBridge(port, "discord:111")
+    await bridge.retrieve("你好", audience="scope_private_owner", actor_id="actor_a", timeout_s=1.5)
+    assert port.calls[0][4] == {"timeout_s": 1.5}

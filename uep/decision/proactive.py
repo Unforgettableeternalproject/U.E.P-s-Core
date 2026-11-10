@@ -471,7 +471,7 @@ def _bad(name: str) -> Any:
 def proactive_initiate_spec(budget_ms: int = _DEFAULT_BUDGET_MS) -> DecisionPointSpec:
     """``proactive.initiate`` 規格：async、shadow-only、不開 native、不用 LLM；fallback 一律 ``deferred``（不誤啟動）。
 
-    ``plan_sections`` 宣告 ``loop``／``placement``／``followups``；hub 目前只強制 ``policy`` 白名單（草案 Q-I），
+    ``plan_sections`` 宣告 ``loop``／``placement``／``followups``；hub 目前只強制 ``policy``／``capability`` 白名單（草案 Q-I、DL-4 PR1），
     其餘區段限制由 ``test_decision_proactive`` 以引擎單元測試鎖定。
     """
     return DecisionPointSpec(

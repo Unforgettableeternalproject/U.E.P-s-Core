@@ -373,12 +373,13 @@ class LoopLauncher:
             discard = getattr(self._store, "discard_run", None)
             if callable(discard):
                 discard(run.run_id)  # Run 終態：child／parent 暫存清理，不得無限增長
+            # 名額先釋放、再終結 turn：turn 終結（使用者看到完成）之後立刻到來的新 turn 不該被舊 Run 的名額誤擋
+            self._forget(threading.current_thread())
+            self._release()
             try:
                 self._orchestrator.on_turn_ended(turn_id, facts)
             except Exception:
                 logger.exception("AgentLoop 結束 turn 失敗：turn=%s", turn_id)
-            self._forget(threading.current_thread())
-            self._release()
 
     def _conclude(self, ctx: _RunCtx, outcome: Any, raised: bool) -> TurnEndFacts:
         """Run 收尾（Run／Task 狀態、使用者端的最後一則訊息）-> turn 終結事實。"""

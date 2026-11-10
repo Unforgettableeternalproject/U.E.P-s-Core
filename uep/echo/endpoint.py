@@ -164,6 +164,10 @@ class EchoEndpoint(CliEndpoint):
 
     def send(self, intent: OutputIntent, dispatch_id: str) -> SendResult:
         rendered: RenderedText | None = None
+        with self._lock:
+            previous = self._sent.get(dispatch_id)
+        if previous is not None:
+            return previous  # 同一 dispatch_id 的重播：不解析 content_ref（文字可能已清除）、不重複渲染
         if intent.kind in _TEXT_KINDS:
             # 文字 intent：content_ref 解析不到就是明確失敗（不假裝已送出）；解析在鎖外，渲染在二次接納通過之後
             resolver = self._text_resolver

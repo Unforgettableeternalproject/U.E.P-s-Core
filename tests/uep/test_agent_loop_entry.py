@@ -213,7 +213,7 @@ def test_unknown_delivery_is_not_delivered():
     launcher = _stub_launcher(delivery=Delivery())
     ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1))
     assert launcher._deliver(ctx, "答案") is False  # 結果未明 -> 不算已交付，也不補發失敗訊息
-    assert ctx.delivery_unknown and not ctx.delivered
+    assert ctx.delivery_uncertain == "loop_delivery_unknown" and not ctx.delivered
     assert len(sent) == 1 and sent[0].kind.value == "text" and sent[0].origin.value == "persona"
     assert launcher._texts.get(sent[0].content_ref) == "答案"
 
@@ -292,3 +292,104 @@ def test_host_tolerates_orchestrator_without_loop_claimed():
     item = SimpleNamespace(ticket=SimpleNamespace(turn_id="t"), fact=object())
     host._dispatch_results([item], None)
     assert len(started) == 1
+
+
+@pytest.mark.parametrize("name", [s.name for s in __import__("uep.output.delivery", fromlist=["DeliveryStatus"]).DeliveryStatus])
+def test_delivered_is_a_whitelist_over_every_delivery_status(name):
+    """只有 SENT／ACCEPTED／RENDERED_PLAYED 算已交付；UNKNOWN／ENQUEUED 不確定（不補發失敗訊息）；其餘走失敗路徑並補發系統訊息。"""
+    from uep.echo.agent_wiring import _RunCtx
+    from uep.output.delivery import DeliveryStatus
+
+    status = DeliveryStatus[name]
+    sent: list = []
+
+    class Delivery:
+        def prepare(self, intent):
+            sent.append(intent)
+
+        def dispatch(self, intent):
+            return SimpleNamespace(status=status)
+
+    launcher = _stub_launcher(delivery=Delivery())
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1))
+    delivered = launcher._deliver(ctx, "答案")
+    assert delivered is (status in {DeliveryStatus.SENT, DeliveryStatus.ACCEPTED, DeliveryStatus.RENDERED_PLAYED})
+    assert ctx.delivered is delivered
+    expect_uncertain = {DeliveryStatus.UNKNOWN: "loop_delivery_unknown", DeliveryStatus.ENQUEUED: "loop_delivery_pending"}
+    assert ctx.delivery_uncertain == expect_uncertain.get(status)
+    # 收尾：Run／Task 以 stub 處理；失敗路徑補發一則系統訊息，已交付與不確定的都不補發
+    launcher._settle = lambda *a, **k: None
+    sent.clear()
+    facts = launcher._conclude(ctx, SimpleNamespace(state="completed" if delivered else "failed", reason_code=None), False)
+    if delivered:
+        assert facts.status == "completed" and sent == []
+    elif ctx.delivery_uncertain is not None:
+        assert facts.status == "failed" and facts.reason_code == ctx.delivery_uncertain and sent == []
+    else:
+        assert facts.status == "failed" and len(sent) == 1
+        assert sent[0].kind.value == "system_notice" and sent[0].origin.value == "system"
+
+
+def test_parked_run_sends_no_failure_notice_and_uses_dedicated_reason():
+    from uep.echo.agent_wiring import LOOP_PARKED_REASON, _RunCtx
+
+    sent: list = []
+
+    class Delivery:
+        def prepare(self, intent):
+            sent.append(intent)
+
+        def dispatch(self, intent):
+            pytest.fail("park 時不該交付任何東西")
+
+    launcher = _stub_launcher(delivery=Delivery())
+    launcher._settle = lambda *a, **k: pytest.fail("park 的 Run 保留，不收尾")
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1))
+    facts = launcher._conclude(ctx, SimpleNamespace(state="awaiting_approval", reason_code="approval_required"), False)
+    assert (facts.status, facts.reason_code) == ("failed", LOOP_PARKED_REASON) and LOOP_PARKED_REASON == "loop_parked_awaiting_approval"
+    assert sent == []
+
+
+def test_run_deadline_is_loop_budget_plus_supervisor_grace():
+    from datetime import UTC, datetime, timedelta
+
+    from uep.agent.budget import LoopBudget
+    from uep.tasks.supervisor import DEFAULT_DEADLINE_GRACE
+
+    launcher = _stub_launcher(budget=LoopBudget(run_deadline_s=100.0))
+    before = datetime.now(UTC)
+    deadline = launcher._run_deadline()
+    assert before + timedelta(seconds=100) + DEFAULT_DEADLINE_GRACE <= deadline <= datetime.now(UTC) + timedelta(seconds=100) + DEFAULT_DEADLINE_GRACE
+    unbounded = _stub_launcher(budget=LoopBudget(run_deadline_s=None))
+    assert unbounded._run_deadline() > datetime.now(UTC) + timedelta(seconds=500)  # 沒有牆鐘上限：保底值，仍有收尾者
+
+
+def test_endpoint_send_replay_is_idempotent_before_resolving_content_ref():
+    """同一 dispatch_id 重播：先查冪等紀錄，不再解析 content_ref（文字可能已清除）、不重複渲染。"""
+    from collections import OrderedDict, deque
+
+    from uep.adapters.output import SendResult
+    from uep.contracts.presence import GateDecision
+    from uep.echo.endpoint import EchoEndpoint
+    from uep.output.delivery import DeliveryEvidence
+    from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
+
+    endpoint = EchoEndpoint.__new__(EchoEndpoint)
+    endpoint._lock = threading.RLock()
+    endpoint._sent = OrderedDict()
+    endpoint._texts = deque()
+    calls: list = []
+    endpoint._text_resolver = lambda ref: calls.append(ref)  # 解析器被呼叫就記下來（並回 None -> 會是 SendFailed）
+    endpoint._on_text = None
+    previous = SendResult("d1", DeliveryEvidence.TRANSPORT_SENT, __import__("datetime").datetime.now(__import__("datetime").UTC))
+    endpoint._sent["d1"] = previous
+    t = _ticket()
+    a = t.auth
+    intent = OutputIntent(
+        output_id="out_1", sequence=0, kind=OutputKind.TEXT, origin=OutputOrigin.PERSONA, persona_id=a.persona_id,
+        endpoint_id=a.endpoint_id, lease_id=a.lease_id, fencing_epoch=1, core_epoch=1, presence_generation=1,
+        turn_id=t.turn_id, turn_generation=1, attempt_id="att_1", audience_scope=t.audience_scope, content_ref="loop:gone",
+        valid_until=t.valid_until,
+    )
+    assert endpoint.send(intent, "d1") is previous and calls == [] and len(endpoint._texts) == 0
+    assert GateDecision.ADMIT  # 僅確認匯入可用

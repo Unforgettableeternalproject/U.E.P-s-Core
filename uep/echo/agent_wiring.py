@@ -14,6 +14,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from uep.adapters.tool import CAPABILITY_CEILING
@@ -32,8 +33,9 @@ from uep.ids import new_id
 from uep.memory.protocol import MemoryPort
 from uep.output.delivery import DeliveryStatus
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
-from uep.tasks.manager import TaskManager, TaskPolicy
+from uep.tasks.manager import StaleWorkerEpoch, TaskManager, TaskPolicy
 from uep.tasks.states import TERMINAL_STATUSES, InterruptPolicy, RunStatus
+from uep.tasks.supervisor import DEFAULT_DEADLINE_GRACE
 from uep.tools.catalog.memory import memory_registry
 from uep.tools.executors.memory import MemoryToolExecutor, RosterPort
 from uep.tools.gateway import ToolGateway
@@ -115,16 +117,19 @@ class LoopEntry:
 
 def create_loop_run(
     tasks: TaskManager, trigger: LoopTrigger, *, persona_id: str, persona_version: int, policy_version: int,
-    interrupt_policy: InterruptPolicy = InterruptPolicy.INTERRUPTIBLE,
+    interrupt_policy: InterruptPolicy = InterruptPolicy.INTERRUPTIBLE, run_deadline: datetime | None = None,
 ) -> tuple[Any, Any]:
-    """為 ``LoopTrigger`` 建立 Task 與 Run（RUNNING，worker_epoch 由 Run 帶出），回傳 ``(task, run)``。"""
+    """為 ``LoopTrigger`` 建立 Task 與 Run（RUNNING，worker_epoch 由 Run 帶出），回傳 ``(task, run)``。
+    ``run_deadline`` 給了就是 Supervisor 的收尾期限（worker 消失時由它 force 收尾）；回合 Task（D62）不帶 deadline，與此無關。"""
     task = tasks.create_task(
         persona_id=persona_id, goal=trigger.goal_code, owner_actor_id=trigger.owner_actor_id, scope_ref=trigger.scope_ref,
         policy=TaskPolicy(presence_bound=False, interrupt_policy=interrupt_policy, policy_ref=trigger.policy_ref),
         origin_ref={"kind": trigger.kind, "ref": trigger.origin_ref},
     )
     try:
-        run = tasks.start_run(task.task_id, persona_version=persona_version, policy_version=policy_version)
+        run = tasks.start_run(
+            task.task_id, persona_version=persona_version, policy_version=policy_version, run_deadline=run_deadline,
+        )
     except BaseException:
         # Task 已建、Run 沒建成：回收 Task，不留孤兒（再讓呼叫端看到原例外）
         try:
@@ -138,14 +143,20 @@ def create_loop_run(
 # ───────────────────────── production 入口（DL-4 PR4） ─────────────────────────
 
 DEFAULT_LOOP_SYSTEM_TEXT = "你是使用者的長期 AI 助理。需要時使用工具查詢記憶，最後以簡短自然的繁體中文回覆。"
-# 送出結果未明（UNKNOWN）不算已交付；被拒／取消／失敗同樣不算
-_DELIVERY_REFUSED = frozenset({
-    DeliveryStatus.REJECTED, DeliveryStatus.CANCELLED, DeliveryStatus.FAILED, DeliveryStatus.UNKNOWN,
-})
+# 交付白名單：只有「已送出」類狀態算 delivered（端點已收下並渲染；SENT 是 transport_sent 證據）。
+# 其餘一律不算：REJECTED／CANCELLED／FAILED／SUPPRESSED（確定沒送出）、GENERATED／SYNTHESIZED（沒進到送出）。
+_DELIVERED = frozenset({DeliveryStatus.SENT, DeliveryStatus.ACCEPTED, DeliveryStatus.RENDERED_PLAYED})
+# 不確定是否已送達：不補發失敗訊息（避免使用者看到兩則）。UNKNOWN＝送出結果未明；ENQUEUED＝沒搶到送出權
+# （``DeliveryManager.dispatch`` 的 ``claim.won`` 為 False，代表另一個送出者持有送出權，它可能正在送），所以同樣不補發。
+_DELIVERY_UNCERTAIN = {
+    DeliveryStatus.UNKNOWN: "loop_delivery_unknown", DeliveryStatus.ENQUEUED: "loop_delivery_pending",
+}
+LOOP_PARKED_REASON = "loop_parked_awaiting_approval"
 # loop 失敗時給使用者的固定系統訊息：不經 LLM、不以角色身分發出，只說這次處理失敗（不得編出看似成功的回答）
 LOOP_FAILURE_TEXT = "這次處理失敗了，沒有產生回覆。"
 DEFAULT_MAX_CONCURRENT_LOOPS = 4
 DEFAULT_CLOSE_TIMEOUT_S = 5.0
+FALLBACK_RUN_DEADLINE_S = 600.0  # 自訂預算沒有牆鐘上限時，Supervisor 收尾期限用的保底值
 
 
 def make_capability_tags_for(
@@ -184,7 +195,8 @@ class _RunCtx:
     task_id: str
     run: Any
     delivered: bool = False  # 角色回覆已確實交付（Gate 放行且端點收下）
-    delivery_unknown: bool = False  # 送出結果未明：不補發失敗訊息（避免使用者看到兩則）
+    delivery_uncertain: str | None = None  # 送出結果不確定時的 reason_code：不補發失敗訊息（避免使用者看到兩則）
+    cancel_requested: bool = False  # 心跳讀到 Supervisor 的取消旗標（SV-2）
     text: str = ""
 
 
@@ -231,6 +243,9 @@ class LoopLauncher:
         self._system_text = system_text
         self._max = max_concurrent
         self._close_timeout_s = DEFAULT_CLOSE_TIMEOUT_S if close_timeout_s is None else close_timeout_s
+        # Supervisor 的收尾期限 = 迴圈自己的牆鐘上限 + grace（grace 取 Supervisor 的預設 deadline_grace）：
+        # 正常情況迴圈自己先在 Step 邊界收尾，期限只是 worker 消失時的持久收尾者
+        self._deadline_grace = DEFAULT_DEADLINE_GRACE
         self._lock = threading.Lock()
         self._active = 0
         self._threads: set[threading.Thread] = set()
@@ -253,7 +268,7 @@ class LoopLauncher:
                 raise LoopLaunchRefused("capability_projection_empty")  # 例如全部 warming：不啟動，回 direct_chat
             task, run = create_loop_run(
                 self._tasks, trigger, persona_id=self._persona_id, persona_version=self._persona_version,
-                policy_version=self._policy_version,
+                policy_version=self._policy_version, run_deadline=self._run_deadline(),
             )
         except BaseException:
             self._release()
@@ -272,6 +287,26 @@ class LoopLauncher:
             self._release()
             raise
         return run
+
+    def _run_deadline(self) -> datetime:
+        seconds = self._budget.run_deadline_s if self._budget.run_deadline_s is not None else FALLBACK_RUN_DEADLINE_S
+        return datetime.now(UTC) + timedelta(seconds=seconds) + self._deadline_grace
+
+    def _heartbeat(self, ctx: _RunCtx, stop: threading.Event) -> None:
+        """背景心跳：等模型回應期間迴圈不會送心跳，Supervisor 的 stale 判定（T-12）需要它。間隔取預算的心跳間隔與
+        ``heartbeat_stale_after`` 的三分之一的較小者。worker 結束（或被 force、epoch 變了）就停；讀到取消旗標就通知迴圈。"""
+        stale = getattr(self._tasks, "heartbeat_stale_after", timedelta(seconds=60))
+        interval = max(0.05, min(self._budget.heartbeat_interval_s, stale.total_seconds() / 3))
+        while not stop.wait(interval) and not self._closing.is_set():
+            try:
+                signal = self._tasks.heartbeat(ctx.run.run_id, worker_epoch=ctx.run.worker_epoch)
+            except StaleWorkerEpoch:
+                return
+            except Exception:
+                logger.exception("AgentLoop 背景心跳失敗：run=%s", ctx.run.run_id)
+                continue
+            if signal is not None:
+                ctx.cancel_requested = True
 
     def close(self, timeout: float | None = None) -> None:
         """關機：不再接新 Run、通知進行中的迴圈取消（Step 邊界生效），限時等待 worker 收尾；逾時的 daemon 執行緒不阻擋關機。"""
@@ -307,6 +342,8 @@ class LoopLauncher:
         ticket, run = ctx.ticket, ctx.run
         turn_id = ticket.turn_id
         facts = TurnEndFacts(status="failed", reason_code="loop_failed")
+        hb_stop = threading.Event()
+        threading.Thread(target=self._heartbeat, args=(ctx, hb_stop), name=f"uep-loop-hb-{turn_id}", daemon=True).start()
         try:
             outcome = None
             raised = False
@@ -326,6 +363,7 @@ class LoopLauncher:
         except Exception:
             logger.exception("AgentLoop 收尾失敗：turn=%s", turn_id)
         finally:
+            hb_stop.set()
             if self._cache is not None:
                 self._cache.discard_turn(turn_id)
             if self._texts is not None:
@@ -343,8 +381,10 @@ class LoopLauncher:
     def _conclude(self, ctx: _RunCtx, outcome: Any, raised: bool) -> TurnEndFacts:
         """Run 收尾（Run／Task 狀態、使用者端的最後一則訊息）-> turn 終結事實。"""
         ticket = ctx.ticket
-        if outcome is not None and getattr(outcome, "state", None) == "awaiting_approval" and not ctx.delivered:
-            reason = "loop_awaiting_approval"  # park 的 Run 保留（核准路徑屬切片 E），不在這裡收掉
+        parked = outcome is not None and getattr(outcome, "state", None) == "awaiting_approval" and not ctx.delivered
+        if parked:
+            # park 的 Run 保留（核准路徑屬切片 E），不在這裡收掉；目前 park 後沒有交付路徑，切片 E 之後補，所以不發失敗訊息
+            reason = LOOP_PARKED_REASON
         else:
             code = getattr(outcome, "reason_code", None)
             code = getattr(code, "value", code)
@@ -359,8 +399,10 @@ class LoopLauncher:
             return TurnEndFacts(
                 status="cancelled", reason_code=self._orchestrator.cancel_reason_of(ticket.turn_id) or "loop_cancelled",
             )
-        if ctx.delivery_unknown:
-            return TurnEndFacts(status="failed", reason_code="loop_delivery_unknown")  # 可能已送達：不再補發
+        if parked:
+            return TurnEndFacts(status="failed", reason_code=LOOP_PARKED_REASON)
+        if ctx.delivery_uncertain is not None:
+            return TurnEndFacts(status="failed", reason_code=ctx.delivery_uncertain)  # 可能已送達：不再補發
         self._notify_failure(ctx)
         return TurnEndFacts(status="failed", reason_code=reason)
 
@@ -409,7 +451,7 @@ class LoopLauncher:
             tasks=self._tasks, gateway=ToolGateway(registry), registry=registry, store=self._store, projector=projector,
             budget=self._budget, worker_epoch=run.worker_epoch, snapshots=snapshots,
             injected={"actor_id": ticket.actor_id, "audience": ticket.audience_scope, "segment_id": ticket.segment_id},
-            cancelled=lambda: self._cancelled(ticket.turn_id),
+            cancelled=lambda: ctx.cancel_requested or self._cancelled(ticket.turn_id),
             deliver_result=lambda text: self._deliver(ctx, text),
             content_lookup=self._cache.text if self._cache is not None else None,
             run_cleanup=self._cache.discard_about_refs_run if self._cache is not None else None,
@@ -422,12 +464,11 @@ class LoopLauncher:
         if self._cancelled(ctx.ticket.turn_id):
             return False
         status = self._dispatch(ctx, text, kind=OutputKind.TEXT, origin=OutputOrigin.PERSONA)
-        if status is DeliveryStatus.UNKNOWN:
-            ctx.delivery_unknown = True
-        if status is None or status in _DELIVERY_REFUSED:
-            return False
-        ctx.delivered, ctx.text = True, text
-        return True
+        if status in _DELIVERED:
+            ctx.delivered, ctx.text = True, text
+            return True
+        ctx.delivery_uncertain = _DELIVERY_UNCERTAIN.get(status) if status is not None else None
+        return False
 
     def _notify_failure(self, ctx: _RunCtx) -> None:
         """失敗時給使用者的固定系統訊息：經同一條 Output Gate；origin=system，不是角色發言，也不編造看似成功的回答。"""

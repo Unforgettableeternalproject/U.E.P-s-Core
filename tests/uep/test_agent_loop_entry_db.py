@@ -337,3 +337,90 @@ def test_console_agent_loop_failure_shows_one_system_notice(session_factory, tmp
         assert es_port.requests == []
     finally:
         rt.core.shutdown()
+
+
+# ---- Supervisor：loop Run 帶 deadline、背景心跳、worker 消失後被收尾 ----
+
+def test_loop_run_carries_a_deadline_and_turn_tasks_do_not(session_factory, tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from uep.tasks.supervisor import DEFAULT_DEADLINE_GRACE
+
+    loop_port = FakePort([])
+    loop_port.hang = True
+    rig, _ = _agent_rig(session_factory, tmp_path, route="agent_loop", flag=True, loop_port=loop_port)
+    try:
+        before = datetime.now(UTC)
+        rig.say("幫我查")
+        rig.wait_for(lambda: bool(loop_port.requests), what="Run 進入模型呼叫")
+        _tasks, runs = _rows(session_factory)
+        (run,) = runs
+        expected = timedelta(seconds=rig.core.loop_launcher._budget.run_deadline_s) + DEFAULT_DEADLINE_GRACE
+        assert run.run_deadline is not None
+        assert before + expected <= run.run_deadline <= datetime.now(UTC) + expected
+    finally:
+        rig.core.loop_launcher.close(timeout=0.2)
+        rig.core.shutdown()
+
+
+def _tight_launcher(rig, *, stale_after_s=0.6, deadline_s=0.5, grace_s=0.1):
+    """把心跳門檻與期限縮到亞秒級，讓測試不必真的等一分鐘。"""
+    from datetime import timedelta
+
+    from uep.agent.budget import LoopBudget
+
+    launcher = rig.core.loop_launcher
+    rig.core.tasks._stale_after = timedelta(seconds=stale_after_s)
+    launcher._budget = LoopBudget(run_deadline_s=deadline_s)
+    launcher._deadline_grace = timedelta(seconds=grace_s)
+    return launcher
+
+
+def test_beating_loop_run_is_not_forced_but_silent_one_is_after_deadline(session_factory, tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from uep.tasks.supervisor import Supervisor
+
+    loop_port = FakePort([])
+    loop_port.hang = True  # 模型呼叫卡住：迴圈自己不會送心跳，只剩背景心跳
+    rig, _ = _agent_rig(session_factory, tmp_path, route="agent_loop", flag=True, loop_port=loop_port)
+    try:
+        launcher = _tight_launcher(rig)
+        supervisor = Supervisor(rig.core.tasks, deadline_grace=timedelta(seconds=30))
+        rig.say("幫我查")
+        rig.wait_for(lambda: bool(loop_port.requests), what="Run 進入模型呼叫")
+        time.sleep(1.2)  # 超過 stale_after（0.6s）也超過 run_deadline（0.5s+0.1s）：只有背景心跳在維持心跳
+        stats = supervisor.tick(datetime.now(UTC))
+        _tasks, (run,) = _rows(session_factory)
+        assert stats.cancel_requested == 1 and stats.forced == 0  # 心跳新鮮：旗標已設，但不 force（T-12）
+        assert run.status == "RUNNING" and run.worker_epoch == 1
+        # 心跳停止（worker 消失的等價做法）：stale 之後，Supervisor 在 deadline 已到期的前提下 force 收尾
+        launcher._closing.set()
+        time.sleep(1.0)
+        stats = supervisor.tick(datetime.now(UTC))
+        assert stats.forced == 1
+        tasks, (run,) = _rows(session_factory)
+        assert run.status == "FAILED" and [t.status for t in tasks] == ["FAILED"]
+    finally:
+        rig.core.loop_launcher.close(timeout=0.2)
+        rig.core.shutdown()
+
+
+def test_supervisor_does_not_touch_a_loop_run_before_its_deadline_even_if_idle(session_factory, tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from uep.tasks.supervisor import Supervisor
+
+    loop_port = FakePort([])
+    loop_port.hang = True
+    rig, _ = _agent_rig(session_factory, tmp_path, route="agent_loop", flag=True, loop_port=loop_port)
+    try:
+        rig.say("幫我查")
+        rig.wait_for(lambda: bool(loop_port.requests), what="Run 進入模型呼叫")
+        # 未到 deadline：Supervisor 只在 deadline 到期後才看 stale，即使心跳在未來的時間點上看起來已過期也不動
+        stats = Supervisor(rig.core.tasks).tick(datetime.now(UTC) + timedelta(seconds=5))
+        assert stats.forced == 0 and stats.cancel_requested == 0
+        assert _rows(session_factory)[1][0].status == "RUNNING"
+    finally:
+        rig.core.loop_launcher.close(timeout=0.2)
+        rig.core.shutdown()

@@ -23,7 +23,7 @@
 | Context | `uep/context/` | `uep/context/snapshot.py`（ContextSnapshot 單一型別＋purpose、不可變、放入規則 X-1）、`uep/context/models.py`（`context_snapshots` 表與 revision 遞增存取） | CC-2 | V28／D24 |
 | Runtime（暫名） | `uep/runtime/` planned | Runtime Adapter | CC-3 | V36／D25 |
 | Presence | `uep/presence/` | `uep/presence/models.py`（`presence_current`、`presence_transfers`、`presence_leases` 表）、`uep/presence/manager.py`（PresenceManager：原子 acquire／confirm_activated／renew／release／revoke／confirm_quiesced／resolve_recovery、Core 啟動 epoch +1）、`uep/presence/gate.py`（OutputGate）、`uep/presence/epoch.py`（Host 本機 epoch 檔，路徑 `UEP_HOST_EPOCH_FILE` 或使用者資料目錄） | CC-4 | V11–V18／D4–D6、D26–D28 |
-| 共用契約型別 | `uep/contracts/` | `uep/contracts/presence.py`（授權六元組、Gate 結果碼 `GateDecision`、acquire／renew／release 結果碼、`TransferPhase`；零依賴，Core 與端點同源） | CC-4 | D27、D28 |
+| 共用契約型別 | `uep/contracts/` | `uep/contracts/presence.py`（授權六元組、Gate 結果碼 `GateDecision`、acquire／renew／release 結果碼、`TransferPhase`；零依賴，Core 與端點同源）、`uep/contracts/platform.py`（`PlatformContext`／`ExecutorDescriptor`／`PlatformDeclaration` 與三套平台詞彙映射表；只依賴 presence 契約型別） | CC-4 | D27、D28 |
 | 控制通道 | `uep/control/` | `uep/control/channel.py`（ControlChannel 協定、程序內實作：端點專屬信箱與執行緒，不經 outbox／Bus）、`uep/control/journal.py`（送出後背景補記 control 事件）、`uep/control/socket_transport.py`（跨行程控制傳輸：只綁 loopback 的 TCP、換行分隔 JSON，與資料通道分離） | CC-5 | E-12、P-8／V06 |
 | Output | `uep/output/` | `uep/output/intent.py`（OutputIntent、ControlSignal）、`uep/output/delivery.py`（DeliveryRecord 與 text／audio 狀態機）、`uep/output/models.py`（`output_intents`、`deliveries` 表）、`uep/output/manager.py`（最小 Delivery Manager） | CC-5 | V06–V08／D29 |
 | Adapter 協定 | `uep/adapters/` | `uep/adapters/runtime.py`（Runtime、RuntimeRequest、RuntimeEvent）、`uep/adapters/output.py`（OutputAdapter）、`uep/adapters/tool.py`（ToolExecutor） | CC-3、CC-5、CC-6 | V36／D25 |
@@ -66,6 +66,7 @@
 | `docs/架構重構/決策中樞架構提案.md` | DL-0 成果：全系統決策點盤點 45 點（A 硬閘／B 熱路徑／C 中樞）、DecisionRequest／DecisionResult／DecisionPlan 契約、decision.consult、引擎分層、遷移 P0～P4、§8 待裁決 Q1～Q26（Q2／Q5／Q6／Q17／Q19 已定案） | 設計／實作 |
 | `docs/架構重構/Proactive決策契約草案.md` | DL-6 定稿（Q-A～Q-J 已裁決）：`ProactiveCandidate` 契約、`proactive.initiate` 決策點（async、shadow-only）、9 關規則仲裁與 28 個 reason_code、與工具層 S-H 的交界（`to_loop_trigger`、`capability_lookup`）、import 邊界與風險；DL-6a 實作對照 | 設計／實作 |
 | `docs/架構重構/Capability收窄ADR.md` | DL-4 定稿（D4-1～D4-7 照建議裁決＋房內裁決）：中樞決策→capability 收窄，`DecisionPlan.capability`（只放 hint）、route 預設表與 `narrow_capability` 純函式、fail-closed 規則、D4-3（快照標籤短期等同不收窄）風險、PR1～PR4 切分；PR1／PR2 實作對照 | 設計／實作 |
+| `docs/架構重構/平台宣告注入端契約草案.md` | 平台宣告注入端定稿（DQ-2、DQ-4～DQ-8 照建議，DQ-1／DQ-3 待 Bernie）：`current_platform`／`available_executors`／`executor_ref`（`tool:platform`）的來源、`PlatformContextProvider`、版本判定、詞彙映射表；第 1～4 步（零行為變化）實作對照；回寫 SYS 增補 PD-18 | 設計／實作 |
 | `docs/架構重構/決策標註規格草案.md` | v1 定案（2026-11-06 裁決）：`reply_mode`／`risky`／選填 `content_risk` 人工真值的標註單位、欄位取值、判準、品質控管、存放 schema 與開放問題；供 P4 訓練與評估，與 DL-2 golden 分開 | 設計／資料標註 |
 | `docs/index/TRACKING.md` | 決策／驗收項／任務卡對應矩陣 | 所有人 |
 | `hidden_docs/DECISIONS.md`、`hidden_docs/TASKS.md` | 內部決策與任務規劃（gitignored，clone 後可能不存在） | 敏卡 |

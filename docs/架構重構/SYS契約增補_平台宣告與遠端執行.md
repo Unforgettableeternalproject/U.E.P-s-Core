@@ -303,6 +303,16 @@ DISCONNECTED ──────────────────────�
 
 **PD-17**（核准清單的修改權）：只有艾斯維爾（設定檔或經人類認證的管理介面）可新增、變更、停用核准清單項或調整 `pinned_schema_hash`；沒有任何註冊工具可讀寫此清單；平台宣告不能自動升格為核准（比照 NT-9 第 6 點對 Hub 允許清單的處置）。清單變更記入 journal（僅 ID、版本、短碼）。
 
+
+**PD-18**（注入端：`current_platform`／`available_executors`／`executor_ref`；對應 [平台宣告注入端契約草案](平台宣告注入端契約草案.md)，R0）：三個注入值只由組裝層的 `PlatformContextProvider` 每 turn 算一次快照（`PlatformContext`），消費點只讀快照，不自行查 Presence 或 registry；模型不可提供（沿用 PD-12）。
+1. `current_platform`：該 persona 的 Presence 為 ACTIVE 時的 `location`（`desktop`／`discord`／`website`…，開放字串 `PlatformId`，字元集 `^[a-z0-9_.:-]{1,64}$`）；非 ACTIVE（NONE／RECOVERING）或 Lease 已過期為 None。`session.platform`（輸入端平台）另列為 `session_platform`，兩者並存、不混用；投影與 placement 只用 `current_platform`。**【DQ-1 待 Bernie 裁決，暫採「兩者並存」】**
+2. `available_executors`：`current_platform` 上可承接工具執行的 executor 集合，元素為 `executor_ref`，排序、去重、只含 current_platform 的變體；`current_platform` 為 None 時為空（loop_consult 走既有 fail-closed）。階段 A 由 registry 靜態資料推導；階段 B 再併入「已宣告且在線且已核准」（PD-9）。executors 由工具層 `ToolRegistry.executors_for(platform) -> tuple[ExecutorDescriptor, ...]`（唯讀、純記憶體）提供；來源失敗或尚未接上時退回 F-1：`(current_platform,)`。
+3. `executor_ref` 格式 `tool:platform`（例 `member_recall:discord`），須符合 `^[a-z0-9_.:-]{1,64}$`，**不得含 `@`**（registry 內部 variant 鍵 `tool@platform` 不外露）；`tool:platform` 的轉換**只在工具層 `executors_for` 一處做**。
+4. 版本：`PlatformContext.version` 在（Presence `status`、`row_version`、`generation`、`current_platform`、`available_executors`、registry／declaration revision）任一變動時 +1；`generation` 只在核發 Lease 時遞增，故必須同時比對 `status` 與 `row_version`。Presence 讀取失敗 fail-closed 為「無場域」，等同今日行為。
+5. 詞彙：`session.platform`（`web`）、Presence `location`（`website`）、host 端點 location（`desktop`）三套並存，對照只在契約層映射表（`uep/contracts/platform.py`）。**【DQ-3 待 Bernie 裁決，暫採「契約層映射表」】**
+6. 實作註記：Presence 以新增的 `PresenceManager.peek()` 讀取，它是無鎖的唯讀 SELECT，不處理過期，只供平台快照與 shadow 使用。shadow 由 `UEP_PLATFORM_SHADOW`（預設關閉）控制。DQ-8 因 `decision_log` 沒有 payload 欄位，改以 log 加 metrics 記錄 `platform_context_version`；若要落進決策表，需要新的 migration，編號從 0018 起，動工前先在房內講。Q26 讀取平台快照之前必須先有 0018，不能事後稽核的自決不得上線。
+7. 目前狀態：第 1～4 步（型別、provider、shadow 記錄、差異比對）已落地且零行為變化；啟用 `ProjectionContext.platform` 與注入 loop_consult 尚未開工。
+
 ---
 
 ## 5. 遠端 executor 協定

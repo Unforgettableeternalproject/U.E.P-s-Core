@@ -374,6 +374,15 @@ class PresenceManager:
             self._apply_expiry(s, pending, controls, locked)
             return _view(locked)
 
+    def peek(self) -> PresenceView:
+        """純唯讀快照：只做無鎖 SELECT，不進寫入交易、不處理過期轉換（過期的 ACTIVE 仍原樣回傳，
+        由呼叫端依 ``expires_at`` 自行判斷）。只供平台快照與 shadow 使用；不處理過期，不可作為 Lease 或授權判斷的依據。"""
+        with self._sf() as s:
+            row = s.get(PresenceCurrentRow, self._persona)
+            if row is None:
+                raise PresenceNotStarted("presence_current 尚無資料；請先 start")
+            return _view(row)
+
     def authorization(self) -> AuthorizationTuple | None:
         """目前可用於輸出的授權六元組；沒有有效 Presence 時為 None。"""
         return self.current().authorization()

@@ -68,6 +68,17 @@ class UepSettings(BaseSettings):
     laya_model: str | None = Field(default=None, validation_alias="UEP_LAYA_MODEL")
     laya_revision: str | None = Field(default=None, validation_alias="UEP_LAYA_REVISION")
     laya_device: str | None = Field(default=None, validation_alias="UEP_LAYA_DEVICE")
+    # Boundary Translator（決策模型輸入 zh→en，決策中樞提案 §5.4）：預設關閉＝laya.shadow 收原文；開啟＝收英文
+    # 模型目錄未設＝~/.uep/models/mt/opus-mt-zh-en；aliases 為逗號分隔（未設＝內建「小U、小優、小悠、U.E.P、UEP」）
+    # unavailable 時：fallback＝laya.shadow 回 reason_code=translate_unavailable（預設，訓練只用英文）；original＝改送原文
+    decision_translate: bool = Field(default=False, validation_alias="UEP_DECISION_TRANSLATE")
+    translate_model_dir: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_MODEL_DIR")
+    translate_device: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_DEVICE")
+    translate_timeout_ms: int | None = Field(default=None, validation_alias="UEP_TRANSLATE_TIMEOUT_MS")
+    translate_aliases: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_ALIASES")
+    translate_placeholder: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_PLACEHOLDER")
+    translate_cpu_fallback: bool = Field(default=True, validation_alias="UEP_TRANSLATE_CPU_FALLBACK")
+    translate_on_unavailable: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_ON_UNAVAILABLE")
     # nlp.legacy（現有英文 NLP shadow proposer）的模型目錄；未設＝repo 相對的 models/nlp。只有放進 shadow 清單才會用到
     nlp_model_dir: str | None = Field(default=None, validation_alias="UEP_NLP_MODEL_DIR")
     test_database_url: SecretStr | None = Field(default=None, validation_alias="UEP_TEST_DATABASE_URL")

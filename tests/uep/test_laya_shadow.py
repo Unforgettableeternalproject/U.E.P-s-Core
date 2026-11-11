@@ -68,12 +68,12 @@ def _install_fake(monkeypatch, agent=None, gate: threading.Event | None = None, 
 def test_build_state_excludes_ids_and_handles_headcount():
     state = build_state(_cand(count=3), "小艾")
     assert state == {
-        "assistant_name": "小艾", "speaker": "使用者", "other_people_present": "另有 2 人在場",
-        "recent_context": "（無）", "message": "小艾，今天會下雨嗎？",
+        "assistant_name": "小艾", "speaker": "user", "other_people_present": "2 other people present",
+        "recent_context": "(none)", "message": "小艾，今天會下雨嗎？",
     }
     assert "12345" not in repr(state)
-    assert build_state(_cand(count=None), "x")["other_people_present"] == "無"
-    assert build_state(_cand(count=1), "x")["other_people_present"] == "無"
+    assert build_state(_cand(count=None), "x")["other_people_present"] == "none"
+    assert build_state(_cand(count=1), "x")["other_people_present"] == "none"
 
 
 def test_proposal_assembly_and_validation(monkeypatch):
@@ -88,7 +88,7 @@ def test_proposal_assembly_and_validation(monkeypatch):
     assert proposal.proposer_id == "laya.shadow"
     assert proposal.proposer_version == "laya-0.4.30:abc123def4567890"
     assert fake.loads == [("m/x", "cpu", {"revision": "rev1"})]
-    state, questions = fake.agent.calls[0]
+    state, questions = fake.agent.calls[-1]  # calls[0] 是 warmup 假推論
     assert state["assistant_name"] == "小艾" and set(questions) == {"reply_mode", "route", "addressed"}
     assert set(questions["reply_mode"]["criteria"]) == {"respond", "passive", "pass", "defer"}
     assert questions["addressed"]["type"] == "noul"

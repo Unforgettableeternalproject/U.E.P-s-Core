@@ -15,7 +15,15 @@ warmup 期間（或載入失敗後）``propose`` 立即回 D80 預設（``propos
 該目錄不存在時工廠建立當下就拋 ``ValueError``，不自動退回 hub 下載。``UEP_LAYA_MODEL`` 明確設成 HF id
 或其他路徑則照原樣傳給 ``laya.load``。
 
-隱私：只送出 state 所需欄位（助理名稱、泛稱的說話者、在場人數、本句文字）。``speaker_ref`` 等平台識別、
+輸入英文化：題目與 state 字面值全英文，定義在 ``uep.decision.laya_schema``（訓練工具共用）。
+``UEP_DECISION_TRANSLATE`` 開啟時，本句文字與上一輪脈絡先經 Boundary Translator（``translate_wiring``）翻成英文
+才送進模型；翻譯 unavailable 時預設回 ``reason_code=translate_unavailable`` 的 shadow 預設（訓練只用英文），
+可設 ``UEP_TRANSLATE_ON_UNAVAILABLE=original`` 改送原文。翻譯在 propose 內同步進行（shadow 不在主路徑預算內）。
+關閉（預設）時 Laya 收原文。
+
+已知競態（接受）：上一輪脈絡（Q2）在回合完成後由背景執行緒翻譯；若下一句 propose 搶在翻譯完成前到，會用舊的脈絡。
+
+隱私：只送出 state 所需欄位（助理名稱、泛稱的說話者、在場人數、近期脈絡、本句文字）。``speaker_ref`` 等平台識別、
 Risky／秘密欄位一律不進模型；文字只在 shadow 內使用，不進日誌。
 """
 from __future__ import annotations
@@ -25,13 +33,22 @@ import logging
 import re
 import sys
 import threading
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from uep.decision.laya_schema import (
+    CONTEXT_MAX_CHARS,
+    NO_CONTEXT,
+    QUESTIONS,
+    WARMUP_MESSAGE,
+    build_state_dict,
+    format_recent_context,
+)
+from uep.echo.translate_wiring import BoundaryTranslator, create_boundary_translator
 from uep.turn.decision_config import DecisionConfig
-from uep.turn.models import Proposal, ReplyMode, TurnCandidate
+from uep.turn.models import Proposal, ReplyMode, TurnCandidate, TurnOutcomeFacts
 from uep.turn.proposer import ROUTES, fallback_proposal
 
 logger = logging.getLogger("uep.echo.laya_wiring")
@@ -42,35 +59,6 @@ LAYA_MODEL_SUBDIR = "laya-multilingual"  # <UEP_LAYA_MODELS_DIR> 下的預設模
 LAYA_REVISION_FILE = "REVISION"  # 模型目錄內記錄來源 snapshot 雜湊的檔案
 DEFAULT_LAYA_DEVICE = "cuda"
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.:\-]")
-
-# 問題集（laya 的 choice／noul 題型）；選項說明是給零樣本模型看的
-QUESTIONS: dict[str, dict[str, Any]] = {
-    "reply_mode": {
-        "type": "choice",
-        "instructions": "根據這段對話，助理此刻應該採取哪種回應模式？",
-        "criteria": {
-            "respond": "助理被叫到或被詢問，應該立即回答",
-            "passive": "助理沒被叫到，但可在背景聆聽、僅在必要時簡短插話",
-            "pass": "與助理無關的對話，保持沉默不回應",
-            "defer": "資訊不足或有風險，需要先向使用者確認或延後處理",
-        },
-    },
-    "route": {
-        "type": "choice",
-        "instructions": "這則訊息該交給哪條處理路徑？",
-        "criteria": {
-            "direct_chat": "一般聊天或簡單問答，直接用對話回覆即可",
-            "agent_loop": "需要多步推理、規劃或多次工具呼叫的複雜任務",
-            "task_request": "單一明確的指令或工具請求（開關裝置、查行事曆、寄信等）",
-            "ignore": "不是對助理說的話，應忽略",
-        },
-    },
-    "addressed": {
-        "type": "noul",
-        "instructions": "這則訊息是對助理說的（直接對助理說話或延續與助理的對話）嗎？",
-    },
-}
-
 
 def laya_models_dir(configured: str | None = None) -> Path:
     """Laya 權重根目錄：``UEP_LAYA_MODELS_DIR`` 優先，否則 ``~/.uep/models/laya``。"""
@@ -122,20 +110,17 @@ def resolve_device(requested: str, cuda_available: bool | None = None) -> str:
     return "cuda" if cuda_available else "cpu"
 
 
-def build_state(candidate: TurnCandidate, assistant_name: str) -> dict[str, str]:
+def build_state(
+    candidate: TurnCandidate, assistant_name: str, *, message: str | None = None, recent_context: str = NO_CONTEXT,
+) -> dict[str, str]:
     """TurnCandidate -> laya 的 state dict。不送 speaker_ref、事件／會話 ID 與任何 Risky／秘密欄位。
 
-    候選沒有對話歷史，``recent_context`` 固定為無；人數未知視為單人（與 D80 一致）。
+    ``message`` 未給時用候選原文；翻譯開啟時由 proposer 傳入英文。人數未知視為單人（與 D80 一致）。
     """
-    count = candidate.participant_count
-    others = f"另有 {count - 1} 人在場" if count is not None and count > 1 else "無"
-    return {
-        "assistant_name": assistant_name,
-        "speaker": "使用者",
-        "other_people_present": others,
-        "recent_context": "（無）",
-        "message": candidate.text,
-    }
+    return build_state_dict(
+        assistant_name=assistant_name, message=candidate.text if message is None else message,
+        participant_count=candidate.participant_count, recent_context=recent_context,
+    )
 
 
 def _shadow_fallback(candidate: TurnCandidate, reason_code: str) -> Proposal:
@@ -157,6 +142,8 @@ class LayaProposer:
         device: str = DEFAULT_LAYA_DEVICE,
         assistant_name: str = "U.E.P",
         source_revision: str | None = None,
+        translator: BoundaryTranslator | None = None,
+        on_translate_unavailable: str = "fallback",
         autoload: bool = True,
     ) -> None:
         if not laya_available():
@@ -175,6 +162,13 @@ class LayaProposer:
         self._load_error: str | None = None
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
+        # Boundary Translator（None＝關閉，Laya 收原文）與 Q2 的上一輪脈絡（英文，行程內，不進日誌）
+        self._translator = translator
+        self._send_original_on_unavailable = on_translate_unavailable == "original"
+        self._recent_text: OrderedDict[str, str] = OrderedDict()  # candidate_id -> 使用者原文，等 outcome 配對
+        self._context_en = NO_CONTEXT
+        self._context_lock = threading.Lock()
+        self._context_threads: list[threading.Thread] = []
         if autoload:
             self.start_warmup()
 
@@ -204,6 +198,16 @@ class LayaProposer:
             if self._revision:
                 kwargs["revision"] = self._revision
             agent = laya.load(self._model_id, **kwargs)
+            if self._translator is not None:
+                # 必須等 laya.load 返回才啟動翻譯器：兩邊同時第一次 import transformers 的延遲載入不是執行緒安全的
+                #（實測並行時 laya 會 ImportError: AutoTokenizer）；之後翻譯器與 Laya 的假推論並行
+                self._translator.start_warmup()
+            # 假推論：CUDA 冷啟動（實測第一次約 16 秒）要在 warmup 內發生，ready 之後才算可用
+            agent.predict(
+                build_state_dict(assistant_name=self._state_assistant_name(), message=WARMUP_MESSAGE), QUESTIONS,
+            )
+            if self._translator is not None:
+                self._translator.wait_ready()  # 翻譯器失敗不擋 Laya，propose 會走 translate_unavailable
             revision = getattr(agent, "revision", None) or self._revision or self._source_revision or "unpinned"
             self.version = _safe_code(f"laya-{getattr(laya, '__version__', 'unknown')}:{revision}")
             self._agent = agent
@@ -214,6 +218,48 @@ class LayaProposer:
         finally:
             self._ready.set()
 
+    def _state_assistant_name(self) -> str:
+        """翻譯開啟時助理名稱用佔位英文名（與譯文內被替換的別名一致）。"""
+        return self._translator.placeholder if self._translator is not None else self._assistant_name
+
+    # ---- Q2：上一輪脈絡 ----
+
+    def on_turn_outcome(self, facts: TurnOutcomeFacts) -> None:
+        """OutcomeObserver：回合完成後記下「她的上一句回覆＋使用者上一句」，背景翻成英文給下一次 propose 用。"""
+        with self._context_lock:
+            user_text = self._recent_text.pop(facts.candidate_id, "")
+        if self._translator is None or facts.status != "completed" or not facts.reply_text.strip():
+            return
+        thread = threading.Thread(
+            target=self._refresh_context, args=(user_text, facts.reply_text), name="uep-laya-context", daemon=True,
+        )
+        self._context_threads = [t for t in self._context_threads if t.is_alive()] + [thread]
+        thread.start()
+
+    def _refresh_context(self, user_text: str, reply_text: str) -> None:
+        translator = self._translator
+        if translator is None:
+            return
+
+        def to_en(text: str) -> str | None:
+            text = text.strip()[:CONTEXT_MAX_CHARS]
+            if not text:
+                return None
+            return translator.translate(text, timeout_ms=2000).text_en  # 背景工作，逾時放寬
+
+        try:
+            context = format_recent_context(to_en(user_text), to_en(reply_text))
+        except Exception:
+            logger.exception("laya.shadow 脈絡翻譯失敗")
+            return
+        with self._context_lock:
+            self._context_en = context
+
+    def wait_context(self, timeout: float | None = None) -> None:
+        """等背景脈絡翻譯結束；測試與診斷用。"""
+        for thread in list(self._context_threads):
+            thread.join(timeout)
+
     # ---- 提議 ----
 
     def propose(self, candidate: TurnCandidate) -> Proposal:
@@ -222,7 +268,23 @@ class LayaProposer:
             reason = "laya_load_failed" if self._load_error else "laya_warming_up"
             self.metrics[reason] += 1
             return _shadow_fallback(candidate, reason)
-        result = agent.predict(build_state(candidate, self._assistant_name), QUESTIONS)
+        assistant, message, context = self._assistant_name, candidate.text, NO_CONTEXT
+        if self._translator is not None:
+            translated = self._translator.translate(candidate.text)
+            if translated.text_en is not None:
+                assistant, message = self._translator.placeholder, translated.text_en
+                with self._context_lock:
+                    context = self._context_en
+            else:
+                self.metrics["translate_unavailable"] += 1
+                if not self._send_original_on_unavailable:
+                    return _shadow_fallback(candidate, "translate_unavailable")
+            with self._context_lock:
+                self._recent_text[candidate.candidate_id] = candidate.text
+                while len(self._recent_text) > 16:
+                    self._recent_text.popitem(last=False)
+        state = build_state(candidate, assistant, message=message, recent_context=context)
+        result = agent.predict(state, QUESTIONS)
         answers = result["answers"]
         reply = answers["reply_mode"]
         route = answers["route"]["choice"]
@@ -263,7 +325,13 @@ def create_laya_proposer(config: DecisionConfig | None = None, settings: object 
         model_id = str(local)
         source_revision = read_source_revision(local)
         revision = None  # 本地目錄沒有 hub revision 可固定
+    translator = None
+    if getattr(st, "decision_translate", False):
+        translator = create_boundary_translator(st, extra_aliases=cfg.bot_identity.all_names)
+    on_unavailable = (getattr(st, "translate_on_unavailable", None) or "").strip().lower()
     return LayaProposer(
+        translator=translator,
+        on_translate_unavailable="original" if on_unavailable == "original" else "fallback",
         model_id=model_id,
         revision=revision,
         device=(getattr(st, "laya_device", None) or "").strip() or DEFAULT_LAYA_DEVICE,

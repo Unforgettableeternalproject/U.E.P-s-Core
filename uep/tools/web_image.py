@@ -143,7 +143,7 @@ def with_web_image(
         settings, transport=transport, resolver=resolver, client_factory=client_factory,
     )
     roots = image_roots(settings)
-    vision_port = vision if vision is not None else (build_vision(settings, client_factory=client_factory) if roots else None)
+    vision_port = vision if vision is not None else build_vision(settings, client_factory=client_factory)
     fetch_policy = FetchPolicy(
         timeout_s=settings.web_fetch_timeout_s, max_bytes=settings.web_fetch_max_bytes,
         max_redirects=settings.web_fetch_max_redirects,
@@ -166,7 +166,7 @@ def with_web_image(
         modules.add(MODULE_WEB_SEARCH)
     if settings.web_fetch_enabled:
         modules.add(MODULE_WEB_FETCH)
-    if roots and vision_port is not None:
+    if vision_port is not None:  # URL 圖片不需要白名單；本機路徑沒設白名單時由 executor 拒絕
         modules.add(MODULE_IMAGE_READ)
     existing = registry.entries()
     if any(name in existing for name in WEB_IMAGE_TOOLS):

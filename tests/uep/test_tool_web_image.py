@@ -648,7 +648,8 @@ def test_entries_valid_and_classified() -> None:
 
 
 def test_unconfigured_search_and_image_unavailable_fetch_ready(monkeypatch: pytest.MonkeyPatch) -> None:
-    registry, executors = with_web_image(memory_registry(), settings(monkeypatch))
+    registry, executors = with_web_image(
+        memory_registry(), settings(monkeypatch, web_search_providers="", web_search_openai_fallback=False))
     assert registry.readiness("web.search") == "unavailable"
     assert registry.readiness("image.read") == "unavailable"
     assert registry.readiness("web.fetch") == "ready"
@@ -661,9 +662,9 @@ def test_unconfigured_search_and_image_unavailable_fetch_ready(monkeypatch: pyte
 def test_provider_chain_readiness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ready, _ = with_web_image(memory_registry(), settings(monkeypatch, web_search_providers="duckduckgo, wikipedia, bogus"))
     assert ready.readiness("web.search") == "ready"
-    only_fallback, _ = with_web_image(memory_registry(), settings(monkeypatch, web_search_openai_fallback=True))
+    only_fallback, _ = with_web_image(memory_registry(), settings(monkeypatch, web_search_providers=""))
     assert only_fallback.readiness("web.search") == "unavailable"  # 只剩 OpenAI 備援且沒有金鑰
-    with_key, _ = with_web_image(memory_registry(), settings(monkeypatch, web_search_openai_fallback=True, llm_api_key="sk-test"))
+    with_key, _ = with_web_image(memory_registry(), settings(monkeypatch, web_search_providers="", llm_api_key="sk-test"))
     assert with_key.readiness("web.search") == "ready"
     searx_missing, _ = with_web_image(memory_registry(), settings(monkeypatch, web_search_providers="searxng"))
     assert searx_missing.readiness("web.search") == "unavailable"  # 沒設 URL 就不建立
@@ -671,6 +672,8 @@ def test_provider_chain_readiness(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert image_ready.readiness("image.read") == "ready"
     no_key, _ = with_web_image(memory_registry(), settings(monkeypatch, image_read_roots=str(tmp_path)))
     assert no_key.readiness("image.read") == "unavailable"
+    url_only, _ = with_web_image(memory_registry(), settings(monkeypatch, llm_api_key="sk-test"))
+    assert url_only.readiness("image.read") == "ready"  # 沒設白名單也 ready（URL 圖片），本機路徑由 executor 拒絕
     off, _ = with_web_image(memory_registry(), settings(monkeypatch, web_fetch_enabled=False))
     assert off.readiness("web.fetch") == "unavailable"
 
@@ -697,3 +700,21 @@ def test_parse_providers() -> None:
 def test_network_smoke() -> None:
     result = fetch_url("https://example.com/", FetchPolicy())
     assert result.status == 200 and "Example Domain" in html_to_text(result.body.decode())[1]
+
+
+def test_defaults_enable_handwritten_providers_and_fallback_needs_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    default = settings(monkeypatch)
+    assert default.web_search_providers == "duckduckgo,wikipedia" and default.web_search_openai_fallback is True
+    registry, _ = with_web_image(memory_registry(), default)
+    assert registry.readiness("web.search") == "ready"
+    off, _ = with_web_image(memory_registry(), settings(monkeypatch, web_search_providers="", web_search_openai_fallback=False))
+    assert off.readiness("web.search") == "unavailable"
+
+
+def test_image_read_url_works_without_roots_but_local_path_rejected(sandbox: dict[str, Path]) -> None:
+    transport = FakeTransport({"https://example.com/a.png": (200, {"Content-Type": "image/png"}, PNG)})
+    vision = FakeVision()
+    ex = ImageToolExecutor(vision=vision, policy=ImagePolicy(roots=()), transport=transport, resolver=resolver_for(GOOD))
+    assert read(ex, "https://example.com/a.png")[0].succeeded
+    receipt, out = read(ex, str(sandbox["root"] / "cat.png"))
+    assert not receipt.succeeded and "沒有設定" in out["result"] and len(vision.calls) == 1

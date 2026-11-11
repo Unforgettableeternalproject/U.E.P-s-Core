@@ -216,9 +216,9 @@ class UepSettings(BaseSettings):
 
     # 網路／圖片工具（web.search、web.fetch、image.read；uep/tools/web_image.py 組裝）。未設定的工具 readiness 為 unavailable、不投出
     # web.search provider 鏈：逗號分隔、依序嘗試（duckduckgo、wikipedia、searxng；未知名稱警告並略過）；空字串＝未設定。
-    # OpenAI Responses 的 web_search 是最後備援，要 UEP_WEB_SEARCH_OPENAI_FALLBACK=1（或清單內列 openai）且有 LLM 金鑰才算可用
-    web_search_providers: str = Field(default="", validation_alias="UEP_WEB_SEARCH_PROVIDERS")
-    web_search_openai_fallback: bool = Field(default=False, validation_alias="UEP_WEB_SEARCH_OPENAI_FALLBACK")
+    # OpenAI Responses 的 web_search 是最後備援，預設開啟，有 LLM 金鑰才算可用；清單為空且關閉備援時 web.search 為 unavailable
+    web_search_providers: str = Field(default="duckduckgo,wikipedia", validation_alias="UEP_WEB_SEARCH_PROVIDERS")
+    web_search_openai_fallback: bool = Field(default=True, validation_alias="UEP_WEB_SEARCH_OPENAI_FALLBACK")
     web_search_openai_model: str | None = Field(default=None, validation_alias="UEP_WEB_SEARCH_OPENAI_MODEL")  # 未設＝對話模型
     web_search_timeout_s: float = Field(default=8.0, gt=0, validation_alias="UEP_WEB_SEARCH_TIMEOUT_S")  # 單一 provider 時限
     web_search_budget_s: float = Field(default=40.0, gt=0, validation_alias="UEP_WEB_SEARCH_BUDGET_S")  # 整條鏈總預算
@@ -231,7 +231,7 @@ class UepSettings(BaseSettings):
     web_fetch_max_bytes: int = Field(default=1_000_000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_BYTES")
     web_fetch_max_chars: int = Field(default=8000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_CHARS")
     web_fetch_max_redirects: int = Field(default=5, ge=0, le=10, validation_alias="UEP_WEB_FETCH_MAX_REDIRECTS")
-    # image.read：本機圖片白名單目錄（作業系統路徑分隔字元分隔：Windows 用 ;、其他用 :）；空＝image.read 不啟用
+    # image.read：視覺模型可用就 ready（URL 圖片不需要白名單）；本機圖片白名單目錄（作業系統路徑分隔字元分隔：Windows 用 ;、其他用 :），空＝本機路徑一律拒絕
     image_read_roots: str = Field(default="", validation_alias="UEP_IMAGE_READ_ROOTS")
     image_read_model: str | None = Field(default=None, validation_alias="UEP_IMAGE_READ_MODEL")  # 未設＝對話模型
     image_read_max_bytes: int = Field(default=5_000_000, gt=0, validation_alias="UEP_IMAGE_READ_MAX_BYTES")

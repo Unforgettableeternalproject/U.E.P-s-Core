@@ -79,6 +79,7 @@ from uep.output.delivery import DeliveryStatus as DS
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
 from uep.tools.catalog.memory import GUILD_ROSTER_CONTEXT, memory_registry
 from uep.tools.projection import ProjectionContext
+from uep.tools.registry import ToolRegistry
 from uep.tools.render import render_tools
 from uep.turn.aggregator import (
     ModeAwareAggregator,
@@ -279,6 +280,7 @@ class EchoPipelineHost:
         self.lease_result: AcquireResult | None = None
         self.metrics: Metrics = Metrics()
         self._platform_shadow: PlatformShadow | None = None  # 平台脈絡 shadow（只記錄，不改任何消費點的輸入）
+        self._tool_registry: ToolRegistry | None = None  # agent 路徑的工具投影註冊表（組裝層注入；未注入時退回記憶註冊表）
         self.discarded_by_turn: Counter[str] = Counter()
         self._retract_tasks: set[asyncio.Future[Any]] = set()  # 只在 ES loop 執行緒上存取
         self._pollers: set[asyncio.Future[Any]] = set()  # 播放進度輪詢任務（只在 ES loop 上存取）
@@ -448,6 +450,12 @@ class EchoPipelineHost:
     def set_require_source_location(self, required: bool) -> None:
         """組裝層注入 ``UEP_REQUIRE_SOURCE_LOCATION``（Host 不自己讀設定）；開啟後缺 source_location 的輸入即否決。"""
         self.orchestrator.require_source_location = bool(required)
+
+    def bind_tool_registry(self, registry: ToolRegistry) -> None:
+        """組裝層注入 agent 路徑的工具註冊表（與 TaskManager／Gateway／loop 同一份）；之後的 direct_chat 投影都用它。"""
+        self._tool_registry = registry
+        if self._tool_path == "agent":
+            self._refresh_tools_agent()
 
     def bind_platform_shadow(self, shadow: PlatformShadow) -> None:
         """組裝層掛上平台脈絡 shadow；每個簽出 ticket 的 turn 觀察一次（失敗已在 shadow 內吞掉）。"""
@@ -948,7 +956,8 @@ class EchoPipelineHost:
         投影失敗 fail-closed：不曝光任何工具。"""
         available = frozenset({GUILD_ROSTER_CONTEXT}) if self._session.guild_id is not None else frozenset()
         try:
-            capability_set = memory_registry().project(
+            registry = getattr(self, "_tool_registry", None) or memory_registry()
+            capability_set = registry.project(
                 self._DIRECT_CHAT_CAPABILITY_TAGS,
                 ProjectionContext.for_platform(
                     self.projection_platform(), available_context=available, audience=self._session.audience_scope,

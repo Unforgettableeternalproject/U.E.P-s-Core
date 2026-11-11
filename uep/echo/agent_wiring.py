@@ -57,12 +57,18 @@ def make_memory_executor(
     return MemoryToolExecutor(memory, roster, cache=cache, audience_ok=audience_ok), cache
 
 
-def attach_agent_tools(think: Any, tasks: TaskManager, cache: TurnOutcomeCache, **kwargs: Any) -> AgentToolTurns:
-    """把回合工具 Port 綁到 ``AgentThinkStage``；``think`` 不是 agent stage（沒有 ``bind_port``）時拋 TypeError。"""
+def attach_agent_tools(
+    think: Any, tasks: TaskManager, cache: TurnOutcomeCache, registry: ToolRegistry | None = None, **kwargs: Any,
+) -> AgentToolTurns:
+    """把回合工具 Port 綁到 ``AgentThinkStage``；``think`` 不是 agent stage（沒有 ``bind_port``）時拋 TypeError。
+    ``registry`` 應為組裝層組出、與 TaskManager 同一份的註冊表；未給時退回 ``tasks.tool_resolver``（是 ToolRegistry 才用），再退回記憶註冊表。"""
     bind = getattr(think, "bind_port", None)
     if not callable(bind):
         raise TypeError("think 不是 AgentThinkStage：agent 路徑需要 UEP_TOOL_PATH=agent 組出的 stage")
-    turns = AgentToolTurns(tasks, memory_registry(), cache, **kwargs)
+    if registry is None:
+        resolver = getattr(tasks, "tool_resolver", None)
+        registry = resolver if isinstance(resolver, ToolRegistry) else memory_registry()
+    turns = AgentToolTurns(tasks, registry, cache, **kwargs)
     bind(turns)
     return turns
 

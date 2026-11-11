@@ -21,6 +21,8 @@ warmup 期間（或載入失敗後）``propose`` 立即回 D80 預設（``propos
 可設 ``UEP_TRANSLATE_ON_UNAVAILABLE=original`` 改送原文。翻譯在 propose 內同步進行（shadow 不在主路徑預算內）。
 關閉（預設）時 Laya 收原文。
 
+已知競態（接受）：上一輪脈絡（Q2）在回合完成後由背景執行緒翻譯；若下一句 propose 搶在翻譯完成前到，會用舊的脈絡。
+
 隱私：只送出 state 所需欄位（助理名稱、泛稱的說話者、在場人數、近期脈絡、本句文字）。``speaker_ref`` 等平台識別、
 Risky／秘密欄位一律不進模型；文字只在 shadow 內使用，不進日誌。
 """

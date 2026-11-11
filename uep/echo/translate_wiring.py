@@ -29,7 +29,7 @@ STATUS_SKIPPED = "skipped"  # 非 CJK 為主，原樣當英文
 STATUS_UNAVAILABLE = "unavailable"
 
 DEFAULT_TRANSLATE_DEVICE = "cuda"
-DEFAULT_TRANSLATE_TIMEOUT_MS = 250
+DEFAULT_TRANSLATE_TIMEOUT_MS = 400
 DEFAULT_PLACEHOLDER = "Yuki"  # 挑不易被改拼的名字（實測 "Aria" 偶被拼成 "Arya"）
 DEFAULT_ALIASES: tuple[str, ...] = ("小U", "小優", "小悠", "U.E.P", "UEP", "uep")
 MT_MODEL_SUBDIR = "opus-mt-zh-en"

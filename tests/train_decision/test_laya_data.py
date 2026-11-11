@@ -283,11 +283,17 @@ def test_check_command_exit_code(tmp_path: Path) -> None:
 def test_testset_draft_is_wellformed_and_pending() -> None:
     path = _TOOLS / "testset" / "zh_candidates_draft.jsonl"
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert 55 <= len(rows) <= 65
+    assert 55 <= len(rows) <= 100
     assert len({r["id"] for r in rows}) == len(rows)
     assert all(r["status"] == "pending_review" for r in rows)
     for r in rows:
         kinds.get_spec(r["kind"]).validate_expected(r["intended"])
+        # speaker：無 context 必為 n/a，有 context 則為 same_as_context_user／other_user
+        assert r["speaker"] in {"same_as_context_user", "other_user", "n/a"}
+        assert (r["speaker"] == "n/a") == (not r["context_zh"])
+    turn = [r["intended"] for r in rows if r["kind"] == "turn.reply"]
+    assert sum(i["reply_mode"] == "passive" for i in turn) >= 6 and sum(i["reply_mode"] == "defer" for i in turn) >= 6
+    assert {0, 1, 2}.issubset({r["others"] for r in rows}) and any(r["others"] >= 3 for r in rows)
 
 
 def test_prompt_uses_placeholder_assistant_name() -> None:

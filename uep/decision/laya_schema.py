@@ -15,6 +15,9 @@ SPEAKER_LABEL = "user"  # 泛稱的說話者，不送 speaker_ref
 NO_OTHER_PEOPLE = "none"
 NO_CONTEXT = "(none)"
 CONTEXT_MAX_CHARS = 160  # recent_context 各段（使用者上一句、她上一句回覆）的長度上限
+USER_LABEL = "User"  # 上一輪使用者與本句說話者相同
+OTHER_USER_LABEL = "Another user"  # 上一輪使用者與本句說話者不同（群組）
+ASSISTANT_LABEL = "Assistant"
 WARMUP_MESSAGE = "Hello, are you there?"  # warmup 假推論用的固定短句
 
 # 問題集（laya 的 choice／noul 題型）；選項說明是給零樣本模型看的
@@ -54,13 +57,18 @@ def others_present(participant_count: int | None) -> str:
     return NO_OTHER_PEOPLE
 
 
-def format_recent_context(user_en: str | None, reply_en: str | None) -> str:
-    """把上一輪的使用者句與她的回覆（皆已是英文）組成 recent_context；都沒有回 ``(none)``。"""
+def format_recent_context(user_en: str | None, reply_en: str | None, *, same_speaker: bool = True) -> str:
+    """把上一輪的使用者句與她的回覆（皆已是英文）組成 recent_context；都沒有回 ``(none)``。
+
+    ``same_speaker``：上一輪使用者與本句說話者相同標 ``User``，不同標 ``Another user``；
+    無法判斷時視為相同（預設）。訓練與推論共用。
+    """
     parts = []
     if user_en and user_en.strip():
-        parts.append(f"User: {user_en.strip()[:CONTEXT_MAX_CHARS]}")
+        label = USER_LABEL if same_speaker else OTHER_USER_LABEL
+        parts.append(f"{label}: {user_en.strip()[:CONTEXT_MAX_CHARS]}")
     if reply_en and reply_en.strip():
-        parts.append(f"Assistant: {reply_en.strip()[:CONTEXT_MAX_CHARS]}")
+        parts.append(f"{ASSISTANT_LABEL}: {reply_en.strip()[:CONTEXT_MAX_CHARS]}")
     return "\n".join(parts) if parts else NO_CONTEXT
 
 

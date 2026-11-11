@@ -16,9 +16,11 @@ from uep.turn.models import SessionContext, TurnCandidate, TurnOutcomeFacts
 CTX = SessionContext(conversation_id="c1", segment_id="s1", audience_scope="aud", session_ref="sess")
 
 
-def _cand(text="小U，明天會下雨嗎？", cid="cand1", count: int | None = 1) -> TurnCandidate:
+def _cand(
+    text="小U，明天會下雨嗎？", cid="cand1", count: int | None = 1, speakers: tuple[str, ...] = ("discord:12345",),
+) -> TurnCandidate:
     return TurnCandidate(
-        candidate_id=cid, utterance_refs=("e1",), speakers=("discord:12345",), ctx=CTX, interaction_state="IDLE",
+        candidate_id=cid, utterance_refs=("e1",), speakers=speakers, ctx=CTX, interaction_state="IDLE",
         interaction_version=1, presence_active=True, text=text, participant_count=count, addressed_hint=True,
     )
 
@@ -86,6 +88,9 @@ def test_schema_is_pure_english_and_shared():
     long = "a" * 500
     ctx = laya_schema.format_recent_context(long, long)
     assert all(len(line) <= laya_schema.CONTEXT_MAX_CHARS + len("Assistant: ") for line in ctx.splitlines())
+    assert laya_schema.format_recent_context("hi", "yo") == "User: hi\nAssistant: yo"
+    assert laya_schema.format_recent_context("hi", "yo", same_speaker=False) == "Another user: hi\nAssistant: yo"
+    assert laya_schema.USER_LABEL == "User" and laya_schema.OTHER_USER_LABEL == "Another user"
 
 
 def test_warmup_runs_a_fake_inference_before_ready(monkeypatch):
@@ -182,6 +187,30 @@ def test_recent_context_carries_previous_turn_in_english(monkeypatch):
     assert state["recent_context"] == "User: Yuki, will it rain tomorrow?\nAssistant: Okay, it may rain tomorrow."
     assert _all_ascii({k: v for k, v in state.items()})  # en 開頭的假譯文皆為 ASCII
     assert "12345" not in repr(state)
+
+
+def _first_turn_then(monkeypatch, prev: tuple[str, ...], now: tuple[str, ...]) -> str:
+    p, agent, tr = _proposer(monkeypatch, _MT())
+    tr.wait_ready(5)
+    p.propose(_cand(text="第一句", cid="c1", speakers=prev))
+    p.on_turn_outcome(_outcome("c1"))
+    p.wait_context(5)
+    p.propose(_cand(text="第二句", cid="c2", speakers=now))
+    state = agent.calls[-1][0]
+    assert "12345" not in repr(state) and "discord" not in repr(state) and "u2" not in repr(state)
+    return state["recent_context"]
+
+
+def test_recent_context_labels_same_vs_another_user(monkeypatch):
+    same = _first_turn_then(monkeypatch, ("discord:12345",), ("discord:12345",))
+    assert same.startswith("User: ") and "Another user" not in same
+    other = _first_turn_then(monkeypatch, ("discord:12345",), ("discord:u2",))
+    assert other.startswith("Another user: ") and "\nAssistant: " in other
+    # 多人合併：任一相同即視為同一說話者
+    merged = _first_turn_then(monkeypatch, ("discord:12345",), ("discord:u2", "discord:12345"))
+    assert merged.startswith("User: ")
+    # 沒有 speaker 資料：視為相同
+    assert _first_turn_then(monkeypatch, ("discord:12345",), ()).startswith("User: ")
 
 
 def test_recent_context_is_truncated_and_skips_non_completed(monkeypatch):

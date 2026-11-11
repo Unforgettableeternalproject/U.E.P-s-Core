@@ -54,3 +54,12 @@ $PY -m laya_data.split check --train out/train.jsonl out/val.jsonl --test <測�
 - 合成資料：由外部 LLM 依情境卡產生，prompt 不含真實日誌或個資；使用外部服務產物的條款以該服務為準。
 - **不收他人資料**。艾斯維爾本人日誌（`real_owner`）只進 `pool_private/`（不入 git），`speaker_ref` 換成 `S1..Sn`。
 - 測試集 = zh-TW 原句經 MT、人工核過，雙標後凍結；訓練工具永遠不讀 `testset/`。草稿內的「intended」只是出題意圖，不是真值。
+
+## 測試集出題規則（zh_candidates_draft.jsonl）
+
+完整判準見標註規格草案 §8.4、§9；摘要：
+
+- `route` 依副作用：`direct_chat`＝閒聊＋唯讀查詢（天氣、新聞、查行事曆、記憶查詢）；`task_request`＝單一明確且改變狀態的動作（寄信、設提醒、開關裝置、訂位）；`agent_loop`＝多步驟／需規劃／串接多次工具。「你可以 X 嗎？」是禮貌請求；ack 的 route 跟被確認的動作走。
+- `absent.target_location` 只記字面明說的地點（「過來」＝`none`）；absent 句中「她」指 U.E.P，第三人寫名字；叫她去別的平台用「去」，用「來」時 `source_platform` 為說話者所在平台。
+- 每列有 `speaker`：`same_as_context_user`／`other_user`／`n/a`（無 context），用來判斷群組 follow-up；`others`（在場他人數）涵蓋 0／1／2／3+；`passive`、`defer` 各至少 6 句。
+- 新增列一律 `status=pending_review`；意圖只是出題參考，不是真值。

@@ -50,6 +50,15 @@ class UepSettings(BaseSettings):
     # 測試用工具組（test_echo／test_clock／test_sleep／test_approval_echo）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效。
     # 開啟後組裝層才註冊這些工具與 executor，並把測試標籤併入 /loop（route=agent_loop）的 capability_tags；關閉時完全不存在
     tool_testkit: bool = Field(default=False, validation_alias="UEP_TOOL_TESTKIT")
+    # Chatroom 原生工具（chatroom.read／wait／post）：全部設定齊了才可用，缺任一項工具恆為 unavailable（組裝不失敗）。
+    # token 來源二選一：UEP_CHATROOM_TOKEN，或 UEP_CHATROOM_TOKEN_FILE（純 token 檔，或含 CHATROOM_TOKEN=... 行的 .env）；只在 executor 側使用
+    chatroom_url: str | None = Field(default=None, validation_alias="UEP_CHATROOM_URL")
+    chatroom_session_key: str | None = Field(default=None, validation_alias="UEP_CHATROOM_SESSION_KEY")
+    chatroom_display_name: str | None = Field(default=None, validation_alias="UEP_CHATROOM_DISPLAY_NAME")
+    chatroom_token: SecretStr | None = Field(default=None, validation_alias="UEP_CHATROOM_TOKEN")
+    chatroom_token_file: Path | None = Field(default=None, validation_alias="UEP_CHATROOM_TOKEN_FILE")
+    # 允許的房間 id（逗號分隔白名單）；executor 只對白名單內的房間自動加入、讀、等、發言
+    chatroom_rooms: str | None = Field(default=None, validation_alias="UEP_CHATROOM_ROOMS")
     # 平台脈絡 shadow（平台宣告注入端 R0 第 3、4 步）：預設關閉；開啟時每個簽出的 turn 多一次唯讀 Presence SELECT（鎖外）
     platform_shadow: bool = Field(default=False, validation_alias="UEP_PLATFORM_SHADOW")
     # Output Gate 前置「端點須具 interaction 能力」（平台端點契約 IC-3、E3）：預設關＝shadow（只計數與記 log，照常放行）；

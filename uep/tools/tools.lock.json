@@ -1,4 +1,16 @@
 {
+  "chatroom.post": {
+    "schema_hash": "b75fb95391138d2323f7e04381468819dfe7655b4559847747a1f9fe18fb3910",
+    "tool_version": 1
+  },
+  "chatroom.read": {
+    "schema_hash": "61f5c7a6b8bbf5ae3739beb0a1e6935710b1bc3a4f6ec89d729cbf50b7dbdae3",
+    "tool_version": 1
+  },
+  "chatroom.wait": {
+    "schema_hash": "8a9f03826ab6d999001a015545706eea43c45fb21864cb6a522a452226efb17e",
+    "tool_version": 1
+  },
   "deep_recall": {
     "schema_hash": "6d53da405e34d3fba27b7e38e0ebec9b4e988374d9d7961e7d40dcd9bad489da",
     "tool_version": 1

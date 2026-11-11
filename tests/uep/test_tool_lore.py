@@ -558,3 +558,118 @@ def test_live_service_smoke_read_only():
     receipt, outcome = run(ex, TOOL_LIST, {"space": space, "limit": 1})
     assert receipt.succeeded, outcome.get("result")
     assert json.loads(outcome["result"])["ok"] is True
+
+
+# ---- 審查修正：反例 ----
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+def test_redirect_is_failure_not_success_for_every_tool(status: int):
+    """3xx（空 body）不得被當成功；請求沒被處理，寫入也沒發生，所以是一般失敗而非 UNKNOWN。"""
+    for tool, params in (
+        (TOOL_WRITE, {"title": "t", "body": "b"}), (TOOL_UPDATE, {"id": "n1", "expected_updated": "u", "body": "x"}),
+        (TOOL_RECALL, {"query": "q"}),
+    ):
+        http = FakeHttp({tool.split(".", 1)[1]: (status, {})})
+        receipt, outcome = run(LoreToolExecutor(make_config(), transport=http, allow_write=True), tool, params)
+        data = json.loads(outcome["result"])
+        assert not receipt.succeeded and receipt.error_code == "failed" and data["error"] == "redirect"
+        assert "id" not in data and outcome["success"] is False
+
+
+def test_redirect_on_delete_confirm_step_is_failure():
+    http = FakeHttp({"note_delete": [PLAN, (302, {})]})
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=http, allow_write=True), TOOL_DELETE, {"id": "n1"})
+    assert not receipt.succeeded and json.loads(outcome["result"])["error"] == "redirect"
+
+
+def test_write_result_is_length_capped_with_huge_duplicates():
+    dups = [{"id": f"d{i}", "title": "標" * 300, "summary": "摘" * 300} for i in range(200)]
+    http = FakeHttp({"write": (201, {"id": "n1", "updated": "u", "duplicates": dups})})
+    _, outcome = run(LoreToolExecutor(make_config(max_chars=1500), transport=http, allow_write=True), TOOL_WRITE,
+                     {"title": "t", "body": "b"})
+    data = json.loads(outcome["result"])
+    assert len(outcome["result"]) <= 1500 and data["truncated"] is True and data["id"] == "n1"
+
+
+def test_invalid_review_state_dropped_from_result_text_too():
+    ex = LoreToolExecutor(make_config(), allow_write=True, transport=FakeHttp({"write": [
+        (201, {"id": "n1", "review_state": "weird"}), (201, {"id": "n2", "review_state": "pending"}),
+    ]}))
+    _, bad = run(ex, TOOL_WRITE, {"title": "t", "body": "b"})
+    _, good = run(ex, TOOL_WRITE, {"title": "t", "body": "b"})
+    assert "review_state" not in json.loads(bad["result"]) and "weird" not in bad["result"]
+    assert json.loads(good["result"])["review_state"] == "pending"
+    http = FakeHttp({"recall": (200, {"items": [{"id": "n1", "title": "a", "review_state": "bogus"}]})})
+    _, read = run(LoreToolExecutor(make_config(), transport=http), TOOL_RECALL, {"query": "q"})
+    assert "bogus" not in read["result"]
+
+
+def test_server_json_with_executor_like_keys_is_not_mistaken_for_failure():
+    """服務端 JSON 剛好有 success／result／code 鍵時，仍照服務端內容處理（失敗形狀靠型別而非鍵名）。"""
+    body = {"success": False, "result": "x", "code": "failed", "items": [{"id": "n1", "title": "標題"}]}
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=FakeHttp({"recall": (200, body)})), TOOL_RECALL, {"query": "q"})
+    assert receipt.succeeded and json.loads(outcome["result"])["items"][0]["title"] == "標題"
+    plan = (200, {"success": True, "executed": False, "confirm_token": "T"})
+    http = FakeHttp({"note_delete": [plan, (200, {"success": False, "executed": True})]})
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=http, allow_write=True), TOOL_DELETE, {"id": "n1"})
+    assert receipt.succeeded and json.loads(outcome["result"])["deleted"] is True
+
+
+@pytest.mark.parametrize("bad", ["doc:abc", "DOC:abc", " Chunk:x", "  doc:x  "])
+def test_write_tools_reject_document_ids_uniformly(bad: str):
+    http = FakeHttp()
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    cases = (
+        (TOOL_UPDATE, {"id": bad, "expected_updated": "u", "body": "x"}),
+        (TOOL_DELETE, {"id": bad}),
+        (TOOL_WRITE, {"title": "t", "body": "b", "supersedes": bad}),
+    )
+    for tool, params in cases:
+        receipt, outcome = run(ex, tool, params)
+        assert not receipt.succeeded and json.loads(outcome["result"])["error"] == "invalid_args"
+    assert not http.calls
+
+
+def test_write_ids_are_stripped_before_sending():
+    http = FakeHttp({"update": (200, {"id": "n1"}), "write": (201, {"id": "n2"})})
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    run(ex, TOOL_UPDATE, {"id": " n1 ", "expected_updated": "u", "body": "x"})
+    run(ex, TOOL_WRITE, {"title": "t", "body": "b", "supersedes": " n1 "})
+    assert http.calls[0][2]["id"] == "n1" and http.calls[1][2]["supersedes"] == "n1"
+
+
+def test_dev_vault_wildcard_treated_as_unset(monkeypatch: pytest.MonkeyPatch):
+    for key in ("UEP_LORE_URL", "UEP_LORE_TOKEN", "UEP_LORE_DEV_VAULT", "UEP_LORE_VAULTS"):
+        monkeypatch.delenv(key, raising=False)
+    settings = UepSettings(_env_file=None, UEP_LORE_URL="http://x", UEP_LORE_TOKEN=SecretStr("t"), UEP_LORE_DEV_VAULT=" * ")
+    cfg = LoreConfig.from_settings(settings)
+    assert cfg.dev_vault == "" and not cfg.configured
+    http = FakeHttp()
+    receipt, _ = run(LoreToolExecutor(make_config(dev_vault=""), transport=http), TOOL_RECALL, {"query": "q", "space": "dev"})
+    assert receipt.error_code == "denied" and not http.calls
+
+
+def test_results_carry_untrusted_marker_first_with_fixed_key_order():
+    http = FakeHttp({"recall": (200, {"items": [{"id": "n1", "title": "a"}]}), "write": (201, {"id": "n2"}),
+                     "note_delete": [PLAN, (200, {"executed": True})]})
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    for tool, params in ((TOOL_RECALL, {"query": "q"}), (TOOL_WRITE, {"title": "t", "body": "b"}), (TOOL_DELETE, {"id": "n1"})):
+        _, outcome = run(ex, tool, params)
+        data = json.loads(outcome["result"])
+        assert list(data)[:2] == ["untrusted", "notice"] and data["untrusted"] is True and data["notice"]
+
+
+def test_urllib_transport_ignores_environment_proxy(monkeypatch: pytest.MonkeyPatch):
+    """環境有 proxy 時請求仍直連（Bearer token 不經 proxy）：proxy 指向會拒絕連線的位址，直連才會成功。"""
+    for key in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(key, "http://127.0.0.1:9")
+    monkeypatch.setenv("NO_PROXY", "")
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _ = urllib_transport(f"http://127.0.0.1:{server.server_address[1]}/v1/recall", {}, b"{}", 3.0)
+        assert status == 200
+    finally:
+        server.shutdown()
+        server.server_close()

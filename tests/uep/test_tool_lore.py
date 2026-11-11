@@ -18,6 +18,7 @@ from pydantic import SecretStr
 from uep.adapters.tool import CAPABILITY_CEILING, ToolCall, ToolResponseLost
 from uep.config import UepSettings
 from uep.tools.catalog.lore import (
+    LIST_INPUT_SCHEMA,
     LORE_EXECUTOR,
     LORE_READ_TOOLS,
     LORE_TOOLS,
@@ -193,6 +194,7 @@ def test_config_from_settings(monkeypatch: pytest.MonkeyPatch):
     )
     cfg = LoreConfig.from_settings(settings)
     assert cfg.configured and cfg.vaults == ("a", "b")  # 去空白、丟掉 "*"
+    assert cfg.delete_enabled and empty.delete_enabled  # lore.delete 預設開啟
     assert "token" not in repr(cfg)  # token 不進 repr
     assert not LoreConfig(url="ftp://x", token="t", dev_vault="d").configured
 
@@ -444,6 +446,113 @@ def test_delete_in_lore_space_reports_pending():
     data = json.loads(outcome["result"])
     assert receipt.succeeded and data["deleted"] is False and outcome["review_state"] == "pending_delete"
     assert http.calls[0][2]["space"] == "lore" and http.calls[0][2]["vault"] == LORE_VAULT
+    assert "待 Bernie 核准" in data["note"] and "仍可見" in data["note"]
+
+
+def test_delete_pending_delete_with_executed_true_is_not_deleted():
+    # Vault 21cf10f 的實際回應：lore 的第二步 executed:true 但 review_state:pending_delete（請求受理，筆記未刪）
+    http = FakeHttp({"note_delete": [PLAN, (200, {"executed": True, "plan": {"id": "n1"}, "review_state": "pending_delete"})]})
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    receipt, outcome = run(ex, TOOL_DELETE, {"id": "n1"})
+    data = json.loads(outcome["result"])
+    assert receipt.succeeded and data["deleted"] is False and data["review_state"] == "pending_delete"
+    assert data["note"] == "已送出刪除請求，待 Bernie 核准，原筆記目前仍可見。" and outcome["review_state"] == "pending_delete"
+    assert "CONFIRM-XYZ" not in outcome["result"]
+
+
+def test_delete_dev_space_real_delete_reports_none():
+    http = FakeHttp({"note_delete": [PLAN, (200, {"executed": True, "review_state": "none"})]})
+    _, outcome = run(LoreToolExecutor(make_config(), transport=http, allow_write=True), TOOL_DELETE, {"id": "n1", "space": "dev"})
+    data = json.loads(outcome["result"])
+    assert data["deleted"] is True and data["review_state"] == "none" and "note" not in data
+
+
+# ---- UEP 審核契約：錯誤碼訊息、審核欄位、list 篩選 ----
+
+CONTRACT_CASES = [
+    (403, "uep_space_forbidden", "denied", "只能使用 dev 或 lore"),
+    (403, "uep_not_author", "denied", "lore.write 另寫一篇並帶 supersedes"),
+    (403, "uep_endpoint_forbidden", "denied", "不開放這個操作"),
+    (409, "review_state_conflict", "failed", "已在待刪除中"),
+]
+
+
+@pytest.mark.parametrize(("status", "code", "kind", "text"), CONTRACT_CASES)
+def test_contract_error_codes_give_clear_messages(status: int, code: str, kind: str, text: str):
+    # 服務端原文帶 URL 與 token 也不得進結果：訊息是固定的繁中文字
+    leaky = f"http://secret.example/v1 Bearer {TOKEN}"
+    http = FakeHttp({"update": (status, {"error": {"code": code, "message": leaky}})})
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    receipt, outcome = run(ex, TOOL_UPDATE, {"id": "n1", "expected_updated": "u0", "body": "新"})
+    data = json.loads(outcome["result"])
+    assert not receipt.succeeded and receipt.error_code == kind
+    assert data["error"] == code and text in data["message"] and data["http_status"] == status
+    assert "hint" not in data  # review_state_conflict 不套用版本衝突的提示
+    assert TOKEN not in outcome["result"] and "secret.example" not in outcome["result"] and "http://" not in outcome["result"]
+
+
+def test_review_state_conflict_on_delete_second_request():
+    http = FakeHttp({"note_delete": [(409, {"error": {"code": "review_state_conflict", "message": "x"}})]})
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=http, allow_write=True), TOOL_DELETE, {"id": "n1"})
+    assert not receipt.succeeded and "已在待刪除中" in json.loads(outcome["result"])["message"] and len(http.calls) == 1
+
+
+def test_space_forbidden_message_on_reads_too():
+    http = FakeHttp({"recall": (403, {"error": {"code": "uep_space_forbidden", "message": "personal"}})})
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=http), TOOL_RECALL, {"query": "q"})
+    assert receipt.error_code == "denied" and "dev 或 lore" in json.loads(outcome["result"])["message"]
+
+
+def test_version_conflict_keeps_existing_hint():
+    http = FakeHttp({"update": (409, {"error": {"code": "version_conflict", "message": "x"}})})
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    _, outcome = run(ex, TOOL_UPDATE, {"id": "n1", "expected_updated": "u0", "body": "新"})
+    assert "lore.get" in json.loads(outcome["result"])["hint"]
+
+
+def test_get_keeps_review_fields():
+    item = {
+        "id": "n1", "title": "t", "body": "內文", "review_state": "rejected", "reviewed_by": "Bernie",
+        "reviewed_at": "2026-11-12T00:00:00Z", "review_reason": "內容不實" * 10, "review": "unverified",
+    }
+    http = FakeHttp({"get": (200, {"items": [item]})})
+    _, outcome = run(LoreToolExecutor(make_config(), transport=http), TOOL_GET, {"ids": ["n1"]})
+    got = json.loads(outcome["result"])["items"][0]
+    assert got["review_state"] == "rejected" and got["reviewed_by"] == "Bernie" and got["reviewed_at"] == "2026-11-12T00:00:00Z"
+    assert got["review_reason"] == item["review_reason"] and got["review"] == "unverified"
+
+
+def test_list_review_state_filter_forwarded_and_schema_strict():
+    prop = LIST_INPUT_SCHEMA["properties"]["review_state"]
+    assert prop["type"] == "string" and prop["enum"] == ["none", "pending", "pending_delete", "verified", "rejected"]
+    assert LIST_INPUT_SCHEMA["additionalProperties"] is False
+    http = FakeHttp({"list": (200, {"items": [{"id": "n1", "title": "t", "review_state": "pending", "review": "unverified"}]})})
+    ex = LoreToolExecutor(make_config(), transport=http)
+    _, outcome = run(ex, TOOL_LIST, {"review_state": "pending"})
+    assert http.calls[0][2]["review_state"] == "pending"
+    assert json.loads(outcome["result"])["items"][0]["review_state"] == "pending"
+    run(ex, TOOL_LIST, {})
+    assert "review_state" not in http.calls[1][2]
+
+
+@pytest.mark.parametrize("bad", ["bogus", ["pending"], 1, ""])
+def test_list_invalid_review_state_rejected_without_http(bad: Any):
+    http = FakeHttp()
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=http), TOOL_LIST, {"review_state": bad})
+    assert receipt.error_code == "failed" and json.loads(outcome["result"])["error"] == "invalid_args" and not http.calls
+
+
+def test_review_guidance_and_list_tool_version():
+    entries = {e.name: e for e in lore_entries()}
+    for name in (TOOL_UPDATE, TOOL_DELETE):
+        hint = entries[name].descriptor.usage_hint
+        assert "rejected" in hint and "pending_delete" in hint and "重新送審" in hint and "取消刪除請求" in hint
+    assert entries[TOOL_LIST].spec.tool_version == 2 and entries[TOOL_RECALL].spec.tool_version == 1
+
+
+def test_delete_enabled_by_default_in_settings_and_config():
+    assert UepSettings(_env_file=None).lore_delete_enabled is True
+    assert LoreConfig().delete_enabled is True
 
 
 def test_delete_guards():

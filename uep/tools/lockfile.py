@@ -8,14 +8,16 @@ from __future__ import annotations
 import json
 import logging
 
+from uep.tools.catalog.image import image_entries
 from uep.tools.catalog.memory import memory_entries
 from uep.tools.catalog.testkit import testkit_entries
+from uep.tools.catalog.web import web_entries
 from uep.tools.registry import LOCKFILE_PATH, ToolRegistry
 
 
 def current_registry() -> ToolRegistry:
     """目前要進 lockfile 的全部 builtin 條目（之後的目錄模組在這裡加；測試工具組無條件在內，與執行期開關無關）。"""
-    return ToolRegistry.build([*memory_entries(), *testkit_entries()])
+    return ToolRegistry.build([*memory_entries(), *testkit_entries(), *web_entries(), *image_entries()])
 
 
 def render_lockfile(registry: ToolRegistry) -> str:

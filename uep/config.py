@@ -214,6 +214,28 @@ class UepSettings(BaseSettings):
     legacy_openai_org: str | None = Field(default=None, validation_alias="OPENAI_ORG")
     legacy_openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
 
+    # 網路／圖片工具（web.search、web.fetch、image.read；uep/tools/web_image.py 組裝）。未設定的工具 readiness 為 unavailable、不投出
+    # web.search provider 鏈：逗號分隔、依序嘗試（duckduckgo、wikipedia、searxng；未知名稱警告並略過）；空字串＝未設定。
+    # OpenAI Responses 的 web_search 是最後備援，要 UEP_WEB_SEARCH_OPENAI_FALLBACK=1（或清單內列 openai）且有 LLM 金鑰才算可用
+    web_search_providers: str = Field(default="", validation_alias="UEP_WEB_SEARCH_PROVIDERS")
+    web_search_openai_fallback: bool = Field(default=False, validation_alias="UEP_WEB_SEARCH_OPENAI_FALLBACK")
+    web_search_openai_model: str | None = Field(default=None, validation_alias="UEP_WEB_SEARCH_OPENAI_MODEL")  # 未設＝對話模型
+    web_search_timeout_s: float = Field(default=8.0, gt=0, validation_alias="UEP_WEB_SEARCH_TIMEOUT_S")  # 單一 provider 時限
+    web_search_budget_s: float = Field(default=40.0, gt=0, validation_alias="UEP_WEB_SEARCH_BUDGET_S")  # 整條鏈總預算
+    web_search_max_results: int = Field(default=8, ge=1, le=10, validation_alias="UEP_WEB_SEARCH_MAX_RESULTS")
+    # SearXNG：設了 URL 才啟用；指向自架內網時必須在 PRIVATE_HOSTS 明列該主機名（逗號分隔），否則 SSRF 規則會擋
+    web_searxng_url: str | None = Field(default=None, validation_alias="UEP_WEB_SEARXNG_URL")
+    web_searxng_private_hosts: str = Field(default="", validation_alias="UEP_WEB_SEARXNG_PRIVATE_HOSTS")
+    web_fetch_enabled: bool = Field(default=True, validation_alias="UEP_WEB_FETCH_ENABLED")
+    web_fetch_timeout_s: float = Field(default=10.0, gt=0, validation_alias="UEP_WEB_FETCH_TIMEOUT_S")
+    web_fetch_max_bytes: int = Field(default=1_000_000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_BYTES")
+    web_fetch_max_chars: int = Field(default=8000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_CHARS")
+    web_fetch_max_redirects: int = Field(default=5, ge=0, le=10, validation_alias="UEP_WEB_FETCH_MAX_REDIRECTS")
+    # image.read：本機圖片白名單目錄（作業系統路徑分隔字元分隔：Windows 用 ;、其他用 :）；空＝image.read 不啟用
+    image_read_roots: str = Field(default="", validation_alias="UEP_IMAGE_READ_ROOTS")
+    image_read_model: str | None = Field(default=None, validation_alias="UEP_IMAGE_READ_MODEL")  # 未設＝對話模型
+    image_read_max_bytes: int = Field(default=5_000_000, gt=0, validation_alias="UEP_IMAGE_READ_MAX_BYTES")
+
     @field_validator("infer_system_prompt")
     @classmethod
     def _default_persona_when_blank(cls, value: str) -> str:

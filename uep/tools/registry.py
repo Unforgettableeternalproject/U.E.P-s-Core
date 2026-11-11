@@ -22,6 +22,7 @@ from typing import Any, Literal, get_args
 from uep.adapters.tool import (
     APPROVAL_ORDER,
     CAPABILITY_CEILING,
+    NATIVE_EXEMPT_CAPABILITIES,
     SIDE_EFFECT_ORDER,
     VISIBLE_ORIGINS,
     ApprovalLevel,
@@ -155,6 +156,8 @@ def compute_schema_hash(entry: ToolEntry, input_schema: Mapping[str, Any] | None
         "approval_level": spec.approval_level,
         "targeting": spec.targeting,
     }
+    if spec.native:  # native=False 不入 canonical，既有 lockfile 條目的 hash 不變
+        payload["native"] = True
     return params_hash("schema_hash", 0, payload)
 
 
@@ -261,8 +264,22 @@ class ToolRegistry:
             if not _valid_scope_ref(value):
                 raise ToolRegistryError("RA-1", f"{name}: {field_name}={value!r} 不是合法 ScopeRef")
         # RA-2
-        if spec.side_effect_class in ("external_effect", "high_impact") and spec.approval_level == "none":
+        # high_impact 一律不豁免；external_effect 僅 native=True 可免（native 資格由 RA-2a 檢查）
+        if spec.approval_level == "none" and (
+            spec.side_effect_class == "high_impact" or (spec.side_effect_class == "external_effect" and not spec.native)
+        ):
             raise ToolRegistryError("RA-2", f"{name}: {spec.side_effect_class} 需要 approval_level >= per_action")
+        # RA-2a：native 只限 builtin／core／core_local、閉集標籤、approval_level=none，且不得為 high_impact
+        if spec.native and (
+            spec.origin != "builtin" or spec.provider != "core" or spec.targeting != "core_local"
+            or spec.capability not in NATIVE_EXEMPT_CAPABILITIES or spec.approval_level != "none"
+            or spec.side_effect_class == "high_impact"
+        ):
+            raise ToolRegistryError(
+                "RA-2a",
+                f"{name}: native 須 origin=builtin／provider=core／targeting=core_local、"
+                "capability 屬 NATIVE_EXEMPT_CAPABILITIES、approval_level=none 且非 high_impact",
+            )
         # RA-4（executor 名單雙向一致由組裝層 TG-5 檢查）
         if (spec.provider != "core") != (spec.targeting == "platform_remote"):
             raise ToolRegistryError("RA-4", f"{name}: provider!=core 與 targeting=platform_remote 必須互為充要")

@@ -350,12 +350,126 @@ def _call_keywords(tree: ast.AST, func_name: str) -> list[set[str]]:
     return out
 
 
-@pytest.mark.parametrize("rel", ["agent/bridge.py", "echo/host.py"])
-def test_projection_context_call_sites_do_not_pass_platform(rel):
-    calls = _call_keywords(_parse(rel), "ProjectionContext")
-    assert calls, f"{rel} 應該有 ProjectionContext 建構點"
-    for kws in calls:
-        assert kws <= {"available_context", "audience"}, f"{rel} 的 ProjectionContext 不得帶 platform：{kws}"
+# 工具投影的平台只能來自 Host 的 Lease＋location（platform_source／Host.projection_platform）；
+# 不得取自模型輸出、ToolCall 參數、SessionContext.platform 或請求內容。PlatformContext 的 peek 只供 consult 建議。
+_PLATFORM_SOURCE_ATTRS = {"projection_platform", "_current_platform", "_platform_source"}
+_PLATFORM_KEYWORDS = {"platform", "presence_active_platforms"}
+
+
+def _is_self_call(node: ast.AST | None, attrs: set[str]) -> bool:
+    return (
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in attrs
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "self"
+    )
+
+
+def _is_none(node: ast.AST | None) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _enclosing_function(tree: ast.AST, target: ast.AST) -> ast.AST:
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(n is target for n in ast.walk(fn)):
+            return fn
+    raise AssertionError("找不到包含呼叫的函式")
+
+
+def _is_trusted_platform_arg(tree: ast.AST, call: ast.Call, arg: ast.AST) -> bool:
+    """arg 必須是平台來源的回傳值：直接呼叫來源，或僅由 None／來源回傳值賦值而來的區域變數。"""
+    if _is_self_call(arg, _PLATFORM_SOURCE_ATTRS):
+        return True
+    if not isinstance(arg, ast.Name):
+        return False
+    fn = _enclosing_function(tree, call)
+    assigned = []
+    other_writes = []
+    for n in ast.walk(fn):
+        targets = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) else []
+        if any(isinstance(t, ast.Name) and t.id == arg.id for t in targets):
+            assigned.append(n.value)
+        elif isinstance(n, (ast.AugAssign, ast.For, ast.With, ast.NamedExpr)) and any(
+            isinstance(x, ast.Name) and x.id == arg.id and isinstance(x.ctx, ast.Store) for x in ast.walk(n)
+        ):
+            other_writes.append(n)
+    return bool(assigned) and not other_writes and all(
+        _is_none(v) or _is_self_call(v, {"_platform_source"}) for v in assigned
+    )
+
+
+@pytest.mark.parametrize("rel", ["agent/bridge.py", "echo/host.py", "echo/agent_wiring.py"])
+def test_projection_context_call_sites_take_platform_only_from_platform_source(rel):
+    tree = _parse(rel)
+    # 不得直接建構 ProjectionContext：一律走 for_platform，讓平台與 presence_active_platforms 同源
+    assert not _call_keywords(tree, "ProjectionContext"), f"{rel} 不得直接建構 ProjectionContext（改用 for_platform）"
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "for_platform"
+        and getattr(n.func.value, "id", None) == "ProjectionContext"
+    ]
+    assert calls, f"{rel} 應該有 ProjectionContext.for_platform 建構點"
+    for call in calls:
+        kws = {k.arg for k in call.keywords}
+        assert not (kws & _PLATFORM_KEYWORDS), f"{rel} 不得以關鍵字覆寫平台：{kws}"
+        assert len(call.args) == 1, f"{rel} 平台必須是 for_platform 的唯一位置參數"
+        assert _is_trusted_platform_arg(tree, call, call.args[0]), (
+            f"{rel} 的 ProjectionContext 平台只能取自 platform_source／Host.projection_platform：{ast.unparse(call.args[0])}"
+        )
+
+
+def _method(rel: str, name: str) -> ast.FunctionDef:
+    for c in ast.walk(_parse(rel)):
+        if isinstance(c, ast.ClassDef):
+            for f in c.body:
+                if isinstance(f, ast.FunctionDef) and f.name == name:
+                    return f
+    raise AssertionError(f"{rel} 找不到 {name}")
+
+
+def test_platform_sources_return_only_lease_location_or_none():
+    # bridge：_current_platform 只回 platform_source() 或 None（失敗 fail-closed）
+    bridge_fn = _method("agent/bridge.py", "_current_platform")
+    for r in (n for n in ast.walk(bridge_fn) if isinstance(n, ast.Return)):
+        assert _is_none(r.value) or _is_self_call(r.value, {"_platform_source"}), ast.unparse(r)
+    # Host：projection_platform 只回 None 或 platform_from_presence_location(self._location)，不讀 session／請求內容
+    host_fn = _method("echo/host.py", "projection_platform")
+    returns = [n for n in ast.walk(host_fn) if isinstance(n, ast.Return)]
+    assert returns
+    for r in returns:
+        v = r.value
+        assert _is_none(v) or (
+            isinstance(v, ast.Call) and getattr(v.func, "id", None) == "platform_from_presence_location"
+            and len(v.args) == 1 and ast.unparse(v.args[0]) == "self._location"
+        ), ast.unparse(r)
+    refs = {n.attr for n in ast.walk(host_fn) if isinstance(n, ast.Attribute)}
+    assert not (refs & {"_session", "platform", "audience_scope"}), refs
+
+
+def test_assembly_wires_platform_source_from_host_projection_platform():
+    tree = _parse("assembly.py")
+    assigns = [
+        n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "platform_source" for t in n.targets)
+    ]
+    assert len(assigns) == 1
+    v = assigns[0].value
+    assert (
+        isinstance(v, ast.Call) and getattr(v.func, "id", None) == "getattr" and len(v.args) == 3
+        and ast.unparse(v.args[0]) == "echo" and ast.unparse(v.args[1]) == "'projection_platform'"
+    ), ast.unparse(v)
+    # 所有 platform_source= 關鍵字都只傳這個區域變數；PlatformContextProvider 的 peek 不得流入投影
+    seen = 0
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        for k in n.keywords:
+            if k.arg == "platform_source":
+                seen += 1
+                assert ast.unparse(k.value) == "platform_source", ast.unparse(n)
+        if getattr(n.func, "id", None) in {"attach_agent_tools", "build_loop_entry"}:
+            exprs = [*n.args, *[k.value for k in n.keywords]]
+            names = {x.id for a in exprs for x in ast.walk(a) if isinstance(x, ast.Name)}
+            assert "platform_provider" not in names, "PlatformContext peek 不得流入工具投影"
+    assert seen >= 2
 
 
 def test_projection_context_defaults_unchanged():
@@ -381,13 +495,34 @@ def _importers(module: str) -> set[str]:
 
 
 def test_platform_context_is_read_only_by_shadow_wiring():
-    # 平台脈絡目前只被 shadow 使用：消費點（projection／loop_consult／proactive／bridge）不得 import
+    # shadow／consult 只讀 PlatformContext：只有組裝層與 Host 可 import 它，消費點不得 import
     assert _importers("uep.echo.platform_context") == {"assembly.py", "echo/host.py"}
-    # 除 shadow 外，只有相容層邊界（SessionContext 建構、HostPolicySource）可 import 舊值正規化；
-    # presence/gate.py 是 E3 Output Gate 前置檢查的唯一能力型別消費者
+    # contracts.platform 的 importer：shadow、相容層邊界（SessionContext 建構、HostPolicySource）、
+    # E3 Output Gate 前置檢查；Host／組裝層只為把 Presence location 轉成平台（工具投影的授權來源）而 import
     assert _importers("uep.contracts.platform") == {
-        "echo/platform_context.py", "echo/policy.py", "presence/gate.py", "turn/models.py",
+        "echo/platform_context.py", "echo/policy.py", "presence/gate.py", "turn/models.py", "echo/host.py", "assembly.py",
     }
+    for rel in ("echo/host.py", "assembly.py"):
+        names = {
+            a.name for n in ast.walk(_parse(rel))
+            if isinstance(n, ast.ImportFrom) and n.module == "uep.contracts.platform" for a in n.names
+        }
+        assert names == {"platform_from_presence_location"}, (rel, names)
+    # shadow 只觀察：observe() 的回傳值不得被使用（不寫回）
+    tree = _parse("echo/host.py")
+    observes = 0
+    for p in ast.walk(tree):
+        for c in ast.iter_child_nodes(p):
+            if isinstance(c, ast.Call) and getattr(c.func, "attr", None) == "observe":
+                observes += 1
+                assert isinstance(p, ast.Expr), "shadow.observe 的回傳值不得被使用"
+    assert observes >= 1
+    # Host 只 import PlatformShadow，不碰 PlatformContextProvider（peek 只給決策層 consult 當建議）
+    imported = {
+        a.name for n in ast.walk(tree)
+        if isinstance(n, ast.ImportFrom) and n.module == "uep.echo.platform_context" for a in n.names
+    }
+    assert imported == {"PlatformShadow"}, imported
 
 
 def test_consumers_do_not_reference_platform_context_names():

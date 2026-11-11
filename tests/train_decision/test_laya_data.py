@@ -711,3 +711,14 @@ def test_human_ruling_overrides_blind() -> None:
            "expected": {"absent.intent": "message", "absent.target_location": "none"}, "meta": {"card": "absent_message_mentions_place"}}
     out, tag = resolve.resolve_row(row, {"absent.intent": "task", "absent.target_location": "none"})
     assert tag == "ruling" and out["expected"]["absent.intent"] == "message"
+
+
+def test_rulings_are_valid_expected_and_drops_have_reasons() -> None:
+    from laya_data import resolve
+
+    assert len([k for k in resolve.RULINGS if k.startswith("synthetic-en-turn.reply-")]) == 18
+    for sid, patch in resolve.RULINGS.items():
+        kind = "turn.reply" if "turn.reply" in sid else "presence.absent_intent"
+        kinds.get_spec(kind).validate_expected(patch if kind == "turn.reply" else {**patch, "absent.target_location": patch.get("absent.target_location", "none")})
+    assert resolve.DROPPED and all(reason.strip() for reason in resolve.DROPPED.values())
+    assert not set(resolve.DROPPED) & set(resolve.RULINGS)

@@ -11,7 +11,8 @@
 - ``COMPOUND_IDS``：人工確認的「提醒＋轉告」混合句。
 先前掃出的 32 筆 turn.reply agent_loop 多步驟句已全數重判為 no（同一目標的步驟或有資料依賴）。
 標註為複合句時，其餘欄位照退回優先序：absent_intent presence_request > task > message > other；
-turn.reply 的 route agent_loop > task_request > direct_chat，reply_mode 只要有一段對她說就 respond。
+turn.reply 的 route agent_loop > task_request > direct_chat，reply_mode 與 addressed 只要有一段對她說就 respond／True；
+request_two_places 的 target_location 填第一個字面地點，其餘留到拆分時處理。
 """
 from __future__ import annotations
 

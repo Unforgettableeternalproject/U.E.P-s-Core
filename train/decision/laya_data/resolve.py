@@ -49,6 +49,37 @@ RULINGS: dict[str, dict[str, Any]] = {
 }
 
 
+def _tr(reply_mode: str, addressed: bool, route: str) -> dict[str, Any]:
+    return {"reply_mode": reply_mode, "addressed": addressed, "compound": False, "route": route}
+
+
+# 艾斯維爾逐筆裁決待核清單（欄位：reply_mode／addressed／compound／route）
+RULINGS.update({
+    "synthetic-en-turn.reply-00364": _tr("respond", True, "task_request"),
+    "synthetic-en-turn.reply-00016": _tr("respond", True, "direct_chat"),
+    "synthetic-en-turn.reply-00017": _tr("respond", True, "direct_chat"),
+    "synthetic-en-turn.reply-00018": _tr("respond", True, "direct_chat"),
+    "synthetic-en-turn.reply-00019": _tr("respond", True, "direct_chat"),
+    "synthetic-en-turn.reply-00099": _tr("passive", False, "ignore"),
+    "synthetic-en-turn.reply-00107": _tr("passive", False, "ignore"),
+    "synthetic-en-turn.reply-00228": _tr("passive", False, "ignore"),
+    "synthetic-en-turn.reply-00233": _tr("respond", True, "task_request"),
+    "synthetic-en-turn.reply-00375": _tr("respond", True, "direct_chat"),
+    "synthetic-en-turn.reply-00411": _tr("respond", True, "direct_chat"),
+    "synthetic-en-turn.reply-00428": _tr("pass", True, "ignore"),
+    "synthetic-en-turn.reply-00571": _tr("respond", True, "direct_chat"),
+    "synthetic-en-turn.reply-00612": _tr("respond", True, "direct_chat"),
+    "synthetic-en-turn.reply-00714": _tr("defer", True, "task_request"),
+    "synthetic-en-turn.reply-00739": _tr("respond", True, "direct_chat"),
+    "synthetic-en-turn.reply-00805": _tr("respond", True, "agent_loop"),
+})
+
+# 剔除（不進 final／review）：句子與前文接不上等，原因必須寫明
+DROPPED: dict[str, str] = {
+    "synthetic-en-turn.reply-00212": "前文沒提到 washer，句子和前文接不上",
+}
+
+
 def rule_of(row: Mapping[str, Any]) -> str:
     meta = row.get("meta") or {}
     return str(meta.get("label_rule") or CARD_RULES.get(meta.get("card", ""), ""))
@@ -229,6 +260,7 @@ def relabel_from_cards(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
 
 def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]:
     rows, relabeled = relabel_from_cards(read_jsonl(mass_dir / "synth_all.jsonl"))
+    rows = [r for r in rows if r["sample_id"] not in DROPPED]
     data = {r["sample_id"]: r for r in rows}
     labels = {r["sample_id"]: r["answers"] for r in read_jsonl(mass_dir / "labels.jsonl")}
     accepted, disputed, blind_stats = compare_labels(rows, labels)[:3]
@@ -240,7 +272,7 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
     counts: Counter[str] = Counter()
     final: list[dict[str, Any]] = []
     for r in accepted:
-        if rule_of(r) == "relay_vs_task":
+        if rule_of(r) == "relay_vs_task" or r["sample_id"] in RULINGS:
             out, tag = resolve_row(r, labels.get(r["sample_id"]))
             if out is None:
                 review.append(_review_entry(r, labels.get(r["sample_id"]), tag))
@@ -277,7 +309,7 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
     stats = {
         "accepted": len(accepted), "disputed": len(disputed), "resolved": len(resolved),
         "review": len(review), "final": len(final), "compound": {k: sum(1 for r in final if r["kind"] == k and r["expected"].get(q)) for k, q in COMPOUND_QID.items()}, "train": len(train), "val": len(val),
-        "rules": dict(sorted(counts.items())), "relabeled_from_cards": dict(sorted(relabeled.items())),
+        "rules": dict(sorted(counts.items())), "dropped": dict(sorted(DROPPED.items())), "relabeled_from_cards": dict(sorted(relabeled.items())),
         "final_distribution": distribution(final), "val_distribution": distribution(val),
     }
     (mass_dir / "final_stats.json").write_text(json.dumps(stats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")

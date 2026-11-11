@@ -166,7 +166,9 @@ class LayaProposer:
         self._translator = translator
         self._send_original_on_unavailable = on_translate_unavailable == "original"
         self._recent_text: OrderedDict[str, str] = OrderedDict()  # candidate_id -> 使用者原文，等 outcome 配對
-        self._context_en = NO_CONTEXT
+        # 上一輪脈絡：英文（使用者句、她的回覆）與上一輪使用者的 speaker_ref 集合；只在行程內比對，不送出、不入 state
+        self._context_parts: tuple[str | None, str | None] | None = None
+        self._context_speakers: frozenset[str] = frozenset()
         self._context_lock = threading.Lock()
         self._context_threads: list[threading.Thread] = []
         if autoload:
@@ -225,18 +227,22 @@ class LayaProposer:
     # ---- Q2：上一輪脈絡 ----
 
     def on_turn_outcome(self, facts: TurnOutcomeFacts) -> None:
-        """OutcomeObserver：回合完成後記下「她的上一句回覆＋使用者上一句」，背景翻成英文給下一次 propose 用。"""
+        """OutcomeObserver：回合完成後記下「她的上一句回覆＋使用者上一句」，背景翻成英文給下一次 propose 用。
+
+        同時記下上一輪的 speaker_ref 集合（僅行程內比對）；propose 時與 ``candidate.speakers`` 比對：
+        只要有任一位相同即視為同一說話者（標 ``User``），否則標 ``Another user``；任一邊沒有 speaker 資料則視為相同。
+        """
         with self._context_lock:
             user_text = self._recent_text.pop(facts.candidate_id, "")
         if self._translator is None or facts.status != "completed" or not facts.reply_text.strip():
             return
         thread = threading.Thread(
-            target=self._refresh_context, args=(user_text, facts.reply_text), name="uep-laya-context", daemon=True,
+            target=self._refresh_context, args=(user_text, facts.reply_text, frozenset(facts.speakers)), name="uep-laya-context", daemon=True,
         )
         self._context_threads = [t for t in self._context_threads if t.is_alive()] + [thread]
         thread.start()
 
-    def _refresh_context(self, user_text: str, reply_text: str) -> None:
+    def _refresh_context(self, user_text: str, reply_text: str, speakers: frozenset[str] = frozenset()) -> None:
         translator = self._translator
         if translator is None:
             return
@@ -248,12 +254,13 @@ class LayaProposer:
             return translator.translate(text, timeout_ms=2000).text_en  # 背景工作，逾時放寬
 
         try:
-            context = format_recent_context(to_en(user_text), to_en(reply_text))
+            parts = (to_en(user_text), to_en(reply_text))
         except Exception:
             logger.exception("laya.shadow 脈絡翻譯失敗")
             return
         with self._context_lock:
-            self._context_en = context
+            self._context_parts = parts
+            self._context_speakers = speakers
 
     def wait_context(self, timeout: float | None = None) -> None:
         """等背景脈絡翻譯結束；測試與診斷用。"""
@@ -274,7 +281,10 @@ class LayaProposer:
             if translated.text_en is not None:
                 assistant, message = self._translator.placeholder, translated.text_en
                 with self._context_lock:
-                    context = self._context_en
+                    if self._context_parts is not None:
+                        prev = self._context_speakers
+                        same = not prev or not candidate.speakers or bool(prev & set(candidate.speakers))
+                        context = format_recent_context(*self._context_parts, same_speaker=same)
             else:
                 self.metrics["translate_unavailable"] += 1
                 if not self._send_original_on_unavailable:

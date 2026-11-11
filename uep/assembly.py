@@ -121,6 +121,7 @@ from uep.tasks.supervisor import Supervisor, SupervisorLoop
 from uep.tools.cancel import ActionCanceller
 from uep.tools.catalog.memory import MEMORY_EXECUTOR, memory_registry
 from uep.tools.module_events import subscribe_module_events
+from uep.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:  # 組裝層不得硬依賴 uep.stream：只有 uep/echo/host 會 import 它
     from uep.echo.host import EchoPipelineHost
@@ -628,12 +629,43 @@ def assemble_core(
         if testkit_on:
             from uep.tools.catalog.testkit import TESTKIT_EXECUTOR, with_testkit
             from uep.tools.executors.testkit import TestkitToolExecutor
-            from uep.tools.registry import ToolRegistry
 
             if not isinstance(tool_resolver, ToolRegistry):
                 raise AssemblyError("UEP_TOOL_TESTKIT 需要 ToolRegistry 型的 tool_resolver（才能併入測試工具）")
             tool_resolver = with_testkit(tool_resolver)
             executors = {**executors, TESTKIT_EXECUTOR: TestkitToolExecutor(cache=agent_cache)}
+        from uep.tools.catalog.chatroom import CHATROOM_EXECUTOR, with_chatroom
+        from uep.tools.executors.chatroom import (
+            ChatroomToolExecutor,
+            chatroom_config_from_settings,
+        )
+        from uep.tools.registry import ToolRegistry as _ToolRegistry
+
+        if isinstance(tool_resolver, _ToolRegistry):
+            # Chatroom 原生工具：一律註冊；UEP_CHATROOM_* 不齊時 readiness 恆為 unavailable（不投出），組裝不失敗
+            chatroom_config = chatroom_config_from_settings(get_settings())
+            tool_resolver = with_chatroom(tool_resolver, configured=chatroom_config is not None)
+            executors = {**executors, CHATROOM_EXECUTOR: ChatroomToolExecutor(chatroom_config, cache=agent_cache)}
+        from uep.tools.registry import ToolRegistry as _Registry
+
+        if isinstance(tool_resolver, _Registry):
+            # web.search／web.fetch／image.read：條目一律註冊；未設定的工具 readiness 為 unavailable（不投出），組裝不失敗
+            from uep.tools.web_image import with_web_image
+
+            tool_resolver, web_executors = with_web_image(tool_resolver, cache=agent_cache)
+            executors = {**executors, **web_executors}
+        from uep.tools.registry import ToolRegistry as _LoreRegistryType
+
+        if isinstance(tool_resolver, _LoreRegistryType):
+            # Lore Vault 原生工具：一律註冊；未設定時 readiness 為 unavailable（不投出、組裝不失敗）
+            from uep.tools.catalog.lore import LORE_EXECUTOR, with_lore
+            from uep.tools.executors.lore import LoreConfig, LoreToolExecutor
+
+            lore_config = LoreConfig.from_settings(get_settings())
+            tool_resolver = with_lore(
+                tool_resolver, configured=lore_config.configured, delete_enabled=lore_config.delete_enabled,
+            )
+            executors = {**executors, LORE_EXECUTOR: LoreToolExecutor(lore_config, cache=agent_cache, allow_write=True)}
         if callable(getattr(tool_resolver, "entries", None)):
             from uep.models.tool_names import ToolNameError, wire_map
 
@@ -680,14 +712,18 @@ def assemble_core(
         presence_check=presence_check, action_guard=state.action_entry_blocked, **clock_kw,
     )
     _assert_wired(tasks, delivery)
+    agent_registry = tool_resolver if isinstance(tool_resolver, ToolRegistry) else memory_registry()
     if agent_cache is not None:
         assert echo is not None
         # 工具投影的平台取自 Host 本機的 Lease 與 location（授權邊界），不取 Presence peek
         platform_source = getattr(echo, "projection_platform", None)
-        attach_agent_tools(echo.think, tasks, agent_cache, platform_source=platform_source)
+        attach_agent_tools(echo.think, tasks, agent_cache, agent_registry, platform_source=platform_source)
+        bind_registry = getattr(echo, "bind_tool_registry", None)
+        if callable(bind_registry):
+            bind_registry(agent_registry)  # direct_chat 投影與 TaskManager／Gateway／loop 看同一份註冊表
         if loop_entry is None and loop_entry_on:
-            # 開啟測試工具組時 loop 與 TaskManager 用同一個（已併入測試工具的）註冊表；其餘沿用記憶註冊表
-            loop_registry = tool_resolver if testkit_on else memory_registry()
+            # loop、TaskManager、Gateway、投影共用組裝層組出的同一份註冊表（含測試工具與原生工具）
+            loop_registry = agent_registry
             _check_loop_one_shot_executors(loop_registry, executors)
             from uep.tools.catalog.testkit import TESTKIT_TAGS
 
@@ -777,7 +813,7 @@ def assemble_core(
     module_events_unsubscribe: Callable[[], None] | None = None
     if tool_path == "agent" and settings.tool_module_events:
         # 暫定（module coordinator 待設計）：把 agent 路徑共用的註冊表接到 Bus 的 module.* 就緒事件
-        module_events_unsubscribe = subscribe_module_events(bus, memory_registry())
+        module_events_unsubscribe = subscribe_module_events(bus, agent_registry)
     api = LocalStopServer(stop, port=stop_api_port) if stop_api_port is not None else None
     endpoint_server: SocketControlServer | None = None
     try:

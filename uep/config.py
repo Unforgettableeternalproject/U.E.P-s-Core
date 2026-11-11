@@ -50,6 +50,15 @@ class UepSettings(BaseSettings):
     # 測試用工具組（test_echo／test_clock／test_sleep／test_approval_echo）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效。
     # 開啟後組裝層才註冊這些工具與 executor，並把測試標籤併入 /loop（route=agent_loop）的 capability_tags；關閉時完全不存在
     tool_testkit: bool = Field(default=False, validation_alias="UEP_TOOL_TESTKIT")
+    # Chatroom 原生工具（chatroom.read／wait／post）：全部設定齊了才可用，缺任一項工具恆為 unavailable（組裝不失敗）。
+    # token 來源二選一：UEP_CHATROOM_TOKEN，或 UEP_CHATROOM_TOKEN_FILE（純 token 檔，或含 CHATROOM_TOKEN=... 行的 .env）；只在 executor 側使用
+    chatroom_url: str | None = Field(default=None, validation_alias="UEP_CHATROOM_URL")
+    chatroom_session_key: str | None = Field(default=None, validation_alias="UEP_CHATROOM_SESSION_KEY")
+    chatroom_display_name: str | None = Field(default=None, validation_alias="UEP_CHATROOM_DISPLAY_NAME")
+    chatroom_token: SecretStr | None = Field(default=None, validation_alias="UEP_CHATROOM_TOKEN")
+    chatroom_token_file: Path | None = Field(default=None, validation_alias="UEP_CHATROOM_TOKEN_FILE")
+    # 允許的房間 id（逗號分隔白名單）；executor 只對白名單內的房間自動加入、讀、等、發言
+    chatroom_rooms: str | None = Field(default=None, validation_alias="UEP_CHATROOM_ROOMS")
     # 平台脈絡 shadow（平台宣告注入端 R0 第 3、4 步）：預設關閉；開啟時每個簽出的 turn 多一次唯讀 Presence SELECT（鎖外）
     platform_shadow: bool = Field(default=False, validation_alias="UEP_PLATFORM_SHADOW")
     # Output Gate 前置「端點須具 interaction 能力」（平台端點契約 IC-3、E3）：預設關＝shadow（只計數與記 log，照常放行）；
@@ -225,6 +234,47 @@ class UepSettings(BaseSettings):
     legacy_openai_org: str | None = Field(default=None, validation_alias="OPENAI_ORG")
     legacy_openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
 
+    # 網路／圖片工具（web.search、web.fetch、image.read；uep/tools/web_image.py 組裝）。產品決定：零設定時 web.search（自寫 provider）
+    # 與 web.fetch 即為 ready。實際曝光給模型還要 UEP_TOOL_PATH=agent，且決策層 route 表含對應標籤；readiness 為 unavailable 的不投出。
+    # 關閉方法：web.fetch -> UEP_WEB_FETCH_ENABLED=0；web.search -> UEP_WEB_SEARCH_PROVIDERS="" 且 UEP_WEB_SEARCH_OPENAI_FALLBACK=0；
+    # image.read -> 不提供 LLM 金鑰即 unavailable
+    # web.search provider 鏈：逗號分隔、依序嘗試（duckduckgo、wikipedia、searxng；未知名稱警告並略過）；空字串＝未設定。
+    # OpenAI Responses 的 web_search 是最後備援，預設開啟，有 LLM 金鑰才算可用；清單為空且關閉備援時 web.search 為 unavailable
+    web_search_providers: str = Field(default="duckduckgo,wikipedia", validation_alias="UEP_WEB_SEARCH_PROVIDERS")
+    web_search_openai_fallback: bool = Field(default=True, validation_alias="UEP_WEB_SEARCH_OPENAI_FALLBACK")
+    web_search_openai_model: str | None = Field(default=None, validation_alias="UEP_WEB_SEARCH_OPENAI_MODEL")  # 未設＝對話模型
+    web_search_timeout_s: float = Field(default=8.0, gt=0, validation_alias="UEP_WEB_SEARCH_TIMEOUT_S")  # 單一 provider 時限
+    web_search_budget_s: float = Field(default=40.0, gt=0, validation_alias="UEP_WEB_SEARCH_BUDGET_S")  # 整條鏈總預算
+    web_search_max_results: int = Field(default=8, ge=1, le=10, validation_alias="UEP_WEB_SEARCH_MAX_RESULTS")
+    # SearXNG：設了 URL 才啟用；指向自架內網時必須在 PRIVATE_HOSTS 明列該主機名（逗號分隔），否則 SSRF 規則會擋
+    web_searxng_url: str | None = Field(default=None, validation_alias="UEP_WEB_SEARXNG_URL")
+    web_searxng_private_hosts: str = Field(default="", validation_alias="UEP_WEB_SEARXNG_PRIVATE_HOSTS")
+    web_fetch_enabled: bool = Field(default=True, validation_alias="UEP_WEB_FETCH_ENABLED")
+    web_fetch_timeout_s: float = Field(default=10.0, gt=0, validation_alias="UEP_WEB_FETCH_TIMEOUT_S")
+    web_fetch_max_bytes: int = Field(default=1_000_000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_BYTES")
+    web_fetch_max_chars: int = Field(default=8000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_CHARS")
+    # 餵給 HTML 解析器的輸入上限（超過截斷；病態標記另行剝除，確保解析時間線性）
+    web_fetch_max_parse_bytes: int = Field(default=200_000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_PARSE_BYTES")
+    web_fetch_max_redirects: int = Field(default=5, ge=0, le=10, validation_alias="UEP_WEB_FETCH_MAX_REDIRECTS")
+    # image.read：視覺模型可用就 ready（URL 圖片不需要白名單）；本機圖片白名單目錄（作業系統路徑分隔字元分隔：Windows 用 ;、其他用 :），空＝本機路徑一律拒絕
+    image_read_roots: str = Field(default="", validation_alias="UEP_IMAGE_READ_ROOTS")
+    image_read_model: str | None = Field(default=None, validation_alias="UEP_IMAGE_READ_MODEL")  # 未設＝對話模型
+    image_read_max_bytes: int = Field(default=5_000_000, gt=0, validation_alias="UEP_IMAGE_READ_MAX_BYTES")
+
+    # Lore Vault 原生工具（lore.*；Agent 架構提案 §5.2）：未設定 URL／token／vault 範圍時，工具 readiness 為 unavailable、不投出。
+    # token 只在 executor 側使用，不進 LLM 面、不寫 log。dev space 只能用本專案 vault（lore_dev_vault）；
+    # lore space 的 vault 清單用 lore_vaults（逗號分隔白名單）。author 是寫入時自報的角色名（人設自稱 U.E.P）。
+    lore_url: str | None = Field(default=None, validation_alias="UEP_LORE_URL")
+    lore_token: SecretStr | None = Field(default=None, validation_alias="UEP_LORE_TOKEN")
+    lore_dev_vault: str | None = Field(default=None, validation_alias="UEP_LORE_DEV_VAULT")
+    lore_vaults: str | None = Field(default=None, validation_alias="UEP_LORE_VAULTS")
+    lore_default_space: Literal["dev", "lore"] = Field(default="lore", validation_alias="UEP_LORE_DEFAULT_SPACE")
+    lore_author: str = Field(default="U.E.P", validation_alias="UEP_LORE_AUTHOR")
+    # lore.delete 的額外開關：Vault 端刪除介面定案前預設關閉（關閉時 lore.delete readiness 為 unavailable）
+    lore_delete_enabled: bool = Field(default=False, validation_alias="UEP_LORE_DELETE_ENABLED")
+    lore_timeout_s: float = Field(default=10.0, gt=0, validation_alias="UEP_LORE_TIMEOUT_S")
+    lore_max_chars: int = Field(default=6000, ge=500, le=50000, validation_alias="UEP_LORE_MAX_CHARS")
+
     @field_validator("infer_system_prompt")
     @classmethod
     def _default_persona_when_blank(cls, value: str) -> str:
@@ -235,7 +285,7 @@ class UepSettings(BaseSettings):
 
         return default_system_prompt()
 
-    def think_config(self) -> "ThinkConfig":
+    def think_config(self) -> ThinkConfig:
         """解析成 Think adapter 的 ThinkConfig：``UEP_LLM_*`` → ``UEP_INFER_LLM_*`` → 舊名（警告一次）→ 預設。"""
         from uep.stream.adapters.think_config import ThinkConfig
 

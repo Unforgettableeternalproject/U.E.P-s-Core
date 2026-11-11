@@ -494,3 +494,9 @@ def test_import_responses_ignores_other_kind_ids(tmp_path: Path) -> None:
     out = tmp_path / "o.jsonl"
     assert synth.main(["--kind", "turn.reply", "--max-samples", "1", "--per-call", "1", "--import-responses", str(resp), "--out", str(out)]) == 0
     assert len(split.read_rows(out)) == 1
+
+
+def test_self_reminder_is_other_not_message() -> None:
+    card = next(c for c in synth.ABSENT_CARDS if c.card_id == "absent_self_reminder")
+    assert card.expected == {"absent.intent": "other", "absent.target_location": "none"}
+    assert "relayed" in card.guidance

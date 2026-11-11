@@ -21,11 +21,19 @@ CONSULT_TAG = "decision.consult"  # 與工具層 CAPABILITY_CEILING 同名；age
 ROUTE_AGENT_LOOP = "agent_loop"
 ROUTE_DIRECT_CHAT = "direct_chat"
 
-# 預設表（D4-4 a：最小集合起步）。擴充必須是「改程式碼＋測試＋審核」，與標籤閉集同規格。
+# 原生工具能力標籤分類（Bernie 裁決 seq 420）：唯讀類可進 direct_chat（Q-E：direct_chat 維持只讀），寫入類只進 agent_loop。
+# web.search／web.fetch／image.read 讀外部內容但對本機與外部皆無寫入副作用，依 CAPABILITY_CEILING 的 internal_read 上限歸唯讀；
+# 是否逐次核准屬工具層 approval_level，決策層只管標籤集合。
+READ_ONLY_NATIVE_TAGS: frozenset[str] = frozenset({
+    "lore.read", "chatroom.read", "web.search", "web.fetch", "image.read",
+})
+WRITE_NATIVE_TAGS: frozenset[str] = frozenset({"lore.write", "chatroom.post"})
+
+# 預設表（D4-4 a：最小集合起步；原生工具標籤依裁決擴充）。擴充必須是「改程式碼＋測試＋審核」，與標籤閉集同規格。
 # 表內標籤是否屬於工具層閉集，由組裝層（PR3）以 CAPABILITY_CEILING 驗證，未知標籤 = 啟動失敗。
 ROUTE_DEFAULT_CAPABILITIES: Mapping[str, frozenset[str]] = MappingProxyType({
-    "direct_chat": frozenset({"memory.read"}),
-    "agent_loop": frozenset({"memory.read", CONSULT_TAG}),
+    "direct_chat": frozenset({"memory.read"}) | READ_ONLY_NATIVE_TAGS,
+    "agent_loop": frozenset({"memory.read", CONSULT_TAG}) | READ_ONLY_NATIVE_TAGS | WRITE_NATIVE_TAGS,
     "task_request": frozenset(),
     "ignore": frozenset(),
 })

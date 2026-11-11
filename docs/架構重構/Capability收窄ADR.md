@@ -73,6 +73,7 @@ class DecisionCapability:
 
 - 決策層**不 import 工具層**。組裝層（assembly／`agent_wiring`）啟動時以 `CAPABILITY_CEILING.keys()` 驗證兩張表的每個標籤，**表內有未知標籤 = 啟動失敗**（設定錯誤，不是執行期降級）。
 - 預設內容（建議，待工具層確認）：`direct_chat -> {memory.read}`（取代 `host.py:849` 常數，值相同）；`agent_loop -> {memory.read, memory.write, lore.read, chatroom.read, desktop.file_read, web.fetch, decision.consult}`；`task_request`／`ignore -> {}`（`ignore` 永遠不產生 Trigger）。具體集合由工具層切片 B／D 驗收時定案，ADR 只鎖結構與規則。
+- 原生工具標籤擴充（Bernie 裁決，房內 seq 420）：route 表加入 `lore.read`、`lore.write`、`chatroom.read`、`chatroom.post`、`web.search`、`web.fetch`、`image.read`。唯讀類（`lore.read`、`chatroom.read`、`web.search`、`web.fetch`、`image.read`，對應 `READ_ONLY_NATIVE_TAGS`）進 `direct_chat` 與 `agent_loop`；寫入類（`lore.write`、`chatroom.post`，對應 `WRITE_NATIVE_TAGS`）只進 `agent_loop`，`direct_chat` 維持只讀（Q-E）。`web.search`／`web.fetch`／`image.read` 讀外部內容但無寫入副作用，依 `CAPABILITY_CEILING` 的 `internal_read` 歸唯讀。是否逐次核准屬工具層 `approval_level`（`lore.write`、`chatroom.post` 不逐次核准），決策層只管標籤集合；D4-5 不變，hint／plan／LoopTrigger 仍只能收窄，標籤須已註冊且 enabled（交集）。`web.search`、`image.read` 需先進工具層 `CAPABILITY_CEILING`，否則組裝期 `validate_route_capabilities` 啟動失敗。
 - 兩張表的不對稱是刻意的：route 是決策層自己的詞彙，goal_code 的能力需求跟著工具走。Proactive 路徑**不經 route 表也不經 hint**，直接 `lookup(goal_code) ∩ 快照`（除非 D4-2 另裁）。
 
 ### 2.3 交集公式與 fail-closed

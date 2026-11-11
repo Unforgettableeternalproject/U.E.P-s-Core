@@ -90,7 +90,7 @@ def run(executor: LoreToolExecutor, tool: str, params: dict[str, Any]) -> tuple[
 # ---- 註冊表宣告 ----
 
 def test_read_entries_classification_and_strict_schema():
-    entries = {e.name: e for e in lore_entries()}
+    entries = {e.name: e for e in lore_entries() if e.spec.capability == "lore.read"}
     assert set(entries) == set(LORE_READ_TOOLS)
     for entry in entries.values():
         assert entry.spec.side_effect_class == "internal_read"
@@ -105,7 +105,7 @@ def test_read_entries_classification_and_strict_schema():
 
 
 def test_schema_space_enum_only_dev_and_lore_and_no_delete():
-    for entry in lore_entries() + lore_write_entries():
+    for entry in lore_entries():
         space = entry.descriptor.input_schema["properties"].get("space")
         if space is not None:
             assert space["enum"] == ["dev", "lore"]
@@ -118,14 +118,27 @@ def test_capability_tags_in_closed_set():
     assert "lore.write" in CAPABILITY_CEILING
 
 
-def test_write_entries_declared_honestly_pending_native_exemption():
-    """寫入工具如實標 external_effect＋approval none；ToolSpec.native 合入前 RA-2 會拒絕（合入後改為註冊並驗證通過）。"""
-    for entry in lore_write_entries():
-        assert entry.spec.side_effect_class == "external_effect"
-        assert entry.spec.approval_level == "none"
-        assert entry.spec.capability == "lore.write"
+def test_write_entries_registered_honestly_native():
+    """寫入如實標 external_effect；免核准靠 native=True（RA-2a），不是調低分類。"""
+    entries = {e.name: e for e in lore_entries()}
+    assert {TOOL_WRITE, TOOL_UPDATE} <= set(entries)
+    for name in (TOOL_WRITE, TOOL_UPDATE):
+        spec = entries[name].spec
+        assert (spec.side_effect_class, spec.approval_level, spec.native, spec.capability) == (
+            "external_effect", "none", True, "lore.write",
+        )
+        assert spec.idempotency == "none" and entries[name].concurrency == "serial"
+    ToolRegistry.build(lore_entries(), known_modules={"lore"})  # RA-2／2a／6 通過
+
+
+def test_write_not_exempt_without_native():
+    """native 只豁免核准，沒有 native 的 external_effect＋none 仍被 RA-2 拒絕（不能靠 lore.write 標籤繞過）。"""
+    import dataclasses
+
+    entry = lore_write_entries()[0]
+    plain = dataclasses.replace(entry, spec=dataclasses.replace(entry.spec, native=False))
     with pytest.raises(ToolRegistryError) as exc:
-        ToolRegistry.build(lore_write_entries(), known_modules={"lore"})
+        ToolRegistry.build([plain], known_modules={"lore"})
     assert exc.value.rule == "RA-2"
 
 
@@ -133,16 +146,16 @@ def test_write_entries_declared_honestly_pending_native_exemption():
 
 def test_unconfigured_readiness_unavailable_and_not_projected():
     registry = with_lore(memory_registry(), configured=False)
-    for name in LORE_READ_TOOLS:
+    for name in LORE_TOOLS:
         assert registry.readiness(name) == "unavailable"
-    assert "lore.read" not in registry.enabled_tags()
+    assert not {"lore.read", "lore.write"} & registry.enabled_tags()
     assert "memory.read" in registry.enabled_tags()  # 不影響既有工具
 
 
 def test_configured_readiness_ready_and_idempotent():
     registry = with_lore(memory_registry(), configured=True)
-    assert all(registry.readiness(n) == "ready" for n in LORE_READ_TOOLS)
-    assert "lore.read" in registry.enabled_tags()
+    assert all(registry.readiness(n) == "ready" for n in LORE_TOOLS)
+    assert {"lore.read", "lore.write"} <= registry.enabled_tags()
     assert with_lore(registry, configured=False) is registry  # 已含 lore：原樣回傳
     assert "lore.recall" not in memory_registry().entries()  # 不改動傳入的實例
 

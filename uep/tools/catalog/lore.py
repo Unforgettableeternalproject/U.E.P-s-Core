@@ -3,11 +3,9 @@
 Lore Vault 是她自己的長期記憶與設定庫（原生能力），不屬於平台工具。
 
 - 唯讀三工具（已註冊）：``lore.recall``／``lore.get``／``lore.list``，``internal_read``、``parallel_safe``，能力標籤 ``lore.read``。
-- 寫入兩工具（``lore.write``／``lore.update``，能力標籤 ``lore.write``）：**宣告在 ``lore_write_entries()``，目前不註冊**。
-  Bernie 裁決是不逐次核准（``approval_level=none``）、事後在 Lore Vault UI 複審，且 ``side_effect_class`` 要如實標成外部系統寫入；
-  但 RA-2 要求 ``external_effect`` 必須 ``approval_level >= per_action``，且 ``lore.write`` 的能力上限目前是 ``reversible_local``
-  （RA-6）。兩者衝突待裁決（協調者已送審），裁決前不改 registry 的 RA-2、也不改上限、更不調低分類繞過。
-  TODO(待裁決)：裁決落地後把 ``lore_write_entries()`` 併入 ``lore_entries()`` 並升 lockfile。
+- 寫入兩工具（``lore.write``／``lore.update``，能力標籤 ``lore.write``）：照實分類 ``external_effect``，``approval_level=none``
+  且 ``native=True``（Bernie 裁決：原生工具不受 Core 內部核准限制，寫入由 Lore Vault 端另行核准／事後在 UI 複審；RA-2a）。
+  仍走完整四階段（create_action -> execute_action -> receipt），只是免 Core 核准。
 - 不開放 delete；只開放 ``dev`` 與 ``lore`` 兩個 space（schema 用 enum 收斂，executor 再驗一次）。
 - 沒設定（URL／token／vault 範圍）時 readiness 為 unavailable：條目以 ``requires=("lore",)`` 宣告，
   ``with_lore`` 在未設定時對註冊表送 ``module.unavailable``，Gateway 不會投出也不會執行。
@@ -179,24 +177,23 @@ def _read_entry(name: str, description: str, hint: str, schema: dict[str, Any]) 
 
 
 def lore_entries() -> list[ToolEntry]:
-    """已註冊的 lore 條目（目前只有唯讀三工具；寫入待 RA-2 裁決，見模組說明）。"""
+    """lore 條目：唯讀三工具＋寫入兩工具。"""
     return [
         _read_entry(TOOL_RECALL, RECALL_DESCRIPTION, RECALL_USAGE_HINT, RECALL_INPUT_SCHEMA),
         _read_entry(TOOL_GET, GET_DESCRIPTION, GET_USAGE_HINT, GET_INPUT_SCHEMA),
         _read_entry(TOOL_LIST, LIST_DESCRIPTION, LIST_USAGE_HINT, LIST_INPUT_SCHEMA),
+        *lore_write_entries(),
     ]
 
 
 def lore_write_entries() -> list[ToolEntry]:
-    """寫入兩工具的宣告（**尚未註冊**）。分類如實標成外部系統寫入（``external_effect``），``approval_level=none``
-    是 Bernie 的裁決；在 RA-2／RA-6 放行前，``ToolRegistry.build`` 會拒絕這組宣告（測試固定這個事實）。
-    TODO(待裁決)：RA-2 例外或分類調整確定後，併入 ``lore_entries()``。"""
+    """寫入兩工具的宣告：``external_effect``＋``approval_level=none``＋``native=True``（RA-2a 限定 ``lore.write`` 等閉集標籤）。"""
     def entry(name: str, description: str, hint: str, schema: dict[str, Any]) -> ToolEntry:
         return ToolEntry(
             name=name,
             spec=ToolSpec(
                 executor=LORE_EXECUTOR, side_effect_class="external_effect", idempotency="none",
-                presence_bound=False, tool_version=1, capability=LORE_WRITE_TAG, approval_level="none",
+                presence_bound=False, tool_version=1, capability=LORE_WRITE_TAG, approval_level="none", native=True,
             ),
             descriptor=ToolDescriptor(description=description, input_schema=schema, usage_hint=hint),
             scope=ToolScope(), output_schema=LORE_OUTPUT_SCHEMA, timeout_s=WRITE_TIMEOUT_S, requires=(LORE_MODULE,),

@@ -19,6 +19,14 @@
     "schema_hash": "6377cc68617ff97628fdb8fa2f081d58bdddc17379afb2a472a260195d7fb7e7",
     "tool_version": 1
   },
+  "lore.update": {
+    "schema_hash": "c964cf5ec55b846e44e696e6765c8a0786186858f96f4dd7a21fd10ab4507c2b",
+    "tool_version": 1
+  },
+  "lore.write": {
+    "schema_hash": "17242749fb90ce743934a4d2c69fa4048b1d2b3bc359c38f139753ffc0571749",
+    "tool_version": 1
+  },
   "member_recall": {
     "schema_hash": "6b65a7b86e688f0834c856bcdd725998e38dd1578d880c4002b6040396da6359",
     "tool_version": 1

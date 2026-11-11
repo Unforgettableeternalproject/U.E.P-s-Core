@@ -15,12 +15,19 @@
 能力標籤 ``test.read``（上限 ``internal_read``）與 ``test.approval``（上限 ``external_effect``）在 ``CAPABILITY_CEILING``；
 決策層的 route 表不含它們，所以只在開關開啟時由組裝層併入 ``/loop`` 的 capability_tags（見 ``uep.echo.agent_wiring.build_loop_entry``）。
 開關關閉時這些工具不進任何執行期註冊表，標籤也不出現在任何投影。
+
+另有兩個 composite（Agent 架構提案 §5.7.4、RA-14；串起上面的工具，用來在 Console 驗 composite 的展開與 park／resume）：
+
+- ``test_clock_echo``：``test_clock`` -> ``test_echo``，第二步的 ``text`` 引用第一步 receipt 的 ``result_ref``
+  （receipt 持久，跨重啟可續跑；不引用回合範圍的 ``text``）。因此 ``test_clock``／``test_echo`` 的 ``output_schema`` 宣告 ``result_ref``。
+- ``test_echo_then_approve``：``test_echo`` -> ``test_approval_echo``，第二步需要核准；用來驗 composite 子步驟 park -> ``/approve`` -> 續跑，
+  且已成功的 ``test_echo`` 不重播。分類取子步驟最大值（external_effect／per_action），composite 自身 serial。
 """
 from __future__ import annotations
 
 from typing import Any
 
-from uep.adapters.tool import ToolDescriptor, ToolEntry, ToolScope, ToolSpec
+from uep.adapters.tool import CompositeSpec, CompositeStep, ToolDescriptor, ToolEntry, ToolScope, ToolSpec
 from uep.tools.registry import ToolRegistry
 
 TESTKIT_EXECUTOR = "core_testkit"
@@ -32,7 +39,11 @@ TOOL_ECHO = "test_echo"
 TOOL_CLOCK = "test_clock"
 TOOL_SLEEP = "test_sleep"
 TOOL_APPROVAL_ECHO = "test_approval_echo"
-TESTKIT_TOOLS: tuple[str, ...] = (TOOL_ECHO, TOOL_CLOCK, TOOL_SLEEP, TOOL_APPROVAL_ECHO)
+TOOL_CLOCK_ECHO = "test_clock_echo"
+TOOL_ECHO_THEN_APPROVE = "test_echo_then_approve"
+TESTKIT_TOOLS: tuple[str, ...] = (
+    TOOL_ECHO, TOOL_CLOCK, TOOL_SLEEP, TOOL_APPROVAL_ECHO, TOOL_CLOCK_ECHO, TOOL_ECHO_THEN_APPROVE,
+)
 
 ECHO_TEXT_MAX = 500
 SLEEP_MAX_S = 30.0
@@ -55,6 +66,14 @@ APPROVAL_ECHO_DESCRIPTION = (
     "Test tool with NO real external effect: echoes the message, but is classified as an approval-required external effect "
     "so the approval flow can be exercised."
 )
+CLOCK_ECHO_DESCRIPTION = (
+    "測試工具（composite）：先取得目前時間，再把第一步結果的參考（result_ref）用回聲工具回傳，沒有任何副作用。"
+    "Test composite: reads the clock, then echoes the first step's result reference; no side effects."
+)
+ECHO_THEN_APPROVE_DESCRIPTION = (
+    "測試工具（composite，實際沒有任何外部效果）：先回聲輸入文字，再執行需要使用者核准的測試步驟，用來測試 composite 的等待核准與核准後續行。"
+    "Test composite with NO real external effect: echoes the text, then runs an approval-required test step."
+)
 
 ECHO_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -64,14 +83,16 @@ ECHO_INPUT_SCHEMA: dict[str, Any] = {
 }
 ECHO_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {"echo": {"type": "string"}, "length": {"type": "integer"}},
+    "properties": {"echo": {"type": "string"}, "length": {"type": "integer"}, "result_ref": {"type": "string"}},
     "required": ["echo", "length"],
     "additionalProperties": False,
 }
 CLOCK_INPUT_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
 CLOCK_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {"utc": {"type": "string"}, "local": {"type": "string"}, "timezone": {"type": "string"}},
+    "properties": {
+        "utc": {"type": "string"}, "local": {"type": "string"}, "timezone": {"type": "string"}, "result_ref": {"type": "string"},
+    },
     "required": ["utc", "local", "timezone"],
     "additionalProperties": False,
 }
@@ -101,6 +122,12 @@ APPROVAL_ECHO_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {"echo": {"type": "string"}, "note": {"type": "string"}},
     "required": ["echo", "note"],
+    "additionalProperties": False,
+}
+ECHO_THEN_APPROVE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"text": {"type": "string", "description": "要回聲並送核准的文字。", "maxLength": ECHO_TEXT_MAX}},
+    "required": ["text"],
     "additionalProperties": False,
 }
 
@@ -139,6 +166,30 @@ def testkit_entries() -> list[ToolEntry]:
             ),
             descriptor=ToolDescriptor(description=APPROVAL_ECHO_DESCRIPTION, input_schema=APPROVAL_ECHO_INPUT_SCHEMA),
             scope=ToolScope(), output_schema=APPROVAL_ECHO_OUTPUT_SCHEMA,
+        ),
+        ToolEntry(
+            name=TOOL_CLOCK_ECHO, spec=_read_spec(),
+            descriptor=ToolDescriptor(description=CLOCK_ECHO_DESCRIPTION, input_schema=CLOCK_INPUT_SCHEMA),
+            scope=ToolScope(), output_schema=ECHO_OUTPUT_SCHEMA, timeout_s=READ_TIMEOUT_S,
+            composite=CompositeSpec(steps=(
+                CompositeStep(TOOL_CLOCK, {}),
+                CompositeStep(TOOL_ECHO, {"text": "$.steps[0].output.result_ref"}),
+            )),
+        ),
+        ToolEntry(
+            name=TOOL_ECHO_THEN_APPROVE,
+            spec=ToolSpec(
+                executor=TESTKIT_EXECUTOR, side_effect_class="external_effect", idempotency="via_action_id",
+                presence_bound=False, tool_version=1, capability=TEST_APPROVAL_TAG, approval_level="per_action",
+            ),
+            descriptor=ToolDescriptor(
+                description=ECHO_THEN_APPROVE_DESCRIPTION, input_schema=ECHO_THEN_APPROVE_INPUT_SCHEMA,
+            ),
+            scope=ToolScope(), output_schema=APPROVAL_ECHO_OUTPUT_SCHEMA,
+            composite=CompositeSpec(steps=(
+                CompositeStep(TOOL_ECHO, {"text": "$.input.text"}),
+                CompositeStep(TOOL_APPROVAL_ECHO, {"message": "$.input.text"}),
+            )),
         ),
     ]
 

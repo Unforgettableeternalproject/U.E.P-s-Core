@@ -38,7 +38,9 @@ from uep.tools.catalog.testkit import (
     TESTKIT_TOOLS,
     TOOL_APPROVAL_ECHO,
     TOOL_CLOCK,
+    TOOL_CLOCK_ECHO,
     TOOL_ECHO,
+    TOOL_ECHO_THEN_APPROVE,
     TOOL_SLEEP,
     with_testkit,
 )
@@ -171,7 +173,7 @@ def test_console_loop_with_testkit_offers_and_runs_the_test_tools(session_factor
     console, rt, out = _console(session_factory, tmp_path, port, testkit=True)
     try:
         console.execute("/say 用測試工具")
-        assert [TOOL_ECHO, TOOL_CLOCK, TOOL_SLEEP, TOOL_APPROVAL_ECHO] == [n for n in _offered(port) if n.startswith("test_")]
+        assert [TOOL_ECHO, TOOL_CLOCK, TOOL_SLEEP, TOOL_APPROVAL_ECHO, TOOL_CLOCK_ECHO, TOOL_ECHO_THEN_APPROVE] == [n for n in _offered(port) if n.startswith("test_")]
         assert "deep_recall" in _offered(port)  # 記憶工具仍在
         assert "回應：測試工具都好了。" in out.lines
         assert any(line.startswith("工具呼叫：") and f"{TOOL_ECHO}[SUCCEEDED]" in line and f"{TOOL_CLOCK}[SUCCEEDED]" in line
@@ -337,3 +339,108 @@ def test_testkit_requires_the_agent_tool_path_and_a_tool_registry(session_factor
     publisher = EventPublisher(session_factory, bus)
     with pytest.raises(AssemblyError, match="UEP_TOOL_TESTKIT"):  # legacy 路徑不曝光測試工具
         assemble_core(session_factory, **{**base_kwargs(session_factory, tmp_path, bus=bus, publisher=publisher), "tool_testkit": True})
+
+
+# ───────────────────────── composite 測試工具（真實 TaskManager／Console） ─────────────────────────
+
+def _by_tool(rig: KitDb) -> dict[str, ActionIntentRow]:
+    return {a.tool: a for a in rig.actions()}
+
+
+def test_clock_echo_composite_feeds_the_first_receipt_result_ref_into_the_second_step(session_factory):
+    from uep.tasks.manager import params_hash
+
+    rig = KitDb(session_factory, [Round("組合", ((TOOL_CLOCK_ECHO, {}),)), Round("完成")], registry=REGISTRY)
+    out = rig.go()
+    assert (out.state, out.tool_calls) == ("completed", 2)
+    rows = _by_tool(rig)
+    assert set(rows) == {TOOL_CLOCK, TOOL_ECHO}  # composite 本身沒有 action 列
+    assert {a.status for a in rows.values()} == {ActionStatus.SUCCEEDED.value}
+    receipt = rig.tm.get_receipt(rows[TOOL_CLOCK].action_id)
+    assert receipt is not None and receipt.result_ref
+    assert rows[TOOL_ECHO].params_hash == params_hash(TOOL_ECHO, 1, {"text": receipt.result_ref})  # 取自 DB receipt，不是回合暫存
+    assert json.loads(rig.kit.cache.text(rows[TOOL_ECHO].action_id))["echo"] == receipt.result_ref
+
+
+def test_echo_then_approve_composite_parks_then_resumes_without_replaying_the_echo(session_factory):
+    rig = KitDb(session_factory, [Round("要核准", ((TOOL_ECHO_THEN_APPROVE, {"text": "放行"}),)), Round("核准後完成")], registry=REGISTRY)
+    out = rig.go()
+    assert out.state == "awaiting_approval"
+    rows = _by_tool(rig)
+    assert set(rows) == {TOOL_ECHO, TOOL_APPROVAL_ECHO}
+    echo, ask = rows[TOOL_ECHO], rows[TOOL_APPROVAL_ECHO]
+    assert (echo.status, ask.status) == (ActionStatus.SUCCEEDED.value, ActionStatus.INTENDED.value)
+    assert rig.kit.executions == [echo.action_id] and rig.tm.get_run(rig.run.run_id).status == RunStatus.WAITING_APPROVAL.value
+    approval = rig.tm.record_approval(
+        principal=OWNER, action_hash=ask.params_hash, target=ask.tool, scope=SCOPE, expiry=datetime.now(UTC) + timedelta(hours=1),
+    )
+    plan = rig.tm.resume_run(rig.run.run_id)
+    resumed = rig.loop(runtime=ScriptedRuntime([Round("核准後完成")]), epoch=plan.run.worker_epoch).resume(
+        rig.run.run_id, plan.checkpoint or {}, trigger=trigger(tags={TEST_READ_TAG, TEST_APPROVAL_TAG}),
+        parent_id="ctx_parent", approvals={ask.action_id: approval.approval_id},
+    )
+    assert (resumed.state, resumed.text) == ("completed", "核准後完成")
+    assert rig.kit.executions == [echo.action_id, ask.action_id]  # 已成功的 echo 不重播，核准步驟只執行一次
+    assert {a.status for a in rig.actions()} == {ActionStatus.SUCCEEDED.value}
+    with rig.tm._sf() as s:
+        assert s.get(ApprovalRow, approval.approval_id).consumed_by_action_id == ask.action_id
+
+
+def test_console_composite_park_then_approve_resumes_the_sub_step_once(session_factory, tmp_path):
+    port = FakePort([
+        [intent(TOOL_ECHO_THEN_APPROVE, {"text": "放行"}, call_id="c1"), fin("tool_calls")],
+        [text("composite 核准後完成。"), fin()],
+    ])
+    console, rt, out = _console(session_factory, tmp_path, port, testkit=True)
+    try:
+        console.execute("/say 請核准這個 composite")
+        with rt.session_factory() as s:
+            rows = {a.tool: a for a in s.scalars(select(ActionIntentRow))}
+        echo, ask = rows[TOOL_ECHO], rows[TOOL_APPROVAL_ECHO]
+        assert (echo.status, ask.status) == (ActionStatus.SUCCEEDED.value, ActionStatus.INTENDED.value)
+        assert any(f"等待核准：{ask.action_id}" in line for line in out.lines)
+        assert _kit(rt).executions == [echo.action_id]
+        out.lines.clear()
+        console.execute(f"/approve {ask.action_id}")
+        assert out.lines[0].startswith("已記錄核准 appr_")
+        assert f"續跑結果：Run {ask.run_id}：completed" in out.lines and "回應（續跑）：composite 核准後完成。" in out.lines
+        assert _kit(rt).executions == [echo.action_id, ask.action_id]  # echo 沒有重播
+        with rt.session_factory() as s:
+            assert s.get(RunRow, ask.run_id).status == RunStatus.SUCCEEDED.value
+            (approval,) = list(s.scalars(select(ApprovalRow)))
+        assert approval.consumed_by_action_id == ask.action_id
+    finally:
+        rt.core.shutdown()
+
+
+def test_console_composite_reject_ends_the_run_without_executing_the_approval_step(session_factory, tmp_path):
+    port = FakePort([
+        [intent(TOOL_ECHO_THEN_APPROVE, {"text": "放行"}, call_id="c1"), fin("tool_calls")],
+        [text("好，不執行。"), fin()],
+    ])
+    console, rt, out = _console(session_factory, tmp_path, port, testkit=True)
+    try:
+        console.execute("/say 請核准這個 composite")
+        with rt.session_factory() as s:
+            rows = {a.tool: a for a in s.scalars(select(ActionIntentRow))}
+        ask = rows[TOOL_APPROVAL_ECHO]
+        out.lines.clear()
+        console.execute(f"/reject {ask.action_id}")
+        assert f"已否決 {ask.action_id}。" in out.lines
+        assert _kit(rt).executions == [rows[TOOL_ECHO].action_id]  # 核准步驟從未執行
+        with rt.session_factory() as s:
+            assert s.get(ActionIntentRow, ask.action_id).status == ActionStatus.FAILED.value
+    finally:
+        rt.core.shutdown()
+
+
+def test_console_clock_echo_composite_runs_end_to_end(session_factory, tmp_path):
+    port = FakePort([[intent(TOOL_CLOCK_ECHO, {}, call_id="c1"), fin("tool_calls")], [text("時間回聲好了。"), fin()]])
+    console, rt, out = _console(session_factory, tmp_path, port, testkit=True)
+    try:
+        console.execute("/say 時間回聲")
+        assert "回應：時間回聲好了。" in out.lines
+        assert any(line.startswith("工具呼叫：") and f"{TOOL_CLOCK}[SUCCEEDED]" in line and f"{TOOL_ECHO}[SUCCEEDED]" in line
+                   for line in out.lines)
+    finally:
+        rt.core.shutdown()

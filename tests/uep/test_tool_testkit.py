@@ -33,7 +33,9 @@ from uep.tools.catalog.testkit import (
     TESTKIT_TOOLS,
     TOOL_APPROVAL_ECHO,
     TOOL_CLOCK,
+    TOOL_CLOCK_ECHO,
     TOOL_ECHO,
+    TOOL_ECHO_THEN_APPROVE,
     TOOL_SLEEP,
     with_testkit,
 )
@@ -115,8 +117,8 @@ def test_with_testkit_is_additive_idempotent_and_leaves_the_memory_registry_unto
 
 def test_projection_offers_testkit_tools_only_when_registered():
     ctx = ProjectionContext()
-    assert names(REGISTRY.project({TEST_READ_TAG}, ctx)) == [TOOL_ECHO, TOOL_CLOCK, TOOL_SLEEP]
-    assert names(REGISTRY.project({TEST_APPROVAL_TAG}, ctx)) == [TOOL_APPROVAL_ECHO]
+    assert names(REGISTRY.project({TEST_READ_TAG}, ctx)) == [TOOL_ECHO, TOOL_CLOCK, TOOL_SLEEP, TOOL_CLOCK_ECHO]
+    assert names(REGISTRY.project({TEST_APPROVAL_TAG}, ctx)) == [TOOL_APPROVAL_ECHO, TOOL_ECHO_THEN_APPROVE]
     assert not set(TESTKIT_TOOLS) & set(names(REGISTRY.project({"memory.read", "memory.write"}, ctx)))
     assert TESTKIT_TAGS <= REGISTRY.enabled_tags()
 
@@ -370,3 +372,71 @@ def test_gateway_rejects_bad_testkit_arguments_before_any_action():
             gateway.check_intent(tool, args, caps)
         assert exc.value.code == "invalid_tool_args"
     assert gateway.check_intent(TOOL_SLEEP, {"seconds": 1}, caps) == {"seconds": 1}
+
+
+# ───────────────────────── composite 測試工具 ─────────────────────────
+
+def sub_act(ordinal: int, sub: int, step: int = 1) -> str:
+    return stable_action_id(RUN, f"step_{step}", ordinal, sub)
+
+
+def test_composite_testkit_entries_follow_ra14_and_reference_only_persistent_outputs():
+    entries = {e.name: e for e in kit_entries()}
+    clock_echo, echo_approve = entries[TOOL_CLOCK_ECHO], entries[TOOL_ECHO_THEN_APPROVE]
+    for comp in (clock_echo, echo_approve):
+        assert comp.concurrency == "serial" and comp.composite is not None  # 自身 serial（RA-14）
+        assert all(s.tool in TESTKIT_TOOLS for s in comp.composite.steps)
+    assert [s.tool for s in clock_echo.composite.steps] == [TOOL_CLOCK, TOOL_ECHO]
+    assert clock_echo.composite.steps[1].params == {"text": "$.steps[0].output.result_ref"}  # 只引用 receipt 持久的欄位
+    assert (clock_echo.spec.side_effect_class, clock_echo.spec.approval_level, clock_echo.spec.capability) == (
+        "internal_read", "none", TEST_READ_TAG)
+    assert [s.tool for s in echo_approve.composite.steps] == [TOOL_ECHO, TOOL_APPROVAL_ECHO]
+    assert (echo_approve.spec.side_effect_class, echo_approve.spec.approval_level, echo_approve.spec.capability) == (
+        "external_effect", "per_action", TEST_APPROVAL_TAG)  # 分類取子步驟最大值
+    for tool in (TOOL_CLOCK, TOOL_ECHO):  # 被引用的 result_ref 必須在 output_schema 內（RA-14 靜態檢查）
+        assert "result_ref" in entries[tool].output_schema["properties"]
+        assert "result_ref" not in entries[tool].output_schema["required"]
+
+
+def test_composite_testkit_tools_are_projected_by_their_tags_and_hidden_without_the_switch():
+    ctx = ProjectionContext()
+    assert TOOL_CLOCK_ECHO in names(REGISTRY.project({TEST_READ_TAG}, ctx))
+    assert TOOL_ECHO_THEN_APPROVE not in names(REGISTRY.project({TEST_READ_TAG}, ctx))
+    assert TOOL_ECHO_THEN_APPROVE in names(REGISTRY.project({TEST_APPROVAL_TAG}, ctx))
+    assert not {TOOL_CLOCK_ECHO, TOOL_ECHO_THEN_APPROVE} & set(names(memory_registry().project(ALL_TAGS, ctx)))
+
+
+def test_loop_clock_echo_passes_the_first_receipt_result_ref_to_the_second_step():
+    rig = kit_rig([Round("組合", ((TOOL_CLOCK_ECHO, {}),)), Round("完成")])
+    out = rig.run(trigger=trigger(tags={TEST_READ_TAG}))
+    clock_id, echo_id = sub_act(0, 0), sub_act(0, 1)
+    assert (out.state, out.text) == ("completed", "完成")
+    assert rig.kit.executions == [clock_id, echo_id] and not rig.tasks.approvals  # composite 本身不建 action
+    assert result_of(rig.kit, echo_id) == {"echo": f"blob_{clock_id}", "length": len(f"blob_{clock_id}")}
+    view = fed(rig)[0]
+    assert [(i["tool"], i["status"]) for i in view["items"]] == [(TOOL_CLOCK, "ok"), (TOOL_ECHO, "ok")]
+
+
+def test_loop_echo_then_approve_parks_at_the_approval_step_then_resumes_without_replaying_the_echo():
+    rig = kit_rig([Round("要核准", ((TOOL_ECHO_THEN_APPROVE, {"text": "請放行"}),)), Round("核准後完成")])
+    tags = {TEST_READ_TAG, TEST_APPROVAL_TAG}
+    out = rig.run(trigger=trigger(tags=tags))
+    echo_id, approval_id = sub_act(0, 0), sub_act(0, 1)
+    assert (out.state, out.pending_action_ids) == ("awaiting_approval", (approval_id,))
+    assert rig.kit.executions == [echo_id]  # 第一步已執行；核准步驟尚未
+    checkpoint = _park_checkpoint(rig)
+    assert checkpoint["composite_cursor"]["next"] == 1
+    rig.tasks.grant("appr_1", approval_id)
+    resumed = _crash(rig, rounds=[Round("核准後完成")]).resume(
+        RUN, checkpoint, trigger=trigger(tags=tags), parent_id="ctx_parent", approvals={approval_id: "appr_1"},
+    )
+    assert (resumed.state, resumed.text) == ("completed", "核准後完成")
+    assert rig.kit.executions == [echo_id, approval_id]  # echo 沒有重播；核准步驟只執行一次
+    assert rig.tasks.approvals["appr_1"].consumed_by == approval_id
+    assert json.loads(tool_texts(rig)[0]) == {"echo": "請放行", "note": APPROVAL_NOTE}
+
+
+def test_loop_clock_echo_is_invisible_without_the_test_read_tag():
+    rig = kit_rig([Round("", ((TOOL_CLOCK_ECHO, {}),)), Round("好")])
+    out = rig.run(trigger=trigger(tags={TEST_APPROVAL_TAG}))
+    assert out.state == "completed" and fed(rig)[0]["reason_code"] == "capability_missing" and rig.kit.executions == []

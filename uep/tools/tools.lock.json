@@ -27,8 +27,16 @@
     "schema_hash": "bacb3af635631385359a579cdc37246900781052a5a6050809d1cb885bbba2c8",
     "tool_version": 1
   },
+  "test_clock_echo": {
+    "schema_hash": "c61b560e3dd5629b4b358601b2282c9cbdec20f93b2d78263fd2e9e300f0a767",
+    "tool_version": 1
+  },
   "test_echo": {
     "schema_hash": "8c9893c1213befce1606c7a1f2ef2c3ab02d20a4dce5a90ff6ac5cfdac890504",
+    "tool_version": 1
+  },
+  "test_echo_then_approve": {
+    "schema_hash": "f5d37a62e52e480a540603935ef08aaffac2ede062da52c6a34993115fe14ae1",
     "tool_version": 1
   },
   "test_sleep": {

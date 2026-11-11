@@ -310,6 +310,29 @@ def test_resume_after_capability_revoked_fails_without_consuming_approval():
     assert rig.tasks.approvals["appr_1"].consumed_by is None
 
 
+def test_pending_step_that_cannot_rebuild_its_params_ends_run_without_waking_model():
+    """park 後回合範圍暫存已清（例如重啟）：待決步驟引用的前步輸出不可得 ⇒ 不回視圖喚醒模型，Run 結束、核准不消耗。"""
+    rig, _ = _park()
+    ask_id = sub_id("step_1", 0, 1)
+    rig.tasks.grant("appr_1", ask_id)
+    rig.tasks.contents.clear()
+    out = _resume(rig, {ask_id: "appr_1"}, rounds=[Round("不該到這裡")])
+    assert (out.state, out.reason_code) == ("failed", "intent_rejected")
+    assert rig.last_runtime.requests == []  # 沒有白花一次模型呼叫
+    assert rig.tasks.run_status == [RunStatus.FAILED]
+    assert rig.tasks.approvals["appr_1"].consumed_by is None and [t for _, t in rig.tasks.executions] == ["fs.read"]
+
+
+def test_pending_step_blocked_before_execute_ends_run_instead_of_returning_a_blocked_view():
+    rig, _ = _park()
+    ask_id = sub_id("step_1", 0, 1)
+    rig.tasks.grant("appr_1", ask_id)
+    rig.tasks.bump_version("fs.ask")  # 建立層擋下（tool_version_changed）：未抵達 execute
+    out = _resume(rig, {ask_id: "appr_1"}, rounds=[Round("不該到這裡")])
+    assert (out.state, out.reason_code) == ("failed", "tool_version_changed")
+    assert rig.last_runtime.requests == [] and rig.tasks.approvals["appr_1"].consumed_by is None
+
+
 # ---- 崩潰後從 cursor 續跑 ----
 
 class _Crash(BaseException):

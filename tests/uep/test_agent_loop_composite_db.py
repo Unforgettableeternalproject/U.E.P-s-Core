@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from tests.uep.acceptance_support import POLICY, make_tm
 from tests.uep.loop_support import Round, _entry
 from tests.uep.test_agent_loop_approval_db import (
     OWNER,
@@ -24,6 +25,8 @@ from tests.uep.test_agent_loop_db import DbRig, _actions
 from uep.adapters.tool import CompositeSpec, CompositeStep
 from uep.agent.budget import LoopBudget
 from uep.agent.core import stable_action_id
+from uep.agent.loop import AgentLoop
+from uep.fakes.crash import CrashInjector, SimulatedCrash
 from uep.tasks.manager import PolicyViolation, params_hash
 from uep.tasks.states import ActionStatus, RunStatus
 from uep.tools.registry import ToolRegistry
@@ -118,3 +121,80 @@ def test_db_composite_failed_read_runs_nothing_else(session_factory):
     out = rig.go()
     assert (out.state, out.reason_code) == ("failed", "unresolved_actions")
     assert [a.tool for a in _actions(rig)] == ["read.lone"]  # UNKNOWN 後第二步沒有建 action
+
+
+# ---- 崩潰：對真實 Manager 的 resume_run（EXECUTING -> UNKNOWN）----
+
+def chain_registry() -> ToolRegistry:
+    read = dataclasses.replace(_entry("read.lone", timeout_s=None), output_schema=_OUT_REF)
+    write = dataclasses.replace(_entry("write.s", side="reversible_local", capability="memory.write", timeout_s=None), output_schema=_OUT_REF)
+    chain = dataclasses.replace(
+        write,
+        name="note.chain",
+        composite=CompositeSpec(steps=(
+            CompositeStep("read.lone", {"path": "$.input.path"}),
+            CompositeStep("write.s", {"path": "$.steps[0].output.result_ref"}),
+            CompositeStep("write.s", {"path": "$.input.path"}),
+        )),
+    )
+    return ToolRegistry.build([read, write, chain])
+
+
+def crashing_rig(session_factory, crash: CrashInjector) -> DbRig:
+    rig = DbRig(
+        session_factory, [Round("串接", (("note.chain", {"path": "/a.md"}),)), Round("完成")], budget=LoopBudget(repeat_limit=99),
+        registry=chain_registry(),
+    )
+    rig.tm = make_tm(session_factory, rig.executor, crash=crash, tool_resolver=rig.registry)
+    task = rig.tm.create_task(persona_id="uep", goal="串接", owner_actor_id="owner", scope_ref=SCOPE, policy=POLICY)
+    rig.run = rig.tm.start_run(task.task_id, persona_version=1, policy_version=1)
+    return rig
+
+
+def test_db_crash_mid_execute_of_a_step_ends_run_unresolved_and_never_replays_earlier_steps(session_factory):
+    crash = CrashInjector()
+    rig = crashing_rig(session_factory, crash)
+    crash.arm("action.after_executing_commit", on_hit=2)  # 第二個子步驟進入 EXECUTING 後、executor 呼叫前崩潰
+    with pytest.raises(SimulatedCrash):
+        rig.go()
+    read, write = sorted(_actions(rig), key=lambda a: a.created_at)
+    assert read.status == ActionStatus.SUCCEEDED.value and write.status == ActionStatus.EXECUTING.value
+    assert rig.tm.get_run(rig.run.run_id).checkpoint["composite_cursor"]["next"] == 1  # 逐步 checkpoint 已含第一步
+
+    plan = rig.tm.resume_run(rig.run.run_id, stale_after=timedelta(0))
+    assert plan.unknown_action_ids == [write.action_id]
+    out = resume(rig, new_loop(rig, epoch=plan.run.worker_epoch, rounds=[Round("不該到這裡")]), plan.checkpoint or {}, {})
+    assert (out.state, out.reason_code) == ("failed", "unresolved_actions")
+    assert rig.executor.execution_count(read.action_id) == 1 and rig.executor.execution_count(write.action_id) == 0
+    assert rig.tm.get_action(write.action_id).status == ActionStatus.UNKNOWN.value
+    assert len(_actions(rig)) == 2  # 第三步沒有建 action
+
+
+def test_db_crash_between_steps_resumes_from_cursor_and_completes(session_factory, monkeypatch):
+    crash = CrashInjector()
+    rig = crashing_rig(session_factory, crash)
+    original = AgentLoop._composite_progress
+    seen = {"n": 0}
+
+    def crash_after_second_progress(self, st, m, entry, rows):
+        original(self, st, m, entry, rows)  # 第二步的 checkpoint 已寫入
+        seen["n"] += 1
+        if seen["n"] == 2:
+            raise SimulatedCrash("between_steps")
+
+    monkeypatch.setattr(AgentLoop, "_composite_progress", crash_after_second_progress)
+    with pytest.raises(SimulatedCrash):
+        rig.go()
+    first_two = sorted(_actions(rig), key=lambda a: a.created_at)
+    assert [a.status for a in first_two] == [ActionStatus.SUCCEEDED.value] * 2
+    stored = rig.tm.get_run(rig.run.run_id).checkpoint
+    assert stored["composite_cursor"]["next"] == 2 and stored["pending_approvals"] == []
+
+    plan = rig.tm.resume_run(rig.run.run_id, stale_after=timedelta(0))
+    assert plan.unknown_action_ids == []
+    out = resume(rig, new_loop(rig, epoch=plan.run.worker_epoch, rounds=[Round("完成")]), plan.checkpoint or {}, {})
+    assert (out.state, out.text) == ("completed", "完成")
+    all_actions = sorted(_actions(rig), key=lambda a: a.created_at)
+    assert len(all_actions) == 3 and all(a.status == ActionStatus.SUCCEEDED.value for a in all_actions)
+    assert [rig.executor.execution_count(a.action_id) for a in all_actions] == [1, 1, 1]  # 前兩步沒有重播
+    assert rig.tm.get_run(rig.run.run_id).status == RunStatus.SUCCEEDED.value

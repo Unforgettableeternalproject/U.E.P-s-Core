@@ -1182,13 +1182,15 @@ class AgentLoop:
 
     def _execute_composite(
         self, st: _State, m: ScreenedIntent, entry: Any, *, cursor: Mapping[str, Any] | None = None,
-        approvals: Mapping[str, str] | None = None,
+        approvals: Mapping[str, str] | None = None, pending: frozenset[str] = frozenset(),
     ) -> IntentResult | _Halt:
         """依序展開 composite 的子步驟；composite 本身不建 ActionIntent，每個子步驟走完整的 screen／create／execute。
 
         回傳彙整結果（``IntentResult``）；子步驟需核准時回 ``approval_required=True`` 的結果（``record.action_id`` 是子 action，
         ``st.composite_cursor`` 已更新、由呼叫端 park）。``cursor`` 只在 resume 時給：已成功的步驟不重播，從 ``cursor.next`` 續跑，
-        該步（待決的那一個）的結果依 ``_pending_stop`` 判定，不能續跑時回 ``_Halt``。"""
+        該步（待決的那一個）的結果依 ``_pending_stop`` 判定，不能續跑時回 ``_Halt``。``pending``：checkpoint 的待核准 action
+        （Run 此時是 WAITING_APPROVAL）；待決步驟連執行階段都到不了（能力、路徑、screen、建立被拒）也一樣回 ``_Halt``，
+        不回 rejected／blocked 視圖喚醒模型（同 ``_resume_pending``）。"""
         steps = entry.composite.steps
         rows = [dict(r) for r in cursor["rows"]] if cursor is not None else []
         inputs = self._composite_inputs(entry, m.args)
@@ -1213,7 +1215,7 @@ class AgentLoop:
             else:
                 step_result = self._composite_step(
                     st, m, j, steps[j].tool, steps[j].params, inputs, output_of, sub_ids[j], (approvals or {}).get(sub_ids[j]),
-                    resumed,
+                    resumed, resumed and sub_ids[j] in pending,
                 )
             resumed = False
             if isinstance(step_result, _Halt):
@@ -1232,24 +1234,34 @@ class AgentLoop:
     def _composite_step(
         self, st: _State, m: ScreenedIntent, j: int, tool: str, params: Mapping[str, Any], inputs: Mapping[str, Any],
         output_of: Callable[[int], Mapping[str, Any] | None], sub_id: str, approval_id: str | None, resumed: bool,
+        pending_step: bool = False,
     ) -> dict[str, Any] | IntentResult | _Halt:
-        """一個子步驟：能力範圍 -> 路徑解析 -> screen -> create -> execute。回逐步狀態列（dict）、需核准的結果、或 ``_Halt``。"""
+        """一個子步驟：能力範圍 -> 路徑解析 -> screen -> create -> execute。回逐步狀態列（dict）、需核准的結果、或 ``_Halt``。
+
+        ``pending_step``：這一步是 resume 時有待核准 action 的步驟（Run 在 WAITING_APPROVAL）；它在抵達 execute 之前被擋下
+        一律回 ``_Halt``（原因碼對照 ``_pending_stop``），否則 composite 會回 rejected／blocked 視圖喚醒模型。"""
         # AL-3：子步驟只能在 Run 凍結的能力範圍內（且當下仍可見）；不在範圍 ⇒ 這一步 blocked，composite 失敗
         if tool not in st.frozen_tools or tool not in visible_tools(st.cap):
+            if pending_step:
+                return _Halt(LoopReason.CAPABILITY_REVOKED, sub_id)
             return self._row(j, tool, "blocked", reason_code=TOOL_NOT_IN_SNAPSHOT)
         try:
             resolved = resolve_params(params, inputs=inputs, output_of=output_of)
         except CompositePathError:
+            if pending_step:  # 引用的前步輸出已不可得（例如重啟後回合範圍暫存已清）：核准的參數無從重建
+                return _Halt(LoopReason.INTENT_REJECTED, sub_id)
             return self._row(j, tool, "rejected", reason_code=INVALID_TOOL_ARGS, fields=[f"/steps/{j}/params"])
         screened = self._core.screen_intent(
             run_id=m.run_id, step_id=m.step_id, ordinal=m.ordinal, sub_index=j, capability_set=st.cap, tool=tool, args=resolved,
             injected=self._run_injected(st),
         )
         if isinstance(screened, IntentResult):
-            return self._row_of(j, tool, screened)
+            stop = self._pending_stop(screened) if pending_step else None
+            return _Halt(stop, sub_id) if stop is not None else self._row_of(j, tool, screened)
         early = self._core.create_screened(screened)
         if early is not None:
-            return self._row_of(j, tool, early)
+            stop = self._pending_stop(early) if pending_step else None
+            return _Halt(stop, sub_id) if stop is not None else self._row_of(j, tool, early)
         res = self._core.execute_screened(screened, approval_id=approval_id)
         if res.approval_required and not resumed:
             return res
@@ -1305,7 +1317,7 @@ class AgentLoop:
         if isinstance(screened, IntentResult):
             logger.warning("resume：composite %s 重新篩選被拒，Run 改轉 FAILED(intent_rejected)：run=%s", call["name"], st.run_id)
             return self._finish(st, "failed", LoopReason.INTENT_REJECTED)
-        result = self._execute_composite(st, screened, entry, cursor=cursor, approvals=approvals)
+        result = self._execute_composite(st, screened, entry, cursor=cursor, approvals=approvals, pending=pending)
         if isinstance(result, _Halt):
             if result.stop == "repark":
                 return self._repark(st, result.action_id)

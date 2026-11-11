@@ -162,7 +162,7 @@ _ABSENT_SPECS: tuple[tuple[str, str, dict[str, str], bool, str, str], ...] = (
     ("pass_message", "Asks the assistant to relay or remember something (tell Anna I will be late, remind me about the meeting).", _MSG, True, "discord", ""),
     ("message_leave_note", "Asks the assistant to leave or pass a short note to a named person.", _MSG, True, "website", ""),
     ("message_mentions_place", "Asks the assistant to tell a named person something that mentions a platform or machine (meet me on Discord at eight), but does not ask the assistant to move.", _MSG, True, "desktop", ""),
-    ("message_remind_self", "Asks the assistant to remind the speaker about something later.", _MSG, True, "host", ""),
+    ("self_reminder", "Asks the assistant to remind the speaker themselves about something later.", _OTHER, True, "host", "The request is only a reminder for the speaker; nothing is passed to the assistant or to another person (message is limited to content relayed to the assistant or someone else)."),
 )
 ABSENT_CARDS: tuple[Card, ...] = tuple(
     Card(f"absent_{cid}", _ABS, desc, exp, hard=hard, source_platform=plat, guidance=g)

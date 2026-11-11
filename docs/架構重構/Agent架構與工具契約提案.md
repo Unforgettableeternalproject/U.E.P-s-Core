@@ -324,6 +324,8 @@ class ToolSpec:            # 寫入 ActionIntent 的分類面；resolver 回傳�
     approval_level: ApprovalLevel = "none"      # 新增（帶預設）
     interruptible: InterruptKind = "non_interruptible"  # 新增；fail-closed 預設最嚴
     capability: str = ""                         # 新增；能力標籤，Registry 載入時必填(§5.4)
+    native: bool = False                         # 新增；原生工具免 Core 內部核准（RA-2a）；分類仍照實標註
+# NATIVE_EXEMPT_CAPABILITIES = {"lore.write", "chatroom.post"}  # 閉集；與 CAPABILITY_CEILING 同為程式碼常數
 
 @dataclass(frozen=True)
 class ToolDescriptor:      # LLM 面；不進 resolver、不進 TaskManager
@@ -395,7 +397,8 @@ registry = ToolRegistry.build(
 | # | 斷言 | 來源／理由 |
 |---|---|---|
 | RA-1 | `origin`、`side_effect_class`、`idempotency`、`approval_level`、`interruptible`、`targeting` 皆屬 Literal 值域（執行期用 `typing.get_args` 檢查，不信任型別標註） | 現況 D91 三欄為裸 `str` |
-| RA-2 | `external_effect`／`high_impact` ⇒ `approval_level≥per_action` | SYS 草案 §3.1 |
+| RA-2 | `external_effect`／`high_impact` ⇒ `approval_level≥per_action`；唯一例外：`native=True` 的 `external_effect` 可為 `none`（`high_impact` 一律不豁免） | SYS 草案 §3.1；Bernie 裁決（房內 #431） |
+| RA-2a | `native=True` ⇒ `origin=builtin`∧`provider=core`∧`targeting=core_local`∧`capability∈NATIVE_EXEMPT_CAPABILITIES`（`lore.write`、`chatroom.post`）∧`approval_level=none`∧非 `high_impact`；違反即註冊失敗（fail-closed）。`native` 入 `schema_hash`（`native=False` 時不入 canonical，既有 lockfile 不變）。`lore.write` 上限調為 `external_effect`，分類照實標註、不得降級 | 同上 |
 | RA-3 | LLM 可見 ⇒ `origin ∈ VISIBLE_ORIGINS`；`discovered`／`platform_declared` 永不投影 | 遷入計畫 §3.5 風險(3) |
 | RA-4 | `executor` 名單雙向一致（TG-5）；`provider!="core"` ⇔ `targeting=platform_remote` | 沿用；切片 A 刻意分工：註冊表只檢查 provider／targeting 一致，executor 名單雙向一致由組裝層 TG-5 負責 |
 | RA-5 | `interruptible!="non_interruptible"` ⇒ `cancellable=True`（executor 實作 `cancel`，D69） | 沿用 TC-4 |
@@ -421,7 +424,7 @@ registry = ToolRegistry.build(
 
 ### 5.5 版本與 schema_hash 漂移
 
-- `schema_hash` ＝ canonical JSON（沿用 `params_hash` 的唯一 canonical 函式，TG-6）對 `{name, input_schema, side_effect_class, idempotency, approval_level, targeting}` 的 sha256。description 不入 hash（§5.1）。
+- `schema_hash` ＝ canonical JSON（沿用 `params_hash` 的唯一 canonical 函式，TG-6）對 `{name, input_schema, side_effect_class, idempotency, approval_level, targeting}` 的 sha256；`native=True` 時多納入 `native: true`（False 不入，維持既有 hash）。description 不入 hash（§5.1）。
 - **兩道防線**：
   1. **lockfile（`uep/tools/tools.lock.json`，入版控）**：記 `name → {tool_version, schema_hash}`；CI 測試比對，hash 變而 version 未升 ⇒ 失敗（RA-8）。任何工具變更在 PR diff 上可見、可審。
   2. **執行期**：`mcp_static`／`platform_approved` 啟動與每次重連時重算外部回報的 canonical hash，與 `pinned_schema_hash` 比對；不符 ⇒ 該工具 `disabled`（fail-closed）、發 `tool.drift_detected`（非轉移型事件，payload 僅 `{tool, expected_prefix, actual_prefix}`），保持停用直到人工重審。LLM 面與驗證面一律用 Core 的審核副本，不用外部即時內容。
@@ -824,6 +827,7 @@ execute_action → ApprovalRequired
 | `internal_read` | Gateway 驗證後同步執行；`UNKNOWN` 重跑無副作用不阻擋（TC-3） |
 | `reversible_local` | 需任務授權（Task scope）；執行並留 receipt；`presence_bound` 於 action 層強制（TC-5） |
 | `external_effect`／`high_impact` | `per_action`；park → resume；絕不由模型或 Runtime 自述核准（TG-7 反例全部保留） |
+| 原生工具（`native=True`） | 不經 Core 內部核准，但仍完整走四階段（act_、receipt、`action.*` 事件）；執行期由 `TaskManager` 依 resolver 當前的 `native` 判定（`high_impact` 不豁免）。注記：原生工具的核准權在外部系統（Lore Vault 端契約待訂；chatroom 不設限） |
 | 外部內容誘導擴權 | TG-10 反例保留；AL-3 再加一層：即使被誘導，能力集合也無法在 Run 內擴大 |
 | 工作量預算內的授權 | `standing` 授權首版不做（D65）；長任務每次外部副作用都 per_action——【奈也】體驗上摩擦大，這是已知取捨 |
 

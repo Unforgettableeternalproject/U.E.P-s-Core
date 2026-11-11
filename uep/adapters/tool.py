@@ -34,7 +34,7 @@ CAPABILITY_CEILING: Mapping[str, SideEffectClass] = {
     "memory.read": "internal_read",
     "memory.write": "reversible_local",
     "lore.read": "internal_read",
-    "lore.write": "reversible_local",
+    "lore.write": "external_effect",  # 照實分類：lore 寫入對外部 Lore Vault 有副作用（核准權在 Vault 端）
     "chatroom.read": "internal_read",
     "chatroom.post": "external_effect",
     "desktop.file_read": "internal_read",
@@ -48,6 +48,10 @@ CAPABILITY_CEILING: Mapping[str, SideEffectClass] = {
     "test.read": "internal_read",
     "test.approval": "external_effect",
 }
+
+# 原生工具（native）可免 Core 內部核准的能力標籤閉集（裁決：核准權在外部系統，Core 不重複把關）。
+# 新增標籤＝改程式碼＋測試＋審核；與 CAPABILITY_CEILING 同為閉集，無萬用字元。
+NATIVE_EXEMPT_CAPABILITIES: frozenset[str] = frozenset({"lore.write", "chatroom.post"})
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,7 @@ class ToolSpec:
     approval_level: ApprovalLevel = "none"
     interruptible: InterruptKind = "non_interruptible"  # fail-closed：預設最嚴
     capability: str = ""  # 能力標籤（§5.4）；由 ToolRegistry 載入時要求必填且屬閉集
+    native: bool = False  # 原生工具：external_effect 免 Core 內部核准（RA-2a 限定來源與標籤）；分類仍照實標註
 
 
 @dataclass(frozen=True)

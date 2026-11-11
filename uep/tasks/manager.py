@@ -254,6 +254,16 @@ class ParamsLimits:
 DEFAULT_PARAMS_LIMITS = ParamsLimits()
 PARAMS_NOT_CANONICAL = "params_not_canonical"
 TOOL_VERSION_CHANGED = "tool_version_changed"
+
+
+def _needs_approval(side_effect_class: str, spec: object) -> bool:
+    """action 是否須經 Core 內部核准。native 工具（核准權在外部系統）的 external_effect 免核准；
+    high_impact 一律不豁免。native 由 resolver 當前宣告取得（不新增 ActionIntent 欄位，與 tool_version 同源；
+    升版比對先於此判定，且 native 入 schema_hash，翻轉必須升 tool_version）。取不到視為非 native（fail-closed）。"""
+    if side_effect_class not in APPROVAL_REQUIRED:
+        return False
+    return not (side_effect_class == "external_effect" and getattr(spec, "native", False) is True)
+
 ACTION_UNRESOLVED = "action_unresolved"  # ActionBlocked.code：action 本身為 UNKNOWN／EXECUTING（副作用可能已發生、尚無定論）
 APPROVAL_DENIED = "approval_denied"  # receipt.error_code：人類否決核准（E2）；action 轉 FAILED，回餵 Agent 為 rejected
 ALREADY_EXECUTING = "already_executing"  # PolicyViolation.code：否決時 action 已離開 INTENDED（已核准／執行中／已有結果）
@@ -1372,7 +1382,11 @@ class TaskManager:
                 raise PolicyViolation(
                     f"action 已不是等待核准的 INTENDED（{action.status}），不可否決", code=ALREADY_EXECUTING,
                 )
-            if action.side_effect_class not in APPROVAL_REQUIRED:
+            try:
+                current_spec: object = self._tool_resolver.resolve(action.tool)
+            except PolicyViolation:  # 工具已下架：視為非 native，維持原有（需核准即可否決）行為
+                current_spec = None
+            if not _needs_approval(action.side_effect_class, current_spec):
                 raise PolicyViolation("此 action 不需要核准，不可否決", code="approval_not_required")
             if run.status != RunStatus.WAITING_APPROVAL.value:
                 raise IllegalTransition(f"run 不在等待核准（{run.status}），不可否決")
@@ -1734,7 +1748,8 @@ class TaskManager:
                 raise ActionBlocked(f"task 狀態為 {task.status}，不可執行 action")
             if run.status not in (RunStatus.RUNNING.value, RunStatus.WAITING_APPROVAL.value):
                 raise ActionBlocked(f"run 狀態為 {run.status}，不可執行 action")
-            if self._tool_resolver.resolve(action.tool).tool_version != action.tool_version:
+            resolved = self._tool_resolver.resolve(action.tool)
+            if resolved.tool_version != action.tool_version:
                 # 註冊表升版後 fail-closed：須以新 action 與新 approval 重來，不自動沿用舊版
                 raise ActionBlocked(f"{TOOL_VERSION_CHANGED}：{action.tool} 已升版，須建立新 action", code=TOOL_VERSION_CHANGED)
             executor = self._executors.get(action.executor)
@@ -1757,7 +1772,7 @@ class TaskManager:
                     raise ActionBlocked(blocked)
 
             if status is ActionStatus.INTENDED:
-                if action.side_effect_class in APPROVAL_REQUIRED:
+                if _needs_approval(action.side_effect_class, resolved):
                     if approval_id is None:
                         deferred = ApprovalRequired("外部副作用需要有效 approval")
                     else:

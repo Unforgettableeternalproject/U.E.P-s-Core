@@ -294,3 +294,71 @@ def test_prompt_uses_placeholder_assistant_name() -> None:
     card = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_named_chat")
     prompt = synth.build_prompt(card, "mt_style", "weather", 3)
     assert "Yuki" in prompt and "U.E.P" not in prompt
+
+
+# ---- 檔案式後端（匯出 prompt／匯入回應，不連網） ----
+
+def _args(kind: str, out: Path, *extra: str) -> list[str]:
+    return ["--kind", kind, "--max-samples", "12", "--per-call", "2", "--out", str(out), *extra]
+
+
+def test_export_prompts_matches_plan_and_hides_labels(tmp_path: Path) -> None:
+    exp = tmp_path / "prompts.jsonl"
+    assert synth.main(_args("turn.reply", tmp_path / "unused.jsonl", "--export-prompts", str(exp))) == 0
+    recs = split.read_rows(exp)
+    plan = synth.plan_calls(synth.CARDS["turn.reply"], 12, 2, __import__("random").Random(0))
+    assert [r["call_id"] for r in recs] == [f"turn.reply-{i:04d}" for i in range(len(plan))]
+    assert [(r["card"], r["style"], r["n"]) for r in recs] == [(c.card_id, s, n) for c, s, _t, n in plan]
+    for r in recs:
+        assert r["system"] == synth.SYSTEM_PROMPT and "Yuki" in r["user"]
+        assert "reply_mode" not in r["user"] and "route" not in r["user"]
+    assert not (tmp_path / "unused.jsonl").exists()
+
+
+def test_import_responses_matches_backend_path(tmp_path: Path) -> None:
+    reply = json.dumps([{"message": "hello there"}, {"message": "what is the weather like today"}])
+    exp = tmp_path / "p.jsonl"
+    synth.main(_args("turn.reply", tmp_path / "x.jsonl", "--export-prompts", str(exp)))
+    ids = [r["call_id"] for r in split.read_rows(exp)]
+    resp = tmp_path / "r.jsonl"
+    resp.write_text("".join(json.dumps({"call_id": i, "response": reply}) + "\n" for i in ids), encoding="utf-8")
+    out = tmp_path / "out.jsonl"
+    assert synth.main(_args("turn.reply", out, "--import-responses", str(resp))) == 0
+    imported = split.read_rows(out)
+    # 與 FakeBackend 路徑結果一致（相同回應、相同計畫）
+    rows, stats = synth.generate("turn.reply", synth.FakeBackend([reply]), max_samples=12, per_call=2, seed=0)
+    assert imported == rows
+    assert stats["samples"] == len(imported) >= 1
+
+
+def test_import_counts_missing_unparseable_and_unmatched(tmp_path: Path) -> None:
+    good = json.dumps([{"message": "ok so that works"}])
+    resp = tmp_path / "r.jsonl"
+    resp.write_text(
+        json.dumps({"call_id": "presence.absent_intent-0000", "response": good}) + "\n"
+        + json.dumps({"call_id": "presence.absent_intent-0001", "response": "not json"}) + "\n"
+        + json.dumps({"call_id": "presence.absent_intent-9999", "response": good}) + "\n",
+        encoding="utf-8",
+    )
+    ids: list[str] = []
+    plan_n = len(synth.plan_calls(synth.CARDS["presence.absent_intent"], 6, 2, __import__("random").Random(0)))
+    planned = [synth.call_id_of("presence.absent_intent", i) for i in range(plan_n)]
+    backend = synth.ReplayBackend(synth.load_responses(resp), planned)
+    rows, stats = synth.generate("presence.absent_intent", backend, max_samples=6, per_call=2, seed=0, call_ids=ids)
+    assert ids == planned and len(rows) == 1
+    assert stats["rejected"]["unparseable"] == 1
+    assert stats["rejected"]["backend_error:LookupError"] == plan_n - 2
+
+
+def test_load_responses_rejects_duplicates_and_bad_rows(tmp_path: Path) -> None:
+    dup = _write(tmp_path, [{"call_id": "a", "response": "x"}, {"call_id": "a", "response": "y"}])
+    with pytest.raises(ValueError, match="重複"):
+        synth.load_responses(dup)
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text(json.dumps({"call_id": "a"}) + "\n", encoding="utf-8")
+    with pytest.raises(TypeError, match="call_id"):
+        synth.load_responses(bad)
+
+
+def test_export_and_import_are_mutually_exclusive(tmp_path: Path) -> None:
+    assert synth.main(_args("turn.reply", tmp_path / "o.jsonl", "--export-prompts", "a", "--import-responses", "b")) == 2

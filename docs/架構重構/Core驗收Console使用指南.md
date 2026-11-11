@@ -5,11 +5,11 @@
 
 `python -m uep.console` 是 Core 的端到端驗收入口，取代 Legacy `devtools/debug_api.py` 的「隔離模組測試」用途。它分三層：
 
-| 層 | 用途 | 入口 |
-|---|---|---|
-| (a) 子系統隔離 | 單獨測 STT／Think／TTS／記憶，不經 Core | `/stt` `/llm` `/tts` `/mem embed` |
-| (b) Core 隔離 | 子系統全換假元件，只測 Core 的 turn／presence／output | `--mode fake`（預設） |
-| (c) 端到端 | Core＋所有真實子系統，從輸入跑到輸出 | `--mode real` |
+| 層             | 用途                                                  | 入口                                      |
+| -------------- | ----------------------------------------------------- | ----------------------------------------- |
+| (a) 子系統隔離 | 單獨測 STT／Think／TTS／記憶，不經 Core               | `/stt` `/llm` `/tts` `/mem embed` |
+| (b) Core 隔離  | 子系統全換假元件，只測 Core 的 turn／presence／output | `--mode fake`（預設）                   |
+| (c) 端到端     | Core＋所有真實子系統，從輸入跑到輸出                  | `--mode real`                           |
 
 ---
 
@@ -50,14 +50,14 @@ real 模式啟動會先暖機，**看到各元件 warmup 耗時印完、出現 `
 
 ### 1.4 旗標
 
-| 旗標 | 說明 |
-|---|---|
-| `--mode fake\|real` | fake（預設）或 real（全部真實，需 `UEP_E2E_ALLOW_GPU=1`） |
-| `--think` `--tts` `--stt` `--memory` `fake\|real` | 個別覆寫，例如 `--mode real --tts fake`＝不用 TTS GPU |
-| `--play` | 本機播放 TTS（需 sounddevice＋耳機） |
-| `--no-tts` | 不落地音訊 |
-| `--no-stt` | 等同 `--stt fake` |
-| `--session-dir <目錄>` | 音訊輸出與 host epoch 檔位置，預設 `outputs\e2e` |
+| 旗標                                                       | 說明                                                        |
+| ---------------------------------------------------------- | ----------------------------------------------------------- |
+| `--mode fake\|real`                                       | fake（預設）或 real（全部真實，需 `UEP_E2E_ALLOW_GPU=1`） |
+| `--think` `--tts` `--stt` `--memory` `fake\|real` | 個別覆寫，例如 `--mode real --tts fake`＝不用 TTS GPU     |
+| `--play`                                                 | 本機播放 TTS（需 sounddevice＋耳機）                        |
+| `--no-tts`                                               | 不落地音訊                                                  |
+| `--no-stt`                                               | 等同 `--stt fake`                                         |
+| `--session-dir <目錄>`                                   | 音訊輸出與 host epoch 檔位置，預設 `outputs\e2e`          |
 
 TTS 引擎預設 VOX，改用 IndexTTS 2.5 設 `UEP_INFER_TTS_ENGINE=indextts2`（另需 `UEP_TTS_INDEXTTS_DIR` 指向權重）。
 
@@ -65,14 +65,14 @@ TTS 引擎預設 VOX，改用 IndexTTS 2.5 設 `UEP_INFER_TTS_ENGINE=indextts2`�
 
 進入點（console／endpoint／stop）啟動時自動設定日誌：console 只印 WARNING 以上到 **stderr**（REPL 的 stdout 不受影響），完整日誌寫到 repo 的 `logs/`（每個行程一組檔案：`uep-<啟動時間>-pid<pid>.log`、`.error.log`，開 JSON 時多 `.jsonl`）。每行自動標註來源，例如 `[core.tasks] uep/tasks/manager.py:123 execute_action | ...`，呼叫端不必改；子系統日誌標成 `echo_tts` 等名稱。密鑰形式（`api_key=`、`token=`、`secret=`、`Bearer xxx`）會被遮成 `***`。
 
-| 環境變數 | 說明 |
-|---|---|
-| `UEP_LOG_DEPTH` | 1..4 ＝ KEY／INFO／DEBUG／TRACE 門檻（預設 2，INFO）；WARNING 以上永遠輸出 |
-| `UEP_LOG_LEVEL` | 直接指定 root 等級（如 `DEBUG`），優先於 DEPTH |
-| `UEP_LOG_LEVELS` | 命名空間覆寫，例：`uep.decision=DEBUG,echo_tts=WARNING`；格式錯的項目會警告一次並忽略 |
-| `UEP_LOG_CONSOLE_LEVEL` | console 門檻（預設 `WARNING`） |
-| `UEP_LOG_FILE` / `UEP_LOG_DIR` | 檔案輸出開關（預設開）與目錄（預設 repo `logs/`） |
-| `UEP_LOG_JSON` | 設 `1` 另寫 JSONL（`ts/level/subsystem/logger/where/msg/context`），供查核 |
+| 環境變數                           | 說明                                                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------------- |
+| `UEP_LOG_DEPTH`                  | 1..4 ＝ KEY／INFO／DEBUG／TRACE 門檻（預設 2，INFO）；WARNING 以上永遠輸出              |
+| `UEP_LOG_LEVEL`                  | 直接指定 root 等級（如 `DEBUG`），優先於 DEPTH                                        |
+| `UEP_LOG_LEVELS`                 | 命名空間覆寫，例：`uep.decision=DEBUG,echo_tts=WARNING`；格式錯的項目會警告一次並忽略 |
+| `UEP_LOG_CONSOLE_LEVEL`          | console 門檻（預設 `WARNING`）                                                        |
+| `UEP_LOG_FILE` / `UEP_LOG_DIR` | 檔案輸出開關（預設開）與目錄（預設 repo `logs/`）                                     |
+| `UEP_LOG_JSON`                   | 設 `1` 另寫 JSONL（`ts/level/subsystem/logger/where/msg/context`），供查核          |
 
 REPL：`/log` 看目前等級；`/log level <名稱空間> <等級>` 即時調整（例：`/log level uep.decision DEBUG`）；`/log console <等級>` 調整 console 門檻。httpx、urllib3、torch、transformers、sqlalchemy.engine 等第三方預設壓在 WARNING，可用 `UEP_LOG_LEVELS` 覆寫。程式內：`from uep.log import get_logger, log_context`，`with log_context(turn_id=...):` 內的日誌會自動帶上該欄位。
 
@@ -84,32 +84,32 @@ REPL：`/log` 看目前等級；`/log level <名稱空間> <等級>` 即時調�
 
 ### 2.1 對話與流程
 
-| 指令 | 說明 |
-|---|---|
-| `/say <文字>` | 送一句話，等這一輪結束，顯示回應、首音延遲（TTFA）與 wav 路徑 |
-| `/wav <路徑>` | 用音檔當輸入。real 模式走真實 STT；長音檔若因停頓被切成多句，後句會依設計取代前句，console 追到最後一輪才結束（之後多等 2 秒） |
-| `/mic` | 麥克風：按 Enter 開始、說話、再按 Enter 結束，送進 STT 跑整輪（目前無自動斷句） |
-| `/cancel` | 取消進行中的一輪（用來驗插話打斷） |
-| `/session new` | 開新 session：清掉對話歷史；驗跨 session 記憶時要用 |
-| `/status` | Presence／Interaction 狀態、turn 狀態、host 健康 |
-| `/trace [all]` | 最近一輪的事件與各段延遲（`all`＝所有輪摘要） |
-| `/help`、`/quit` | 說明、結束 |
+| 指令                 | 說明                                                                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `/say <文字>`      | 送一句話，等這一輪結束，顯示回應、首音延遲（TTFA）與 wav 路徑                                                                  |
+| `/wav <路徑>`      | 用音檔當輸入。real 模式走真實 STT；長音檔若因停頓被切成多句，後句會依設計取代前句，console 追到最後一輪才結束（之後多等 2 秒） |
+| `/mic`             | 麥克風：按 Enter 開始、說話、再按 Enter 結束，送進 STT 跑整輪（目前無自動斷句）                                                |
+| `/cancel`          | 取消進行中的一輪（用來驗插話打斷）                                                                                             |
+| `/session new`     | 開新 session：清掉對話歷史；驗跨 session 記憶時要用                                                                            |
+| `/status`          | Presence／Interaction 狀態、turn 狀態、host 健康                                                                               |
+| `/trace [all]`     | 最近一輪的事件與各段延遲（`all`＝所有輪摘要）                                                                                |
+| `/help`、`/quit` | 說明、結束                                                                                                                     |
 
 ### 2.2 記憶
 
-| 指令 | 說明 |
-|---|---|
-| `/mem` | 目前 namespace、episode 數、最近寫入 |
-| `/mem recall <文字>` | 經 Core 記憶存取層檢索 |
-| `/mem embed <文字> [--device cpu\|cuda] [--n 次數]` | 量 embedding 載入、首查、p50／p95 |
+| 指令                                                 | 說明                                 |
+| ---------------------------------------------------- | ------------------------------------ |
+| `/mem`                                             | 目前 namespace、episode 數、最近寫入 |
+| `/mem recall <文字>`                               | 經 Core 記憶存取層檢索               |
+| `/mem embed <文字> [--device cpu\|cuda] [--n 次數]` | 量 embedding 載入、首查、p50／p95    |
 
 ### 2.3 子系統隔離
 
-| 指令 | 說明 |
-|---|---|
-| `/stt <wav> [--model 名] [--lang 碼]` | 只跑語音辨識，印文字與耗時（未設 GPU 旗標時強制 CPU＋base 模型） |
-| `/llm <文字>` | 只跑 Think（真實 LLM），印切句與耗時 |
-| `/tts <文字> [--engine vox\|indextts2]` | 只跑合成，寫 wav，印首音延遲、總耗時、VRAM 峰值（需 GPU） |
+| 指令                                     | 說明                                                             |
+| ---------------------------------------- | ---------------------------------------------------------------- |
+| `/stt <wav> [--model 名] [--lang 碼]`  | 只跑語音辨識，印文字與耗時（未設 GPU 旗標時強制 CPU＋base 模型） |
+| `/llm <文字>`                          | 只跑 Think（真實 LLM），印切句與耗時                             |
+| `/tts <文字> [--engine vox\|indextts2]` | 只跑合成，寫 wav，印首音延遲、總耗時、VRAM 峰值（需 GPU）        |
 
 ---
 
@@ -117,15 +117,15 @@ REPL：`/log` 看目前等級；`/log level <名稱空間> <等級>` 即時調�
 
 前置：bot 已停、`UEP_E2E_ALLOW_GPU=1`、記憶目錄指向新目錄，`--mode real` 啟動並等暖機完成。每項記錄「通過／不通過＋觀察」。
 
-| 編號 | 驗什麼 | 怎麼做 | 通過條件 |
-|---|---|---|---|
-| A1 | 文字→真實 LLM | `/say 你好，請簡單介紹你自己` | 有回應，且以人設回答（自稱 U，非 ChatGPT） |
-| A2 | 文字→LLM→TTS | 同上，看輸出的 TTFA 與 wav；用 `--play` 可直接聽 | 有聲音、內容與文字一致；TTFA 記錄下來（參考 1.9–3.2 秒） |
-| A3 | 音檔→STT→LLM→TTS | `/wav subsystems/echo_stt/tests/data/zh_test.wav` | 顯示辨識文字，最後一輪有回應與 wav |
-| A4 | 麥克風＋插話 | `--play` 啟動，戴耳機；`/mic` 說一句；她回答播放中再用 `/cancel` | 辨識正確、有語音回應；`/cancel` 後立即停止 |
-| A5 | 跨 session 記憶 | `/say 我養了一隻叫小橘的貓` → `/session new` → `/say 你記得我的寵物叫什麼嗎`；再 `/mem`、`/mem recall 寵物` | 新 session 答出「小橘」；`/mem recall` 命中 |
-| A7 | 降級 | 以 `--mode real --tts fake --no-tts` 啟動，`/say` 一句 | 不用真實 TTS 時整輪仍完成、文字回應正常、不報錯 |
-| A8 | 延遲 | 做完上面幾輪後 `/trace all` | 記錄各輪 TTFA，與 ES 舊基線約 5.1 秒對照（不設硬門檻） |
+| 編號 | 驗什麼              | 怎麼做                                                                                                                  | 通過條件                                                  |
+| ---- | ------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| A1   | 文字→真實 LLM      | `/say 你好，請簡單介紹你自己`                                                                                         | 有回應，且以人設回答（自稱 U，非 ChatGPT）                |
+| A2   | 文字→LLM→TTS      | 同上，看輸出的 TTFA 與 wav；用 `--play` 可直接聽                                                                      | 有聲音、內容與文字一致；TTFA 記錄下來（參考 1.9–3.2 秒） |
+| A3   | 音檔→STT→LLM→TTS | `/wav subsystems/echo_stt/tests/data/zh_test.wav`                                                                     | 顯示辨識文字，最後一輪有回應與 wav                        |
+| A4   | 麥克風＋插話        | `--play` 啟動，戴耳機；`/mic` 說一句；她回答播放中再用 `/cancel`                                                  | 辨識正確、有語音回應；`/cancel` 後立即停止              |
+| A5   | 跨 session 記憶     | `/say 我養了一隻叫小橘的貓` → `/session new` → `/say 你記得我的寵物叫什麼嗎`；再 `/mem`、`/mem recall 寵物` | 新 session 答出「小橘」；`/mem recall` 命中             |
+| A7   | 降級                | 以 `--mode real --tts fake --no-tts` 啟動，`/say` 一句                                                              | 不用真實 TTS 時整輪仍完成、文字回應正常、不報錯           |
+| A8   | 延遲                | 做完上面幾輪後 `/trace all`                                                                                           | 記錄各輪 TTFA，與 ES 舊基線約 5.1 秒對照（不設硬門檻）    |
 
 順帶可驗（會影響後續工作，有空再做）：
 
@@ -151,20 +151,20 @@ $env:UEP_LLM_API_KEY = "<金鑰>"         # 或寫在 Core .env
 
 **可用的工具**（以現行註冊表 `memory_registry()` 為準，沒有時間或網路類工具）：
 
-| 工具 | 能力 | 在 Console 可見性 |
-|---|---|---|
-| `deep_recall` | memory.read（唯讀） | 一般對話與 `/loop` 都可見 |
-| `force_remember` | memory.write（可還原，無需核准） | 只在一般對話可見（`agent_loop` 路徑只開放唯讀能力） |
-| `member_recall`、`retract_about_me`、`opt_out_about_me` | 場域（guild）成員記憶 | Console 沒有 guild，不曝光 |
+| 工具                                                          | 能力                             | 在 Console 可見性                                     |
+| ------------------------------------------------------------- | -------------------------------- | ----------------------------------------------------- |
+| `deep_recall`                                               | memory.read（唯讀）              | 一般對話與 `/loop` 都可見                           |
+| `force_remember`                                            | memory.write（可還原，無需核准） | 只在一般對話可見（`agent_loop` 路徑只開放唯讀能力） |
+| `member_recall`、`retract_about_me`、`opt_out_about_me` | 場域（guild）成員記憶            | Console 沒有 guild，不曝光                            |
 
 **步驟與預期**：
 
-| 步驟 | 輸入 | 預期 |
-|---|---|---|
-| G1 一般對話 | `你好，介紹一下你自己` | `turn ...：turn.completed`，印一則「回應：…」；沒有 Run／工具資訊 |
-| G2 寫入（`--memory real` 較有意義） | `請記住我養了一隻叫小橘的貓` | 模型呼叫 `force_remember`，回應確認；`/mem` 可見新 episode |
-| G3 agent_loop 查詢 | `/loop 幫我查一下我的寵物叫什麼名字` | 印 `回應：…` 一則（**只回覆一次**）、`Run run_…：SUCCEEDED（Task SUCCEEDED）`、`工具呼叫：deep_recall[SUCCEEDED]`（可多次） |
-| G4 一次性 | 接著送一般句子 | 回到 G1 的形狀（`/loop` 只影響下一句） |
+| 步驟                                  | 輸入                                   | 預期                                                                                                                                      |
+| ------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| G1 一般對話                           | `你好，介紹一下你自己`               | `turn ...：turn.completed`，印一則「回應：…」；沒有 Run／工具資訊                                                                      |
+| G2 寫入（`--memory real` 較有意義） | `請記住我養了一隻叫小橘的貓`         | 模型呼叫 `force_remember`，回應確認；`/mem` 可見新 episode                                                                            |
+| G3 agent_loop 查詢                    | `/loop 幫我查一下我的寵物叫什麼名字` | 印 `回應：…` 一則（**只回覆一次**）、`Run run_…：SUCCEEDED（Task SUCCEEDED）`、`工具呼叫：deep_recall[SUCCEEDED]`（可多次） |
+| G4 一次性                             | 接著送一般句子                         | 回到 G1 的形狀（`/loop` 只影響下一句）                                                                                                  |
 
 `/loop <文字>` 把下一個 respond 的提議改成 `route=agent_loop`（Console 專用，規則 proposer 本身不會產出這個 route）。沒設 `UEP_AGENT_LOOP_ENTRY=1` 時會提示並退回一般回覆。失敗時使用者只會看到固定系統訊息「這次處理失敗了，沒有產生回覆。」，不是模型編的答案；`/status` 的 Host 指標與 `/trace` 可輔助看哪一輪失敗。
 
@@ -175,24 +175,26 @@ $env:UEP_LLM_API_KEY = "<金鑰>"         # 或寫在 Core .env
 這一批是「週期一設計並經 bot 驗證、但遷入時沒帶進 Core」的內容。fake 與單元測試都已通過，**真機都還沒驗過**，請以 `--mode real` 逐項確認。
 
 **測試前**：
+
 - 本機 `.env` 的 `UEP_INFER_SYSTEM_PROMPT` 要刪掉或清空；否則會覆寫 repo 的人設檔 `uep/persona/persona.yaml`（legacy 原版＋顏文字句）。
 - `.env` 不要設 `UEP_INFER_TTS_ENGINE`（驗預設已是 vox）、`UEP_LLM_REASONING_EFFORT`（驗預設已是 medium）。
 
-| 編號 | 驗什麼 | 怎麼做 | 通過條件／觀察重點 |
-|---|---|---|---|
-| C1 | 人設 | A1 | 自稱 U、口吻輕鬆，用顏文字、不用 emoji |
-| C2 | TTS 預設 Vox＋48k | 不設引擎直接 `--mode real` 跑 A2 | 啟動暖機顯示 VOX；`outputs\e2e` 的 wav 取樣率 48000（檔案內容或播放器資訊可看）；音質與 bot 相當、句尾沒爆音 |
-| C3 | 預熱與首音 | 重啟後第一句與第二句比 TTFA（`/trace all`） | 第一句不再明顯慢於後面（啟動時已用人設預熱 prompt cache） |
-| C4 | 長對話壓縮 | 連續 `/say` 超過 25 輪（可用短句），第 1 輪講一件具體的事（例如「我今天中午吃了牛肉麵」），最後問「我今天中午吃了什麼」 | 能答出第 1 輪內容（舊版只留 20 則會忘）；過程中沒有卡頓或錯誤；`logs/` 搜 `compress` 可看到壓縮紀錄 |
-| C5 | 喚醒詞與熱詞 | `/mic` 說「小U，……」與「U.E.P，……」；說「Bernie」 | 辨識文字正確寫出 小U／U.E.P／Bernie |
-| C6 | STT 幻聽過濾 | `/mic` 按開始後保持安靜幾秒再結束；或錄一段只有背景雜音 | 不會冒出「謝謝觀看」「字幕」這類幻聽句、不開回合 |
-| C7 | 敘述中保持聆聽 | 先正常對話一兩句讓頻道進入主動模式（`/status` 看 channel mode＝active；只在主動模式生效），再 `/wav` 一段 10 秒以上、中間有短停頓的長句音檔（會被切成多段） | 她等你講完、安靜約 2.5 秒才回，不會在第一段就接話；`/trace` 看各段併成同一輪 |
-| C8 | 墊話 | `/say 你還記得我上次說過什麼嗎`（會觸發記憶工具） | 工具執行期間先有一句自然的墊話（模型產生，失敗退固定句），不會長時間沉默 |
-| C9 | 做夢迴圈（shadow） | 啟動前設 `UEP_DREAM_WINDOW_START=09:00`、`UEP_DREAM_WINDOW_END=23:59`（涵蓋當下）與 `--memory real`；寫入 5 筆以上記憶後靜置 5 分鐘以上 | `/mem` 出現「做夢迴圈：running=True shadow=True」，且 `shadow would_run` > 0 或最近決策有原因碼；shadow 不會真的做夢（不寫活動紀錄） |
-| C10 | agent 回合 | 依 3.1 的 G1–G4 | G3 只回覆一次、Run SUCCEEDED |
-| C11 | 情緒語音（可選） | 設 `UEP_INFER_VOX_EMOTION_ENABLED=1` 後跑 A2，請她用開心或難過的語氣說一句 | 中文語氣有差異、音色不跑掉；不滿意就維持預設關 |
+| 編號 | 驗什麼             | 怎麼做                                                                                                                                                          | 通過條件／觀察重點                                                                                                                       |
+| ---- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| C1   | 人設               | A1                                                                                                                                                              | 自稱 U、口吻輕鬆，用顏文字、不用 emoji                                                                                                   |
+| C2   | TTS 預設 Vox＋48k  | 不設引擎直接 `--mode real` 跑 A2                                                                                                                              | 啟動暖機顯示 VOX；`outputs\e2e` 的 wav 取樣率 48000（檔案內容或播放器資訊可看）；音質與 bot 相當、句尾沒爆音                           |
+| C3   | 預熱與首音         | 重啟後第一句與第二句比 TTFA（`/trace all`）                                                                                                                   | 第一句不再明顯慢於後面（啟動時已用人設預熱 prompt cache）                                                                                |
+| C4   | 長對話壓縮         | 連續 `/say` 超過 25 輪（可用短句），第 1 輪講一件具體的事（例如「我今天中午吃了牛肉麵」），最後問「我今天中午吃了什麼」                                       | 能答出第 1 輪內容（舊版只留 20 則會忘）；過程中沒有卡頓或錯誤；`logs/` 搜 `compress` 可看到壓縮紀錄                                  |
+| C5   | 喚醒詞與熱詞       | `/mic` 說「小U，……」與「U.E.P，……」；說「Bernie」                                                                                                         | 辨識文字正確寫出 小U／U.E.P／Bernie                                                                                                      |
+| C6   | STT 幻聽過濾       | `/mic` 按開始後保持安靜幾秒再結束；或錄一段只有背景雜音                                                                                                       | 不會冒出「謝謝觀看」「字幕」這類幻聽句、不開回合                                                                                         |
+| C7   | 敘述中保持聆聽     | 先正常對話一兩句讓頻道進入主動模式（`/status` 看 channel mode＝active；只在主動模式生效），再 `/wav` 一段 10 秒以上、中間有短停頓的長句音檔（會被切成多段） | 她等你講完、安靜約 2.5 秒才回，不會在第一段就接話；`/trace` 看各段併成同一輪                                                           |
+| C8   | 墊話               | `/say 你還記得我上次說過什麼嗎`（會觸發記憶工具）                                                                                                             | 工具執行期間先有一句自然的墊話（模型產生，失敗退固定句），不會長時間沉默                                                                 |
+| C9   | 做夢迴圈（shadow） | 啟動前設 `UEP_DREAM_WINDOW_START=09:00`、`UEP_DREAM_WINDOW_END=23:59`（涵蓋當下）與 `--memory real`；寫入 5 筆以上記憶後靜置 5 分鐘以上                   | `/mem` 出現「做夢迴圈：running=True shadow=True」，且 `shadow would_run` > 0 或最近決策有原因碼；shadow 不會真的做夢（不寫活動紀錄） |
+| C10  | agent 回合         | 依 3.1 的 G1–G4                                                                                                                                                | G3 只回覆一次、Run SUCCEEDED                                                                                                             |
+| C11  | 情緒語音（可選）   | 設 `UEP_INFER_VOX_EMOTION_ENABLED=1` 後跑 A2，請她用開心或難過的語氣說一句                                                                                    | 中文語氣有差異、音色不跑掉；不滿意就維持預設關                                                                                           |
 
 **順帶留意**：
+
 - 語音記憶檢索逾時改為 1.5 秒（bot 值），**Console 打字輸入也套用**；若打字時常出現「這輪沒帶到記憶」，回報後再區分語音與文字路徑。
 - STT 單一工作逾時 4.0 秒＋每秒音訊 0.5 秒；長時間 `/mic` 不應卡死佇列。
 - Windows 下啟動時會關閉本行程的 EcoQoS（避免背景降頻拉長延遲）。

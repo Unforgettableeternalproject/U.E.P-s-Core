@@ -520,3 +520,89 @@ def test_other_user_cards_require_another_user_speaker() -> None:
     assert len(synth.parse_items(other, ok)[0]) == 1 and synth.parse_items(other, plain)[1]["bad_context"] == 1
     assert len(synth.parse_items(same, plain)[0]) == 1 and synth.parse_items(same, ok)[1]["bad_context"] == 1
     assert "Another user" in synth.build_prompt(other, "clean", "pets", 2, 2)
+
+
+# ---- resolve：disputed 規則化裁決 ----
+
+def test_first_place_takes_earliest_literal_place() -> None:
+    from laya_data import resolve
+
+    assert resolve.first_place("go to the desktop app then discord") == "desktop"
+    assert resolve.first_place("Move to the web site and the host machine") == "website"
+    assert resolve.first_place("come over here") is None
+
+
+def test_judge_promise_rules() -> None:
+    from laya_data import resolve
+
+    cancel = {"message": "no need to ping me friday", "recent_context": "User: remind me\nAssistant: I'll remind you on Friday."}
+    assert resolve.judge_promise(cancel) == ("respond", "a")
+    reply = {"message": "no need, we already did it", "recent_context": "Assistant: Shall I book a clinic appointment?"}
+    assert resolve.judge_promise(reply) == ("respond", "b")
+    aside = {"message": "Mia, the preorder opens tonight", "recent_context": "Assistant: I'll preorder it tonight."}
+    assert resolve.judge_promise(aside) == ("passive", "other")
+    assert resolve.judge_promise({"message": "that starts monday right?", "recent_context": "User: sign me up\nAssistant: Okay, I'll sign you up."}) is None
+    dont_forget = {"message": "Don't forget, Tom, it closes Thursday", "recent_context": "User: sign us up\nAssistant: Sure, I'll register you."}
+    assert resolve.judge_promise(dont_forget) is None  # "Don't forget" 不是取消語氣
+
+
+def _res_row(card: str, kind: str, state: dict, expected: dict) -> dict:
+    return {"sample_id": "x", "kind": kind, "state": state, "expected": expected, "meta": {"card": card}}
+
+
+def test_resolve_row_defer_adopts_blind_route_only_when_defer() -> None:
+    from laya_data import resolve
+
+    row = _res_row("defer_busy", "turn.reply", {"message": "m", "recent_context": "(none)"}, {"reply_mode": "defer", "addressed": True, "route": "direct_chat"})
+    out, tag = resolve.resolve_row(row, {"reply_mode": "defer", "addressed": True, "route": "agent_loop"})
+    assert tag == "route_follows_action" and out["expected"]["route"] == "agent_loop"
+    out, tag = resolve.resolve_row(row, {"reply_mode": "respond", "addressed": True, "route": "agent_loop"})
+    assert out is None and tag == "defer:blind_not_defer"
+
+
+def test_resolve_row_two_places_and_other_cards() -> None:
+    from laya_data import resolve
+
+    exp = {"absent.intent": "presence_request", "absent.target_location": "none"}
+    row = _res_row("absent_request_two_places", "presence.absent_intent", {"message": "go to the desktop app and discord"}, exp)
+    out, tag = resolve.resolve_row(row, {"absent.intent": "presence_request", "absent.target_location": "desktop"})
+    assert tag == "first_place" and out["expected"]["absent.target_location"] == "desktop"
+    out, tag = resolve.resolve_row(row, {"absent.intent": "presence_request", "absent.target_location": "discord"})
+    assert out is None and tag == "first_place:blind_differs"
+    other = _res_row("private_complex", "turn.reply", {"message": "m"}, {"reply_mode": "respond", "addressed": True, "route": "agent_loop"})
+    assert resolve.resolve_row(other, {"route": "direct_chat"}) == (None, "other_card")
+
+
+def test_label_rule_cards_and_new_cancel_card() -> None:
+    rules = {c.card_id: c.label_rule for cs in synth.CARDS.values() for c in cs if c.label_rule}
+    assert rules["absent_request_two_places"] == "first_place"
+    assert rules["group_promise_update"] == rules["group_commitment_related"] == "promise_mode"
+    assert all(rules[k] == "route_follows_action" for k in ("defer_busy", "defer_busy_hands", "defer_wait_result", "defer_after_meeting"))
+    cancel = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_promise_cancel_by_requester")
+    assert cancel.expected["reply_mode"] == "respond" and cancel.context == "assistant_promised_user"
+
+
+def test_resolve_run_end_to_end(tmp_path: Path) -> None:
+    from laya_data import resolve
+
+    cards = {c.card_id: c for c in synth.TURN_REPLY_CARDS}
+    c = cards["defer_busy"]
+    rows = [
+        kinds.make_row("turn.reply", {"message": f"busy now, do job {i} later please", "others": 0}, dict(c.expected), sample_id=f"d{i}", source="synthetic",
+                       meta={"card": "defer_busy", "hard": True, "group_id": f"g{i}"})
+        for i in range(3)
+    ]
+    mass = tmp_path / "mass"
+    synth.write_jsonl(mass / "synth_all.jsonl", rows)
+    labels = [{"sample_id": "d0", "answers": {"reply_mode": "defer", "addressed": True, "route": "direct_chat"}},
+              {"sample_id": "d1", "answers": {"reply_mode": "defer", "addressed": True, "route": "task_request"}},
+              {"sample_id": "d2", "answers": {"reply_mode": "respond", "addressed": True, "route": "direct_chat"}}]
+    synth.write_jsonl(mass / "labels.jsonl", labels)
+    synth.main(["--import-labels", str(mass / "labels.jsonl"), "--data", str(mass / "synth_all.jsonl"), "--out-dir", str(mass / "blind")])
+    stats = resolve.run(mass, val_ratio=0.0)
+    assert stats["accepted"] == 1 and stats["resolved"] == 1 and stats["review"] == 1 and stats["final"] == 2
+    final = split.read_rows(mass / "final.jsonl")
+    assert {r["sample_id"]: r["expected"]["route"] for r in final} == {"d0": "direct_chat", "d1": "task_request"}
+    review = split.read_rows(mass / "blind" / "review_for_bernie.jsonl")
+    assert [r["sample_id"] for r in review] == ["d2"] and review[0]["blind_answers"]["reply_mode"] == "respond"
+    assert (mass / "blind" / "review_for_bernie.md").read_text(encoding="utf-8").count("\n") <= 40

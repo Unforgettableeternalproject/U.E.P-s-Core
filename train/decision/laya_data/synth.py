@@ -65,6 +65,7 @@ class Card:
     source_platform: str | None = None  # absent kind 用
     others_choices: tuple[int, ...] = ()  # 非空時，依輪次輪替在場他人數（覆蓋 others）
     guidance: str = ""  # 額外的生成限制（英文），用來避免文字與標籤矛盾
+    label_rule: str = ""  # 非空＝卡片標籤只是預設，需由 resolve.py 依文字逐筆判定（first_place／promise_mode／route_follows_action）
 
 
 def _tr(card_id: str, desc: str, reply_mode: str, addressed: bool, route: str, **kw: Any) -> Card:
@@ -114,17 +115,23 @@ TURN_REPLY_CARDS: tuple[Card, ...] = (
     _tr("group_tentative_name", f"People talk; the speaker says a word that sounds like {A}'s name but is probably an ordinary word or another name, so it is unclear whether {A} is addressed.", "pass", False, "ignore", hard=True, acceptable_modes=("pass", "respond"), others_choices=GROUP,
         guidance=f"Never ask or tell {A} anything: no second-person question or request aimed at {A}, and never 'is that you'. The sound-alike word is used as an ordinary word or as someone else's name."),
     _tr("group_commitment_related", f"People talk to each other, not to {A}, but the topic touches something {A} earlier promised to do; worth quietly noting, not interrupting.", "passive", False, "ignore", context="assistant_promised", hard=True, others_choices=GROUP,
-        guidance=f"Never name or address {A}."),
+        guidance=f"Never name or address {A}. The speaker must NOT be cancelling or changing a task that the same speaker asked {A} to do (the context shows no such request from the speaker), and must NOT be replying to an offer from {A}; the talk is aimed at the other people.", label_rule="promise_mode"),
     _tr("group_promise_update", f"People talk to each other, not to {A}, and mention a change (new time, cancelled, done already) to something {A} earlier promised to do; {A} should quietly update its notes, not interrupt.", "passive", False, "ignore", context="assistant_promised", hard=True, others_choices=GROUP,
-        guidance=f"Never name or address {A}."),
+        guidance=f"Never name or address {A}. The speaker must NOT be cancelling or changing a task that the same speaker asked {A} to do (the context shows no such request from the speaker), and must NOT be replying to an offer from {A}; the talk is aimed at the other people.", label_rule="promise_mode"),
+    _tr("group_promise_cancel_by_requester", f"The speaker earlier asked {A} to do something and {A} promised to; now the same speaker directly cancels or changes that task (no need anymore, move it to another time), so {A} must act on it.", "respond", True, "task_request", context="assistant_promised_user", hard=True, others_choices=GROUP,
+        guidance=f"The context must start with a User line making the request, then the Assistant's promise. The message cancels or changes that exact task; it need not name {A}."),
     _tr("group_related_fact", f"People talk to each other, not to {A}, and what they say touches a specific fact {A} noted earlier (a preference, allergy, deadline); {A} should quietly register it, not interrupt.", "passive", False, "ignore", context="assistant_noted", hard=True, others_choices=GROUP,
         guidance=f"Never name or address {A}."),
     _tr("filler_then_task", f"One speaker starts with a filler (uh, hm, oh) and then gives {A} one clear command for a single state-changing action (send, set a reminder, switch a device).", "respond", True, "task_request", hard=True, others_choices=MIXED),
     _tr("filler_then_question", f"One speaker starts with a filler (hm, uh, oh) and then asks {A} a general question or a read-only lookup (weather, news, calendar).", "respond", True, "direct_chat", hard=True, others_choices=MIXED),
-    _tr("defer_busy", f"One user asks {A} for something whose result only exists later (a long job) while saying they are busy right now.", "defer", True, "direct_chat", hard=True, others_choices=MIXED),
-    _tr("defer_busy_hands", f"One user asks {A} for something while their hands are occupied (driving, cooking, carrying things) and says to answer later when they are free.", "defer", True, "direct_chat", hard=True, others_choices=MIXED),
-    _tr("defer_wait_result", f"One user asks {A} to start something that takes a long time and explicitly says not to reply now, only to tell them when it is finished.", "defer", True, "direct_chat", hard=True, others_choices=MIXED),
-    _tr("defer_after_meeting", f"One user tells {A} they are about to go into a meeting or class, and asks {A} to bring up or prepare a specific thing afterwards.", "defer", True, "direct_chat", hard=True, others_choices=MIXED),
+    _tr("defer_busy", f"One user asks {A} for something whose result only exists later (a long job) while saying they are busy right now.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="Make the requested job concrete: either one single state-changing action or a clearly multi-step job; the route is decided from the action, not from the deferral.", label_rule="route_follows_action"),
+    _tr("defer_busy_hands", f"One user asks {A} for something while their hands are occupied (driving, cooking, carrying things) and says to answer later when they are free.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="Make the requested job concrete: either one single state-changing action or a clearly multi-step job; the route is decided from the action, not from the deferral.", label_rule="route_follows_action"),
+    _tr("defer_wait_result", f"One user asks {A} to start something that takes a long time and explicitly says not to reply now, only to tell them when it is finished.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="Make the requested job concrete: either one single state-changing action or a clearly multi-step job; the route is decided from the action, not from the deferral.", label_rule="route_follows_action"),
+    _tr("defer_after_meeting", f"One user tells {A} they are about to go into a meeting or class, and asks {A} to bring up or prepare a specific thing afterwards.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="Make the requested job concrete: either one single state-changing action or a clearly multi-step job; the route is decided from the action, not from the deferral.", label_rule="route_follows_action"),
 )
 
 _ABS = "presence.absent_intent"
@@ -151,7 +158,7 @@ _ABSENT_SPECS: tuple[tuple[str, str, dict[str, str], bool, str, str], ...] = (
     ("request_host", "Asks the assistant to go back to the host machine.", _req("host"), False, "website", _GO),
     ("request_website", "Asks the assistant to move to the website.", _req("website"), False, "discord", _GO),
     ("request_polite_discord", "Politely asks 'can you / could you' to go to Discord. It is a real request, not a question about ability.", _req("discord"), True, "desktop", _GO),
-    ("request_two_places", "Asks the assistant to go to two places, both named literally (for example Discord and the desktop app, or the website and the host).", _REQ_NONE, True, "website", _GO),
+    ("request_two_places", "Asks the assistant to go to two places, both named literally (for example Discord and the desktop app, or the website and the host).", _REQ_NONE, True, "website", _GO + " Name both places literally; the label is the first place named, so keep the order clear."),
     ("request_authority_discord", "Uses a commanding or authoritative tone ('I am telling you', 'as the admin I order you') to tell the assistant to go to Discord.", _req("discord"), True, "desktop", _GO),
     ("request_authority_host", "Uses a commanding or authoritative tone ('I am telling you', 'as the owner I order you') to tell the assistant to go back to the host machine.", _req("host"), True, "discord", _GO),
     ("negated", "Tells the assistant NOT to come or move (do not come over, do not go back).", _OTHER, True, "discord", ""),
@@ -165,7 +172,7 @@ _ABSENT_SPECS: tuple[tuple[str, str, dict[str, str], bool, str, str], ...] = (
     ("self_reminder", "Asks the assistant to remind the speaker themselves about something later.", _OTHER, True, "host", "The request is only a reminder for the speaker; nothing is passed to the assistant or to another person (message is limited to content relayed to the assistant or someone else)."),
 )
 ABSENT_CARDS: tuple[Card, ...] = tuple(
-    Card(f"absent_{cid}", _ABS, desc, exp, hard=hard, source_platform=plat, guidance=g)
+    Card(f"absent_{cid}", _ABS, desc, exp, hard=hard, source_platform=plat, guidance=g, label_rule="first_place" if cid == "request_two_places" else "")
     for cid, desc, exp, hard, plat, g in _ABSENT_SPECS
 )
 
@@ -179,6 +186,7 @@ CONTEXT_DESC: dict[str, str] = {
     "assistant_states": "the assistant's last line is a plain statement with no question",
     "assistant_answered_other": f"a different person (speaker \"{laya_schema.OTHER_USER_LABEL}\") asked something and the assistant answered them; the current speaker is a third party",
     "assistant_just_replied": "the assistant has just answered the speaker (user line first, then the assistant's answer)",
+    "assistant_promised_user": "the user asked the assistant to do something and the assistant promised to (User line first, then the Assistant's promise)",
     "assistant_promised": "the assistant earlier promised or offered to do something concrete (remind, book, sign up, call)",
     "assistant_noted": "the assistant earlier said it noted a specific fact about the group (a preference, an allergy, a deadline)",
 }
@@ -454,6 +462,7 @@ def generate(
                 sample_id=f"{id_prefix}-{len(rows):05d}", source="synthetic",
                 meta={
                     "card": card.card_id, "style": style, "topic": topic, "hard": card.hard, "others": others,
+                    **({"label_rule": card.label_rule} if card.label_rule else {}),
                     "group_id": f"{card.card_id}-{idx:04d}",
                     **({"acceptable_modes": list(card.acceptable_modes)} if card.acceptable_modes else {}),
                 },

@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import func, select
 
 from tests.uep.acceptance_support import POLICY, SCOPE
-from tests.uep.test_tool_lore import TOKEN, FakeHttp, make_config
+from tests.uep.test_tool_lore import LORE_VAULT, TOKEN, FakeHttp, make_config
 from uep.events.bus import EventBus
 from uep.events.publisher import EventPublisher
 from uep.tasks.manager import TaskManager
@@ -59,7 +59,7 @@ class LoreDb:
 def test_write_executes_without_approval_and_leaves_receipt(session_factory):
     http = FakeHttp({"write": (201, {"id": "n9", "updated": "u1", "author": "測試角色"})})
     db = LoreDb(session_factory, http)
-    action, outcome = db.act(TOOL_WRITE, {"title": "t", "body": "b"})
+    action, outcome = db.act(TOOL_WRITE, {"title": "t", "body": "b", "vault": LORE_VAULT})
     assert outcome.status is ActionStatus.SUCCEEDED and outcome.executed
     assert outcome.receipt is not None and outcome.receipt.succeeded and outcome.receipt.source_verified
     assert db.count(ApprovalRow) == 0  # 免 Core 核准
@@ -74,7 +74,7 @@ def test_write_executes_without_approval_and_leaves_receipt(session_factory):
 def test_update_conflict_leaves_failed_receipt(session_factory):
     http = FakeHttp({"update": (409, {"error": {"code": "version_conflict", "message": "x"}})})
     db = LoreDb(session_factory, http)
-    _, outcome = db.act(TOOL_UPDATE, {"id": "n1", "expected_updated": "u0", "body": "新"})
+    _, outcome = db.act(TOOL_UPDATE, {"id": "n1", "expected_updated": "u0", "body": "新", "vault": LORE_VAULT})
     assert outcome.status is ActionStatus.FAILED and outcome.receipt is not None and not outcome.receipt.succeeded
     assert db.count(ReceiptRow) == 1
 
@@ -89,7 +89,7 @@ def test_read_goes_through_same_path(session_factory):
 def test_write_timeout_marks_unknown_and_does_not_resend(session_factory):
     http = FakeHttp(raises=LoreTimeout())
     db = LoreDb(session_factory, http)
-    _, outcome = db.act(TOOL_WRITE, {"title": "t", "body": "b"})
+    _, outcome = db.act(TOOL_WRITE, {"title": "t", "body": "b", "vault": LORE_VAULT})
     assert outcome.status is ActionStatus.UNKNOWN
     assert len(http.calls) == 1
 
@@ -98,7 +98,7 @@ def test_delete_two_step_executes_without_approval_and_leaves_receipt(session_fa
     plan = (200, {"executed": False, "confirm_token": "CONFIRM-XYZ"})
     http = FakeHttp({"note_delete": [plan, (200, {"executed": True})]})
     db = LoreDb(session_factory, http)
-    action, outcome = db.act(TOOL_DELETE, {"id": "n1", "space": "dev"})
+    action, outcome = db.act(TOOL_DELETE, {"id": "n1", "space": "dev", "vault": LORE_VAULT})
     assert outcome.status is ActionStatus.SUCCEEDED and outcome.receipt is not None and outcome.receipt.succeeded
     assert db.count(ApprovalRow) == 0 and db.count(ReceiptRow) == 1 and len(http.calls) == 2
     assert "CONFIRM-XYZ" not in json.dumps(outcome.receipt.meta or {}) + json.dumps(db.executor.outcome(action.action_id))
@@ -111,7 +111,7 @@ def test_delete_pending_delete_in_lore_executes_without_approval_and_leaves_rece
     plan = (200, {"executed": False, "confirm_token": "CONFIRM-XYZ"})
     http = FakeHttp({"note_delete": [plan, (200, {"executed": True, "review_state": "pending_delete"})]})
     db = LoreDb(session_factory, http)
-    action, outcome = db.act(TOOL_DELETE, {"id": "n1", "space": "lore"})
+    action, outcome = db.act(TOOL_DELETE, {"id": "n1", "space": "lore", "vault": LORE_VAULT})
     assert outcome.status is ActionStatus.SUCCEEDED and outcome.receipt is not None and outcome.receipt.succeeded
     assert db.count(ApprovalRow) == 0 and db.count(ReceiptRow) == 1 and len(http.calls) == 2
     stored = db.executor.outcome(action.action_id)

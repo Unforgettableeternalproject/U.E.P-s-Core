@@ -24,28 +24,28 @@
     "tool_version": 1
   },
   "lore.delete": {
-    "schema_hash": "461830b9e9445e4af95de0df6a8fd0cfa6dd9282bff9ff72eefb5abe6324da10",
-    "tool_version": 1
-  },
-  "lore.get": {
-    "schema_hash": "6c32bf6ba8abcf9195a6a7b468e557760b4b70f1b7d779046899287b9a1693ba",
-    "tool_version": 1
-  },
-  "lore.list": {
-    "schema_hash": "c141a9889972e3e7b794a35ca9a2500b675806078f699662b5c11f05c5d58b8a",
+    "schema_hash": "f63019614c51ad3308747cf924f962f09ea624dba5d5ef4ca768c07077e20bef",
     "tool_version": 2
   },
+  "lore.get": {
+    "schema_hash": "5c0fdafc1bd8a3ae1afb15aac6b21ebb070ec69c272526a09b0800f7be650518",
+    "tool_version": 2
+  },
+  "lore.list": {
+    "schema_hash": "3ca4cf8f0f158b0a3d86c4dfc37ad33081eef1abeacb56ca4b35591bcc334767",
+    "tool_version": 3
+  },
   "lore.recall": {
-    "schema_hash": "6377cc68617ff97628fdb8fa2f081d58bdddc17379afb2a472a260195d7fb7e7",
-    "tool_version": 1
+    "schema_hash": "3c5896e2b9a61cd67c2854a5541c75322af76d9de0b8ceefe88d5d10f2dd8081",
+    "tool_version": 2
   },
   "lore.update": {
-    "schema_hash": "c964cf5ec55b846e44e696e6765c8a0786186858f96f4dd7a21fd10ab4507c2b",
-    "tool_version": 1
+    "schema_hash": "3e7e0d6a2d3ec28541e8d68dbefcb1a12dfa08bc0def4f7baa12874e8a9ea01d",
+    "tool_version": 2
   },
   "lore.write": {
-    "schema_hash": "726d4ef085072ce49032547027016af5efba8b192f19187ca1a80492048e607a",
-    "tool_version": 1
+    "schema_hash": "ee62a142d5660842a09ead10551be62780df5db2e2464bdacf5d518f702ac4c0",
+    "tool_version": 2
   },
   "member_recall": {
     "schema_hash": "6b65a7b86e688f0834c856bcdd725998e38dd1578d880c4002b6040396da6359",

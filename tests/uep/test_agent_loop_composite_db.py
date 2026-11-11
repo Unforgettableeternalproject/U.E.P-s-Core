@@ -72,7 +72,7 @@ def test_db_composite_parks_with_cursor_and_new_worker_continues_without_replay(
     assert read.action_id == stable_action_id(rig.run.run_id, step_id, 0, 0) and ask.action_id == stable_action_id(rig.run.run_id, step_id, 0, 1)
     stored = rig.tm.get_run(rig.run.run_id).checkpoint  # JSONB 往返後
     assert stored["composite_cursor"] == {
-        "ordinal": 0, "tool": "post.pub", "next": 1,
+        "ordinal": 0, "tool": "post.pub", "next": 1, "version": 1, "schema_hash": stored["composite_cursor"]["schema_hash"],
         "rows": [{"step": 0, "tool": "read.lone", "status": "ok", "action_id": read.action_id}],
     }
     assert stored["pending_approvals"] == [ask.action_id]

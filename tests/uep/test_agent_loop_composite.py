@@ -119,8 +119,8 @@ def test_two_steps_pass_previous_output_and_each_gets_its_own_action():
     assert view["items"][-1]["content"] == "fs.write:/a.md"  # 對外內容取最後一步
     assert _tool_texts(rig)[0] == "fs.write:/a.md"
     cursors = [cp.get("composite_cursor") for cp in rig.tasks.checkpoints]
-    assert cursors[:2] == [{"ordinal": 0, "tool": "notes.prepare", "next": 1, "rows": cursors[0]["rows"]},
-                           {"ordinal": 0, "tool": "notes.prepare", "next": 2, "rows": cursors[1]["rows"]}]
+    assert [(c["tool"], c["next"]) for c in cursors[:2]] == [("notes.prepare", 1), ("notes.prepare", 2)]
+    assert cursors[0]["version"] == 1 and cursors[0]["schema_hash"]
     assert all(cp.get("composite_cursor") is None for cp in rig.tasks.checkpoints[2:])  # 完成後 cursor 清除
 
 
@@ -376,3 +376,105 @@ def test_malformed_cursor_fails_closed_without_replay():
     assert (out.state, out.reason_code) == ("failed", "checkpoint_incomplete")
     assert [t for _, t in rig.tasks.executions] == ["fs.read"]
 
+
+
+# ---- 審查修正：checkpoint 一致性與 cursor 驗證（fail-closed） ----
+
+def _tampered(mutate):
+    rig, _ = _park()
+    cp = dict(rig.tasks.checkpoints[-1])
+    cursor = {**cp["composite_cursor"], "rows": [dict(r) for r in cp["composite_cursor"]["rows"]]}
+    cp["composite_cursor"] = cursor
+    mutate(cp, cursor)
+    ask_id = sub_id("step_1", 0, 1)
+    rig.tasks.grant("appr_1", ask_id)
+    out = _resume(rig, {ask_id: "appr_1"}, checkpoint=cp, rounds=[Round("不該到這裡")])
+    return rig, out
+
+
+def _assert_failed_closed(rig, out, reason):
+    assert (out.state, out.reason_code) == ("failed", reason)
+    assert rig.last_runtime.requests == [] and rig.tasks.approvals["appr_1"].consumed_by is None
+    assert [t for _, t in rig.tasks.executions] == ["fs.read"]  # 沒有執行任何新步驟、核准不消耗
+
+
+def test_pending_sub_action_without_cursor_fails_closed_instead_of_deferring():
+    def drop_cursor(cp, _cursor):
+        del cp["composite_cursor"]
+
+    rig, out = _tampered(drop_cursor)
+    _assert_failed_closed(rig, out, "checkpoint_incomplete")
+    assert not any("deferred_by_approval_wait" in m.content for m in rig.child() if m.role == "tool")
+
+
+def test_pending_id_matching_no_call_fails_closed():
+    def stray(cp, _cursor):
+        cp["pending_approvals"] = [sub_id("step_1", 5, 0)]
+
+    rig, out = _tampered(stray)
+    _assert_failed_closed(rig, out, "checkpoint_incomplete")
+
+
+def test_cursor_tool_must_match_the_call():
+    rig, out = _tampered(lambda cp, cursor: cursor.update(tool="notes.prepare"))
+    _assert_failed_closed(rig, out, "checkpoint_incomplete")
+
+
+def test_cursor_rows_must_match_declared_steps():
+    rig, out = _tampered(lambda cp, cursor: cursor["rows"][0].update(tool="fs.write"))
+    _assert_failed_closed(rig, out, "checkpoint_incomplete")
+
+
+def test_cursor_longer_than_declared_steps_fails_closed():
+    def extend(cp, cursor):
+        cursor["rows"] += [{"step": 1, "tool": "fs.ask", "status": "ok"}, {"step": 2, "tool": "fs.ask", "status": "ok"}]
+        cursor["next"] = 3
+
+    rig, out = _tampered(extend)
+    _assert_failed_closed(rig, out, "checkpoint_incomplete")
+
+
+@pytest.mark.parametrize("key", ["version", "schema_hash"])
+def test_composite_declaration_changed_since_cursor_fails_closed(key):
+    rig, out = _tampered(lambda cp, cursor: cursor.update({key: 99 if key == "version" else "0" * 64}))
+    _assert_failed_closed(rig, out, "tool_version_changed")
+
+
+# ---- 審查修正：非待決步驟與全新執行一致、預算 ----
+
+def _crashed_prepare(**loop_over):
+    class Crash(BaseException):
+        pass
+
+    state = {"crash": True}
+
+    def write(args):
+        if state["crash"]:
+            raise Crash
+        return "寫入"
+
+    rig = _rig([Round("組合", (_composite(),)), Round("不會用到")], behaviors={"fs.write": write})
+    with pytest.raises(Crash):
+        _run(rig)
+    state["crash"] = False
+    cp = dict(rig.tasks.checkpoints[-1])
+    assert cp["pending_approvals"] == [] and cp["composite_cursor"]["next"] == 1
+    return rig, cp
+
+
+def test_non_pending_step_blocked_on_resume_is_a_blocked_row_not_a_run_ending_halt():
+    rig, cp = _crashed_prepare()
+    rig.tasks.bump_version("fs.write")  # 建立層擋下：該步不是待核准步驟
+    out = _resume(rig, None, checkpoint=cp, rounds=[Round("收尾")])
+    assert (out.state, out.text) == ("completed", "收尾")  # 與全新執行一致：列成 blocked，Run 繼續
+    view = next(m for m in rig.child() if m.role == "tool").content
+    assert view.startswith("tool blocked")
+
+
+def test_non_pending_step_counts_against_tool_call_budget_on_resume():
+    rig, cp = _crashed_prepare()
+    loop = _crash(rig, 2, rounds=[Round("收尾")], budget=LoopBudget(repeat_limit=99, max_tool_calls=1))
+    out = loop.resume(RUN, cp, trigger=trigger(rig.tags), parent_id="ctx_parent")
+    assert out.state == "completed"
+    assert [t for _, t in rig.tasks.executions].count("fs.write") == 0  # 預算已滿：第二步 blocked(deferred_budget)，不執行
+    assert next(m for m in rig.child() if m.role == "tool").content == "tool blocked: deferred_budget"

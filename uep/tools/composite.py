@@ -8,6 +8,10 @@
 
 不以 ``$`` 開頭的值都是字面值（dict／list 會遞迴處理）。路徑引用不支援運算、條件、函式；
 解析失敗一律拋 ``CompositePathError``，由呼叫端轉成 ``rejected(invalid_tool_args)``。
+
+已知限制（已裁決延到下一階段）：``$.steps[k].output.text`` 取自回合範圍結果來源（D33，只在記憶體），不進 receipt／DB。
+引用它的子步驟若已 park 待核准，跨重啟後輸出不可得、核准的參數也無從重建 ⇒ fail-closed（Run 以 ``intent_rejected`` 結束、
+核准不消耗），不會以缺值續跑。只引用 ``result_ref``（receipt 持久）者不受影響。
 """
 from __future__ import annotations
 

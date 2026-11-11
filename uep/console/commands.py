@@ -10,6 +10,7 @@ import time
 import wave
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -24,7 +25,9 @@ from uep.contracts.presence import PresenceLocation
 from uep.events.models import EventRow
 from uep.log import describe_levels, set_console_level, set_namespace_level
 from uep.state.coordinator import Axis
+from uep.tasks.manager import AuthenticatedPrincipal
 from uep.tasks.models import ActionIntentRow, RunRow, TaskRow
+from uep.tasks.states import APPROVAL_REQUIRED, ActionStatus
 from uep.turn.models import UtteranceFact
 
 TERMINAL_EVENTS = ("turn.completed", "turn.cancelled", "turn.skipped")
@@ -47,6 +50,7 @@ HELP_TEXT = """\
 指令：
   /say <文字>        送出一句話（無指令的輸入行等同 /say），等該 turn 結束並顯示結果
   /loop <文字>       agent 路徑（UEP_TOOL_PATH=agent）：這一句導向 agent_loop，顯示 Run 狀態與工具呼叫（需 UEP_AGENT_LOOP_ENTRY=1）
+  /approve [action_id]  核准等待中的工具呼叫（以本機使用者的已驗證人類身分記錄核准）；不帶參數列出等待核准的項目
   /wav <路徑>       以音檔當輸入；real 模式經真實 STT（餵進 Host）跑整條 turn，以真實時間速度餵入（會花與音檔等長的時間）；
                      fake 模式由 fake STT 產 utterance
   /cancel            取消進行中的 turn（宿主取消）
@@ -91,7 +95,7 @@ class Console:
         self.settle_s = settle_s
         self.last_turn_id: str | None = None
         self._commands: dict[str, Callable[[str], None]] = {
-            "say": self._say, "loop": self._loop, "wav": self._wav, "cancel": self._cancel, "status": self._status,
+            "say": self._say, "loop": self._loop, "approve": self._approve, "wav": self._wav, "cancel": self._cancel, "status": self._status,
             "trace": self._trace, "mem": self._mem, "session": self._session, "mic": self._mic, "stream": self._stream, "help": self._help, "log": self._log, "stt": self._stt, "llm": self._llm, "tts": self._tts,
         }
 
@@ -296,6 +300,46 @@ class Console:
         for wav in rt.wavs.get(turn_id, []):
             self.out(f"音訊：{wav}（{_wav_seconds(wav):.1f} 秒）")
 
+    def _approve(self, arg: str) -> None:
+        """核准等待中的 action：以 task 擁有者的已驗證人類身分呼叫 ``TaskManager.record_approval``（沿用既有規則：
+        只收 human＋verified、hash／target／scope 取自 action 與 task 列、核准單次消耗且 10 分鐘內有效）。
+        不帶參數時列出等待核准的 action。
+        只記錄核准；park 之後的 resume 路徑（AgentLoop.resume）production 尚未接上，所以 Run 不會自動續跑。"""
+        with self.rt.session_factory() as s:
+            if not arg:
+                pending = list(s.scalars(
+                    select(ActionIntentRow).join(RunRow, RunRow.run_id == ActionIntentRow.run_id)
+                    .where(ActionIntentRow.status == ActionStatus.INTENDED.value,
+                           ActionIntentRow.side_effect_class.in_(sorted(APPROVAL_REQUIRED)))
+                    .order_by(ActionIntentRow.created_at)
+                ))
+                if not pending:
+                    self.out("目前沒有等待核准的工具呼叫。")
+                for a in pending:
+                    self.out(f"等待核准：{a.action_id}（{a.tool}，Run {a.run_id}）→ /approve {a.action_id}")
+                return
+            action_id = arg.split()[0]
+            action = s.get(ActionIntentRow, action_id)
+            if action is None:
+                self.out(f"找不到 action：{action_id}")
+                return
+            if action.status != ActionStatus.INTENDED.value or action.side_effect_class not in APPROVAL_REQUIRED:
+                self.out(f"action {action_id} 目前不需要核准（狀態 {action.status}，副作用 {action.side_effect_class}）。")
+                return
+            run = s.get(RunRow, action.run_id)
+            task = s.get(TaskRow, run.task_id) if run is not None else None
+            if task is None:
+                self.out(f"找不到 action {action_id} 所屬的 Task。")
+                return
+            owner, scope = task.owner_actor_id, task.scope_ref
+            params_hash, tool = action.params_hash, action.tool
+        principal = AuthenticatedPrincipal(actor_id=owner, kind="human", verified=True)
+        approval = self.rt.core.tasks.record_approval(
+            principal=principal, action_hash=params_hash, target=tool, scope=scope,
+            expiry=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        self.out(f"已記錄核准 {approval.approval_id}（{tool}，10 分鐘內有效）。注意：production 尚未接上 park 後的 resume，Run 不會自動續跑。")
+
     def _report_loop(self, turn_id: str) -> None:
         """agent_loop 回合的 Task／Run 狀態與工具呼叫（action_intents：工具名稱與狀態）。"""
         with self.rt.session_factory() as s:
@@ -309,8 +353,12 @@ class Console:
                     actions = s.scalars(
                         select(ActionIntentRow).where(ActionIntentRow.run_id == run.run_id).order_by(ActionIntentRow.created_at)
                     )
-                    calls = [f"{a.tool}[{a.status}]" for a in actions]
+                    rows = list(actions)
+                    calls = [f"{a.tool}[{a.status}]" for a in rows]
                     self.out("工具呼叫：" + (" > ".join(calls) if calls else "（無）"))
+                    for a in rows:
+                        if a.status == ActionStatus.INTENDED.value and a.side_effect_class in APPROVAL_REQUIRED:
+                            self.out(f"等待核准：{a.action_id}（{a.tool}）→ /approve {a.action_id}")
 
     def _reply_text(self, turn_id: str) -> str | None:
         """該 turn 的回應文字：fake Think 有 ``committed``；真實 Think 取歷史中最後一則 assistant（turn 已結束，輪是序列的）。"""

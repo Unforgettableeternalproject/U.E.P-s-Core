@@ -180,6 +180,23 @@ def make_capability_tags_for(
     return tags_for
 
 
+def with_extra_capability_tags(
+    tags_for: Callable[[Any, Any], frozenset[str]], extra: frozenset[str], registry: ToolRegistry,
+) -> Callable[[Any, Any], frozenset[str]]:
+    """在決策層收窄**之後**併入額外標籤（測試工具組 ``UEP_TOOL_TESTKIT`` 用；決策層的 route 表不含這些標籤）。
+
+    只在 ``route=agent_loop`` 且收窄結果非空時併入（空即不啟動的 fail-closed 不被繞過）；併入的標籤限 ``CAPABILITY_CEILING`` 閉集
+    且必須是註冊表目前有工具的標籤（``registry.enabled_tags()``），所以不會憑空放寬或帶出沒有工具的標籤。"""
+
+    def wrapped(ticket: Any, proposal: Any) -> frozenset[str]:
+        tags = frozenset(tags_for(ticket, proposal))
+        if not tags or getattr(proposal, "route", None) != "agent_loop":
+            return tags
+        return tags | (extra & registry.enabled_tags() & CAPABILITY_CEILING.keys())
+
+    return wrapped
+
+
 class LoopLaunchRefused(RuntimeError):
     """入口明確拒絕啟動（並發上限、投影為空、關閉中）。orchestrator 看 ``loop_refused``：不算故障，回合退回 direct_chat。"""
 
@@ -520,17 +537,21 @@ class LoopLauncher:
 def build_loop_entry(
     *, tool_path: str, tasks: TaskManager, delivery: Any, orchestrator: Any, registry: ToolRegistry, model_port: Any,
     cache: TurnOutcomeCache | None, text_store: LoopTextStore | None, persona_id: str = "uep",
-    policy_ref: str = "pol_agent_loop", **launcher_kwargs: Any,
+    policy_ref: str = "pol_agent_loop", extra_capability_tags: frozenset[str] = frozenset(), **launcher_kwargs: Any,
 ) -> tuple[LoopEntry, LoopLauncher]:
     """組裝層用：production 的 ``(LoopEntry, LoopLauncher)``（capability 收窄 + 啟動器）。只在 ``tool_path == "agent"`` 可建。
     launcher 另回傳是為了讓 ``CoreAssembly.shutdown`` 能關閉它。``owner_for`` 取 ticket 的 ``actor_id``
-    （與 agent 路徑的回合 Task 一致；現有記憶工具不需核准）。"""
+    （與 agent 路徑的回合 Task 一致；現有記憶工具不需核准）。
+    ``extra_capability_tags``（預設空＝行為不變）：收窄後額外併入的標籤，見 ``with_extra_capability_tags``。"""
     launcher = LoopLauncher(
         tasks=tasks, delivery=delivery, orchestrator=orchestrator, registry=registry, model_port=model_port,
         text_store=text_store, cache=cache, persona_id=persona_id, **launcher_kwargs,
     )
+    tags_for = make_capability_tags_for(registry, orchestrator.metrics)
+    if extra_capability_tags:
+        tags_for = with_extra_capability_tags(tags_for, frozenset(extra_capability_tags), registry)
     entry = LoopEntry(
-        tool_path, capability_tags_for=make_capability_tags_for(registry, orchestrator.metrics), launch=launcher,
+        tool_path, capability_tags_for=tags_for, launch=launcher,
         policy_ref=policy_ref, owner_for=lambda ticket: ticket.actor_id,
     )
     return entry, launcher

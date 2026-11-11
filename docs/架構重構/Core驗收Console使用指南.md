@@ -168,7 +168,26 @@ $env:UEP_LLM_API_KEY = "<金鑰>"         # 或寫在 Core .env
 
 `/loop <文字>` 把下一個 respond 的提議改成 `route=agent_loop`（Console 專用，規則 proposer 本身不會產出這個 route）。沒設 `UEP_AGENT_LOOP_ENTRY=1` 時會提示並退回一般回覆。失敗時使用者只會看到固定系統訊息「這次處理失敗了，沒有產生回覆。」，不是模型編的答案；`/status` 的 Host 指標與 `/trace` 可輔助看哪一輪失敗。
 
-**核准（Risky 工具）**：現行註冊表沒有任何工具需要核准（全部 `approval_level=none`），所以 G1–G4 不會遇到核准。Console **尚未提供核准指令**：若之後註冊了需核准的工具，agent_loop 會把 Run 停在 `WAITING_APPROVAL`（`awaiting_approval`，回合不會有回覆），Console 目前無法放行或否決，要等 Approval 通道接上 Console 才能測。
+**核准（Risky 工具）**：現行註冊表沒有任何工具需要核准（全部 `approval_level=none`），所以 G1–G4 不會遇到核准。需核准的工具（例如下面的測試工具組 `test_approval_echo`）會讓 agent_loop 把 Run 停在 `WAITING_APPROVAL`（`awaiting_approval`，回合不會有回覆）；Console 有最小的 `/approve [action_id]`（見 3.1.1）能記錄核准，但**放行後的 resume 路徑 production 尚未接上**，Run 不會自動續跑，否決也尚未提供。
+
+#### 3.1.1 測試用工具組（`UEP_TOOL_TESTKIT`）
+
+驗工具層契約用，預設關閉；只在 `UEP_TOOL_PATH=agent` 下有效（legacy 下開啟會拒絕組裝）。額外設定：
+
+```powershell
+$env:UEP_TOOL_TESTKIT = "1"
+```
+
+開啟後註冊 4 個沒有任何外部效果的工具（工具名用底線，因為 provider 的函式名不接受 `.`），標籤 `test.read`／`test.approval` 只在 `/loop`（`route=agent_loop`）併入，一般對話看不到；關閉時工具、executor、標籤都不存在：
+
+| 工具 | 分類 | 用來驗 |
+|---|---|---|
+| `test_echo` | internal_read／parallel_safe | 多輪呼叫、同批並行（叫模型「同時呼叫 test_echo 與 test_clock」） |
+| `test_clock` | internal_read／parallel_safe | 同上；回傳 UTC 與本地時間 |
+| `test_sleep` | internal_read／parallel_one_shot／interruptible，`seconds` 0–30，總時限 10 秒 | 逾時（睡超過 10 秒）、`/cancel` 取消（executor.cancel）、Supervisor |
+| `test_approval_echo` | external_effect＋per_action（如實借用外部效果類別以觸發核准，實際無任何效果）／serial | park（`WAITING_APPROVAL`）與 `/approve` 記錄核准 |
+
+步驟：`/loop 請同時呼叫 test_echo（text=你好）與 test_clock，再告訴我結果` -> `工具呼叫：test_echo[SUCCEEDED] > test_clock[SUCCEEDED]`；`/loop 請呼叫 test_sleep 睡 20 秒`：總時限 10 秒，應以 `failed(timeout)` 回餵模型、Run 仍可收尾（`/loop` 會等到 turn 結束，手動 `/cancel` 需另開輸入，逾時路徑較好驗）；`/loop 請呼叫 test_approval_echo 說「放行」` -> 印 `等待核准：<action_id>`，`/approve <action_id>` -> `已記錄核准 appr_…`（資料庫 `approvals` 有一列，未消耗）。
 
 ### 3.2 週期二補漏重點（2026-11-11 合入，Bernie 親自驗證時重點關注）
 

@@ -469,6 +469,8 @@ class ToolScope:
 
 **與 D91 的區分**：D91 的 `origin=platform_approved`／`provider`／`targeting=platform_remote` 描述「工具由平台端執行」；scope 描述「何時把工具給模型看」。`platform_approved` 的工具其 scope 通常是 `platform:<該平台>`，但這是慣例而非約束，RA 不強制。
 
+- **實作註記（投影平台來源）**：production 的 `ProjectionContext.platform` 取自 Host 本機持有的 Lease 與 location（`EchoPipelineHost.projection_platform()`：Lease ACTIVE 時為本機 location，否則 None；組裝層以 `platform_source` 注入 `AgentToolTurns`／`LoopLauncher`），不用 `PlatformContextProvider` 的 peek。這是刻意的授權邊界：peek 是建議性快照，不作授權依據，與 V18 沿用 Host location 的裁決一致；決策層 consult 用 peek 只做建議與 placement。兩邊不一致時投影偏保守（Lease 不在就不投平台限定工具），屬可接受。platform=None ⇒ 只投 global 工具（`ProjectionContext.for_platform(None)`）。Lease 取得／遺失（`presence_lost`）後 Host 重投影 `think.tools`，忙碌（有進行中的輪）或 session 切換中時延後到輪結束。
+
 ### 5.7 並行資格、衝突鍵、schema 嚴格化與 composite（Q-C）
 
 **5.7.1 legacy 組裝器評估**（`legacy-final-v0.9.4` 的 `sys_module/workflows.py`、`step_templates.py`）：**類別與引擎不沿用**。理由：狀態在記憶體（崩潰即失）、資料靠字串 key 傳遞（無 schema）、核准繞過 ActionIntent、沒有任何並行／冪等／衝突欄位、`ConditionalStep` 依 SYS 草案 §7.2 已定案不承襲。**沿用三個概念**：(1) YAML 宣告名稱／分類／參數 schema；(2) `initial_params` 預填、使互動步驟可跳過；(3) 必要／可選輸入。這三者在新契約中分別落為：目錄檔案格式（§5.2）、composite 的 `initial_params`（§5.7.4）、`input_schema.required`。

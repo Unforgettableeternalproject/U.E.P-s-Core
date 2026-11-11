@@ -65,6 +65,7 @@ class Card:
     source_platform: str | None = None  # absent kind 用
     others_choices: tuple[int, ...] = ()  # 非空時，依輪次輪替在場他人數（覆蓋 others）
     guidance: str = ""  # 額外的生成限制（英文），用來避免文字與標籤矛盾
+    label_rule: str = ""  # 非空＝卡片標籤只是預設，需由 resolve.py 依文字逐筆判定（first_place／promise_mode／route_follows_action）
 
 
 def _tr(card_id: str, desc: str, reply_mode: str, addressed: bool, route: str, **kw: Any) -> Card:
@@ -114,17 +115,23 @@ TURN_REPLY_CARDS: tuple[Card, ...] = (
     _tr("group_tentative_name", f"People talk; the speaker says a word that sounds like {A}'s name but is probably an ordinary word or another name, so it is unclear whether {A} is addressed.", "pass", False, "ignore", hard=True, acceptable_modes=("pass", "respond"), others_choices=GROUP,
         guidance=f"Never ask or tell {A} anything: no second-person question or request aimed at {A}, and never 'is that you'. The sound-alike word is used as an ordinary word or as someone else's name."),
     _tr("group_commitment_related", f"People talk to each other, not to {A}, but the topic touches something {A} earlier promised to do; worth quietly noting, not interrupting.", "passive", False, "ignore", context="assistant_promised", hard=True, others_choices=GROUP,
-        guidance=f"Never name or address {A}."),
+        guidance=f"Never name or address {A}. The speaker must NOT be cancelling or changing a task that the same speaker asked {A} to do (the context shows no such request from the speaker), and must NOT be replying to an offer from {A}; the talk is aimed at the other people.", label_rule="promise_mode"),
     _tr("group_promise_update", f"People talk to each other, not to {A}, and mention a change (new time, cancelled, done already) to something {A} earlier promised to do; {A} should quietly update its notes, not interrupt.", "passive", False, "ignore", context="assistant_promised", hard=True, others_choices=GROUP,
-        guidance=f"Never name or address {A}."),
+        guidance=f"Never name or address {A}. The speaker must NOT be cancelling or changing a task that the same speaker asked {A} to do (the context shows no such request from the speaker), and must NOT be replying to an offer from {A}; the talk is aimed at the other people.", label_rule="promise_mode"),
+    _tr("group_promise_cancel_by_requester", f"The speaker earlier asked {A} to do something and {A} promised to; now the same speaker directly cancels or changes that task (no need anymore, move it to another time), so {A} must act on it.", "respond", True, "task_request", context="assistant_promised_user", hard=True, others_choices=GROUP,
+        guidance=f"The context must start with a User line making the request, then the Assistant's promise. The message cancels or changes that exact task; it need not name {A}."),
     _tr("group_related_fact", f"People talk to each other, not to {A}, and what they say touches a specific fact {A} noted earlier (a preference, allergy, deadline); {A} should quietly register it, not interrupt.", "passive", False, "ignore", context="assistant_noted", hard=True, others_choices=GROUP,
         guidance=f"Never name or address {A}."),
     _tr("filler_then_task", f"One speaker starts with a filler (uh, hm, oh) and then gives {A} one clear command for a single state-changing action (send, set a reminder, switch a device).", "respond", True, "task_request", hard=True, others_choices=MIXED),
     _tr("filler_then_question", f"One speaker starts with a filler (hm, uh, oh) and then asks {A} a general question or a read-only lookup (weather, news, calendar).", "respond", True, "direct_chat", hard=True, others_choices=MIXED),
-    _tr("defer_busy", f"One user asks {A} for something whose result only exists later (a long job) while saying they are busy right now.", "defer", True, "direct_chat", hard=True, others_choices=MIXED),
-    _tr("defer_busy_hands", f"One user asks {A} for something while their hands are occupied (driving, cooking, carrying things) and says to answer later when they are free.", "defer", True, "direct_chat", hard=True, others_choices=MIXED),
-    _tr("defer_wait_result", f"One user asks {A} to start something that takes a long time and explicitly says not to reply now, only to tell them when it is finished.", "defer", True, "direct_chat", hard=True, others_choices=MIXED),
-    _tr("defer_after_meeting", f"One user tells {A} they are about to go into a meeting or class, and asks {A} to bring up or prepare a specific thing afterwards.", "defer", True, "direct_chat", hard=True, others_choices=MIXED),
+    _tr("defer_busy", f"One user asks {A} for something whose result only exists later (a long job) while saying they are busy right now.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="Make the requested job concrete: either one single state-changing action or a clearly multi-step job; the route is decided from the action, not from the deferral.", label_rule="route_follows_action"),
+    _tr("defer_busy_hands", f"One user asks {A} for something while their hands are occupied (driving, cooking, carrying things) and says to answer later when they are free.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="Make the requested job concrete: either one single state-changing action or a clearly multi-step job; the route is decided from the action, not from the deferral.", label_rule="route_follows_action"),
+    _tr("defer_wait_result", f"One user asks {A} to start something that takes a long time and explicitly says not to reply now, only to tell them when it is finished.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="Make the requested job concrete: either one single state-changing action or a clearly multi-step job; the route is decided from the action, not from the deferral.", label_rule="route_follows_action"),
+    _tr("defer_after_meeting", f"One user tells {A} they are about to go into a meeting or class, and asks {A} to bring up or prepare a specific thing afterwards.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="Make the requested job concrete: either one single state-changing action or a clearly multi-step job; the route is decided from the action, not from the deferral.", label_rule="route_follows_action"),
 )
 
 _ABS = "presence.absent_intent"
@@ -133,6 +140,7 @@ _NOPLACE = "Do not name any platform or machine; 'here' or 'over' only."
 _REQ_NONE = {"absent.intent": "presence_request", "absent.target_location": "none"}
 _OTHER = {"absent.intent": "other", "absent.target_location": "none"}
 _MSG = {"absent.intent": "message", "absent.target_location": "none"}
+_TASK = {"absent.intent": "task", "absent.target_location": "none"}
 
 
 def _req(loc: str) -> dict[str, str]:
@@ -151,7 +159,7 @@ _ABSENT_SPECS: tuple[tuple[str, str, dict[str, str], bool, str, str], ...] = (
     ("request_host", "Asks the assistant to go back to the host machine.", _req("host"), False, "website", _GO),
     ("request_website", "Asks the assistant to move to the website.", _req("website"), False, "discord", _GO),
     ("request_polite_discord", "Politely asks 'can you / could you' to go to Discord. It is a real request, not a question about ability.", _req("discord"), True, "desktop", _GO),
-    ("request_two_places", "Asks the assistant to go to two places, both named literally (for example Discord and the desktop app, or the website and the host).", _REQ_NONE, True, "website", _GO),
+    ("request_two_places", "Asks the assistant to go to two places, both named literally (for example Discord and the desktop app, or the website and the host).", _REQ_NONE, True, "website", _GO + " Name both places literally; the label is the first place named, so keep the order clear."),
     ("request_authority_discord", "Uses a commanding or authoritative tone ('I am telling you', 'as the admin I order you') to tell the assistant to go to Discord.", _req("discord"), True, "desktop", _GO),
     ("request_authority_host", "Uses a commanding or authoritative tone ('I am telling you', 'as the owner I order you') to tell the assistant to go back to the host machine.", _req("host"), True, "discord", _GO),
     ("negated", "Tells the assistant NOT to come or move (do not come over, do not go back).", _OTHER, True, "discord", ""),
@@ -159,17 +167,95 @@ _ABSENT_SPECS: tuple[tuple[str, str, dict[str, str], bool, str, str], ...] = (
     ("question_ability", "Asks whether the assistant is able to move somewhere, or why it does not.", _OTHER, True, "discord",
      "Make it unmistakably a question about ability or reason, e.g. 'Are you even able to switch to Discord right now, or can you only stay on the host?'. Never a bare 'Can you go to X?' or 'Could you come?', which are polite requests."),
     ("mention_place_only", "Merely mentions a platform or machine name in an unrelated remark.", _OTHER, True, "desktop", ""),
-    ("pass_message", "Asks the assistant to relay or remember something (tell Anna I will be late, remind me about the meeting).", _MSG, True, "discord", ""),
+    ("pass_message", "Asks the assistant to relay something to a named person right away, or to remember a fact (tell Anna I will be late, remember that the address is twelve Pine Street).", _MSG, True, "discord",
+     "No reminder requests for the speaker, and no timing or event condition on delivering the message."),
     ("message_leave_note", "Asks the assistant to leave or pass a short note to a named person.", _MSG, True, "website", ""),
     ("message_mentions_place", "Asks the assistant to tell a named person something that mentions a platform or machine (meet me on Discord at eight), but does not ask the assistant to move.", _MSG, True, "desktop", ""),
-    ("self_reminder", "Asks the assistant to remind the speaker themselves about something later.", _OTHER, True, "host", "The request is only a reminder for the speaker; nothing is passed to the assistant or to another person (message is limited to content relayed to the assistant or someone else)."),
+    ("self_reminder", "Asks the assistant to remind the speaker themselves about something later (remind me, ping me).", _TASK, True, "host",
+     "The request is addressed to the assistant: the speaker asks the assistant to remind or ping the speaker, with or without a time."),
 )
+# 訊息類卡片的 relay／提醒邊界由 resolve.py 的 relay_vs_task 規則逐筆判定（轉告帶觸發條件或夾帶「提醒我」→ task）
+_RELAY_CARDS = frozenset({"pass_message", "message_leave_note", "message_mentions_place"})
 ABSENT_CARDS: tuple[Card, ...] = tuple(
-    Card(f"absent_{cid}", _ABS, desc, exp, hard=hard, source_platform=plat, guidance=g)
+    Card(f"absent_{cid}", _ABS, desc, exp, hard=hard, source_platform=plat, guidance=g, label_rule="first_place" if cid == "request_two_places" else "relay_vs_task" if cid in _RELAY_CARDS else "")
     for cid, desc, exp, hard, plat, g in _ABSENT_SPECS
 )
 
 CARDS: dict[str, tuple[Card, ...]] = {"turn.reply": TURN_REPLY_CARDS, "presence.absent_intent": ABSENT_CARDS}
+
+# 對照卡（task／message／other 的邊界）。另成一組，不併入 ABSENT_CARDS，否則 plan_calls 的配額會變、舊產物無法重現；
+# 以 ``--card-set contrast`` 使用，call_id 為 ``presence.absent_intent.contrast-NNNN``。
+_CONTRAST_SPECS: tuple[tuple[str, str, dict[str, str], str], ...] = (
+    ("self_note", "The speaker talks to themselves or jots a private note ('I need to remember to...', 'note to self', 'gotta remember...'); it is NOT a request to the assistant and never asks the assistant to remind, ping, tell or do anything.", _OTHER,
+     "No second-person address of the assistant, no 'remind me', no 'ping me', no request of any kind."),
+    ("remind_me", "Asks the assistant to remind or ping the speaker themselves later (remind me, ping me, don't let me forget, make sure I remember to X and ping me); a time may be given or left out.", _TASK,
+     "Use varied wordings: 'remind me', 'ping me', 'don't let me forget', 'make sure I remember ... ping me'. About half should give no time at all."),
+    ("relay_with_trigger", "Asks the assistant to tell or remind ANOTHER named person, but only at a set time or when an event happens (tell Anna at five that..., remind Rob when he gets home to...).", _TASK,
+     "The timing or event condition must be on WHEN the assistant delivers the message, e.g. 'at five', 'when he gets home', 'tomorrow morning', 'when you see her'."),
+    ("relay_no_trigger", "Asks the assistant to tell, remind or leave a note for ANOTHER named person with no timing or event condition on delivery (tell Anna..., remind Anna to bring the cake).", _MSG,
+     "Do not put any 'at <time>', 'when', 'later' or 'tomorrow' on the delivery. A time may appear only inside the content itself (the meeting is at five)."),
+    ("remember_that", "Asks the assistant to remember a fact or detail, phrased as 'remember that ...' or 'keep in mind that ...' (including appointments such as 'remember that I have the dentist on Friday').", _MSG,
+     "Always use 'remember that', 'keep in mind that' or 'note that'; never 'remind me', 'ping me' or 'don't let me forget'."),
+    ("delegate_action", "Hands the assistant a concrete job to do for the speaker while it is away (book a table for Friday, order more coffee, send an email, set up a calendar entry); it does not ask the assistant to come over.", _TASK,
+     "Each message is one state-changing job (book, order, send, schedule, cancel, buy). Do not ask for a reminder and do not ask the assistant to move anywhere."),
+)
+ABSENT_CONTRAST_CARDS: tuple[Card, ...] = tuple(
+    Card(f"absent_{cid}", _ABS, desc, exp, hard=True, source_platform="discord" if i % 2 else "desktop", guidance=g)
+    for i, (cid, desc, exp, g) in enumerate(_CONTRAST_SPECS)
+)
+
+# 複合指示（compound）卡組：標籤照退回優先序（absent: presence_request > task > message > other；
+# turn.reply: route agent_loop > task_request > direct_chat，有一段對她說就 respond）。
+# 反例卡（single）看起來有 and／條件，其實是一件事：b＝一個意圖多項內容，c＝段落間有條件或資料依賴。
+_CP = "compound"
+_ACP = "absent.compound"
+
+
+def _tc(card_id: str, desc: str, route: str, yes: bool, **kw: Any) -> Card:
+    return Card(card_id, "turn.reply", desc, {"reply_mode": "respond", "addressed": True, "route": route, _CP: yes}, hard=True, **kw)
+
+
+def _ac(card_id: str, desc: str, intent: str, loc: str, yes: bool, plat: str, g: str) -> Card:
+    return Card(f"absent_{card_id}", _ABS, desc, {"absent.intent": intent, "absent.target_location": loc, _ACP: yes}, hard=True, source_platform=plat, guidance=g)
+
+
+_TWO = "The message must hold two clearly separate instructions joined by 'and', 'also', 'then' or a comma, each with its own target."
+TURN_COMPOUND_CARDS: tuple[Card, ...] = (
+    _tc("compound_chat_task", f"The speaker talks to {A}: first a casual remark or a general question, then in the same message one clear state-changing command (set a reminder, send a message, switch a device off).", "task_request", True, others_choices=MIXED, guidance=_TWO),
+    _tc("compound_task_task", f"The speaker gives {A} two different state-changing commands in one message, for different targets (for example switch a device off and send a text to a named person).", "task_request", True, others_choices=MIXED, guidance=_TWO),
+    _tc("compound_lookup_task", f"The speaker asks {A} for a read-only lookup (weather, calendar, news) and, independently, gives one state-changing command (set a reminder, send a message, switch a device).", "task_request", True, others_choices=MIXED,
+        guidance=_TWO + " The command must not depend on the lookup result."),
+    _tc("compound_task_complex", f"The speaker gives {A} one simple state-changing command and, independently, asks for a separate multi-step job (research, compare, plan).", "agent_loop", True, others_choices=MIXED,
+        guidance=_TWO + " The two parts must be about different things."),
+    _tc("compound_mixed_addressee", f"People are present; the speaker gives {A} one clear command by name and, in the same breath, tells another named person in the room to do something.", "task_request", True, others_choices=GROUP,
+        guidance=f"Name {A} for the first command and a different person (for example Rob) for the second; both are imperative."),
+)
+TURN_SINGLE_CARDS: tuple[Card, ...] = (
+    _tc("single_multi_object", f"The speaker gives {A} ONE state-changing command that covers several objects (switch off the lights in the kitchen and the hallway; add three events to the calendar).", "task_request", False, others_choices=MIXED,
+        guidance="It must be one action applied to several things; do not add a second kind of instruction."),
+    _tc("single_multi_recipient", f"The speaker asks {A} to send ONE message or email to several people at once, or one message whose content has two parts (tell Rob I am late and sorry).", "task_request", False, others_choices=MIXED,
+        guidance="One send action only; the 'and' joins recipients or parts of the same content."),
+    _tc("single_conditional", f"The speaker gives {A} one request whose parts depend on each other: check something and then act only if a condition holds (check the forecast, and if it is sunny tell Rob we are hiking).", "agent_loop", False, others_choices=MIXED,
+        guidance="The second part must depend on the result of the first (if/when/unless); one goal overall."),
+)
+ABSENT_COMPOUND_CARDS: tuple[Card, ...] = (
+    _ac("compound_presence_message", "Asks the assistant to come over where the speaker is AND to pass a message to a named person, in one sentence.", "presence_request", "none", True, "discord", _NOPLACE + " The message part must not mention any platform or machine. " + _TWO),
+    _ac("compound_task_message", "Asks the assistant to remind the speaker about something later AND to tell a named person something, in one sentence.", "task", "none", True, "desktop", _TWO),
+    _ac("compound_presence_task", "Asks the assistant to come over where the speaker is AND to remind the speaker about something later, in one sentence.", "presence_request", "none", True, "website", _NOPLACE + " " + _TWO),
+    _ac("compound_place_message", "Asks the assistant to go to Discord AND to tell a named person something, in one sentence.", "presence_request", "discord", True, "desktop", _GO + " Name Discord as the only place; the message part must not mention any platform or machine. " + _TWO),
+    _ac("compound_task_task", "Asks the assistant to remind the speaker about something later AND to do another job (book, order, send), in one sentence.", "task", "none", True, "host", _TWO + " The job must not depend on the reminder."),
+)
+ABSENT_SINGLE_CARDS: tuple[Card, ...] = (
+    _ac("single_multi_recipient", "Asks the assistant to tell two named people the same thing, or to pass one message with two parts (tell Anna and Rob I will be late and sorry).", "message", "none", False, "discord", "One message only; the 'and' joins recipients or parts of the same content. No reminder, no time condition."),
+    _ac("single_multi_item", "Asks the assistant to remind the speaker about one thing that has several items (remind me to buy milk and eggs and bread).", "task", "none", False, "desktop", "One reminder only; the 'and' joins items of the same errand."),
+    _ac("single_conditional", "Asks the assistant to do something only if a condition holds, or to check something and act on it (if it rains tomorrow tell Rob we cancel; check if the shop is open and book a table if it is).", "task", "none", False, "host", "The second part depends on the first (if/when/unless); one goal overall."),
+)
+CARD_SETS: dict[str, dict[str, tuple[Card, ...]]] = {
+    "main": CARDS,
+    "contrast": {"presence.absent_intent": ABSENT_CONTRAST_CARDS},
+    "compound": {"turn.reply": TURN_COMPOUND_CARDS, "presence.absent_intent": ABSENT_COMPOUND_CARDS},
+    "single": {"turn.reply": TURN_SINGLE_CARDS, "presence.absent_intent": ABSENT_SINGLE_CARDS},
+}
 
 OTHER_USER_CONTEXTS = frozenset({"assistant_answered_other"})  # 前文的提問者不是目前說話者
 CONTEXT_DESC: dict[str, str] = {
@@ -179,6 +265,7 @@ CONTEXT_DESC: dict[str, str] = {
     "assistant_states": "the assistant's last line is a plain statement with no question",
     "assistant_answered_other": f"a different person (speaker \"{laya_schema.OTHER_USER_LABEL}\") asked something and the assistant answered them; the current speaker is a third party",
     "assistant_just_replied": "the assistant has just answered the speaker (user line first, then the assistant's answer)",
+    "assistant_promised_user": "the user asked the assistant to do something and the assistant promised to (User line first, then the Assistant's promise)",
     "assistant_promised": "the assistant earlier promised or offered to do something concrete (remind, book, sign up, call)",
     "assistant_noted": "the assistant earlier said it noted a specific fact about the group (a preference, an allergy, a deadline)",
 }
@@ -417,6 +504,7 @@ def generate(
     id_prefix: str | None = None,
     cards: Sequence[Card] | None = None,
     call_ids: list[str] | None = None,
+    call_label_name: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """產生合成列與統計。每次呼叫產出的樣本屬同一 group（供切分用）。"""
     cards = tuple(cards or CARDS[kind])
@@ -432,7 +520,7 @@ def generate(
         api_calls += 1
         others = others_for(card, idx, len(cards))
         if call_ids is not None:
-            call_ids.append(call_id_of(kind, idx))
+            call_ids.append(call_id_of(call_label_name or kind, idx))
         try:
             reply = backend.complete(SYSTEM_PROMPT, build_prompt(card, style, topic, n, others))
         except Exception as exc:  # noqa: BLE001 - 單次呼叫失敗只計數，不中斷
@@ -454,6 +542,7 @@ def generate(
                 sample_id=f"{id_prefix}-{len(rows):05d}", source="synthetic",
                 meta={
                     "card": card.card_id, "style": style, "topic": topic, "hard": card.hard, "others": others,
+                    **({"label_rule": card.label_rule} if card.label_rule else {}),
                     "group_id": f"{card.card_id}-{idx:04d}",
                     **({"acceptable_modes": list(card.acceptable_modes)} if card.acceptable_modes else {}),
                 },
@@ -468,14 +557,20 @@ def generate(
     return rows, stats
 
 
-def export_prompts(kind: str, *, max_samples: int, per_call: int, seed: int) -> list[dict[str, Any]]:
+def call_label(kind: str, card_set: str = "main") -> str:
+    """call_id 前綴：主卡組用 kind；其他卡組加後綴，避免和主卡組的回應檔 call_id 衝突。"""
+    return kind if card_set == "main" else f"{kind}.{card_set}"
+
+
+def export_prompts(kind: str, *, max_samples: int, per_call: int, seed: int, card_set: str = "main") -> list[dict[str, Any]]:
     """依 plan_calls／build_prompt 產生每次呼叫的 prompt 與中繼資料（不呼叫任何後端）。"""
-    plan = plan_calls(CARDS[kind], max_samples, per_call, random.Random(seed))
+    cards = CARD_SETS[card_set][kind]
+    plan = plan_calls(cards, max_samples, per_call, random.Random(seed))
     return [
         {
-            "call_id": call_id_of(kind, idx), "kind": kind, "card": card.card_id, "style": style,
+            "call_id": call_id_of(call_label(kind, card_set), idx), "kind": kind, "card": card.card_id, "style": style,
             "topic": topic, "n": n, "hard": card.hard,
-            "system": SYSTEM_PROMPT, "user": build_prompt(card, style, topic, n, others_for(card, idx, len(CARDS[kind]))),
+            "system": SYSTEM_PROMPT, "user": build_prompt(card, style, topic, n, others_for(card, idx, len(cards))),
         }
         for idx, (card, style, topic, n) in enumerate(plan)
     ]
@@ -511,6 +606,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-samples", type=int, default=TRIAL_CAP)
     p.add_argument("--out", default=None, help="輸出檔（合成、匯入回應、匯出盲標任務時使用）")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--card-set", default="main", choices=sorted(CARD_SETS), help="卡組；contrast＝task／message／other 邊界對照卡（匯入時 --id-prefix 另訂）")
+    p.add_argument("--id-prefix", default=None, help="匯入時的 sample_id 前綴（對照卡組必須另訂，避免和主卡組撞號）")
     p.add_argument("--per-call", type=int, default=PER_CALL, help="每次呼叫要幾筆（影響卡片×風格輪替密度）")
     p.add_argument("--export-prompts", default=None, metavar="PATH", help="只把每次呼叫的 prompt 寫成 JSONL，不呼叫後端")
     p.add_argument("--import-responses", default=None, metavar="PATH", help="讀 {call_id, response} JSONL，走解析／去重／寫出流程")
@@ -555,7 +652,7 @@ def main(argv: list[str] | None = None) -> int:
             print("需要 --out", file=sys.stderr)
             return 2
     if args.export_prompts:
-        recs = export_prompts(args.kind, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed)
+        recs = export_prompts(args.kind, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed, card_set=args.card_set)
         write_jsonl(Path(args.export_prompts), recs)
         print(json.dumps({"exported_calls": len(recs), "samples": args.max_samples}, ensure_ascii=False))
         return 0
@@ -564,11 +661,14 @@ def main(argv: list[str] | None = None) -> int:
             print("--import-responses 需要 --out", file=sys.stderr)
             return 2
         # 回應檔可含多個 kind（量產各 part 合併）；只取本 kind 的 call_id
-        responses = {k: v for k, v in load_responses(Path(args.import_responses)).items() if k.startswith(f"{args.kind}-")}
+        label = call_label(args.kind, args.card_set)
+        card_set = CARD_SETS[args.card_set][args.kind]
+        responses = {k: v for k, v in load_responses(Path(args.import_responses)).items() if k.startswith(f"{label}-")}
         ids: list[str] = []
-        planned = [call_id_of(args.kind, i) for i in range(len(plan_calls(CARDS[args.kind], args.max_samples, args.per_call, random.Random(args.seed))))]
+        planned = [call_id_of(label, i) for i in range(len(plan_calls(card_set, args.max_samples, args.per_call, random.Random(args.seed))))]
         backend_r = ReplayBackend(responses, planned)
-        rows, stats = generate(args.kind, backend_r, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed, call_ids=ids)
+        rows, stats = generate(args.kind, backend_r, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed, call_ids=ids,
+                               cards=card_set, id_prefix=args.id_prefix, call_label_name=label)
         stats["unmatched_response_ids"] = sorted(set(responses) - set(planned))
         write_jsonl(Path(args.out), rows)
         print(json.dumps(stats, ensure_ascii=False, indent=2))

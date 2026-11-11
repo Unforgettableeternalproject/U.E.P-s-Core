@@ -16,18 +16,20 @@ from typing import Any
 
 from .kinds import get_spec
 
+OPTIONAL_QIDS = frozenset({"compound", "absent.compound"})
+
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     with path.open(encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def export_tasks(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """盲標任務：不含任何標籤或卡片資訊。"""
+def export_tasks(rows: Iterable[Mapping[str, Any]], only: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    """盲標任務：不含任何標籤或卡片資訊。``only`` 指定時只出這些題（補標新題目用）。"""
     tasks = []
     for r in rows:
         spec = get_spec(r["kind"])
-        qids = list(r["expected"])  # 該 kind 該列有標的題目；題目定義取自 KindSpec
+        qids = [q for q in r["expected"] if only is None or q in set(only)]  # 該 kind 該列有標的題目；題目定義取自 KindSpec
         tasks.append({
             "sample_id": r["sample_id"],
             "kind": r["kind"],
@@ -67,6 +69,9 @@ def compare_row(row: Mapping[str, Any], answers: Mapping[str, Any] | None) -> di
             mode_accepted_other = True
     for qid, want in expected.items():
         if qid not in answers:
+            if qid in OPTIONAL_QIDS:  # compound 只對候選句盲標，其餘句沒有答案不算缺漏
+                res["skipped"].append(qid)
+                continue
             res["missing"].append(qid)
             continue
         got = answers[qid]

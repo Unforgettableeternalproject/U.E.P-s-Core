@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -280,12 +281,14 @@ def test_check_command_exit_code(tmp_path: Path) -> None:
     assert split.main(["check", "--train", str(train), "--test", str(test)]) == 0
 
 
-def test_testset_draft_is_wellformed_and_pending() -> None:
+def test_testset_draft_is_wellformed_and_reviewed() -> None:
     path = _TOOLS / "testset" / "zh_candidates_draft.jsonl"
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert 55 <= len(rows) <= 100
     assert len({r["id"] for r in rows}) == len(rows)
-    assert all(r["status"] == "pending_review" for r in rows)
+    # 艾斯維爾 11/12 已審訂；id 統一為三位數
+    assert all(r["status"] == "reviewed" for r in rows)
+    assert all(re.fullmatch(r"zt-\d{3}", r["id"]) for r in rows)
     for r in rows:
         kinds.get_spec(r["kind"]).validate_expected(r["intended"])
         # speaker：無 context 必為 n/a，有 context 則為 same_as_context_user／other_user
@@ -496,10 +499,55 @@ def test_import_responses_ignores_other_kind_ids(tmp_path: Path) -> None:
     assert len(split.read_rows(out)) == 1
 
 
-def test_self_reminder_is_other_not_message() -> None:
+def test_self_reminder_is_task_not_other() -> None:
     card = next(c for c in synth.ABSENT_CARDS if c.card_id == "absent_self_reminder")
-    assert card.expected == {"absent.intent": "other", "absent.target_location": "none"}
-    assert "relayed" in card.guidance
+    assert card.expected == {"absent.intent": "task", "absent.target_location": "none"}
+    assert kinds.ABSENT_INTENTS == ("presence_request", "message", "task", "other")
+    assert set(kinds.QUESTIONS_ABSENT_INTENT["absent.intent"]["criteria"]) == set(kinds.ABSENT_INTENTS)
+    kinds.validate_absent_expected({"absent.intent": "task", "absent.target_location": "none"})
+    with pytest.raises(ValueError):
+        kinds.validate_absent_expected({"absent.intent": "task", "absent.target_location": "discord"})  # 只有 presence_request 能帶地點
+
+
+def test_contrast_cards_are_a_separate_set_and_cover_the_boundaries() -> None:
+    by_id = {c.card_id: c.expected["absent.intent"] for c in synth.ABSENT_CONTRAST_CARDS}
+    assert by_id == {
+        "absent_self_note": "other", "absent_remind_me": "task", "absent_relay_with_trigger": "task",
+        "absent_relay_no_trigger": "message", "absent_remember_that": "message", "absent_delegate_action": "task",
+    }
+    main_ids = {c.card_id for c in synth.ABSENT_CARDS}
+    assert not main_ids & set(by_id)  # 不併入主卡組，主卡組的 plan_calls 才能重現
+    plan = synth.export_prompts("presence.absent_intent", max_samples=12, per_call=4, seed=0, card_set="contrast")
+    assert plan[0]["call_id"].startswith("presence.absent_intent.contrast-")
+    assert not plan[0]["call_id"].startswith("presence.absent_intent-")
+
+
+def test_relay_intent_boundaries() -> None:
+    from laya_data import resolve
+
+    task = [
+        "remind me about the landlord meeting tomorrow at ten", "ping me around one", "make sure i remember to call the client, ping me",
+        "don't let me forget the dentist", "remind anna to bring the snacks when you see her, Yuki", "at five tell Anna the sauce is ready",
+        "hey remind me to pick up garlic on the way home, and tell rob the recipe's in the fridge",
+    ]
+    message = [
+        "tell anna i will be late", "remind anna to bring the cake", "remember that I have the dentist on Friday",
+        "Remember that the new address is 12 Pine Street", "Tell Rob to meet me on Discord at eight tonight",
+        "tell rob the recipe is in the fridge, and remind me to buy garlic",  # 混合句取第一個
+    ]
+    assert all(resolve.relay_intent(m) == "task" for m in task)
+    assert all(resolve.relay_intent(m) == "message" for m in message)
+
+
+def test_resolve_row_relay_vs_task_needs_blind_agreement() -> None:
+    from laya_data import resolve
+
+    row = _res_row("absent_pass_message", "presence.absent_intent", {"message": "remind me about the landlord meeting"}, {"absent.intent": "message", "absent.target_location": "none"})
+    out, tag = resolve.resolve_row(row, {"absent.intent": "task", "absent.target_location": "none"})
+    assert tag == "relay_task" and out["expected"]["absent.intent"] == "task"
+    out, tag = resolve.resolve_row(row, {"absent.intent": "other", "absent.target_location": "none"})
+    assert out is None and tag == "relay:rule_task_blind_other"
+    assert resolve.rule_of(row) == "relay_vs_task"
 
 
 def test_another_user_context_matches_shared_definition() -> None:
@@ -520,3 +568,160 @@ def test_other_user_cards_require_another_user_speaker() -> None:
     assert len(synth.parse_items(other, ok)[0]) == 1 and synth.parse_items(other, plain)[1]["bad_context"] == 1
     assert len(synth.parse_items(same, plain)[0]) == 1 and synth.parse_items(same, ok)[1]["bad_context"] == 1
     assert "Another user" in synth.build_prompt(other, "clean", "pets", 2, 2)
+
+
+# ---- resolve：disputed 規則化裁決 ----
+
+def test_first_place_takes_earliest_literal_place() -> None:
+    from laya_data import resolve
+
+    assert resolve.first_place("go to the desktop app then discord") == "desktop"
+    assert resolve.first_place("Move to the web site and the host machine") == "website"
+    assert resolve.first_place("come over here") is None
+
+
+def test_judge_promise_rules() -> None:
+    from laya_data import resolve
+
+    cancel = {"message": "no need to ping me friday", "recent_context": "User: remind me\nAssistant: I'll remind you on Friday."}
+    assert resolve.judge_promise(cancel) == ("respond", "a")
+    reply = {"message": "no need, we already did it", "recent_context": "Assistant: Shall I book a clinic appointment?"}
+    assert resolve.judge_promise(reply) == ("respond", "b")
+    aside = {"message": "Mia, the preorder opens tonight", "recent_context": "Assistant: I'll preorder it tonight."}
+    assert resolve.judge_promise(aside) == ("passive", "other")
+    assert resolve.judge_promise({"message": "that starts monday right?", "recent_context": "User: sign me up\nAssistant: Okay, I'll sign you up."}) is None
+    dont_forget = {"message": "Don't forget, Tom, it closes Thursday", "recent_context": "User: sign us up\nAssistant: Sure, I'll register you."}
+    assert resolve.judge_promise(dont_forget) is None  # "Don't forget" 不是取消語氣
+
+
+def _res_row(card: str, kind: str, state: dict, expected: dict) -> dict:
+    return {"sample_id": "x", "kind": kind, "state": state, "expected": expected, "meta": {"card": card}}
+
+
+def test_resolve_row_defer_adopts_blind_route_only_when_defer() -> None:
+    from laya_data import resolve
+
+    row = _res_row("defer_busy", "turn.reply", {"message": "m", "recent_context": "(none)"}, {"reply_mode": "defer", "addressed": True, "route": "direct_chat"})
+    out, tag = resolve.resolve_row(row, {"reply_mode": "defer", "addressed": True, "route": "agent_loop"})
+    assert tag == "route_follows_action" and out["expected"]["route"] == "agent_loop"
+    out, tag = resolve.resolve_row(row, {"reply_mode": "respond", "addressed": True, "route": "agent_loop"})
+    assert out is None and tag == "defer:blind_not_defer"
+
+
+def test_resolve_row_two_places_and_other_cards() -> None:
+    from laya_data import resolve
+
+    exp = {"absent.intent": "presence_request", "absent.target_location": "none"}
+    row = _res_row("absent_request_two_places", "presence.absent_intent", {"message": "go to the desktop app and discord"}, exp)
+    out, tag = resolve.resolve_row(row, {"absent.intent": "presence_request", "absent.target_location": "desktop"})
+    assert tag == "first_place" and out["expected"]["absent.target_location"] == "desktop"
+    out, tag = resolve.resolve_row(row, {"absent.intent": "presence_request", "absent.target_location": "discord"})
+    assert out is None and tag == "first_place:blind_differs"
+    other = _res_row("private_complex", "turn.reply", {"message": "m"}, {"reply_mode": "respond", "addressed": True, "route": "agent_loop"})
+    assert resolve.resolve_row(other, {"route": "direct_chat"}) == (None, "other_card")
+
+
+def test_label_rule_cards_and_new_cancel_card() -> None:
+    rules = {c.card_id: c.label_rule for cs in synth.CARDS.values() for c in cs if c.label_rule}
+    assert rules["absent_request_two_places"] == "first_place"
+    assert rules["group_promise_update"] == rules["group_commitment_related"] == "promise_mode"
+    assert all(rules[k] == "route_follows_action" for k in ("defer_busy", "defer_busy_hands", "defer_wait_result", "defer_after_meeting"))
+    cancel = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_promise_cancel_by_requester")
+    assert cancel.expected["reply_mode"] == "respond" and cancel.context == "assistant_promised_user"
+
+
+def test_resolve_run_end_to_end(tmp_path: Path) -> None:
+    from laya_data import resolve
+
+    cards = {c.card_id: c for c in synth.TURN_REPLY_CARDS}
+    c = cards["defer_busy"]
+    rows = [
+        kinds.make_row("turn.reply", {"message": f"busy now, do job {i} later please", "others": 0}, dict(c.expected), sample_id=f"d{i}", source="synthetic",
+                       meta={"card": "defer_busy", "hard": True, "group_id": f"g{i}"})
+        for i in range(3)
+    ]
+    mass = tmp_path / "mass"
+    synth.write_jsonl(mass / "synth_all.jsonl", rows)
+    labels = [{"sample_id": "d0", "answers": {"reply_mode": "defer", "addressed": True, "route": "direct_chat"}},
+              {"sample_id": "d1", "answers": {"reply_mode": "defer", "addressed": True, "route": "task_request"}},
+              {"sample_id": "d2", "answers": {"reply_mode": "respond", "addressed": True, "route": "direct_chat"}}]
+    synth.write_jsonl(mass / "labels.jsonl", labels)
+    synth.main(["--import-labels", str(mass / "labels.jsonl"), "--data", str(mass / "synth_all.jsonl"), "--out-dir", str(mass / "blind")])
+    stats = resolve.run(mass, val_ratio=0.0)
+    assert stats["accepted"] == 1 and stats["resolved"] == 1 and stats["review"] == 1 and stats["final"] == 2
+    final = split.read_rows(mass / "final.jsonl")
+    assert {r["sample_id"]: r["expected"]["route"] for r in final} == {"d0": "direct_chat", "d1": "task_request"}
+    review = split.read_rows(mass / "blind" / "review_for_bernie.jsonl")
+    assert [r["sample_id"] for r in review] == ["d2"] and review[0]["blind_answers"]["reply_mode"] == "respond"
+    assert (mass / "blind" / "review_for_bernie.md").read_text(encoding="utf-8").count("\n") <= 40
+
+
+def test_compound_questions_and_validation() -> None:
+    assert kinds.QUESTIONS_TURN_REPLY["compound"]["type"] == "noul"
+    assert kinds.QUESTIONS_ABSENT_INTENT["absent.compound"]["type"] == "noul"
+    kinds.validate_turn_reply_expected({"reply_mode": "respond", "addressed": True, "route": "task_request", "compound": True})
+    kinds.validate_absent_expected({"absent.intent": "task", "absent.target_location": "none", "absent.compound": False})
+    with pytest.raises(ValueError):
+        kinds.validate_turn_reply_expected({"compound": "yes"})
+    with pytest.raises(ValueError):
+        kinds.validate_absent_expected({"absent.compound": 1})
+
+
+def test_compound_cards_follow_priority_and_counterexamples_are_no() -> None:
+    absent = {c.card_id: c.expected for c in synth.ABSENT_COMPOUND_CARDS}
+    assert all(e["absent.compound"] is True for e in absent.values())
+    assert absent["absent_compound_presence_message"]["absent.intent"] == "presence_request"  # presence_request > task > message
+    assert absent["absent_compound_task_message"]["absent.intent"] == "task"
+    assert absent["absent_compound_place_message"]["absent.target_location"] == "discord"
+    turn = {c.card_id: c.expected for c in synth.TURN_COMPOUND_CARDS}
+    assert turn["compound_task_complex"]["route"] == "agent_loop" and turn["compound_chat_task"]["route"] == "task_request"
+    assert all(e["reply_mode"] == "respond" and e["compound"] is True for e in turn.values())
+    singles = [c.expected for c in (*synth.TURN_SINGLE_CARDS, *synth.ABSENT_SINGLE_CARDS)]
+    assert all(e.get("compound") is False or e.get("absent.compound") is False for e in singles)
+    assert next(c for c in synth.TURN_SINGLE_CARDS if c.card_id == "single_conditional").expected["route"] == "agent_loop"
+    ids = [c.card_id for cs in synth.CARD_SETS.values() for sets in cs.values() for c in sets]
+    assert len(ids) == len(set(ids))  # 卡片 ID 不得跨卡組／kind 重複
+
+
+def test_existing_rows_default_to_compound_no_with_few_exceptions() -> None:
+    from laya_data import compound, resolve
+
+    plain = {"sample_id": "s", "kind": "turn.reply", "meta": {"card": "private_chat"}, "expected": {"reply_mode": "respond", "addressed": True, "route": "direct_chat"}, "state": {"message": "hi"}}
+    two = {"sample_id": "t", "kind": "presence.absent_intent", "meta": {"card": "absent_request_two_places"}, "expected": {"absent.intent": "presence_request", "absent.target_location": "none"}, "state": {"message": "x"}}
+    mixed = {"sample_id": "synthetic-en-presence.absent_intent-00405", "kind": "presence.absent_intent", "meta": {"card": "absent_pass_message"}, "expected": {"absent.intent": "message", "absent.target_location": "none"}, "state": {"message": "x"}}
+    out, changed = resolve.relabel_from_cards([plain, two, mixed])
+    assert out[0]["expected"]["compound"] is False and "compound" in out[0]["questions"]
+    assert out[1]["expected"]["absent.compound"] is True and out[2]["expected"]["absent.compound"] is True
+    assert not changed  # 只是補 compound 欄位，不算卡片重標
+    assert compound.is_compound(two) and not compound.is_compound(plain)
+
+
+def test_compound_answer_missing_is_skipped_not_disputed() -> None:
+    from laya_data import blind
+
+    row = kinds.make_row("turn.reply", {"message": "hi"}, {"reply_mode": "respond", "addressed": True, "route": "direct_chat", "compound": False}, sample_id="a", source="t")
+    res = blind.compare_row(row, {"reply_mode": "respond", "addressed": True, "route": "direct_chat"})
+    assert not (res["mismatch"] or res["missing"] or res["invalid"]) and res["skipped"] == ["compound"]
+    res = blind.compare_row(row, {"reply_mode": "respond", "addressed": True, "route": "direct_chat", "compound": True})
+    assert res["mismatch"] == ["compound"]
+
+
+def test_human_ruling_overrides_blind() -> None:
+    from laya_data import resolve
+
+    sid = "synthetic-en-presence.absent_intent-00162"
+    row = {"sample_id": sid, "kind": "presence.absent_intent", "state": {"message": "tell Mia I'll be on the host machine until noon"},
+           "expected": {"absent.intent": "message", "absent.target_location": "none"}, "meta": {"card": "absent_message_mentions_place"}}
+    out, tag = resolve.resolve_row(row, {"absent.intent": "task", "absent.target_location": "none"})
+    assert tag == "ruling" and out["expected"]["absent.intent"] == "message"
+
+
+def test_rulings_are_valid_expected_and_drops_have_reasons() -> None:
+    from laya_data import resolve
+
+    assert len([k for k in resolve.RULINGS if k.startswith("synthetic-en-turn.reply-")]) == 18
+    for sid, patch in resolve.RULINGS.items():
+        kind = "turn.reply" if "turn.reply" in sid else "presence.absent_intent"
+        kinds.get_spec(kind).validate_expected(patch if kind == "turn.reply" else {**patch, "absent.target_location": patch.get("absent.target_location", "none")})
+    assert resolve.DROPPED and all(reason.strip() for reason in resolve.DROPPED.values())
+    assert not set(resolve.DROPPED) & set(resolve.RULINGS)

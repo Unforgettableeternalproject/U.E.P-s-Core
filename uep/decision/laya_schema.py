@@ -36,15 +36,19 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "type": "choice",
         "instructions": "Which handling route should this message be sent to?",
         "criteria": {
-            "direct_chat": "Casual chat or a simple question; a conversational reply is enough",
+            "direct_chat": "Casual chat, a simple question, or a read-only lookup that changes nothing (weather, news, checking the calendar, recalling a memory); a conversational reply is enough",
             "agent_loop": "A complex task that needs multi-step reasoning, planning or several tool calls",
-            "task_request": "A single, clear command or tool request (switch a device, check the calendar, send an email, etc.)",
+            "task_request": "A single, clear command for one action that changes state (switch a device, set a reminder, send an email, etc.)",
             "ignore": "Not addressed to the assistant; ignore it",
         },
     },
     "addressed": {
         "type": "noul",
         "instructions": "Is this message addressed to the assistant (speaking to it directly or continuing a conversation with it)?",
+    },
+    "compound": {
+        "type": "noul",
+        "instructions": "Does this message contain two or more independent intents that go to different handling routes or targets (for example a chat remark plus a command, or a reminder plus a message to someone else)? Answer no for the steps of one multi-step goal, for one intent with several items or recipients, and for steps that depend on each other's results.",
     },
 }
 

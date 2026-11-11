@@ -36,7 +36,7 @@ DEFAULT_ASSISTANT_NAME = "Yuki"
 
 REPLY_MODES = ("respond", "passive", "pass", "defer")
 ROUTES = ("direct_chat", "agent_loop", "task_request", "ignore")
-ABSENT_INTENTS = ("presence_request", "message", "other")
+ABSENT_INTENTS = ("presence_request", "message", "task", "other")
 TARGET_LOCATIONS = ("desktop", "discord", "website", "host", "none")
 
 QUESTIONS_TURN_REPLY: dict[str, dict[str, Any]] = laya_schema.QUESTIONS
@@ -47,8 +47,9 @@ QUESTIONS_ABSENT_INTENT: dict[str, dict[str, Any]] = {
         "instructions": "What does this message, sent while the assistant is not present, ask for?",
         "criteria": {
             "presence_request": "A request for the assistant to come, appear, or move to a place or platform",
-            "message": "Content to pass on to the assistant or someone else; not a request to move",
-            "other": "Anything else: chit-chat, questions, negations, past events, or unclear",
+            "message": "Plain content handled right away: a note to relay to another person with no timing or event condition, or something for the assistant to remember; not a request to move",
+            "task": "A request for the assistant to carry out an action without coming over: anything to do later at a given time or on an event (a reminder, scheduling, relaying something at a set time), or another job handed over such as booking or sending something",
+            "other": "Anything else: chit-chat, questions, negations, past events, a private note to oneself that does not ask the assistant for anything, or unclear",
         },
     },
     "absent.target_location": {
@@ -61,6 +62,10 @@ QUESTIONS_ABSENT_INTENT: dict[str, dict[str, Any]] = {
             "host": "The host machine",
             "none": "No specific place named",
         },
+    },
+    "absent.compound": {
+        "type": "noul",
+        "instructions": "Does this message contain two or more independent requests that go to different handling routes or targets (for example a reminder plus a message to someone else, or a request to come over plus a message)? Answer no for one request with several items or recipients, for the steps of one goal, and for conditional requests whose parts depend on each other.",
     },
 }
 
@@ -76,9 +81,9 @@ def validate_turn_reply_expected(expected: Mapping[str, Any]) -> None:
             _check_in(key, value, REPLY_MODES)
         elif key == "route":
             _check_in(key, value, ROUTES)
-        elif key == "addressed":
+        elif key in ("addressed", "compound"):
             if not isinstance(value, bool):
-                raise ValueError("addressed 必須是 bool")
+                raise ValueError(f"{key} 必須是 bool")
         else:
             raise ValueError(f"turn.reply 不認得的題目：{key!r}")
 
@@ -89,6 +94,9 @@ def validate_absent_expected(expected: Mapping[str, Any]) -> None:
             _check_in(key, value, ABSENT_INTENTS)
         elif key == "absent.target_location":
             _check_in(key, value, TARGET_LOCATIONS)
+        elif key == "absent.compound":
+            if not isinstance(value, bool):
+                raise ValueError("absent.compound 必須是 bool")
         else:
             raise ValueError(f"presence.absent_intent 不認得的題目：{key!r}")
     target = expected.get("absent.target_location")

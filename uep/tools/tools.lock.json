@@ -23,6 +23,30 @@
     "schema_hash": "6a1e8266446fd3aa75539c079604f9aac70756095c26a6ef7b9924117336d79c",
     "tool_version": 1
   },
+  "lore.delete": {
+    "schema_hash": "461830b9e9445e4af95de0df6a8fd0cfa6dd9282bff9ff72eefb5abe6324da10",
+    "tool_version": 1
+  },
+  "lore.get": {
+    "schema_hash": "6c32bf6ba8abcf9195a6a7b468e557760b4b70f1b7d779046899287b9a1693ba",
+    "tool_version": 1
+  },
+  "lore.list": {
+    "schema_hash": "8b2a6c5fa7e84c1409215cbaa4c6faa52529ff76e737994ac43db5eb5f4d828c",
+    "tool_version": 1
+  },
+  "lore.recall": {
+    "schema_hash": "6377cc68617ff97628fdb8fa2f081d58bdddc17379afb2a472a260195d7fb7e7",
+    "tool_version": 1
+  },
+  "lore.update": {
+    "schema_hash": "c964cf5ec55b846e44e696e6765c8a0786186858f96f4dd7a21fd10ab4507c2b",
+    "tool_version": 1
+  },
+  "lore.write": {
+    "schema_hash": "726d4ef085072ce49032547027016af5efba8b192f19187ca1a80492048e607a",
+    "tool_version": 1
+  },
   "member_recall": {
     "schema_hash": "6b65a7b86e688f0834c856bcdd725998e38dd1578d880c4002b6040396da6359",
     "tool_version": 1

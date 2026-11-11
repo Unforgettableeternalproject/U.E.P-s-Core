@@ -261,6 +261,20 @@ class UepSettings(BaseSettings):
     image_read_model: str | None = Field(default=None, validation_alias="UEP_IMAGE_READ_MODEL")  # 未設＝對話模型
     image_read_max_bytes: int = Field(default=5_000_000, gt=0, validation_alias="UEP_IMAGE_READ_MAX_BYTES")
 
+    # Lore Vault 原生工具（lore.*；Agent 架構提案 §5.2）：未設定 URL／token／vault 範圍時，工具 readiness 為 unavailable、不投出。
+    # token 只在 executor 側使用，不進 LLM 面、不寫 log。dev space 只能用本專案 vault（lore_dev_vault）；
+    # lore space 的 vault 清單用 lore_vaults（逗號分隔白名單）。author 是寫入時自報的角色名（人設自稱 U.E.P）。
+    lore_url: str | None = Field(default=None, validation_alias="UEP_LORE_URL")
+    lore_token: SecretStr | None = Field(default=None, validation_alias="UEP_LORE_TOKEN")
+    lore_dev_vault: str | None = Field(default=None, validation_alias="UEP_LORE_DEV_VAULT")
+    lore_vaults: str | None = Field(default=None, validation_alias="UEP_LORE_VAULTS")
+    lore_default_space: Literal["dev", "lore"] = Field(default="lore", validation_alias="UEP_LORE_DEFAULT_SPACE")
+    lore_author: str = Field(default="U.E.P", validation_alias="UEP_LORE_AUTHOR")
+    # lore.delete 的額外開關：Vault 端刪除介面定案前預設關閉（關閉時 lore.delete readiness 為 unavailable）
+    lore_delete_enabled: bool = Field(default=False, validation_alias="UEP_LORE_DELETE_ENABLED")
+    lore_timeout_s: float = Field(default=10.0, gt=0, validation_alias="UEP_LORE_TIMEOUT_S")
+    lore_max_chars: int = Field(default=6000, ge=500, le=50000, validation_alias="UEP_LORE_MAX_CHARS")
+
     @field_validator("infer_system_prompt")
     @classmethod
     def _default_persona_when_blank(cls, value: str) -> str:
@@ -271,7 +285,7 @@ class UepSettings(BaseSettings):
 
         return default_system_prompt()
 
-    def think_config(self) -> "ThinkConfig":
+    def think_config(self) -> ThinkConfig:
         """解析成 Think adapter 的 ThinkConfig：``UEP_LLM_*`` → ``UEP_INFER_LLM_*`` → 舊名（警告一次）→ 預設。"""
         from uep.stream.adapters.think_config import ThinkConfig
 

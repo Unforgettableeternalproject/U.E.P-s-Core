@@ -654,6 +654,18 @@ def assemble_core(
 
             tool_resolver, web_executors = with_web_image(tool_resolver, cache=agent_cache)
             executors = {**executors, **web_executors}
+        from uep.tools.registry import ToolRegistry as _LoreRegistryType
+
+        if isinstance(tool_resolver, _LoreRegistryType):
+            # Lore Vault 原生工具：一律註冊；未設定時 readiness 為 unavailable（不投出、組裝不失敗）
+            from uep.tools.catalog.lore import LORE_EXECUTOR, with_lore
+            from uep.tools.executors.lore import LoreConfig, LoreToolExecutor
+
+            lore_config = LoreConfig.from_settings(get_settings())
+            tool_resolver = with_lore(
+                tool_resolver, configured=lore_config.configured, delete_enabled=lore_config.delete_enabled,
+            )
+            executors = {**executors, LORE_EXECUTOR: LoreToolExecutor(lore_config, cache=agent_cache, allow_write=True)}
         if callable(getattr(tool_resolver, "entries", None)):
             from uep.models.tool_names import ToolNameError, wire_map
 

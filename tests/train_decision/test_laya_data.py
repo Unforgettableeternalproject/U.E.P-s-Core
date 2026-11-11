@@ -653,12 +653,61 @@ def test_resolve_run_end_to_end(tmp_path: Path) -> None:
     assert (mass / "blind" / "review_for_bernie.md").read_text(encoding="utf-8").count("\n") <= 40
 
 
-def test_compound_marking_is_meta_only_and_keeps_first_instruction_label() -> None:
-    from laya_data import compound
+def test_compound_questions_and_validation() -> None:
+    assert kinds.QUESTIONS_TURN_REPLY["compound"]["type"] == "noul"
+    assert kinds.QUESTIONS_ABSENT_INTENT["absent.compound"]["type"] == "noul"
+    kinds.validate_turn_reply_expected({"reply_mode": "respond", "addressed": True, "route": "task_request", "compound": True})
+    kinds.validate_absent_expected({"absent.intent": "task", "absent.target_location": "none", "absent.compound": False})
+    with pytest.raises(ValueError):
+        kinds.validate_turn_reply_expected({"compound": "yes"})
+    with pytest.raises(ValueError):
+        kinds.validate_absent_expected({"absent.compound": 1})
 
-    two = {"sample_id": "x", "meta": {"card": "absent_request_two_places"}}
-    mixed = {"sample_id": "synthetic-en-presence.absent_intent-00405", "meta": {"card": "absent_pass_message"}}
-    plain = {"sample_id": "synthetic-en-presence.absent_intent-00001", "meta": {"card": "absent_request_generic"}}
-    assert compound.is_compound(two) and compound.is_compound(mixed) and not compound.is_compound(plain)
-    # 對照卡不得是複合句：每張卡的 guidance 都沒有要求兩個指示
-    assert not any("and tell" in c.description.lower() for c in synth.ABSENT_CONTRAST_CARDS)
+
+def test_compound_cards_follow_priority_and_counterexamples_are_no() -> None:
+    absent = {c.card_id: c.expected for c in synth.ABSENT_COMPOUND_CARDS}
+    assert all(e["absent.compound"] is True for e in absent.values())
+    assert absent["absent_compound_presence_message"]["absent.intent"] == "presence_request"  # presence_request > task > message
+    assert absent["absent_compound_task_message"]["absent.intent"] == "task"
+    assert absent["absent_compound_place_message"]["absent.target_location"] == "discord"
+    turn = {c.card_id: c.expected for c in synth.TURN_COMPOUND_CARDS}
+    assert turn["compound_task_complex"]["route"] == "agent_loop" and turn["compound_chat_task"]["route"] == "task_request"
+    assert all(e["reply_mode"] == "respond" and e["compound"] is True for e in turn.values())
+    singles = [c.expected for c in (*synth.TURN_SINGLE_CARDS, *synth.ABSENT_SINGLE_CARDS)]
+    assert all(e.get("compound") is False or e.get("absent.compound") is False for e in singles)
+    assert next(c for c in synth.TURN_SINGLE_CARDS if c.card_id == "single_conditional").expected["route"] == "agent_loop"
+    ids = [c.card_id for cs in synth.CARD_SETS.values() for sets in cs.values() for c in sets]
+    assert len(ids) == len(set(ids))  # 卡片 ID 不得跨卡組／kind 重複
+
+
+def test_existing_rows_default_to_compound_no_with_few_exceptions() -> None:
+    from laya_data import compound, resolve
+
+    plain = {"sample_id": "s", "kind": "turn.reply", "meta": {"card": "private_chat"}, "expected": {"reply_mode": "respond", "addressed": True, "route": "direct_chat"}, "state": {"message": "hi"}}
+    two = {"sample_id": "t", "kind": "presence.absent_intent", "meta": {"card": "absent_request_two_places"}, "expected": {"absent.intent": "presence_request", "absent.target_location": "none"}, "state": {"message": "x"}}
+    mixed = {"sample_id": "synthetic-en-presence.absent_intent-00405", "kind": "presence.absent_intent", "meta": {"card": "absent_pass_message"}, "expected": {"absent.intent": "message", "absent.target_location": "none"}, "state": {"message": "x"}}
+    out, changed = resolve.relabel_from_cards([plain, two, mixed])
+    assert out[0]["expected"]["compound"] is False and "compound" in out[0]["questions"]
+    assert out[1]["expected"]["absent.compound"] is True and out[2]["expected"]["absent.compound"] is True
+    assert not changed  # 只是補 compound 欄位，不算卡片重標
+    assert compound.is_compound(two) and not compound.is_compound(plain)
+
+
+def test_compound_answer_missing_is_skipped_not_disputed() -> None:
+    from laya_data import blind
+
+    row = kinds.make_row("turn.reply", {"message": "hi"}, {"reply_mode": "respond", "addressed": True, "route": "direct_chat", "compound": False}, sample_id="a", source="t")
+    res = blind.compare_row(row, {"reply_mode": "respond", "addressed": True, "route": "direct_chat"})
+    assert not (res["mismatch"] or res["missing"] or res["invalid"]) and res["skipped"] == ["compound"]
+    res = blind.compare_row(row, {"reply_mode": "respond", "addressed": True, "route": "direct_chat", "compound": True})
+    assert res["mismatch"] == ["compound"]
+
+
+def test_human_ruling_overrides_blind() -> None:
+    from laya_data import resolve
+
+    sid = "synthetic-en-presence.absent_intent-00162"
+    row = {"sample_id": sid, "kind": "presence.absent_intent", "state": {"message": "tell Mia I'll be on the host machine until noon"},
+           "expected": {"absent.intent": "message", "absent.target_location": "none"}, "meta": {"card": "absent_message_mentions_place"}}
+    out, tag = resolve.resolve_row(row, {"absent.intent": "task", "absent.target_location": "none"})
+    assert tag == "ruling" and out["expected"]["absent.intent"] == "message"

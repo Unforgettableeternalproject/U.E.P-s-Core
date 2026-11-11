@@ -203,9 +203,58 @@ ABSENT_CONTRAST_CARDS: tuple[Card, ...] = tuple(
     Card(f"absent_{cid}", _ABS, desc, exp, hard=True, source_platform="discord" if i % 2 else "desktop", guidance=g)
     for i, (cid, desc, exp, g) in enumerate(_CONTRAST_SPECS)
 )
+
+# 複合指示（compound）卡組：標籤照退回優先序（absent: presence_request > task > message > other；
+# turn.reply: route agent_loop > task_request > direct_chat，有一段對她說就 respond）。
+# 反例卡（single）看起來有 and／條件，其實是一件事：b＝一個意圖多項內容，c＝段落間有條件或資料依賴。
+_CP = "compound"
+_ACP = "absent.compound"
+
+
+def _tc(card_id: str, desc: str, route: str, yes: bool, **kw: Any) -> Card:
+    return Card(card_id, "turn.reply", desc, {"reply_mode": "respond", "addressed": True, "route": route, _CP: yes}, hard=True, **kw)
+
+
+def _ac(card_id: str, desc: str, intent: str, loc: str, yes: bool, plat: str, g: str) -> Card:
+    return Card(f"absent_{card_id}", _ABS, desc, {"absent.intent": intent, "absent.target_location": loc, _ACP: yes}, hard=True, source_platform=plat, guidance=g)
+
+
+_TWO = "The message must hold two clearly separate instructions joined by 'and', 'also', 'then' or a comma, each with its own target."
+TURN_COMPOUND_CARDS: tuple[Card, ...] = (
+    _tc("compound_chat_task", f"The speaker talks to {A}: first a casual remark or a general question, then in the same message one clear state-changing command (set a reminder, send a message, switch a device off).", "task_request", True, others_choices=MIXED, guidance=_TWO),
+    _tc("compound_task_task", f"The speaker gives {A} two different state-changing commands in one message, for different targets (for example switch a device off and send a text to a named person).", "task_request", True, others_choices=MIXED, guidance=_TWO),
+    _tc("compound_lookup_task", f"The speaker asks {A} for a read-only lookup (weather, calendar, news) and, independently, gives one state-changing command (set a reminder, send a message, switch a device).", "task_request", True, others_choices=MIXED,
+        guidance=_TWO + " The command must not depend on the lookup result."),
+    _tc("compound_task_complex", f"The speaker gives {A} one simple state-changing command and, independently, asks for a separate multi-step job (research, compare, plan).", "agent_loop", True, others_choices=MIXED,
+        guidance=_TWO + " The two parts must be about different things."),
+    _tc("compound_mixed_addressee", f"People are present; the speaker gives {A} one clear command by name and, in the same breath, tells another named person in the room to do something.", "task_request", True, others_choices=GROUP,
+        guidance=f"Name {A} for the first command and a different person (for example Rob) for the second; both are imperative."),
+)
+TURN_SINGLE_CARDS: tuple[Card, ...] = (
+    _tc("single_multi_object", f"The speaker gives {A} ONE state-changing command that covers several objects (switch off the lights in the kitchen and the hallway; add three events to the calendar).", "task_request", False, others_choices=MIXED,
+        guidance="It must be one action applied to several things; do not add a second kind of instruction."),
+    _tc("single_multi_recipient", f"The speaker asks {A} to send ONE message or email to several people at once, or one message whose content has two parts (tell Rob I am late and sorry).", "task_request", False, others_choices=MIXED,
+        guidance="One send action only; the 'and' joins recipients or parts of the same content."),
+    _tc("single_conditional", f"The speaker gives {A} one request whose parts depend on each other: check something and then act only if a condition holds (check the forecast, and if it is sunny tell Rob we are hiking).", "agent_loop", False, others_choices=MIXED,
+        guidance="The second part must depend on the result of the first (if/when/unless); one goal overall."),
+)
+ABSENT_COMPOUND_CARDS: tuple[Card, ...] = (
+    _ac("compound_presence_message", "Asks the assistant to come over where the speaker is AND to pass a message to a named person, in one sentence.", "presence_request", "none", True, "discord", _NOPLACE + " The message part must not mention any platform or machine. " + _TWO),
+    _ac("compound_task_message", "Asks the assistant to remind the speaker about something later AND to tell a named person something, in one sentence.", "task", "none", True, "desktop", _TWO),
+    _ac("compound_presence_task", "Asks the assistant to come over where the speaker is AND to remind the speaker about something later, in one sentence.", "presence_request", "none", True, "website", _NOPLACE + " " + _TWO),
+    _ac("compound_place_message", "Asks the assistant to go to Discord AND to tell a named person something, in one sentence.", "presence_request", "discord", True, "desktop", _GO + " Name Discord as the only place; the message part must not mention any platform or machine. " + _TWO),
+    _ac("compound_task_task", "Asks the assistant to remind the speaker about something later AND to do another job (book, order, send), in one sentence.", "task", "none", True, "host", _TWO + " The job must not depend on the reminder."),
+)
+ABSENT_SINGLE_CARDS: tuple[Card, ...] = (
+    _ac("single_multi_recipient", "Asks the assistant to tell two named people the same thing, or to pass one message with two parts (tell Anna and Rob I will be late and sorry).", "message", "none", False, "discord", "One message only; the 'and' joins recipients or parts of the same content. No reminder, no time condition."),
+    _ac("single_multi_item", "Asks the assistant to remind the speaker about one thing that has several items (remind me to buy milk and eggs and bread).", "task", "none", False, "desktop", "One reminder only; the 'and' joins items of the same errand."),
+    _ac("single_conditional", "Asks the assistant to do something only if a condition holds, or to check something and act on it (if it rains tomorrow tell Rob we cancel; check if the shop is open and book a table if it is).", "task", "none", False, "host", "The second part depends on the first (if/when/unless); one goal overall."),
+)
 CARD_SETS: dict[str, dict[str, tuple[Card, ...]]] = {
     "main": CARDS,
     "contrast": {"presence.absent_intent": ABSENT_CONTRAST_CARDS},
+    "compound": {"turn.reply": TURN_COMPOUND_CARDS, "presence.absent_intent": ABSENT_COMPOUND_CARDS},
+    "single": {"turn.reply": TURN_SINGLE_CARDS, "presence.absent_intent": ABSENT_SINGLE_CARDS},
 }
 
 OTHER_USER_CONTEXTS = frozenset({"assistant_answered_other"})  # 前文的提問者不是目前說話者

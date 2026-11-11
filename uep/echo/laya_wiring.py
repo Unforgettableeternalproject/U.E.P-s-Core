@@ -304,11 +304,23 @@ class LayaProposer:
         probs = reply.get("probabilities")
         confidence = float(probs.get(reply["choice"], 0.0)) if isinstance(probs, dict) else 0.0
         self.metrics["laya_proposed"] += 1
+        # compound（是否含兩個以上獨立指示）先只讀取與計數，不影響本次提案；拆分與連鎖由後續流程處理
+        compound = _read_compound(answers)
+        if compound:
+            self.metrics["laya_compound_yes"] += 1
         return Proposal(
             reply_mode=mode, addressed=float(answers["addressed"]["noul"]) >= 0.5,
             confidence=min(1.0, max(0.0, confidence)), route=route, reason_code="laya_model",
             proposer_id=self.proposer_id, proposer_version=self.version,
         )
+
+
+def _read_compound(answers: dict) -> bool | None:
+    """讀 compound 題的答案（noul 機率 >= 0.5 視為 yes）；舊模型或答案缺漏回 None。"""
+    try:
+        return float(answers["compound"]["noul"]) >= 0.5
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def create_laya_proposer(config: DecisionConfig | None = None, settings: object | None = None, **_: object) -> LayaProposer:

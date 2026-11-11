@@ -31,13 +31,22 @@ from pathlib import Path
 from typing import Any
 
 from .blind import compare_labels, read_jsonl, write_jsonl
-from .compound import is_compound
+from .compound import COMPOUND_QID, is_compound
 from .kinds import ROUTES, get_spec
 from .split import split_rows
-from .synth import ABSENT_CONTRAST_CARDS, CARDS
+from .synth import CARD_SETS, CARDS
 
 # 舊產物的 meta 沒有 label_rule，改由卡片定義查
 CARD_RULES: dict[str, str] = {c.card_id: c.label_rule for cards in CARDS.values() for c in cards if c.label_rule}
+
+
+# 人工裁決（逐筆）：規則與盲標不一致、經裁示採某答案的句子
+RULINGS: dict[str, dict[str, Any]] = {
+    # "until noon" 是轉告內容，不是何時投遞 -> message
+    "synthetic-en-presence.absent_intent-00162": {"absent.intent": "message", "absent.target_location": "none"},
+    # 到期日→提醒→信：提醒依賴查到的到期日，屬同一目標的相依步驟（compound 定義 a／c）-> no（盲標判 yes）
+    "synthetic-en-turn.reply-00058": {"compound": False},
+}
 
 
 def rule_of(row: Mapping[str, Any]) -> str:
@@ -119,6 +128,8 @@ def _expected_with(row: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
 def resolve_row(row: Mapping[str, Any], blind: Mapping[str, Any] | None) -> tuple[dict[str, Any] | None, str]:
     """回傳 (裁決後的列或 None, 規則代號／不收原因)。"""
     rule = rule_of(row)
+    if row["sample_id"] in RULINGS:  # 人工裁決優先於盲標
+        return {**row, "expected": _expected_with(row, **RULINGS[row["sample_id"]])}, "ruling"
     if not blind:
         return None, "no_blind_answer"
     if rule == "first_place":
@@ -192,8 +203,10 @@ def distribution(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     return {k: dict(sorted(v.items())) for k, v in sorted(dist.items())}
 
 
-CARD_EXPECTED: dict[str, dict[str, Any]] = {c.card_id: dict(c.expected) for cards in CARDS.values() for c in cards}
-CARD_EXPECTED.update({c.card_id: dict(c.expected) for c in ABSENT_CONTRAST_CARDS})
+CARD_EXPECTED: dict[str, dict[str, Any]] = {
+    c.card_id: dict(c.expected) for card_set in CARD_SETS.values() for cards in card_set.values() for c in cards
+}
+_COMPOUND_QIDS = frozenset(COMPOUND_QID.values())
 
 
 def relabel_from_cards(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Counter[str]]:
@@ -201,8 +214,13 @@ def relabel_from_cards(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
     out, changed = [], Counter()
     for r in rows:
         want = CARD_EXPECTED.get((r.get("meta") or {}).get("card", ""))
+        if want is not None:
+            qid = COMPOUND_QID.get(r["kind"])
+            if qid and qid not in want:  # 舊卡片沒有 compound 欄：既有句預設 no，例外見 compound.py
+                want = {**want, qid: is_compound(r)}
         if want is not None and r["expected"] != want:
-            changed[r["meta"]["card"]] += 1
+            if {k: v for k, v in r["expected"].items() if k not in _COMPOUND_QIDS} != {k: v for k, v in want.items() if k not in _COMPOUND_QIDS}:
+                changed[r["meta"]["card"]] += 1
             r = {**r, "expected": want}
         # 題目說明一律取目前定義（schema 文字改版後，舊產物內嵌的 questions 跟著更新）
         out.append({**r, "questions": {q: dict(get_spec(r["kind"]).questions[q]) for q in r["expected"]}})
@@ -249,7 +267,6 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
         resolved.append(out)
         counts[f"resolved:{tag}"] += 1
     final += resolved
-    final = [{**r, "meta": {**r["meta"], "compound": True}} if is_compound(r) else r for r in final]
     final.sort(key=lambda r: r["sample_id"])
     train, val = split_rows(final, val_ratio, seed)
     write_jsonl(mass_dir / "final.jsonl", final)
@@ -259,7 +276,7 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
     (mass_dir / "blind" / "review_for_bernie.md").write_text(build_summary(review), encoding="utf-8", newline="\n")
     stats = {
         "accepted": len(accepted), "disputed": len(disputed), "resolved": len(resolved),
-        "review": len(review), "final": len(final), "compound": sum(1 for r in final if r["meta"].get("compound")), "train": len(train), "val": len(val),
+        "review": len(review), "final": len(final), "compound": {k: sum(1 for r in final if r["kind"] == k and r["expected"].get(q)) for k, q in COMPOUND_QID.items()}, "train": len(train), "val": len(val),
         "rules": dict(sorted(counts.items())), "relabeled_from_cards": dict(sorted(relabeled.items())),
         "final_distribution": distribution(final), "val_distribution": distribution(val),
     }

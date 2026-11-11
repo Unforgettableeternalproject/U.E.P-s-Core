@@ -13,7 +13,7 @@ train/decision/
 │   ├── synth.py        # 情境卡合成器（卡片決定標籤，LLM 只生文字）
 │   ├── split.py        # train/val 切分、測試集防洩漏檢查
 │   ├── resolve.py      # 盲標 disputed 規則化裁決、卡片重標、最終訓練集（final／train／val／stats）
-│   └── compound.py     # 複合指示（一句兩個以上指示）標記，meta.compound=true，標註仍取第一個
+│   └── compound.py     # 既有資料的 compound 例外清單（預設 no）與定義
 ├── testset/zh_candidates_draft.jsonl   # 測試集 zh-TW 原句草稿（status=pending_review，待艾斯維爾核）
 ├── pool/           # synthetic 內容池（入庫；量產後才有）
 ├── pool_private/   # real_owner 日誌（.gitignore，不入 git）
@@ -30,6 +30,9 @@ turn.reply 的題目與 state 取自 `uep/decision/laya_schema.py`（訓練與�
 - `message`：純內容、當下可完成：轉告他人（無時間／事件觸發）、要她記住的內容（`remember that…`）。
 - `task`：要她執行動作：提醒／排程（`remind me`、`ping me`、`don't let me forget`，沒說時間也算）、轉告但帶時間／事件觸發（`tell Anna at five…`）、不在場時交辦的其他動作（`book the table`）。
 - `other`：閒聊、提問、否定、過去的事、純自我筆記（`I need to remember to…`）、不明。
+- `compound`（turn.reply）／`absent.compound`（absent_intent）：`noul` 是／否題。yes＝一句裡有好幾個彼此獨立、各自交給不同處理路線或對象的意圖（`remind me at four…, and tell Rob…`、閒聊＋交辦）。no＝同一目標的多步驟（agent_loop）、一個意圖多項內容（`tell Rob I'm late and sorry`、`remind me to buy milk and eggs`）、段落間有條件或資料依賴（`check the forecast and if sunny tell Rob`；在場走 agent_loop，不在場照意圖標，多為 task）。`request_two_places` 維持 yes。
+- compound=yes 時其餘欄位照退回優先序（拆分失敗時的答案）：absent_intent `presence_request > task > message > other`；turn.reply 的 route `agent_loop > task_request > direct_chat`，reply_mode 只要有一段對她說就 respond。
+- 既有資料預設 compound=no，例外見 `compound.py`；候選句（含連接詞＋第二個動作）另經獨立盲標抽驗。新樣本走 `--card-set compound`（正例）與 `--card-set single`（反例）。
 - 一句多個指示先取第一個；`task` 與 `message` 的文字邊界由 `resolve.py` 的 `relay_vs_task` 規則判定，並須與盲標一致。
 - 對照卡（`synth.ABSENT_CONTRAST_CARDS`，`--card-set contrast`）另成一組，避免動到主卡組的 plan 而無法重現；卡片標籤改版後直接重跑 `python -m laya_data.resolve --mass-dir out/mass`（會依目前卡片重標 `synth_all.jsonl`、重算 accepted／disputed）。
 

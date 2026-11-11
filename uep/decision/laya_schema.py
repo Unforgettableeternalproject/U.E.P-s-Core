@@ -46,6 +46,10 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "type": "noul",
         "instructions": "Is this message addressed to the assistant (speaking to it directly or continuing a conversation with it)?",
     },
+    "compound": {
+        "type": "noul",
+        "instructions": "Does this message contain two or more independent intents that go to different handling routes or targets (for example a chat remark plus a command, or a reminder plus a message to someone else)? Answer no for the steps of one multi-step goal, for one intent with several items or recipients, and for steps that depend on each other's results.",
+    },
 }
 
 

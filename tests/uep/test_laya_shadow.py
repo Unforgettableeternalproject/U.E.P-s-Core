@@ -89,9 +89,28 @@ def test_proposal_assembly_and_validation(monkeypatch):
     assert proposal.proposer_version == "laya-0.4.30:abc123def4567890"
     assert fake.loads == [("m/x", "cpu", {"revision": "rev1"})]
     state, questions = fake.agent.calls[-1]  # calls[0] 是 warmup 假推論
-    assert state["assistant_name"] == "小艾" and set(questions) == {"reply_mode", "route", "addressed"}
+    assert state["assistant_name"] == "小艾" and set(questions) == {"reply_mode", "route", "addressed", "compound"}
     assert set(questions["reply_mode"]["criteria"]) == {"respond", "passive", "pass", "defer"}
-    assert questions["addressed"]["type"] == "noul"
+    assert questions["addressed"]["type"] == "noul" and questions["compound"]["type"] == "noul"
+    assert p.metrics["laya_compound_yes"] == 0  # 假推論沒回 compound（舊模型）：讀不到不影響提案
+
+
+def test_compound_answer_is_read_but_does_not_change_the_proposal(monkeypatch):
+    answers = {
+        "reply_mode": {"choice": "respond", "probabilities": {"respond": 0.9}},
+        "route": {"choice": "task_request", "probabilities": {}},
+        "addressed": {"noul": 0.8},
+        "compound": {"noul": 0.9},
+    }
+    _install_fake(monkeypatch, _FakeAgent(answers))
+    p = LayaProposer(device="cpu")
+    p.wait_ready(5)
+    with_compound = p.propose(_cand())
+    assert p.metrics["laya_compound_yes"] == 1
+    answers.pop("compound")
+    without = p.propose(_cand())
+    assert p.metrics["laya_compound_yes"] == 1
+    assert (with_compound.reply_mode, with_compound.route, with_compound.addressed) == (without.reply_mode, without.route, without.addressed)
 
 
 def test_unknown_choice_raises_and_not_addressed(monkeypatch):

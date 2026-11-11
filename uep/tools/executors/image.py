@@ -65,6 +65,47 @@ def sniff_format(data: bytes) -> tuple[str, str] | None:
     return None
 
 
+def root_problem(root: Path) -> str | None:
+    """白名單目錄不合格的原因（相對路徑、磁碟根目錄、無法 canonical 化），合格回 None。"""
+    if not root.is_absolute():
+        return "必須是絕對路徑"
+    try:
+        resolved = root.resolve()
+    except (OSError, RuntimeError):
+        return "無法解析"
+    if resolved == Path(resolved.anchor):
+        return "不得是磁碟根目錄"
+    return None
+
+
+def _final_path(fd: int) -> Path | None:
+    """已開啟檔案實際指向的路徑（作業系統層查詢，擋 resolve 之後被換成 symlink 的競態）；查不到回 None。"""
+    try:
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
+            func = ctypes.windll.kernel32.GetFinalPathNameByHandleW  # type: ignore[attr-defined]
+            func.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+            func.restype = wintypes.DWORD
+            buf = ctypes.create_unicode_buffer(32768)
+            if not func(handle, buf, len(buf), 0):
+                return None
+            text = buf.value
+            text = text.removeprefix("\\\\?\\")
+            return Path(text)
+        link = f"/proc/self/fd/{fd}"
+        if os.path.exists(link):
+            return Path(os.readlink(link))
+        import fcntl
+
+        return Path(fcntl.fcntl(fd, 50, b"\0" * 1024).split(b"\0", 1)[0].decode())  # macOS F_GETPATH
+    except (OSError, ImportError, ValueError, AttributeError, TypeError):
+        return None
+
+
 @dataclass(frozen=True)
 class ImagePolicy:
     roots: tuple[Path, ...] = ()
@@ -73,6 +114,10 @@ class ImagePolicy:
     max_redirects: int = 3
 
     def __post_init__(self) -> None:
+        for root in self.roots:
+            problem = root_problem(Path(root))
+            if problem:
+                raise ValueError(f"圖片白名單目錄不合格：{problem}")
         object.__setattr__(self, "roots", tuple(Path(r).resolve() for r in self.roots))
 
 
@@ -142,10 +187,21 @@ class ImageToolExecutor(ReadToolExecutor):
     def _load_local(self, source: str) -> tuple[str, bytes]:
         path = resolve_allowed(source, self._policy.roots)
         try:
-            with path.open("rb") as handle:
-                data = handle.read(self._policy.max_bytes + 1)
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
         except OSError as exc:
             raise ImageReadError("not_found", "無法讀取圖片檔") from exc
+        with os.fdopen(fd, "rb") as handle:
+            # resolve 與 open 之間路徑可能被換成 symlink：以已開啟 handle 的最終路徑再驗一次
+            final = _final_path(handle.fileno())
+            if final is None:
+                if not os.path.samestat(os.fstat(handle.fileno()), os.stat(path)):
+                    raise ImageReadError("blocked", "路徑在讀取前被更動")
+            elif not any(final.resolve().is_relative_to(root) for root in self._policy.roots):
+                raise ImageReadError("blocked", "路徑不在允許讀取的目錄內")
+            try:
+                data = handle.read(self._policy.max_bytes + 1)
+            except OSError as exc:
+                raise ImageReadError("not_found", "無法讀取圖片檔") from exc
         if len(data) > self._policy.max_bytes:
             raise ImageReadError("too_large", "圖片超過大小上限")
         return "local", data

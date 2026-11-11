@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import threading
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -59,19 +60,27 @@ class OpenAIWebSearch:
 
     name = "openai"
 
-    def __init__(self, client_factory: Callable[[], Any], model: str, *, has_credentials: bool) -> None:
+    def __init__(
+        self, client_factory: Callable[[], Any], model: str, *, has_credentials: bool, timeout_s: float = 16.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._client = _LazyClient(client_factory)
         self._model = model
         self._has_credentials = has_credentials
+        self._timeout_s = timeout_s
+        self._clock = clock
 
     def available(self) -> bool:
         return self._has_credentials and bool(self._model)
 
     def search(self, query: str, *, limit: int, languages: Sequence[str], deadline: float) -> list[SearchHit]:
-        try:
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise ProviderError("timeout", "已超過搜尋時限")
+        try:  # 請求時限 = min(設定值, 剩餘時間)，整條鏈不會因備援而超出工具的 timeout_s
             response = self._client.get().responses.create(
                 model=self._model, tools=[{"type": "web_search"}], input=query,
-                max_output_tokens=SEARCH_MAX_OUTPUT_TOKENS,
+                max_output_tokens=SEARCH_MAX_OUTPUT_TOKENS, timeout=min(self._timeout_s, remaining),
             )
         except ProviderError:
             raise

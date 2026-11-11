@@ -2,7 +2,8 @@
 
 讀本機白名單目錄內的圖片或 http(s) 圖片 URL，交給視覺模型產生文字描述後回傳。``internal_read``、``parallel_safe``、
 ``idempotency=native``。描述文字來自模型對外部圖片的解讀，屬於不可信內容（輸出帶 ``untrusted=true``）。
-readiness：``image_read`` 模組只在白名單目錄已設定且有可用的視覺模型時才算已知，否則 ``unavailable``、不投出。
+readiness：``image_read`` 模組只在有可用的視覺模型（LLM 金鑰）時才算已知，否則 ``unavailable``、不投出；URL 圖片不需要白名單，
+本機路徑需 ``UEP_IMAGE_READ_ROOTS``，沒設時本機路徑一律被 executor 拒絕。實際曝光還要 agent 路徑與決策層 route 表含標籤。
 設定與組裝見 ``uep.tools.web_image``；執行見 ``uep.tools.executors.image``。
 """
 from __future__ import annotations

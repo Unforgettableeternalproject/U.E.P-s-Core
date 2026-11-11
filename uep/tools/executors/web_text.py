@@ -18,6 +18,63 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _META_CHARSET = re.compile(rb"<meta[^>]+charset=[\"']?\s*([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
 
+MAX_PARSE_CHARS = 200_000  # 餵給 html.parser 的輸入上限（UEP_WEB_FETCH_MAX_PARSE_BYTES 覆寫）
+
+
+def sanitize_markup(text: str, limit: int = MAX_PARSE_CHARS) -> str:
+    """把輸入截到 ``limit`` 並剝掉病態結構，確保 ``html.parser`` 的耗時與輸入長度成線性。
+
+    ``html.parser`` 遇到未結束的 ``<!--``、``<![CDATA[``、``<?``、``<!``、``<a `` 之類會反覆從頭重掃（二次方）。這裡用單趟掃描處理：
+    註解／CDATA／處理指令／宣告整段剝掉，找不到結尾就在該處截斷；一般標籤找不到 ``>`` 也截斷；標籤內又出現 ``<`` 時把外層的
+    ``<`` 當成文字（跳脫）。每個位置只被 ``find`` 掃過常數次。
+    """
+    text = text[:limit]
+    out: list[str] = []
+    pos, size = 0, len(text)
+    gt = lt = -2  # 快取「下一個 > / <」的位置，避免每個 < 都重掃
+    truncated = False
+    i = text.find("<")
+    while i != -1:
+        out.append(text[pos:i])
+        pos = i
+        end = -1
+        if text.startswith("<!--", i):
+            end = text.find("-->", i + 4)
+            end = end + 3 if end != -1 else -1
+        elif text.startswith("<![CDATA[", i):
+            end = text.find("]]>", i + 9)
+            end = end + 3 if end != -1 else -1
+        elif text.startswith(("<?", "<!"), i):
+            end = text.find(">", i + 2)
+            end = end + 1 if end != -1 else -1
+        else:
+            if gt < i:
+                gt = text.find(">", i)
+            if gt == -1:
+                truncated = True
+                break
+            if lt <= i:
+                lt = text.find("<", i + 1)
+            if lt != -1 and lt < gt:  # 標籤裡還有 <：這個 < 只是文字
+                out.append("&lt;")
+                pos = i + 1
+                i = text.find("<", pos)
+                continue
+            out.append(text[i:gt + 1])
+            pos = gt + 1
+            i = text.find("<", pos)
+            continue
+        if end == -1:
+            truncated = True
+            break
+        pos = end  # 剝掉整段
+        i = text.find("<", pos)
+    if not truncated:
+        out.append(text[pos:])
+    del size
+    return "".join(out)
+
+
 class _TextParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -93,8 +150,9 @@ def decode_body(body: bytes, charset: str | None) -> str:
     return body.decode("utf-8", errors="replace")
 
 
-def html_to_text(html: str) -> tuple[str, str]:
-    """``(title, text)``，皆已折疊空白，未截長度。"""
+def html_to_text(html: str, *, max_parse_chars: int = MAX_PARSE_CHARS) -> tuple[str, str]:
+    """``(title, text)``，皆已折疊空白，未截長度。輸入先經 ``sanitize_markup``（截長度、剝病態結構）。"""
+    html = sanitize_markup(html, max_parse_chars)
     parser = _TextParser()
     with contextlib.suppress(Exception):  # 畸形 HTML 不致命：用已解析的部分
         parser.feed(html)

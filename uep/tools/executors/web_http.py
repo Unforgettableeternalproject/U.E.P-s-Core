@@ -15,10 +15,12 @@
 """
 from __future__ import annotations
 
+import contextlib
 import http.client
 import ipaddress
 import socket
 import ssl
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -31,6 +33,9 @@ IMAGE_TYPES: tuple[str, ...] = ("image/png", "image/jpeg", "image/webp", "image/
 # 通用 User-Agent：不帶專案名稱或聯絡資訊
 USER_AGENT = "Mozilla/5.0 (compatible; text-fetcher/1.0)"
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+# 跨主機 redirect 時不得帶到下一個主機的標頭
+SENSITIVE_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization", "x-api-key"})
+_READ_TIMEOUT_CAP_S = 5.0  # 單次讀取的等待上限（再與剩餘總時間取小）
 DEFAULT_PORTS = {"http": 80, "https": 443}
 _CHUNK = 16 * 1024
 # 永遠拒絕的位址（雲端 metadata），白名單也不豁免
@@ -73,7 +78,9 @@ class Opened(Protocol):
     status: int
     headers: Mapping[str, str]  # 鍵為小寫
 
-    def read(self, size: int) -> bytes: ...
+    def read(self, size: int, timeout_s: float) -> bytes:
+        """最多讀 ``size`` 位元組（有資料就回，不等湊滿）；本次讀取最多等 ``timeout_s`` 秒。EOF 回 ``b""``。"""
+        ...
 
     def close(self) -> None: ...
 
@@ -97,14 +104,28 @@ def system_resolver(host: str) -> list[str]:
     return list(dict.fromkeys(str(info[4][0]).split("%")[0] for info in infos))
 
 
+_V6_MAPPED = ipaddress.ip_network("::ffff:0:0/96")  # IPv4-mapped
+_V6_SIIT = ipaddress.ip_network("::ffff:0:0:0/96")  # SIIT（IPv4-translated）
+_V6_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_V6_6TO4 = ipaddress.ip_network("2002::/16")
+# IPv6 只放行全球單播 2000::/3，再排除已知的特殊用途段（IPv4-compatible ::/96、site-local fec0::/10、ULA、link-local 都在 2000::/3 之外）
+_V6_GLOBAL = ipaddress.ip_network("2000::/3")
+_V6_SPECIAL = tuple(ipaddress.ip_network(n) for n in (
+    "2001::/23", "2001:db8::/32", "2001:10::/28", "2001:20::/28", "3fff::/20", "5f00::/16",
+))
+
+
 def _embedded_v4(addr: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
-    if addr.ipv4_mapped is not None:
-        return addr.ipv4_mapped
-    if addr in ipaddress.ip_network("64:ff9b::/96"):  # NAT64
+    """內嵌 IPv4 的過渡位址（mapped／SIIT／NAT64／6to4）拆出 IPv4 再判，避免用 IPv6 外殼繞過 IPv4 規則。"""
+    if addr in _V6_MAPPED or addr in _V6_SIIT or addr in _V6_NAT64:
         return ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
-    if addr in ipaddress.ip_network("2002::/16"):  # 6to4
+    if addr in _V6_6TO4:
         return ipaddress.IPv4Address((int(addr) >> 80) & 0xFFFFFFFF)
     return None
+
+
+def _v6_public(addr: ipaddress.IPv6Address) -> bool:
+    return addr in _V6_GLOBAL and not any(addr in net for net in _V6_SPECIAL) and addr.is_global
 
 
 def is_public_ip(value: str) -> bool:
@@ -115,8 +136,9 @@ def is_public_ip(value: str) -> bool:
         return False
     if isinstance(addr, ipaddress.IPv6Address):
         inner = _embedded_v4(addr)
-        if inner is not None:
-            addr = inner
+        if inner is None:
+            return _v6_public(addr) and addr not in _ALWAYS_BLOCKED
+        addr = inner
     return addr.is_global and not addr.is_multicast and addr not in _ALWAYS_BLOCKED
 
 
@@ -208,21 +230,28 @@ def fetch_url(
     limit = clock() + policy.timeout_s
     deadline = limit if deadline is None else min(deadline, limit)
     current = url
+    origin_host: str | None = None
     for _hop in range(policy.max_redirects + 1):
+        if clock() >= deadline:  # 已超過總時限就不再解析、不再連線（多次請求共用同一個 deadline）
+            raise FetchError("timeout", "抓取逾時")
         scheme, host, port, target, exempt = _parse(current, policy)
+        origin_host = origin_host or host
         ips = _validated_ips(host, exempt, resolver)
         remaining = deadline - clock()
         if remaining <= 0:
             raise FetchError("timeout", "抓取逾時")
+        extra = {k: v for k, v in policy.headers.items() if host == origin_host or k.lower() not in SENSITIVE_HEADERS}
         headers = {
             "User-Agent": policy.user_agent, "Accept": ", ".join(policy.accept_types) + ", */*;q=0.1",
-            "Accept-Encoding": "identity", "Connection": "close", **policy.headers,
+            "Accept-Encoding": "identity", "Connection": "close", **extra,
         }
         try:
             opened = transport.open(scheme, host, port, ips[0], target, headers, remaining)
         except TimeoutError as exc:
             raise FetchError("timeout", "連線逾時") from exc
         except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+            if clock() >= deadline:  # 看門狗在總時限到時關閉 socket，會表現成連線錯誤
+                raise FetchError("timeout", "連線逾時") from exc
             raise FetchError("network", "連線失敗") from exc
         try:
             if opened.status in REDIRECT_STATUSES:
@@ -255,7 +284,10 @@ def _read_body(opened: Opened, url: str, policy: FetchPolicy, clock: Callable[[]
         while True:
             if clock() >= deadline:
                 raise FetchError("timeout", "讀取逾時")
-            chunk = opened.read(_CHUNK)
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise FetchError("timeout", "讀取逾時")
+            chunk = opened.read(_CHUNK, min(remaining, _READ_TIMEOUT_CAP_S))
             if not chunk:
                 break
             total += len(chunk)
@@ -265,6 +297,8 @@ def _read_body(opened: Opened, url: str, policy: FetchPolicy, clock: Callable[[]
     except TimeoutError as exc:
         raise FetchError("timeout", "讀取逾時") from exc
     except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+        if clock() >= deadline:  # 看門狗關閉 socket 的結果
+            raise FetchError("timeout", "讀取逾時") from exc
         raise FetchError("network", "讀取失敗") from exc
     return FetchResult(url=url, status=opened.status, content_type=content_type, charset=charset, body=b"".join(chunks))
 
@@ -284,17 +318,32 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(sock, server_hostname=self._server_name)  # type: ignore[attr-defined]
 
 
+def _abort(sock: socket.socket) -> None:
+    """看門狗：總時限到時強制關閉 socket，喚醒卡在 recv 的執行緒（防慢速滴流）。"""
+    with contextlib.suppress(OSError):
+        sock.shutdown(socket.SHUT_RDWR)
+    with contextlib.suppress(OSError):
+        sock.close()
+
+
 class _StdlibOpened:
-    def __init__(self, conn: http.client.HTTPConnection, response: http.client.HTTPResponse) -> None:
+    def __init__(
+        self, conn: http.client.HTTPConnection, response: http.client.HTTPResponse, sock: socket.socket,
+        watchdog: threading.Timer,
+    ) -> None:
         self._conn = conn
         self._response = response
+        self._sock = sock
+        self._watchdog = watchdog
         self.status = response.status
         self.headers = {k.lower(): v for k, v in response.getheaders()}
 
-    def read(self, size: int) -> bytes:
-        return self._response.read(size)
+    def read(self, size: int, timeout_s: float) -> bytes:
+        self._sock.settimeout(max(timeout_s, 0.001))
+        return self._response.read1(size)  # read1：有資料就回，不等湊滿 size
 
     def close(self) -> None:
+        self._watchdog.cancel()
         try:
             self._response.close()
         finally:
@@ -311,9 +360,20 @@ class StdlibTransport:
         else:
             conn = http.client.HTTPConnection(ip, port, timeout=timeout_s)
         host_header = host if port == DEFAULT_PORTS[scheme] else f"{host}:{port}"
+        started = time.monotonic()
+        watchdog: threading.Timer | None = None
         try:
+            conn.connect()
+            sock = conn.sock
+            # 看門狗涵蓋送出請求、等標頭與讀本文；連線用掉的時間要從總時限扣掉
+            watchdog = threading.Timer(max(timeout_s - (time.monotonic() - started), 0.01), _abort, args=(sock,))
+            watchdog.daemon = True
+            watchdog.start()
             conn.request("GET", target, headers={"Host": host_header, **headers})
-            return _StdlibOpened(conn, conn.getresponse())
+            response = conn.getresponse()
+            return _StdlibOpened(conn, response, sock, watchdog)
         except BaseException:
+            if watchdog is not None:
+                watchdog.cancel()
             conn.close()
             raise

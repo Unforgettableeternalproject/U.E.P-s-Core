@@ -34,7 +34,13 @@ from uep.tools.executors.web_http import (
     fetch_url,
 )
 from uep.tools.executors.web_search import SearchChain, SearchChainError
-from uep.tools.executors.web_text import clip, collapse, decode_body, html_to_text
+from uep.tools.executors.web_text import (
+    MAX_PARSE_CHARS,
+    clip,
+    collapse,
+    decode_body,
+    html_to_text,
+)
 
 DEFAULT_SEARCH_RESULTS = 5
 _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
@@ -47,9 +53,11 @@ def _bad_args(tool: str) -> dict[str, Any]:
 class WebToolExecutor(ReadToolExecutor):
     def __init__(
         self, *, search: SearchChain | None = None, fetch_policy: FetchPolicy | None = None, fetch_max_chars: int = 8000,
-        transport: Transport | None = None, resolver: Resolver | None = None, **kwargs: Any,
+        transport: Transport | None = None, resolver: Resolver | None = None, max_parse_chars: int = MAX_PARSE_CHARS,
+        **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        self._max_parse = max_parse_chars
         self._search = search
         self._policy = fetch_policy or FetchPolicy()
         self._max_chars = fetch_max_chars
@@ -103,7 +111,7 @@ class WebToolExecutor(ReadToolExecutor):
             return failure(code, f"無法抓取網頁：{exc.message}（{exc.code}）")
         text = decode_body(result.body, result.charset)
         if result.content_type in _HTML_TYPES:
-            title, text = html_to_text(text)
+            title, text = html_to_text(text, max_parse_chars=self._max_parse)
         else:
             title, text = "", collapse(text)
         text, truncated = clip(text, min(max_chars, self._max_chars))  # 設定值是硬上限，模型只能要更少

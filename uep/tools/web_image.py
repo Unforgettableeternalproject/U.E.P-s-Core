@@ -2,7 +2,8 @@
 
 ``with_web_image(registry)`` 與 ``with_testkit`` 同形：回傳新的（已驗證、已凍結）註冊表與 executor 映射，不改動傳入的實例。
 條目永遠註冊（lockfile 與 TG-5 雙向檢查需要 executor 在），可用與否只由 ``known_modules`` 決定：
-未設定的工具 readiness 為 ``unavailable``，不投出、不貢獻 capability 標籤；組裝不會因此失敗。
+條件不足（沒有可用 provider、web.fetch 被關閉、沒有視覺模型）的工具 readiness 為 ``unavailable``，不投出、不貢獻 capability 標籤；
+組裝不會因此失敗。預設（零設定）web.search 與 web.fetch 是 ready，但實際曝光還需 agent 路徑開關與決策層 route 表。
 """
 from __future__ import annotations
 
@@ -27,7 +28,12 @@ from uep.tools.catalog.web import (
     WEB_EXECUTOR,
     web_entries,
 )
-from uep.tools.executors.image import ImagePolicy, ImageToolExecutor, VisionPort
+from uep.tools.executors.image import (
+    ImagePolicy,
+    ImageToolExecutor,
+    VisionPort,
+    root_problem,
+)
 from uep.tools.executors.web import WebToolExecutor
 from uep.tools.executors.web_http import FetchPolicy, Resolver, Transport
 from uep.tools.executors.web_search import (
@@ -107,8 +113,12 @@ def build_search_chain(
         model = (settings.web_search_openai_model or "").strip() or think.model
         fallback = OpenAIWebSearch(
             lambda: factory(settings.web_search_timeout_s * 2), model, has_credentials=bool(think.api_key),
+            timeout_s=settings.web_search_timeout_s * 2,
         )
-    return SearchChain(providers, fallback=fallback, budget_s=settings.web_search_budget_s)
+    return SearchChain(
+        providers, fallback=fallback, budget_s=settings.web_search_budget_s,
+        provider_timeout_s=settings.web_search_timeout_s, fallback_timeout_s=settings.web_search_timeout_s * 2,
+    )
 
 
 def build_vision(
@@ -126,7 +136,15 @@ def build_vision(
 
 
 def image_roots(settings: UepSettings) -> tuple[str, ...]:
-    return tuple(_split(settings.image_read_roots, os.pathsep))
+    """白名單目錄；相對路徑或磁碟根目錄不合格，警告並略過（不讓組裝失敗）。"""
+    valid: list[str] = []
+    for raw in _split(settings.image_read_roots, os.pathsep):
+        problem = root_problem(Path(raw))
+        if problem:
+            logger.warning("UEP_IMAGE_READ_ROOTS 的項目 %r 不合格（%s），已略過", raw, problem)
+        else:
+            valid.append(raw)
+    return tuple(valid)
 
 
 def with_web_image(
@@ -151,7 +169,7 @@ def with_web_image(
     executors = {
         WEB_EXECUTOR: WebToolExecutor(
             search=chain, fetch_policy=fetch_policy, fetch_max_chars=settings.web_fetch_max_chars,
-            transport=transport, resolver=resolver, cache=cache,
+            transport=transport, resolver=resolver, cache=cache, max_parse_chars=settings.web_fetch_max_parse_bytes,
         ),
         IMAGE_EXECUTOR: ImageToolExecutor(
             vision=vision_port, transport=transport, resolver=resolver, cache=cache,

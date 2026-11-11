@@ -214,7 +214,10 @@ class UepSettings(BaseSettings):
     legacy_openai_org: str | None = Field(default=None, validation_alias="OPENAI_ORG")
     legacy_openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
 
-    # 網路／圖片工具（web.search、web.fetch、image.read；uep/tools/web_image.py 組裝）。未設定的工具 readiness 為 unavailable、不投出
+    # 網路／圖片工具（web.search、web.fetch、image.read；uep/tools/web_image.py 組裝）。產品決定：零設定時 web.search（自寫 provider）
+    # 與 web.fetch 即為 ready。實際曝光給模型還要 UEP_TOOL_PATH=agent，且決策層 route 表含對應標籤；readiness 為 unavailable 的不投出。
+    # 關閉方法：web.fetch -> UEP_WEB_FETCH_ENABLED=0；web.search -> UEP_WEB_SEARCH_PROVIDERS="" 且 UEP_WEB_SEARCH_OPENAI_FALLBACK=0；
+    # image.read -> 不提供 LLM 金鑰即 unavailable
     # web.search provider 鏈：逗號分隔、依序嘗試（duckduckgo、wikipedia、searxng；未知名稱警告並略過）；空字串＝未設定。
     # OpenAI Responses 的 web_search 是最後備援，預設開啟，有 LLM 金鑰才算可用；清單為空且關閉備援時 web.search 為 unavailable
     web_search_providers: str = Field(default="duckduckgo,wikipedia", validation_alias="UEP_WEB_SEARCH_PROVIDERS")
@@ -230,6 +233,8 @@ class UepSettings(BaseSettings):
     web_fetch_timeout_s: float = Field(default=10.0, gt=0, validation_alias="UEP_WEB_FETCH_TIMEOUT_S")
     web_fetch_max_bytes: int = Field(default=1_000_000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_BYTES")
     web_fetch_max_chars: int = Field(default=8000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_CHARS")
+    # 餵給 HTML 解析器的輸入上限（超過截斷；病態標記另行剝除，確保解析時間線性）
+    web_fetch_max_parse_bytes: int = Field(default=200_000, gt=0, validation_alias="UEP_WEB_FETCH_MAX_PARSE_BYTES")
     web_fetch_max_redirects: int = Field(default=5, ge=0, le=10, validation_alias="UEP_WEB_FETCH_MAX_REDIRECTS")
     # image.read：視覺模型可用就 ready（URL 圖片不需要白名單）；本機圖片白名單目錄（作業系統路徑分隔字元分隔：Windows 用 ;、其他用 :），空＝本機路徑一律拒絕
     image_read_roots: str = Field(default="", validation_alias="UEP_IMAGE_READ_ROOTS")

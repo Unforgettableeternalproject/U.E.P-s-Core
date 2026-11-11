@@ -65,7 +65,7 @@ class FakeOpened:
         self._fail = fail_after
         self.closed = False
 
-    def read(self, size: int) -> bytes:
+    def read(self, size: int, timeout_s: float = 5.0) -> bytes:
         if self._fail is not None:
             raise self._fail
         chunk = self._body[self._pos:self._pos + size]
@@ -82,11 +82,13 @@ class FakeTransport:
     def __init__(self, routes: Mapping[str, Any]) -> None:
         self.routes = dict(routes)
         self.calls: list[tuple[str, str]] = []  # (url, 連線的 ip)
+        self.headers_seen: list[dict[str, str]] = []
 
     def open(self, scheme, host, port, ip, target, headers, timeout_s):
         default = 80 if scheme == "http" else 443
         url = f"{scheme}://{host}{'' if port == default else f':{port}'}{target}"
         self.calls.append((url, ip))
+        self.headers_seen.append(dict(headers))
         route = self.routes[url]
         if isinstance(route, BaseException):
             raise route
@@ -119,6 +121,7 @@ def fetch(url: str, routes: Mapping[str, Any], dns: Mapping[str, list[str]] | No
     "127.0.0.1", "10.0.0.1", "192.168.1.1", "172.16.5.4", "169.254.169.254", "169.254.1.1", "100.64.0.1", "0.0.0.0",
     "224.0.0.1", "::1", "fe80::1", "fc00::1", "fd00:ec2::254", "::ffff:10.0.0.1", "::ffff:127.0.0.1",
     "64:ff9b::a00:1", "2002:a00:1::", "not-an-ip",
+    "::1.2.3.4", "::8.8.8.8", "::ffff:0:a00:1", "fec0::1", "2001:db8::1", "2001::1", "3fff::1", "64:ff9b:1::1", "::2",
 ])
 def test_non_public_addresses_rejected(ip: str) -> None:
     assert not is_public_ip(ip)
@@ -250,11 +253,16 @@ def test_timeout_from_transport_and_deadline_and_http_error() -> None:
     with pytest.raises(FetchError) as err:
         fetch("http://example.com/t", {"http://example.com/t": TimeoutError()})
     assert err.value.code == "timeout"
-    ticks = iter([0.0, 0.0, 0.0, 99.0, 99.0, 99.0])  # 讀取途中超過總時限
-    transport = FakeTransport({"http://example.com/s": (200, HTML_HEADERS, b"x" * 100)})
+    now = [0.0]
+
+    def clock() -> float:  # 每次呼叫前進 1 秒：讀取途中超過總時限
+        now[0] += 1.0
+        return now[0]
+
+    transport = FakeTransport({"http://example.com/s": (200, HTML_HEADERS, b"x" * (16 * 1024 * 10))})
     with pytest.raises(FetchError) as err:
         fetch_url("http://example.com/s", FetchPolicy(timeout_s=5), transport=transport, resolver=resolver_for(GOOD),
-                  clock=lambda: next(ticks))
+                  clock=clock)
     assert err.value.code == "timeout"
     with pytest.raises(FetchError) as err:
         fetch("http://example.com/n", {"http://example.com/n": (404, HTML_HEADERS, b"no")})
@@ -718,3 +726,195 @@ def test_image_read_url_works_without_roots_but_local_path_rejected(sandbox: dic
     assert read(ex, "https://example.com/a.png")[0].succeeded
     receipt, out = read(ex, str(sandbox["root"] / "cat.png"))
     assert not receipt.succeeded and "沒有設定" in out["result"] and len(vision.calls) == 1
+
+
+# ---- 審查修正：慢速滴流、病態標記、IPv6 白名單、deadline、TOCTOU、root、跨主機標頭 ----
+
+
+def _drip_server(drip_headers: bool):
+    """本機慢速伺服器：每 0.2 秒只送 1 位元組。回傳 (port, 停止函式)。"""
+    import socket
+    import threading
+    import time
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    stop = threading.Event()
+
+    def serve() -> None:
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        with conn:
+            conn.recv(4096)
+            head = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
+            if not drip_headers:
+                conn.sendall(head)
+            stream = head if drip_headers else b""
+            for i in range(100000):
+                if stop.is_set():
+                    return
+                piece = stream[i:i + 1] if drip_headers and i < len(stream) else b"a"
+                try:
+                    conn.sendall(piece)
+                except OSError:
+                    return
+                time.sleep(0.2)
+
+    threading.Thread(target=serve, daemon=True).start()
+    return srv.getsockname()[1], lambda: (stop.set(), srv.close())
+
+
+@pytest.mark.parametrize("drip_headers", [False, True])
+def test_slow_drip_cannot_exceed_total_budget(drip_headers: bool) -> None:
+    import time
+
+    port, shutdown = _drip_server(drip_headers)
+    policy = FetchPolicy(timeout_s=1.0, private_hosts=frozenset({"127.0.0.1"}))
+    started = time.monotonic()
+    try:
+        with pytest.raises(FetchError) as err:
+            fetch_url(f"http://127.0.0.1:{port}/", policy)
+    finally:
+        shutdown()
+    assert err.value.code == "timeout"
+    assert time.monotonic() - started < 1.0 + 0.8  # 預算加一個小誤差，而不是等湊滿 16KB
+
+
+PATHOLOGICAL = {
+    "comment": "<!--", "cdata": "<![CDATA[", "pi": "<?", "tag": "<a ", "decl": "<!x", "script": "<script>",
+    "lt": "<", "quote": '<a b=">', "nested": "<a <b>",
+}
+
+
+@pytest.mark.parametrize("name", sorted(PATHOLOGICAL))
+def test_pathological_markup_parses_in_linear_time(name: str) -> None:
+    import time
+
+    pat = PATHOLOGICAL[name]
+    html = pat * (1_000_000 // len(pat))  # 1MB
+    started = time.monotonic()
+    html_to_text(html)
+    assert time.monotonic() - started < 1.0
+    started = time.monotonic()
+    html_to_text("<p>前文</p>" + html, max_parse_chars=80_000)
+    assert time.monotonic() - started < 1.0
+
+
+def test_sanitize_keeps_normal_content_and_strips_unterminated() -> None:
+    from uep.tools.executors.web_text import sanitize_markup
+
+    assert html_to_text("<p>a<!-- hidden -->b</p><p>c</p>")[1].replace("\n", "") == "abc"
+    assert "hidden" not in html_to_text("<p>前<!-- hidden")[1] and "前" in html_to_text("<p>前<!-- hidden")[1]
+    assert sanitize_markup("x" * 50, 10) == "x" * 10
+    assert html_to_text("<p>5 < 6 and 7 > 3</p>")[1] == "5 < 6 and 7 > 3"
+
+
+def test_ddg_provider_survives_pathological_body() -> None:
+    import time
+
+    body = ("<a class='result__a' href='https://ok.example/'>ok</a>" + "<!--" * 250_000).encode()
+    env = provider_env("https://html.duckduckgo.com/html/?q=x", (200, HTML_HEADERS, body), "html.duckduckgo.com")
+    started = time.monotonic()
+    hits = DuckDuckGoProvider(FetchPolicy(max_bytes=2_000_000), **env).search("x", limit=5, languages=("en",), deadline=1e12)
+    assert time.monotonic() - started < 1.0 and hits and hits[0].url == "https://ok.example/"
+
+
+def test_fetch_executor_honors_parse_limit() -> None:
+    body = ("<p>keep</p>" + "<!--" * 100_000).encode()
+    transport = FakeTransport({"https://example.com/p": (200, HTML_HEADERS, body)})
+    ex = WebToolExecutor(fetch_policy=FetchPolicy(), transport=transport, resolver=resolver_for(GOOD), max_parse_chars=5_000)
+    receipt, out = outcome(ex, call("web.fetch", {"url": "https://example.com/p"}))
+    assert receipt.succeeded and json.loads(out["result"])["text"] == "keep"
+
+
+def test_openai_fallback_respects_deadline() -> None:
+    responses = FakeResponses(SimpleNamespace(output=[]))
+    now = [100.0]
+    provider = OpenAIWebSearch(lambda: SimpleNamespace(responses=responses), "m", has_credentials=True, timeout_s=16.0,
+                               clock=lambda: now[0])
+    provider.search("q", limit=1, languages=(), deadline=103.0)
+    assert responses.kwargs["timeout"] == 3.0  # min(設定值 16, 剩餘 3)
+    provider.search("q", limit=1, languages=(), deadline=500.0)
+    assert responses.kwargs["timeout"] == 16.0
+    responses.kwargs = None
+    with pytest.raises(ProviderError) as err:
+        provider.search("q", limit=1, languages=(), deadline=99.0)
+    assert err.value.code == "timeout" and responses.kwargs is None  # 已逾時就不送出
+
+
+def test_wikipedia_languages_share_one_deadline() -> None:
+    now = [0.0]
+
+    class SlowTransport(FakeTransport):
+        def open(self, *args, **kwargs):
+            now[0] += 9.0  # 第一個語言就用掉整個時限
+            return super().open(*args, **kwargs)
+
+    empty = json.dumps({"query": {"search": []}}).encode()
+    url_en = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=q&srlimit=5&format=json&utf8=1"
+    transport = SlowTransport({url_en: (200, JSON_HEADERS, empty)})
+    provider = WikipediaProvider(FetchPolicy(), transport=transport, resolver=resolver_for({"en.wikipedia.org": [PUBLIC]}),
+                                 clock=lambda: now[0])
+    with pytest.raises(ProviderError) as err:
+        provider.search("q", limit=5, languages=("en", "zh"), deadline=8.0)
+    assert err.value.code == "timeout" and len(transport.calls) == 1  # 第二個語言沒有重新計時
+
+
+def test_chain_gives_each_provider_its_own_bounded_deadline() -> None:
+    seen: list[float] = []
+
+    class Recorder(FakeSearchProvider):
+        def search(self, query, *, limit, languages, deadline):
+            seen.append(deadline)
+            return super().search(query, limit=limit, languages=languages, deadline=deadline)
+
+    SearchChain([Recorder("a", [hit("a")])], budget_s=40, provider_timeout_s=8, clock=lambda: 10.0).run("q", limit=3)
+    assert seen == [18.0]  # min(整條鏈 50, 自己 18)
+    seen.clear()
+    SearchChain([Recorder("a", [hit("a")])], budget_s=5, provider_timeout_s=8, clock=lambda: 10.0).run("q", limit=3)
+    assert seen == [15.0]
+
+
+def test_image_toctou_final_path_checked(monkeypatch: pytest.MonkeyPatch, sandbox: dict[str, Path]) -> None:
+    from uep.tools.executors import image as image_module
+
+    target = sandbox["root"] / "cat.png"
+    real = image_module._final_path
+    with target.open("rb") as handle:
+        final = real(handle.fileno())
+    assert final is None or final.resolve() == target.resolve()  # 平台支援時，回報的是真實路徑
+    vision = FakeVision()
+    monkeypatch.setattr(image_module, "_final_path", lambda fd: sandbox["outside"] / "secret.png")  # 模擬競態：開到的是別處
+    receipt, out = read(image_executor(sandbox["root"], vision), str(target))
+    assert not receipt.succeeded and vision.calls == [] and str(sandbox["outside"]) not in out["result"]
+
+
+@pytest.mark.parametrize("bad", ["relative/dir", ".", os.path.abspath(os.sep)])
+def test_image_policy_rejects_relative_and_filesystem_root(bad: str) -> None:
+    with pytest.raises(ValueError):
+        ImagePolicy(roots=(Path(bad),))
+
+
+def test_bad_image_roots_are_skipped_not_fatal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    raw = os.pathsep.join(["relative/dir", os.path.abspath(os.sep), str(tmp_path)])
+    registry, executors = with_web_image(memory_registry(), settings(monkeypatch, image_read_roots=raw, llm_api_key="sk-test"))
+    assert registry.readiness("image.read") == "ready"
+    assert [str(r) for r in executors["core_image"]._policy.roots] == [str(tmp_path.resolve())]
+
+
+def test_sensitive_headers_dropped_on_cross_host_redirect_only() -> None:
+    policy = FetchPolicy(headers={"Authorization": "Bearer t", "Cookie": "s=1", "X-Other": "y"})
+    routes = {
+        "http://example.com/a": (302, {"Location": "/b"}, b""),
+        "http://example.com/b": (302, {"Location": "http://other.example.org/c"}, b""),
+        "http://other.example.org/c": (200, HTML_HEADERS, b"ok"),
+    }
+    transport = FakeTransport(routes)
+    fetch_url("http://example.com/a", policy, transport=transport,
+              resolver=resolver_for({"example.com": [PUBLIC], "other.example.org": [PUBLIC]}))
+    same_host_first, same_host_second, cross_host = transport.headers_seen
+    assert same_host_first["Authorization"] == same_host_second["Authorization"] == "Bearer t"
+    assert "Authorization" not in cross_host and "Cookie" not in cross_host and cross_host["X-Other"] == "y"

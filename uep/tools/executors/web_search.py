@@ -28,7 +28,7 @@ from uep.tools.executors.web_http import (
     Transport,
     fetch_url,
 )
-from uep.tools.executors.web_text import collapse, decode_body
+from uep.tools.executors.web_text import collapse, decode_body, sanitize_markup
 
 TITLE_MAX = 200
 SNIPPET_MAX = 400
@@ -209,7 +209,7 @@ class DuckDuckGoProvider(_HttpProvider):
     def search(self, query: str, *, limit: int, languages: Sequence[str], deadline: float) -> list[SearchHit]:
         body, _ = self._get(f"{self.ENDPOINT}?{urlencode({'q': query})}", deadline)
         parser = _DdgParser()
-        parser.feed(body)
+        parser.feed(sanitize_markup(body))  # 病態輸入（未結束的註解等）會讓 html.parser 變二次方
         hits: list[SearchHit] = []
         for item in parser.raw:
             target = _ddg_target(item["href"])
@@ -324,11 +324,14 @@ class FakeSearchProvider:
 class SearchChain:
     def __init__(
         self, providers: Sequence[SearchProvider], *, fallback: SearchProvider | None = None, budget_s: float = 40.0,
+        provider_timeout_s: float | None = None, fallback_timeout_s: float | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._providers = [p for p in providers if p.available()]
         self._fallback = fallback if fallback is not None and fallback.available() else None
         self._budget_s = budget_s
+        self._provider_timeout_s = provider_timeout_s
+        self._fallback_timeout_s = fallback_timeout_s if fallback_timeout_s is not None else provider_timeout_s
         self._clock = clock
 
     def available(self) -> bool:
@@ -349,8 +352,11 @@ class SearchChain:
             if self._clock() >= deadline:
                 attempts.append({"provider": provider.name, "outcome": "skipped_budget"})
                 continue
+            # 每個 provider 一個自己的 deadline（不超過整條鏈的）：同一 provider 內的多次請求（例如 Wikipedia 兩個語言）共用它
+            own = self._fallback_timeout_s if is_fallback else self._provider_timeout_s
+            provider_deadline = deadline if own is None else min(deadline, self._clock() + own)
             try:
-                raw = provider.search(query, limit=limit, languages=languages, deadline=deadline)
+                raw = provider.search(query, limit=limit, languages=languages, deadline=provider_deadline)
             except ProviderError as exc:
                 attempts.append({"provider": provider.name, "outcome": exc.code})
                 continue

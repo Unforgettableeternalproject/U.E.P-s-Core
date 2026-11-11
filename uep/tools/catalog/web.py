@@ -5,6 +5,9 @@
 - 結果一律是**不可信外部內容**：輸出帶 ``untrusted=true`` 與 ``notice``，模型只能當資料引用，不當指令。
 - readiness 以 ``requires`` 表達：``web_search`` 模組只在 provider 鏈至少有一個可用 provider 時才算已知；
   ``web_fetch`` 在 ``UEP_WEB_FETCH_ENABLED`` 關閉時不算已知。未知模組 ⇒ ``unavailable`` ⇒ 不投出（RA-15），組裝不會失敗。
+- **預設啟用是刻意的產品決定**：零設定時 ``web.search``（預設 provider 為 duckduckgo、wikipedia）與 ``web.fetch`` 就是 ready。
+  但 ready 不等於已曝光給模型：還要 ``UEP_TOOL_PATH=agent``，且決策層 route 表含對應能力標籤。
+  關閉方法：``UEP_WEB_FETCH_ENABLED=0``；``UEP_WEB_SEARCH_PROVIDERS=""`` 且 ``UEP_WEB_SEARCH_OPENAI_FALLBACK=0``。
 - 設定與 provider 組裝見 ``uep.tools.web_image``；執行見 ``uep.tools.executors.web``。
 """
 from __future__ import annotations

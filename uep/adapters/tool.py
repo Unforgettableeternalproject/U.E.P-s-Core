@@ -40,6 +40,8 @@ CAPABILITY_CEILING: Mapping[str, SideEffectClass] = {
     "desktop.file_read": "internal_read",
     "desktop.file_write": "reversible_local",
     "web.fetch": "internal_read",
+    "web.search": "internal_read",
+    "image.read": "internal_read",
     "presentation.propose": "reversible_local",
     "decision.consult": "internal_read",
     # 測試工具組（UEP_TOOL_TESTKIT）專用：test.approval 的上限是 external_effect，測試工具才能走核准路徑

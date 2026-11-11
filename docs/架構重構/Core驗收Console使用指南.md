@@ -168,7 +168,7 @@ $env:UEP_LLM_API_KEY = "<金鑰>"         # 或寫在 Core .env
 
 `/loop <文字>` 把下一個 respond 的提議改成 `route=agent_loop`（Console 專用，規則 proposer 本身不會產出這個 route）。沒設 `UEP_AGENT_LOOP_ENTRY=1` 時會提示並退回一般回覆。失敗時使用者只會看到固定系統訊息「這次處理失敗了，沒有產生回覆。」，不是模型編的答案；`/status` 的 Host 指標與 `/trace` 可輔助看哪一輪失敗。
 
-**核准（Risky 工具）**：現行註冊表沒有任何工具需要核准（全部 `approval_level=none`），所以 G1–G4 不會遇到核准。需核准的工具（例如下面的測試工具組 `test_approval_echo`）會讓 agent_loop 把 Run 停在 `WAITING_APPROVAL`（`awaiting_approval`，回合不會有回覆）；Console 有最小的 `/approve [action_id]`（見 3.1.1）能記錄核准，但**放行後的 resume 路徑 production 尚未接上**，Run 不會自動續跑，否決也尚未提供。
+**核准（Risky 工具）**：現行註冊表沒有任何工具需要核准（全部 `approval_level=none`），所以 G1–G4 不會遇到核准。需核准的工具（例如下面的測試工具組 `test_approval_echo`）會讓 agent_loop 把 Run 停在 `WAITING_APPROVAL`（`awaiting_approval`，回合不會有回覆）；Console 以 `/approve [action_id]`／`/reject <action_id>`（見 3.1.1）放行或否決，並透過 launcher 的公開 `resume` 讓 Run 續跑、印出續跑結果。續跑後的最終文字**不再經 Output Gate**（原 turn 已結束），只在 Console 的「回應（續跑）」顯示；日後 Host／平台的非同步回覆通道再接。
 
 #### 3.1.1 測試用工具組（`UEP_TOOL_TESTKIT`）
 
@@ -187,7 +187,9 @@ $env:UEP_TOOL_TESTKIT = "1"
 | `test_sleep` | internal_read／parallel_one_shot／interruptible，`seconds` 0–30，總時限 10 秒 | 逾時（睡超過 10 秒）、`/cancel` 取消（executor.cancel）、Supervisor |
 | `test_approval_echo` | external_effect＋per_action（如實借用外部效果類別以觸發核准，實際無任何效果）／serial | park（`WAITING_APPROVAL`）與 `/approve` 記錄核准 |
 
-步驟：`/loop 請同時呼叫 test_echo（text=你好）與 test_clock，再告訴我結果` -> `工具呼叫：test_echo[SUCCEEDED] > test_clock[SUCCEEDED]`；`/loop 請呼叫 test_sleep 睡 20 秒`：總時限 10 秒，應以 `failed(timeout)` 回餵模型、Run 仍可收尾（`/loop` 會等到 turn 結束，手動 `/cancel` 需另開輸入，逾時路徑較好驗）；`/loop 請呼叫 test_approval_echo 說「放行」` -> 印 `等待核准：<action_id>`，`/approve <action_id>` -> `已記錄核准 appr_…`（資料庫 `approvals` 有一列，未消耗）。
+步驟：`/loop 請同時呼叫 test_echo（text=你好）與 test_clock，再告訴我結果` -> `工具呼叫：test_echo[SUCCEEDED] > test_clock[SUCCEEDED]`；`/loop 請呼叫 test_sleep 睡 20 秒`：總時限 10 秒，應以 `failed(timeout)` 回餵模型、Run 仍可收尾（`/loop` 會等到 turn 結束，手動 `/cancel` 需另開輸入，逾時路徑較好驗）；`/loop 請呼叫 test_approval_echo 說「放行」` -> 印 `等待核准：<action_id>`，`/approve <action_id>` -> `已記錄核准 appr_…`、`續跑結果：Run run_…：completed`、`回應（續跑）：…`、`test_approval_echo[SUCCEEDED]`（核准單次消耗，副作用只發生一次）；改用 `/reject <action_id>` 則 action 轉 FAILED、模型看到被否決、Run 收尾。核准超過 10 分鐘會再次 park；工具升版或能力被撤銷時續跑被拒（`failed(tool_version_changed)`／`capability_revoked`），核准不被消耗。
+
+工具名稱含 `.` 者（例如 `decision.consult`）送給 provider 時編成 `__`、回來再解碼（`uep/models/tool_names.py`）；編碼後碰撞或名稱本身含 `__` 會在組裝時失敗。
 
 ### 3.2 週期二補漏重點（2026-11-11 合入，Bernie 親自驗證時重點關注）
 

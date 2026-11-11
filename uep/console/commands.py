@@ -50,7 +50,8 @@ HELP_TEXT = """\
 指令：
   /say <文字>        送出一句話（無指令的輸入行等同 /say），等該 turn 結束並顯示結果
   /loop <文字>       agent 路徑（UEP_TOOL_PATH=agent）：這一句導向 agent_loop，顯示 Run 狀態與工具呼叫（需 UEP_AGENT_LOOP_ENTRY=1）
-  /approve [action_id]  核准等待中的工具呼叫（以本機使用者的已驗證人類身分記錄核准）；不帶參數列出等待核准的項目
+  /approve [action_id]  核准等待中的工具呼叫（以本機使用者的已驗證人類身分記錄核准）並讓 Run 續跑；不帶參數列出等待核准的項目
+  /reject <action_id>   否決等待中的工具呼叫並讓 Run 續跑（模型會看到被否決）
   /wav <路徑>       以音檔當輸入；real 模式經真實 STT（餵進 Host）跑整條 turn，以真實時間速度餵入（會花與音檔等長的時間）；
                      fake 模式由 fake STT 產 utterance
   /cancel            取消進行中的 turn（宿主取消）
@@ -95,7 +96,7 @@ class Console:
         self.settle_s = settle_s
         self.last_turn_id: str | None = None
         self._commands: dict[str, Callable[[str], None]] = {
-            "say": self._say, "loop": self._loop, "approve": self._approve, "wav": self._wav, "cancel": self._cancel, "status": self._status,
+            "say": self._say, "loop": self._loop, "approve": self._approve, "reject": self._reject, "wav": self._wav, "cancel": self._cancel, "status": self._status,
             "trace": self._trace, "mem": self._mem, "session": self._session, "mic": self._mic, "stream": self._stream, "help": self._help, "log": self._log, "stt": self._stt, "llm": self._llm, "tts": self._tts,
         }
 
@@ -304,7 +305,7 @@ class Console:
         """核准等待中的 action：以 task 擁有者的已驗證人類身分呼叫 ``TaskManager.record_approval``（沿用既有規則：
         只收 human＋verified、hash／target／scope 取自 action 與 task 列、核准單次消耗且 10 分鐘內有效）。
         不帶參數時列出等待核准的 action。
-        只記錄核准；park 之後的 resume 路徑（AgentLoop.resume）production 尚未接上，所以 Run 不會自動續跑。"""
+        記錄核准後呼叫 launcher 的公開 ``resume`` 讓 park 中的 Run 續跑（重驗規則在 AgentLoop.resume 與 Manager），並印出結果。"""
         with self.rt.session_factory() as s:
             if not arg:
                 pending = list(s.scalars(
@@ -331,14 +332,56 @@ class Console:
             if task is None:
                 self.out(f"找不到 action {action_id} 所屬的 Task。")
                 return
-            owner, scope = task.owner_actor_id, task.scope_ref
+            owner, scope, run_id = task.owner_actor_id, task.scope_ref, action.run_id
             params_hash, tool = action.params_hash, action.tool
         principal = AuthenticatedPrincipal(actor_id=owner, kind="human", verified=True)
         approval = self.rt.core.tasks.record_approval(
             principal=principal, action_hash=params_hash, target=tool, scope=scope,
             expiry=datetime.now(UTC) + timedelta(minutes=10),
         )
-        self.out(f"已記錄核准 {approval.approval_id}（{tool}，10 分鐘內有效）。注意：production 尚未接上 park 後的 resume，Run 不會自動續跑。")
+        self.out(f"已記錄核准 {approval.approval_id}（{tool}，10 分鐘內有效）。")
+        self._resume(run_id, {action_id: approval.approval_id})
+
+    def _reject(self, arg: str) -> None:
+        """否決等待中的 action（``record_rejection``，同樣以 task 擁有者的已驗證人類身分），再讓 Run 續跑（模型會看到 rejected）。"""
+        action_id = arg.split()[0] if arg else ""
+        if not action_id:
+            self.out("用法：/reject <action_id>")
+            return
+        with self.rt.session_factory() as s:
+            action = s.get(ActionIntentRow, action_id)
+            run = s.get(RunRow, action.run_id) if action is not None else None
+            task = s.get(TaskRow, run.task_id) if run is not None else None
+            if task is None:
+                self.out(f"找不到 action：{action_id}")
+                return
+            owner, run_id = task.owner_actor_id, run.run_id
+        self.rt.core.tasks.record_rejection(
+            principal=AuthenticatedPrincipal(actor_id=owner, kind="human", verified=True), action_id=action_id,
+        )
+        self.out(f"已否決 {action_id}。")
+        self._resume(run_id, {})
+
+    def _resume(self, run_id: str, approvals: dict[str, str]) -> None:
+        """透過 launcher 的公開 ``resume`` 續跑 park 中的 Run，等結果並印出（Console 只負責呼叫與顯示）。"""
+        launcher = self.rt.core.loop_launcher
+        if launcher is None:
+            self.out("沒有 loop launcher（未啟用 UEP_AGENT_LOOP_ENTRY），無法續跑。")
+            return
+        try:
+            result = launcher.resume(run_id, approvals).result(timeout=self.wait_s)
+        except Exception as exc:  # noqa: BLE001 - 續跑被拒或逾時都只回報
+            self.out(f"續跑失敗：{type(exc).__name__}：{exc}")
+            return
+        self.out(f"續跑結果：Run {result.run_id}：{result.state}" + (f"（{result.reason_code}）" if result.reason_code else ""))
+        if result.text:
+            self.out(f"回應（續跑）：{result.text}")
+        with self.rt.session_factory() as s:
+            run = s.get(RunRow, run_id)
+            actions = list(s.scalars(
+                select(ActionIntentRow).where(ActionIntentRow.run_id == run_id).order_by(ActionIntentRow.created_at)
+            ))
+            self.out(f"Run {run_id}：{run.status if run else '?'}　工具呼叫：" + " > ".join(f"{a.tool}[{a.status}]" for a in actions))
 
     def _report_loop(self, turn_id: str) -> None:
         """agent_loop 回合的 Task／Run 狀態與工具呼叫（action_intents：工具名稱與狀態）。"""

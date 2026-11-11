@@ -9,6 +9,7 @@ UEP_TEST_DATABASE_URL 時自動 skip）。
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -27,7 +28,7 @@ from uep.events.bus import EventBus
 from uep.events.publisher import EventPublisher
 from uep.fakes.loop_context import InMemoryLoopContextStore
 from uep.tasks.manager import AuthenticatedPrincipal, TaskManager
-from uep.tasks.models import ActionIntentRow, ApprovalRow
+from uep.tasks.models import ActionIntentRow, ApprovalRow, RunRow, TaskRow
 from uep.tasks.states import ActionStatus, RunStatus
 from uep.tools.catalog.memory import memory_registry
 from uep.tools.catalog.testkit import (
@@ -194,16 +195,32 @@ def test_console_loop_without_the_switch_has_no_test_tools_anywhere(session_fact
         rt.core.shutdown()
 
 
-def test_console_approval_echo_parks_and_approve_records_a_human_approval(session_factory, tmp_path):
-    port = FakePort([[intent(TOOL_APPROVAL_ECHO, {"message": "m"}, call_id="c1"), fin("tool_calls")]])
+def _parked_console(session_factory, tmp_path, after_rounds):
+    port = FakePort([[intent(TOOL_APPROVAL_ECHO, {"message": "放行"}, call_id="c1"), fin("tool_calls")], *after_rounds])
     console, rt, out = _console(session_factory, tmp_path, port, testkit=True)
+    console.execute("/say 請核准")
+    with rt.session_factory() as s:
+        (action,) = list(s.scalars(select(ActionIntentRow)))
+    return console, rt, out, action, port
+
+
+def _kit(rt) -> TestkitToolExecutor:
+    return rt.core.tasks._executors[TESTKIT_EXECUTOR]
+
+
+def _scope_of(rt, action) -> str:
+    with rt.session_factory() as s:
+        return s.get(TaskRow, s.get(RunRow, action.run_id).task_id).scope_ref
+
+
+def test_console_park_then_approve_resumes_and_executes_the_side_effect_once(session_factory, tmp_path):
+    console, rt, out, action, _port = _parked_console(session_factory, tmp_path, [[text("核准後完成。"), fin()]])
     try:
-        console.execute("/say 請核准")
-        with rt.session_factory() as s:
-            (action,) = list(s.scalars(select(ActionIntentRow)))
         assert (action.tool, action.status) == (TOOL_APPROVAL_ECHO, ActionStatus.INTENDED.value)
         assert any(f"等待核准：{action.action_id}" in line for line in out.lines)
         assert any("WAITING_APPROVAL" in line for line in out.lines)
+        assert rt.core.loop_launcher.parked_runs() == (action.run_id,)  # park 後保留可 resume 的狀態
+        assert _kit(rt).executions == []
         out.lines.clear()
         console.execute("/approve")  # 不帶參數：列出
         assert any(action.action_id in line for line in out.lines)
@@ -212,11 +229,86 @@ def test_console_approval_echo_parks_and_approve_records_a_human_approval(sessio
         assert out.lines == ["找不到 action：act_missing"]
         out.lines.clear()
         console.execute(f"/approve {action.action_id}")
-        assert out.lines and out.lines[0].startswith("已記錄核准 appr_")
+        assert out.lines[0].startswith("已記錄核准 appr_")
+        assert f"續跑結果：Run {action.run_id}：completed" in out.lines and "回應（續跑）：核准後完成。" in out.lines
+        assert any(
+            line.startswith(f"Run {action.run_id}：SUCCEEDED") and f"{TOOL_APPROVAL_ECHO}[SUCCEEDED]" in line
+            for line in out.lines
+        )
+        assert _kit(rt).executions == [action.action_id]  # 副作用只發生一次
         with rt.session_factory() as s:
             (approval,) = list(s.scalars(select(ApprovalRow)))
-        assert (approval.target, approval.action_hash) == (TOOL_APPROVAL_ECHO, action.params_hash)
-        assert approval.consumed_at is None  # 只記錄，不消耗；沒有被執行
+        assert approval.consumed_by_action_id == action.action_id and approval.target == TOOL_APPROVAL_ECHO
+        assert rt.core.loop_launcher.parked_runs() == ()  # 終態：暫存已清
+        assert not rt.core.loop_launcher._store.children
+        out.lines.clear()
+        console.execute(f"/approve {action.action_id}")  # 已執行：不再需要核准
+        assert "不需要核准" in out.lines[0]
+    finally:
+        rt.core.shutdown()
+
+
+def test_console_reject_ends_the_run_without_executing(session_factory, tmp_path):
+    console, rt, out, action, _port = _parked_console(session_factory, tmp_path, [[text("好，不執行。"), fin()]])
+    try:
+        out.lines.clear()
+        console.execute(f"/reject {action.action_id}")
+        assert f"已否決 {action.action_id}。" in out.lines
+        assert f"續跑結果：Run {action.run_id}：completed" in out.lines
+        assert _kit(rt).executions == []
+        with rt.session_factory() as s:
+            assert s.get(ActionIntentRow, action.action_id).status == ActionStatus.FAILED.value
+            assert s.get(RunRow, action.run_id).status == RunStatus.SUCCEEDED.value
+        assert rt.core.loop_launcher.parked_runs() == ()
+    finally:
+        rt.core.shutdown()
+
+
+def test_expired_approval_reparks_and_does_not_execute(session_factory, tmp_path):
+    _c, rt, _out, action, _port = _parked_console(session_factory, tmp_path, [])
+    try:
+        approval = rt.core.tasks.record_approval(
+            principal=AuthenticatedPrincipal(actor_id="actor_a", kind="human", verified=True),
+            action_hash=action.params_hash, target=action.tool, scope=_scope_of(rt, action),
+            expiry=datetime.now(UTC) + timedelta(milliseconds=1),
+        )
+        time.sleep(0.05)
+        result = rt.core.loop_launcher.resume(action.run_id, {action.action_id: approval.approval_id}).result(10)
+        assert (result.state, result.reason_code) == ("awaiting_approval", "approval_required")
+        assert _kit(rt).executions == [] and rt.core.loop_launcher.parked_runs() == (action.run_id,)
+    finally:
+        rt.core.shutdown()
+
+
+def test_resume_is_refused_when_the_tool_version_changed(session_factory, tmp_path):
+    console, rt, out, action, _port = _parked_console(session_factory, tmp_path, [])
+    try:
+        launcher = rt.core.loop_launcher
+        bumped = [
+            replace(e, spec=replace(e.spec, tool_version=2)) if e.name == TOOL_APPROVAL_ECHO else e
+            for e in launcher._registry.entries().values()
+        ]
+        launcher._registry = ToolRegistry.build(bumped)  # 註冊表升版：凍結的版本與當下投影不同
+        out.lines.clear()
+        console.execute(f"/approve {action.action_id}")
+        assert f"續跑結果：Run {action.run_id}：failed（tool_version_changed）" in out.lines
+        assert _kit(rt).executions == []
+        with rt.session_factory() as s:
+            (approval,) = list(s.scalars(select(ApprovalRow)))
+            assert approval.consumed_at is None  # 重驗失敗不消耗核准
+            assert s.get(RunRow, action.run_id).status == RunStatus.FAILED.value
+        assert launcher.parked_runs() == ()
+    finally:
+        rt.core.shutdown()
+
+
+def test_resume_refuses_runs_that_are_not_parked(session_factory, tmp_path):
+    from uep.echo.agent_wiring import LoopResumeRefused
+
+    _c, rt, _out, _action, _port = _parked_console(session_factory, tmp_path, [])
+    try:
+        with pytest.raises(LoopResumeRefused):
+            rt.core.loop_launcher.resume("run_nope", {})
     finally:
         rt.core.shutdown()
 

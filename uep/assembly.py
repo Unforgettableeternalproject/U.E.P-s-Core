@@ -632,6 +632,13 @@ def assemble_core(
                 raise AssemblyError("UEP_TOOL_TESTKIT 需要 ToolRegistry 型的 tool_resolver（才能併入測試工具）")
             tool_resolver = with_testkit(tool_resolver)
             executors = {**executors, TESTKIT_EXECUTOR: TestkitToolExecutor(cache=agent_cache)}
+        if callable(getattr(tool_resolver, "entries", None)):
+            from uep.models.tool_names import ToolNameError, wire_map
+
+            try:  # provider 名稱轉譯（. -> __）的碰撞／歧義在組裝時就失敗，不等到第一次呼叫模型
+                wire_map(tool_resolver.entries())
+            except ToolNameError as exc:
+                raise AssemblyError(f"工具名稱無法安全轉譯給 provider：{exc}") from exc
     _check_registry_executors(tool_resolver, executors, internal_executors)
     assert turn_generation_source is not None and presence_audience is not None
 

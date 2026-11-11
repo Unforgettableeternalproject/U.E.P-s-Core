@@ -7,7 +7,9 @@ Lore Vault 是她自己的長期記憶與設定庫（原生能力），不屬於
   且 ``native=True``（Bernie 裁決：原生工具不受 Core 內部核准限制，寫入由 Lore Vault 端另行核准／事後在 UI 複審；RA-2a）。
   仍走完整四階段（create_action -> execute_action -> receipt），只是免 Core 核准。
 - ``lore.delete``（Bernie 裁決新增，取代原本「不開放 delete」）：同為 ``external_effect``＋``native``，另受 ``UEP_LORE_DELETE_ENABLED``
-  控制 readiness（模組 ``lore_delete``，預設關閉）；不開放 undelete／upload。只開放 ``dev`` 與 ``lore`` 兩個 space（schema 用 enum 收斂，executor 再驗一次）。
+  控制 readiness（模組 ``lore_delete``，預設開啟）；不開放 undelete／upload。只開放 ``dev`` 與 ``lore`` 兩個 space（schema 用 enum 收斂，executor 再驗一次）。
+- 審核契約（Lore Vault 21cf10f）：lore space 的 write／update 回 ``pending``、delete 回 ``pending_delete``（筆記照常可見），
+  由 Bernie 在 Vault 核准；dev 直接生效。``lore.list`` 可用 ``review_state`` 篩選（單值）。
 - 沒設定（URL／token／vault 範圍）時 readiness 為 unavailable：條目以 ``requires=("lore",)`` 宣告，
   ``with_lore`` 在未設定時對註冊表送 ``module.unavailable``，Gateway 不會投出也不會執行。
 """
@@ -66,7 +68,7 @@ LORE_OUTPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-# 寫入類工具的結果：多一個選填的 review_state（Vault 審核契約合入前不會出現，出現時才帶）
+# 寫入類工具的結果：多一個選填的 review_state（lore space 的寫入／刪除請求由 Vault 回報審核狀態）
 LORE_WRITE_OUTPUT_SCHEMA: dict[str, Any] = {
     **LORE_OUTPUT_SCHEMA,
     "properties": {**LORE_OUTPUT_SCHEMA["properties"], "review_state": {"type": "string", "enum": list(REVIEW_STATES)}},
@@ -88,7 +90,10 @@ LIST_DESCRIPTION = (
     "列出 Lore Vault 的筆記（依更新時間，新的在前），可用標題關鍵字或主題篩選，回標題與摘要。"
     "想瀏覽有哪些筆記、而不是找特定內容時使用。"
 )
-LIST_USAGE_HINT = "有明確問題時用 lore.recall；要翻閱最近的筆記或某主題的清單時才用 lore.list。"
+LIST_USAGE_HINT = (
+    "有明確問題時用 lore.recall；要翻閱最近的筆記或某主題的清單時才用 lore.list。"
+    "想看待審或被駁回的筆記，用 review_state 篩選（一次一個值）。"
+)
 WRITE_DESCRIPTION = (
     "在 Lore Vault 寫入一則新筆記，記下值得長期保存的設定、決策或心得。不逐次核准，之後由使用者在 Lore Vault 複審。"
 )
@@ -103,6 +108,7 @@ UPDATE_DESCRIPTION = (
 UPDATE_USAGE_HINT = (
     "先用 lore.get 看 author 與最新的 updated：author 是你自己才用 lore.update；是 Bernie 的就改用 lore.write 另寫一篇並帶 supersedes=原篇 id。"
     "衝突（版本已變）時重新讀取後再決定，不要硬蓋。"
+    "修改自己 rejected 或 pending_delete 的筆記會重新送審，或取消刪除請求。"
 )
 DELETE_DESCRIPTION = (
     "刪除 Lore Vault 的一則筆記（只限筆記，不含文件）。dev 的刪除直接生效（Vault 端有墓碑可還原）；"
@@ -110,7 +116,8 @@ DELETE_DESCRIPTION = (
 )
 DELETE_USAGE_HINT = (
     "只刪你確定要移除的筆記（例如你自己寫錯、重複的）；內容有疑慮時優先用 lore.update 修正，或另寫新篇並用 supersedes 取代。"
-    "結果的 review_state 為 pending_delete 代表等待審核，不是已刪除。"
+    "結果的 review_state 為 pending_delete 代表等待審核，不是已刪除；已在待刪除中的筆記不能重複送出。"
+    "修改自己 rejected 或 pending_delete 的筆記會重新送審，或取消刪除請求。"
 )
 
 RECALL_INPUT_SCHEMA: dict[str, Any] = {
@@ -147,6 +154,10 @@ LIST_INPUT_SCHEMA: dict[str, Any] = {
         "topics": {
             "type": "array", "items": {"type": "string", "minLength": 1, "maxLength": TOPIC_MAX},
             "description": "限定主題標籤（最多 5 個）。",
+        },
+        "review_state": {
+            "type": "string", "enum": list(REVIEW_STATES),
+            "description": "只列出此審核狀態的筆記（單一值；省略則不篩選）。",
         },
         "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "最多回幾筆（預設 10）。"},
         "cursor": {"type": "string", "maxLength": 512, "description": "上一頁回傳的 next_cursor，用來翻頁。"},
@@ -200,12 +211,12 @@ UPDATE_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-def _read_entry(name: str, description: str, hint: str, schema: dict[str, Any]) -> ToolEntry:
+def _read_entry(name: str, description: str, hint: str, schema: dict[str, Any], tool_version: int = 1) -> ToolEntry:
     return ToolEntry(
         name=name,
         spec=ToolSpec(
             executor=LORE_EXECUTOR, side_effect_class="internal_read", idempotency="native",
-            presence_bound=False, tool_version=1, capability=LORE_READ_TAG,
+            presence_bound=False, tool_version=tool_version, capability=LORE_READ_TAG,
         ),
         descriptor=ToolDescriptor(description=description, input_schema=schema, usage_hint=hint),
         scope=ToolScope(), output_schema=LORE_OUTPUT_SCHEMA, concurrency="parallel_safe", timeout_s=READ_TIMEOUT_S,
@@ -218,7 +229,7 @@ def lore_entries() -> list[ToolEntry]:
     return [
         _read_entry(TOOL_RECALL, RECALL_DESCRIPTION, RECALL_USAGE_HINT, RECALL_INPUT_SCHEMA),
         _read_entry(TOOL_GET, GET_DESCRIPTION, GET_USAGE_HINT, GET_INPUT_SCHEMA),
-        _read_entry(TOOL_LIST, LIST_DESCRIPTION, LIST_USAGE_HINT, LIST_INPUT_SCHEMA),
+        _read_entry(TOOL_LIST, LIST_DESCRIPTION, LIST_USAGE_HINT, LIST_INPUT_SCHEMA, tool_version=2),  # v2：新增 review_state 篩選
         *lore_write_entries(),
     ]
 

@@ -104,3 +104,17 @@ def test_delete_two_step_executes_without_approval_and_leaves_receipt(session_fa
     assert "CONFIRM-XYZ" not in json.dumps(outcome.receipt.meta or {}) + json.dumps(db.executor.outcome(action.action_id))
     with session_factory() as s:
         assert s.get(ActionIntentRow, action.action_id).side_effect_class == "external_effect"
+
+
+def test_delete_pending_delete_in_lore_executes_without_approval_and_leaves_receipt(session_factory):
+    # Vault 審核契約：lore 的刪除只是送出請求（review_state=pending_delete），Core 端仍免核准並留 receipt
+    plan = (200, {"executed": False, "confirm_token": "CONFIRM-XYZ"})
+    http = FakeHttp({"note_delete": [plan, (200, {"executed": True, "review_state": "pending_delete"})]})
+    db = LoreDb(session_factory, http)
+    action, outcome = db.act(TOOL_DELETE, {"id": "n1", "space": "lore"})
+    assert outcome.status is ActionStatus.SUCCEEDED and outcome.receipt is not None and outcome.receipt.succeeded
+    assert db.count(ApprovalRow) == 0 and db.count(ReceiptRow) == 1 and len(http.calls) == 2
+    stored = db.executor.outcome(action.action_id)
+    data = json.loads(stored["result"])
+    assert data["deleted"] is False and "待 Bernie 核准" in data["note"] and stored["review_state"] == "pending_delete"
+    assert "CONFIRM-XYZ" not in json.dumps(outcome.receipt.meta or {}) + json.dumps(stored)

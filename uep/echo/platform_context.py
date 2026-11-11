@@ -2,8 +2,10 @@
 
 provider 每個 turn 輪詢一次 Presence（唯讀 ``peek``）、executors 來源與 ``session.platform``，算出
 ``PlatformContext`` 快照；版本以 ``status + row_version`` 等判定（``generation`` 只在核發 Lease 時遞增）。
-shadow 只記錄與比對，**不改任何消費點的輸入**：``ProjectionContext``、``loop_consult``、``ProactiveContext``
-的實際輸入與先前相同（恆為 None／空集合）。任何失敗都吞掉並計數，不影響 turn。
+shadow 只記錄與比對，**不改任何消費點的輸入**：``ProjectionContext``、``ProactiveContext`` 的實際輸入與先前相同
+（恆為 None／空集合）。``loop_consult`` 的 placement 事實自第 5 步（決策層側）起由 assembly 以同一個 provider 注入
+（見 ``uep.decision.loop_consult.placement_facts``）；shadow 的比對基準 ``ProductionInputs`` 仍代表「未注入」的舊值。
+任何失敗都吞掉並計數，不影響 turn。
 """
 from __future__ import annotations
 

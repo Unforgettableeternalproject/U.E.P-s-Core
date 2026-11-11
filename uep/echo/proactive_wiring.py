@@ -135,7 +135,16 @@ class ProactiveShadow:
 
     def _presence_facts(self) -> tuple[PresenceStatus, PresenceLocation | None, int, bool]:
         try:
-            view = self._presence.peek()  # 唯讀快照，不觸發過期轉換
+            # 唯讀快照，不觸發過期轉換；只供 shadow 評估，Phase 2 實際投遞前須改走 Lease／current()
+            view = self._presence.peek()
+            # peek 不處理過期：ACTIVE 但 Lease 已過期，比照 platform_context 視同 NONE（不在任何平台）
+            expires_at = getattr(view, "expires_at", None)
+            if (
+                PresenceStatus(view.status) is PresenceStatus.ACTIVE
+                and expires_at is not None
+                and expires_at <= self._clock()
+            ):
+                return PresenceStatus.NONE, None, int(view.generation), view.transfer_id is not None
             location = None
             if view.location:
                 try:

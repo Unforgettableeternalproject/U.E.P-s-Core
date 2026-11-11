@@ -16,7 +16,7 @@
 
 U.E.P (Unified Experience Partner) is a long-lived personal AI assistant core. The repository now hosts the **new Core** (`uep/`) plus the subsystems migrated into it (`subsystems/`).
 
-> **Legacy removed**: the old nine-module event-driven system (`core/`, `modules/`, `utils/`, `devtools/`, `Entry.py`) has been deleted. Its last state is preserved at git tag `legacy-final-v0.9.4`; old documents are archived in `docs/archive/legacy-v0.9.4/` (deprecated, read-only reference).
+> **Legacy removed**: the old nine-module event-driven system (`core/`, `modules/`, `utils/`, `devtools/`, `Entry.py`) has been deleted. Its last state is preserved at git tag `legacy-final-v0.9.4`; old documents are no longer shipped in the repository (see that tag if needed).
 
 ## Project Structure
 
@@ -27,9 +27,8 @@ U.E.P-s-Core/
 ├── tests/uep/               # Core tests
 ├── scripts/                 # Gate script, env setup, index checker
 ├── docs/
-│   ├── 架構重構/            # New architecture: proposals, contracts, migration plan
-│   ├── index/               # Index / Tracking tables
-│   └── archive/legacy-v0.9.4/ # Deprecated legacy documents
+│   ├── 架構概觀.md          # Architecture overview (public highlights)
+│   └── index/               # Index / Tracking tables
 ├── train/nlp/               # NLP training data (seed for the Laya dataset)
 ├── arts/                    # Concept art
 ├── alembic.ini              # PostgreSQL migrations
@@ -42,13 +41,13 @@ U.E.P-s-Core/
 - Build or update the shared inference environment: `scripts/setup_infer_env.ps1` (default `~/.uep/venv-inference-312-t211`).
 - Run the whole test gate: `scripts/run_all_tests.ps1`; Core tests only: `python -m pytest tests/uep -q`.
 - Check the index tables: `python scripts/check_index.py`.
-- Acceptance console: `python -m uep.console` (see `docs/架構重構/Core驗收Console使用指南.md`).
+- Acceptance console: `python -m uep.console` (internal guide, not published).
 
 ## Documentation
 
-- **Architecture, contracts and migration plan**: `docs/架構重構/` (start from `子系統遷入Core計畫.md` and `Core契約草案.md`)
+- **Architecture overview**: `docs/架構概觀.md` (detailed designs and contracts are not published)
 - **Where is X / how far is Y**: `docs/index/` (`INDEX.md`, `TRACKING.md`)
-- **Legacy (deprecated)**: `docs/archive/legacy-v0.9.4/`
+- **Legacy (deprecated)**: git tag `legacy-final-v0.9.4`
 
 ## Contributors
 

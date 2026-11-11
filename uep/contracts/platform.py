@@ -154,7 +154,7 @@ class PlatformContext:
         )
 
 
-# ---- 平台端點契約（E1；docs/架構重構/平台端點契約.md §2、§4.3）----
+# ---- 平台端點契約（E1；hidden_docs/架構重構/平台端點契約.md §2、§4.3）----
 # 純資料型別與建構檢查（fail-closed，ValueError）；目前沒有任何 production 消費者，只有契約測試引用。
 # monitor（非本人的狀態顯示／缺席端輸入）與 interaction（她本人）是兩種能力面（EC-1）；
 # 宣告只表示「技術上能做」，核准設定才表示「允許」（§2.1）。

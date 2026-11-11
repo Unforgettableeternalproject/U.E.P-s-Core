@@ -3,7 +3,7 @@
 You are assisting on **U.E.P (Unified Experience Partner)**, a modular Python project.  
 Main priorities: correctness, modularity, stability, and respect for existing naming conventions.
 
-We are current in the phase three of our project, for more infomation please check docs/架構重構/（舊文件已封存於 docs/archive/legacy-v0.9.4/）.
+We are current in the phase three of our project, for more infomation please check docs/架構概觀.md and docs/index/ (old documents: git tag legacy-final-v0.9.4).
 ---
 
 ## Core Rules

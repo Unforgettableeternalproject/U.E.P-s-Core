@@ -4,7 +4,7 @@
     子系統遷入 Core 的本地閘門：依序在各子系統目錄用共用環境跑其原本的測試命令，再跑 Core 的 tests/uep，彙整 pass／skip／fail 與耗時。
 
 .DESCRIPTION
-    對應 docs/架構重構/子系統遷入Core計畫.md §5.3（基線命令）與 §7.4（本地閘門）。
+    對應 hidden_docs/架構重構/子系統遷入Core計畫.md §5.3（基線命令）與 §7.4（本地閘門）。
     每一項各自獨立行程（五個子系統的 tests/ 同名、conftest 各自獨立，不可同進程混跑）。
     預設設 CUDA_VISIBLE_DEVICES=""，GPU 測試自動 skip、不佔用顯卡；需要 GPU 時加 -AllowGpu。
     不修改任何被測 repo：停用 pytest cacheprovider、不寫 .pyc、Session 的 --cov 以 -o addopts= 覆蓋（共用環境沒有 pytest-cov）。

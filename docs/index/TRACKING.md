@@ -2,14 +2,14 @@
 
 查「做到哪」。規則見 [README](README.md)；每列第一欄是穩定 ID，檢查器據此確認 V01–V36、D1–D21、A1–A7 沒有漏列。
 
-- V 項原文：提案第 23 章（[提案](../../hidden_docs/架構重構/UEP_新架構研究/UEP_新架構技術設計提案_2026-10-25.md)）。本表「摘要」只是提示。
+- V 項原文：提案第 23 章（[提案](hidden_docs/架構重構/UEP_新架構研究/UEP_新架構技術設計提案_2026-10-25.md)）。本表「摘要」只是提示。
 - 「實作」「測試」填 repo 內路徑（反引號）；未存在的路徑同列須含 `planned`。`—` 表示尚無。
 - 狀態詞：`未開始`／`證據已存`（有對應文件，尚待驗收）／`進行中`／`已驗收`。證據類型沿用 T-01：讀碼、執行、實測。
 - 「待立卡」：[週期規劃](#3-任務卡)已指定階段與涵蓋的 V 項，但尚未拆成 T-xx。
 
 ## 1. 決策（D）
 
-D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件以提案為準。D16 以後為重構期新增決策；D22–D43 來自 [Core契約草案 §10](../架構重構/Core契約草案.md)，草案中 D22、D23、D30–D35 已由 A8 定案，其餘待決。
+D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件以提案為準。D16 以後為重構期新增決策；D22–D43 來自 [Core契約草案 §10](hidden_docs/架構重構/Core契約草案.md)，草案中 D22、D23、D30–D35 已由 A8 定案，其餘待決。
 
 | ID | 決策摘要 | 狀態 | 最晚定案／負責卡 | 相關 V |
 |---|---|---|---|---|
@@ -91,7 +91,7 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | A2 | 建立 Index 與 Tracking | T-02 | — |
 | A3 | 啟用 Lore Vault 任務層管理本次重構 | 全部 | — |
 | A4 | Event Bus 程式碼沿用並加 durable journal；Session 只沿用語意與 ID | T-08、T-09 | D16 |
-| A5 | 以提案為主，`docs/改進計畫.md` 標為已被取代 | T-08 | D17 |
+| A5 | 以提案為主，`hidden_docs/archive/改進計畫.md` 標為已被取代 | T-08 | D17 |
 | A6 | Python 3.12＋uv／pyproject；依賴拆三組 | T-03 | D18 |
 | A7 | legacy 原地保留，新 Core 在頂層 `uep/` | T-09 | D19 |
 | A8 | 契約草案 8 項採審查建議預設：D22 訂閱鍵改 `str`；D23 legacy ID 只存 `legacy_ref`；D30 只加 `WAITING_INPUT`；D31 `interrupt_policy` 三值；D32 ID 為 `前綴_ULID`；D33 journal 只存元資料＋`payload_ref`；D34 首版不做 Task Graph；D35 新增第七契約 CC-7 | T-08 | D22、D23、D30–D35 |
@@ -104,14 +104,14 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 
 | 卡 | 標題 | 線／週期 | 任務層 change | 涵蓋 V | 涉及 D／A | 主要產出 |
 |---|---|---|---|---|---|---|
-| T-01 | Core 現況對照表 | C／1 | `core-status-baseline` | V01–V04 | D16 | [Core現況對照表](../架構重構/Core現況對照表.md) |
+| T-01 | Core 現況對照表 | C／1 | `core-status-baseline` | V01–V04 | D16 | [Core現況對照表](hidden_docs/archive/架構重構/Core現況對照表.md) |
 | T-02 | Index／Tracking 方案 | C／1 | `index-tracking-scheme` | — | A2 | `docs/index/`、`scripts/check_index.py` |
 | T-03 | 環境基線 | C／1 | `environment-baseline` | — | D18、A6 | `pyproject.toml`、`uv.lock` |
 | T-04 | Discord 語音辨識異常實驗 | A／1 | `discord-stt-recognition-experiment` | V10（前置） | D20 | 實驗紀錄 planned |
 | T-05 | Echo Stream 分支收斂與驗收清單 | A／1 | `echo-stream-acceptance-checklist` | V05、V06、V08–V10（Echo Stream 部分） | D3 | 驗收清單 planned |
 | T-06 | 外派 Test 子系統現況與收斂 | B／1 | `subsystem-status-convergence` | — | — | 子系統現況表 planned |
 | T-07 | Discord 正式輸入驗收 | A／1 | 尚未轉任務層 | V05、V06、V10 | D20、D21 | trace 與聆聽紀錄 planned |
-| T-08 | Core 契約草案 | C／1 | `core-contract-draft` | （契約對應 V09、V20 等） | D16、D17、A4、A5 | [Core契約草案](../架構重構/Core契約草案.md) |
+| T-08 | Core 契約草案 | C／1 | `core-contract-draft` | （契約對應 V09、V20 等） | D16、D17、A4、A5 | [Core契約草案](hidden_docs/架構重構/Core契約草案.md) |
 | T-09 | legacy 隔離方案 | C／1 | `legacy-isolation` | — | D19、A7 | 隔離方案 planned |
 | T-10 | STT 預設模型決議 | A／1 | 尚未展開 | V10 | D20 | 決議 planned |
 | T-11 | 遊戲偵測（hotwords 切換） | A／1 | 尚未展開 | V10 | D21 | 實作 planned |
@@ -125,32 +125,32 @@ D1–D15 對應提案第 22 章 ADR-001～015，維持 PROPOSED，驗證條件�
 | T-19 | V11、V12、V15 驗證 | C／2 | `p2-v11-v12-v15-verification` | V11、V12、V15 | D44 | `tests/uep/test_acceptance_v11.py` |
 | T-22 | 推理 Host 遷移 Python 3.12 | C／2 | `inference-host-py312-migration` | — | D18、A14 | `pyproject.toml` inference 組、`uv.lock` |
 | T-23 | P3 前置修整（Bus §8.4、D41、D42、維護迴圈、DENIED 原因碼） | C／2 | `p3-prereq-bus-journal-hardening` | — | D41、D42、A16 | `uep/events/tailer.py`、`uep/events/payload_hash.py`、`0006_journal_txid` |
-| T-24 | 週期 2 Core 追加驗證（P1、P2、T-23 對抗式稽核） | C／2 | `core-cycle2-audit` | — | D43、A20 | `tests/uep/test_cycle2_audit_a.py`、`tests/uep/test_cycle2_audit_b.py`、`tests/uep/test_cycle2_audit_c_tasks.py`、`tests/uep/test_cycle2_audit_c_context.py`、`tests/uep/test_cycle2_audit_fix2.py`；契約同步於 [Core契約草案](../架構重構/Core契約草案.md) E-17～E-22、X-7～X-9、R-7、P-16～P-25、O-13～O-15、§6.7 的 T 系列條號 16～20；`0007_journal_truncate_guard`、`0008_receipt_worker_epoch` |
-| Part S | SYS Agent 基底（S0～S3 契約草案；S4、S5 僅邊界） | C／2 | 部分完成（尚未轉任務層）：TG-1／TG-5 已有實作與測試，下一週期由 [Agent架構與工具契約提案](../架構重構/Agent架構與工具契約提案.md) 取代或重構 | V29–V31、V36（延伸 V21、V22、V28） | D49–D69、A21、A22 | [SYS契約草案](../架構重構/SYS契約草案.md) |
+| T-24 | 週期 2 Core 追加驗證（P1、P2、T-23 對抗式稽核） | C／2 | `core-cycle2-audit` | — | D43、A20 | `tests/uep/test_cycle2_audit_a.py`、`tests/uep/test_cycle2_audit_b.py`、`tests/uep/test_cycle2_audit_c_tasks.py`、`tests/uep/test_cycle2_audit_c_context.py`、`tests/uep/test_cycle2_audit_fix2.py`；契約同步於 [Core契約草案](hidden_docs/架構重構/Core契約草案.md) E-17～E-22、X-7～X-9、R-7、P-16～P-25、O-13～O-15、§6.7 的 T 系列條號 16～20；`0007_journal_truncate_guard`、`0008_receipt_worker_epoch` |
+| Part S | SYS Agent 基底（S0～S3 契約草案；S4、S5 僅邊界） | C／2 | 部分完成（尚未轉任務層）：TG-1／TG-5 已有實作與測試，下一週期由 [Agent架構與工具契約提案](hidden_docs/架構重構/Agent架構與工具契約提案.md) 取代或重構 | V29–V31、V36（延伸 V21、V22、V28） | D49–D69、A21、A22 | [SYS契約草案](hidden_docs/架構重構/SYS契約草案.md) |
 | DL-0 | 決策中樞架構提案 | C／2 | done（feature/decision-hub 668a5e2） | — | — | — |
 | DL-1 | TurnProposer 收編為第一個決策點（P0） | C／2 | done（891ef68；Host 注入與 shadow 組裝 dc28d32；預設 primary 改 rules.default 為 DL-1b，9d0832b） | — | — | — |
 | DL-2 | 決策評測集與標註規格 | C／2 | done（DL-2a 5849647、DL-2b 43551af；標註規格 v1 155f46a） | — | — | — |
 | DL-3 | 決策日誌與離線重放評估 | C／2 | done（ec5c3ba；組裝層接上 d6b43c2） | — | — | — |
-| DL-4 | 中樞決策→capability 收窄（對應 Agent 提案 §10 的 I-1～I-4） | C／2 | PR1／PR2 done，PR3 決策層部分 done（組裝期驗證 route 表、host 讀表）；`capability_tags_for`／LoopEntry 接線與 `enabled_tags()` 歸工具層 PR4（房內 #113）（D4-3 快照標籤短期等同不收窄）；route 表已加原生工具標籤（唯讀 5 個進 direct_chat／agent_loop，lore.write／chatroom.post 只進 agent_loop），待工具層 ceiling 補 web.search／image.read | — | — | [Capability收窄ADR](../架構重構/Capability收窄ADR.md)、`uep/decision/capability.py`、`tests/uep/test_decision_capability.py` |
-| DL-5 | 現有英文 NLP 收編為特徵層 | C／2 | done（95c81a0：`nlp.legacy` shadow proposer，英文限定；不含 MT，中文待 Q6=C 兩條路 shadow） | — | — | `uep/echo/nlp_wiring.py`、`tests/uep/test_nlp_wiring.py`、[決策中樞架構提案 §5.2.1](../架構重構/決策中樞架構提案.md) |
-| DL-6 | Proactive 評估／仲裁 規則版＋shadow | C／2 | DL-6a 契約＋規則 engine＋shadow 日誌 done（`uep/decision/proactive.py`）；DL-6b assembly 掛載（shadow-only，`uep/echo/proactive_wiring.py`）done；S-H 標籤表、授權服務、候選 producer、投遞 planned | — | — | [Proactive決策契約草案](../架構重構/Proactive決策契約草案.md) |
-| DL-PF | 平台宣告注入端（SYS 增補 PD-18；R0 第 1～4 步） | C／2 | 第 1～4 步 done（型別＋映射表、`PlatformContextProvider`、shadow 記錄、差異比對；零行為變化）；第 5 步起（啟用 `ProjectionContext.platform`、注入 loop_consult）planned，動工條件：Q26 讀取平台快照前必須先有 migration 0018 把 `platform_context_version` 寫進 `decision_log`（不能事後稽核的自決不得上線；0018 動工前先在房內講）；0018 已落地（`decision_log.platform_context_version`），DQ-1／DQ-3 已裁決；決策層側第 5 步 done（11/11：`LoopConsultEngine(platform_facts=)` 覆蓋式注入 `current_platform`／`available_executors`／版本、`assemble_core` 登記 `loop.consult`；行為變更：ACTIVE 時 placement consult 由 `placement_review` 變可評估），工具層側（`ProjectionContext.platform`、`executors_for`）仍 planned；shadow 由 `UEP_PLATFORM_SHADOW` 控制、預設關閉；`ToolRegistry.executors_for` 歸工具層 PR4 前後 | — | — | [平台宣告注入端契約草案](../架構重構/平台宣告注入端契約草案.md)、`uep/contracts/platform.py`、`uep/echo/platform_context.py`、`tests/uep/test_platform_context.py`、`tests/uep/test_decision_platform_inject.py` |
-| DL-EP | 平台端點契約（監控 vs 互動；SYS 增補 PD-19～PD-21） | C／2 | E0 契約定稿、E1 純資料型別、E2 `monitor_platforms` shadow（隨 `UEP_PLATFORM_SHADOW`）done（零行為變化）；E3 Gate 前置 interaction 檢查 shadow 已落地（`UEP_GATE_REQUIRE_INTERACTION` 預設關＝只計數不擋、`REJECT_NOT_INTERACTION` 已加入 D28 碼表；強制開關另行裁決）、E5 監控通道、E6 仲裁器接 Presence Manager（行為變更）、E7 分級投影 planned | — | — | [平台端點契約](../架構重構/平台端點契約.md)、`uep/contracts/platform.py`、`uep/echo/platform_context.py`、`uep/presence/gate.py`、`tests/uep/test_gate_interaction.py`、`tests/uep/test_platform_capabilities.py`、`tests/uep/test_platform_context.py` |
-| DL-7 | 缺席端輸入意圖判斷 `presence.absent_intent`（V18 後續；rules 版 proposer＋shadow） | C／2 | done（分支 feature/decision-absent-intent）：sync、一律 shadow 的決策點，輸出意圖 `presence_request`／`message`／`other`，不產生授權；V18 `presence_request_hook` 預設改走此決策點（失敗為 None）；中性入口 `judge_absent_intent` 與 `AbsentInboundItem` 欄位 adapter（尚未接 monitor 通道，E5）；Laya 標註類別見標註規格 §8；模型版 proposer planned | `uep/decision/presence_absent_intent.py`、`uep/turn/orchestrator.py` | `tests/uep/test_decision_absent_intent.py`、`tests/uep/test_source_location_veto.py` | [V18缺席端輸入契約](../架構重構/V18缺席端輸入契約.md)、[決策標註規格草案 §8](../架構重構/決策標註規格草案.md) |
-| DL-MT | Boundary Translator（zh→en）與 Laya 輸入英文化（提案 §5.4 實作） | C／2 | done（分支 feature/decision-boundary-translator）：`BoundaryTranslator`（opus-mt-zh-en，別名佔位、逾時、退化偵測、lazy＋warmup）、`laya_schema`（題目與 state 全英文，推論／訓練共用）、`laya.shadow` 同步翻譯（未與 aggregator.feed 重疊）、recent_context、warmup 含假推論；`UEP_DECISION_TRANSLATE` 預設關閉 | `uep/echo/translate_wiring.py`、`uep/echo/laya_wiring.py`、`uep/decision/laya_schema.py` | `tests/uep/test_translate_wiring.py`、`tests/uep/test_laya_translate.py`、`tests/uep/test_laya_shadow.py` | [決策中樞架構提案 §5.4.1](../架構重構/決策中樞架構提案.md) |
+| DL-4 | 中樞決策→capability 收窄（對應 Agent 提案 §10 的 I-1～I-4） | C／2 | PR1／PR2 done，PR3 決策層部分 done（組裝期驗證 route 表、host 讀表）；`capability_tags_for`／LoopEntry 接線與 `enabled_tags()` 歸工具層 PR4（房內 #113）（D4-3 快照標籤短期等同不收窄）；route 表已加原生工具標籤（唯讀 5 個進 direct_chat／agent_loop，lore.write／chatroom.post 只進 agent_loop），待工具層 ceiling 補 web.search／image.read | — | — | [Capability收窄ADR](hidden_docs/架構重構/Capability收窄ADR.md)、`uep/decision/capability.py`、`tests/uep/test_decision_capability.py` |
+| DL-5 | 現有英文 NLP 收編為特徵層 | C／2 | done（95c81a0：`nlp.legacy` shadow proposer，英文限定；不含 MT，中文待 Q6=C 兩條路 shadow） | — | — | `uep/echo/nlp_wiring.py`、`tests/uep/test_nlp_wiring.py`、[決策中樞架構提案 §5.2.1](hidden_docs/架構重構/決策中樞架構提案.md) |
+| DL-6 | Proactive 評估／仲裁 規則版＋shadow | C／2 | DL-6a 契約＋規則 engine＋shadow 日誌 done（`uep/decision/proactive.py`）；DL-6b assembly 掛載（shadow-only，`uep/echo/proactive_wiring.py`）done；S-H 標籤表、授權服務、候選 producer、投遞 planned | — | — | [Proactive決策契約草案](hidden_docs/架構重構/Proactive決策契約草案.md) |
+| DL-PF | 平台宣告注入端（SYS 增補 PD-18；R0 第 1～4 步） | C／2 | 第 1～4 步 done（型別＋映射表、`PlatformContextProvider`、shadow 記錄、差異比對；零行為變化）；第 5 步起（啟用 `ProjectionContext.platform`、注入 loop_consult）planned，動工條件：Q26 讀取平台快照前必須先有 migration 0018 把 `platform_context_version` 寫進 `decision_log`（不能事後稽核的自決不得上線；0018 動工前先在房內講）；0018 已落地（`decision_log.platform_context_version`），DQ-1／DQ-3 已裁決；決策層側第 5 步 done（11/11：`LoopConsultEngine(platform_facts=)` 覆蓋式注入 `current_platform`／`available_executors`／版本、`assemble_core` 登記 `loop.consult`；行為變更：ACTIVE 時 placement consult 由 `placement_review` 變可評估），工具層側（`ProjectionContext.platform`、`executors_for`）仍 planned；shadow 由 `UEP_PLATFORM_SHADOW` 控制、預設關閉；`ToolRegistry.executors_for` 歸工具層 PR4 前後 | — | — | [平台宣告注入端契約草案](hidden_docs/架構重構/平台宣告注入端契約草案.md)、`uep/contracts/platform.py`、`uep/echo/platform_context.py`、`tests/uep/test_platform_context.py`、`tests/uep/test_decision_platform_inject.py` |
+| DL-EP | 平台端點契約（監控 vs 互動；SYS 增補 PD-19～PD-21） | C／2 | E0 契約定稿、E1 純資料型別、E2 `monitor_platforms` shadow（隨 `UEP_PLATFORM_SHADOW`）done（零行為變化）；E3 Gate 前置 interaction 檢查 shadow 已落地（`UEP_GATE_REQUIRE_INTERACTION` 預設關＝只計數不擋、`REJECT_NOT_INTERACTION` 已加入 D28 碼表；強制開關另行裁決）、E5 監控通道、E6 仲裁器接 Presence Manager（行為變更）、E7 分級投影 planned | — | — | [平台端點契約](hidden_docs/架構重構/平台端點契約.md)、`uep/contracts/platform.py`、`uep/echo/platform_context.py`、`uep/presence/gate.py`、`tests/uep/test_gate_interaction.py`、`tests/uep/test_platform_capabilities.py`、`tests/uep/test_platform_context.py` |
+| DL-7 | 缺席端輸入意圖判斷 `presence.absent_intent`（V18 後續；rules 版 proposer＋shadow） | C／2 | done（分支 feature/decision-absent-intent）：sync、一律 shadow 的決策點，輸出意圖 `presence_request`／`message`／`other`，不產生授權；V18 `presence_request_hook` 預設改走此決策點（失敗為 None）；中性入口 `judge_absent_intent` 與 `AbsentInboundItem` 欄位 adapter（尚未接 monitor 通道，E5）；Laya 標註類別見標註規格 §8；模型版 proposer planned | `uep/decision/presence_absent_intent.py`、`uep/turn/orchestrator.py` | `tests/uep/test_decision_absent_intent.py`、`tests/uep/test_source_location_veto.py` | [V18缺席端輸入契約](hidden_docs/架構重構/V18缺席端輸入契約.md)、[決策標註規格草案 §8](hidden_docs/架構重構/決策標註規格草案.md) |
+| DL-MT | Boundary Translator（zh→en）與 Laya 輸入英文化（提案 §5.4 實作） | C／2 | done（分支 feature/decision-boundary-translator）：`BoundaryTranslator`（opus-mt-zh-en，別名佔位、逾時、退化偵測、lazy＋warmup）、`laya_schema`（題目與 state 全英文，推論／訓練共用）、`laya.shadow` 同步翻譯（未與 aggregator.feed 重疊）、recent_context、warmup 含假推論；`UEP_DECISION_TRANSLATE` 預設關閉 | `uep/echo/translate_wiring.py`、`uep/echo/laya_wiring.py`、`uep/decision/laya_schema.py` | `tests/uep/test_translate_wiring.py`、`tests/uep/test_laya_translate.py`、`tests/uep/test_laya_shadow.py` | [決策中樞架構提案 §5.4.1](hidden_docs/架構重構/決策中樞架構提案.md) |
 
 T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細節待敏卡展開後補。
 
 ## 4. 驗收項（V）
 
-「契約覆蓋」摘自 [Core契約草案 §11](../架構重構/Core契約草案.md)：`是`＝草案有對應驗證案例（VC-x-y，尚未執行）；`部分`＝案例不完整；`未涵蓋`＝草案無案例；`契約外`＝屬整合或實測驗收。覆蓋不等於驗收。
+「契約覆蓋」摘自 [Core契約草案 §11](hidden_docs/架構重構/Core契約草案.md)：`是`＝草案有對應驗證案例（VC-x-y，尚未執行）；`部分`＝案例不完整；`未涵蓋`＝草案無案例；`契約外`＝屬整合或實測驗收。覆蓋不等於驗收。
 
 | ID | 摘要 | 任務卡 | 實作 | 測試 | 證據 | 狀態 | 契約覆蓋（草案 §11） |
 |---|---|---|---|---|---|---|---|
-| V01 | 核對本地設計與程式 call path，列出差異 | T-01 | — | — | [對照表 §1、§3](../架構重構/Core現況對照表.md)（讀碼＋執行） | 證據已存 | 契約外 |
-| V02 | Echo Stream 與各模組實際接入狀態 | T-01 | — | — | [對照表 §2](../架構重構/Core現況對照表.md)（讀碼；core／modules 無 Echo Stream 引用） | 證據已存 | 契約外 |
-| V03 | GS 啟動／雙條件終止、NLP 狀態權限、WS 持久化 | T-01 | — | — | [對照表 §2](../架構重構/Core現況對照表.md)（讀碼＋執行；單元測試不代表端到端） | 證據已存 | 契約外 |
-| V04 | Frontend Bridge、ON_CALL、SLEEP、口型、播放器事件來源 | T-01 | — | — | [對照表 §2](../架構重構/Core現況對照表.md)（讀碼） | 證據已存 | 契約外 |
+| V01 | 核對本地設計與程式 call path，列出差異 | T-01 | — | — | [對照表 §1、§3](hidden_docs/archive/架構重構/Core現況對照表.md)（讀碼＋執行） | 證據已存 | 契約外 |
+| V02 | Echo Stream 與各模組實際接入狀態 | T-01 | — | — | [對照表 §2](hidden_docs/archive/架構重構/Core現況對照表.md)（讀碼；core／modules 無 Echo Stream 引用） | 證據已存 | 契約外 |
+| V03 | GS 啟動／雙條件終止、NLP 狀態權限、WS 持久化 | T-01 | — | — | [對照表 §2](hidden_docs/archive/架構重構/Core現況對照表.md)（讀碼＋執行；單元測試不代表端到端） | 證據已存 | 契約外 |
+| V04 | Frontend Bridge、ON_CALL、SLEEP、口型、播放器事件來源 | T-01 | — | — | [對照表 §2](hidden_docs/archive/架構重構/Core現況對照表.md)（讀碼） | 證據已存 | 契約外 |
 | V05 | 真實語音全鏈路與分段延遲 | T-05（清單）、T-07（實測） | — | — | — | 未開始 | 契約外 |
 | V06 | 插話時佇列填滿仍可停止並續說 | T-05、T-07 | — | — | — | 未開始 | 是：VC-5-1、VC-4-5 |
 | V07 | 取消／斷線／Lease revoke 競態無晚到輸出 | 週期 2 P3（待立卡） | — | — | — | 未開始 | 是：VC-3-1、VC-4-5 |
@@ -164,7 +164,7 @@ T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細
 | V15 | 舊端網路隔離的 watchdog 與嚴格模式 | T-19（週期 2 P2） | `uep/endpoint/watchdog.py`、`uep/presence/manager.py` | `tests/uep/test_acceptance_v15.py`、`tests/uep/test_cycle2_audit_b.py`、`tests/uep/test_cycle2_audit_fix2.py` | 隔離下端點依本地單調時鐘於 TTL 內停止並清 buffer，恢復後補送證據；嚴格模式證據到前新端 NOT_QUIESCED、偽造證據不放行、人為確認可放行；證據僅於播放真正停止後送出。缺口記 D44。T-24 補強：端點二次接納自守本地期限與 `valid_until`；停止證據白名單與資格（缺 `playing=False`／`buffer_flushed=True` 為 `EVIDENCE_REJECTED`）；`fresh_process` 須舊 Lease `expires_at`＋30 秒已過，端點有上限（65 秒）等待；revoke 後他端放行條件（A20）；operator `resolve-recovery` API／CLI | 已驗證（P2，CLI＋模擬端點） | 是：VC-4-4 |
 | V16 | 離場／加入失敗與 timeout 的 NONE／RECOVERING | 週期 3 P5（待立卡） | — | — | — | 未開始 | 部分：VC-4-4、VC-5-3 |
 | V17 | 多分頁／多 Desktop／多頻道的排他粒度 | 週期 3 Part H（多 Desktop）、P4（多頻道）、P5（多分頁）（待立卡） | — | — | — | 未開始 | 未涵蓋 |
-| V18 | 缺席的 Discord 不錄音不參與 | 週期 3 P4（待立卡）；契約與決策層否決先行（分支 feature/decision-v18-absent-input） | `uep/turn/orchestrator.py`、`uep/turn/models.py`、`uep/echo/host.py`、`uep/assembly.py`、`uep/config.py` | `tests/uep/test_source_location_veto.py`、[V18缺席端輸入契約](../架構重構/V18缺席端輸入契約.md) | 缺席端輸入（來源非 Host location 或 Host 無 Lease）不開 turn、不進 aggregator／proposer，留下不含原文的 shadow 紀錄；缺失放行並計數，`UEP_REQUIRE_SOURCE_LOCATION` 開啟後缺失即否決；非 desktop adapter 未開關則拒絕組裝。範圍聲明：只驗證決策層，P4 外部 adapter 與 Core ingress 簽發未實作，不宣稱端到端 | 部分驗證（決策層，單元／整合） | 未涵蓋 |
+| V18 | 缺席的 Discord 不錄音不參與 | 週期 3 P4（待立卡）；契約與決策層否決先行（分支 feature/decision-v18-absent-input） | `uep/turn/orchestrator.py`、`uep/turn/models.py`、`uep/echo/host.py`、`uep/assembly.py`、`uep/config.py` | `tests/uep/test_source_location_veto.py`、[V18缺席端輸入契約](hidden_docs/架構重構/V18缺席端輸入契約.md) | 缺席端輸入（來源非 Host location 或 Host 無 Lease）不開 turn、不進 aggregator／proposer，留下不含原文的 shadow 紀錄；缺失放行並計數，`UEP_REQUIRE_SOURCE_LOCATION` 開啟後缺失即否決；非 desktop adapter 未開關則拒絕組裝。範圍聲明：只驗證決策層，P4 外部 adapter 與 Core ingress 簽發未實作，不宣稱端到端 | 部分驗證（決策層，單元／整合） | 未涵蓋 |
 | V19 | Task 跨 GS 結束可恢復；Outbox 重播與 DeliveryManager 去重（production 尚無 task 終局→OutputIntent consumer） | T-15（週期 2 P1） | `uep/tasks/` | `tests/uep/test_acceptance_v19.py`、`tests/uep/test_cycle2_audit_c_tasks.py` | fake 驗證：對話端丟棄＋新 manager 可恢復；6 個 crash 點×3 種 idempotency 已成功 action 恆執行 1 次；完成通知單次；task 終局事件與狀態同交易寫 outbox（target `notification`），Bus 投遞前崩潰可由 outbox 補送。範圍聲明（T-24）：「完成通知單次」只驗證 Outbox 重播與 DeliveryManager 去重（測試自行組出 OutputIntent），production 目前尚無 task 終局事件→OutputIntent 的 consumer；另補 Task／Run／Action 稽核回歸（暫停連動、`resume_run` 暫停原因、`transition_run` 必填 epoch、T-13 全 Run 檢查、`run.ended` 的 `unresolved_actions` 等） | 已驗證（P1，fake） | 是：VC-6-1 |
 | V20 | 重送／Outbox 重播不重複 action | T-15（週期 2 P1） | `uep/events/`、`uep/output/manager.py` | `tests/uep/test_acceptance_v20.py`、`tests/uep/test_cycle2_audit_a.py`、`tests/uep/test_cycle2_audit_fix2.py` | fake 驗證：重送／併發重送／ACK 前崩潰重播／雙 dispatcher／delivery 各 crash 點重啟，action execution_count 與 output effect_count 皆 1。已知邊界：權威 lookup 誤報 confirmed_not_sent 且 adapter 非冪等時重送 1 次。T-24 補強：`create_action` 第二層 IntegrityError 仍去重、同 action_id 比對 run／tool／side_effect_class／params_hash；冪等重送不一致拋 `IdempotencyConflict`（含 blob 三態與密鑰輪替不誤報，`tests/uep/test_cycle2_audit_a.py`、`tests/uep/test_cycle2_audit_fix2.py`） | 已驗證（P1，fake） | 是：VC-1-1、VC-1-2 |
 | V21 | 工具已做完但 response 遺失可查 receipt | T-15（週期 2 P1） | `uep/tasks/`、`uep/adapters/tool.py` | `tests/uep/test_acceptance_v21.py`、`tests/uep/test_cycle2_audit_c_tasks.py`、`tests/uep/test_cycle2_audit_fix2.py` | fake 驗證：found／undetermined／confirmed_not_executed 各條件、unverified receipt、lookup 例外、輸出端 unknown 皆不盲目重送。已知邊界：查核誤報＋宣告權威＋宣稱可冪等卻不去重的 executor 會重複 1 次。T-24 補強：zombie worker 晚到 receipt 立即入庫，`resolve_unknown` 優先採已存已驗證 receipt、不退回 INTENDED；階段 1.5 呼叫前重檢（被擋 FAILED＋Core 自簽 receipt，executor 零次呼叫）；階段 3 入庫失敗轉 UNKNOWN；receipt 內容限制與 HMAC 脫敏。已知限制：重檢與 executor 呼叫之間仍有殘餘極短窗口 | 已驗證（P1，fake） | 是：VC-6-2 |
@@ -175,9 +175,9 @@ T-10、T-11 目前只在 DECISIONS 被引用，TASKS.md 尚無卡片內容；細
 | V26 | 靜音／冷卻／過期不造成連續打擾 | 週期 4 P7（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V27 | 高 salience 但不適合打擾仍可延後 | 週期 4 P7（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V28 | 私聊→公開 Discord 不洩漏私人內容 | 週期 3 P5（待立卡） | — | — | — | 未開始 | 是：VC-2-1 |
-| V29 | 惡意內容要求擴權被 Policy 拒絕 | 週期 2 Part S（待立卡） | `uep/tools/registry.py`、`uep/tools/gateway.py`、`uep/agent/core.py` | `tests/uep/test_tool_spec.py`、`tests/uep/test_p3_s1_registry.py`、`tests/uep/test_agent_core.py` | [SYS契約草案](../架構重構/SYS契約草案.md) | 部分完成（TG-1／TG-5 已實作；其餘待下一週期由 [Agent架構與工具契約提案](../架構重構/Agent架構與工具契約提案.md) 取代或重構） | 是：SYS契約草案 VC-S2-3 |
-| V30 | LLM 自述核准不能消耗 approval | 週期 2 Part S（待立卡） | `uep/tools/registry.py`、`uep/tools/gateway.py`、`uep/agent/core.py` | `tests/uep/test_tool_spec.py`、`tests/uep/test_p3_s1_registry.py`、`tests/uep/test_agent_core.py` | — | 部分完成（TG-1／TG-5 已實作；其餘待下一週期由 [Agent架構與工具契約提案](../架構重構/Agent架構與工具契約提案.md) 取代或重構） | 是：VC-6-4；SYS契約草案 TG-7 反例、VC-S2-4 |
-| V31 | 參數變更後舊 approval 失效；global stop 不依賴 LLM | 週期 2 Part S（待立卡） | `uep/tools/registry.py`、`uep/tools/gateway.py`、`uep/agent/core.py` | `tests/uep/test_tool_spec.py`、`tests/uep/test_p3_s1_registry.py`、`tests/uep/test_agent_core.py` | — | 部分完成（TG-1／TG-5 已實作；其餘待下一週期由 [Agent架構與工具契約提案](../架構重構/Agent架構與工具契約提案.md) 取代或重構） | 是：VC-6-3；SYS契約草案 VC-S2-4、TG-11 |
+| V29 | 惡意內容要求擴權被 Policy 拒絕 | 週期 2 Part S（待立卡） | `uep/tools/registry.py`、`uep/tools/gateway.py`、`uep/agent/core.py` | `tests/uep/test_tool_spec.py`、`tests/uep/test_p3_s1_registry.py`、`tests/uep/test_agent_core.py` | [SYS契約草案](hidden_docs/架構重構/SYS契約草案.md) | 部分完成（TG-1／TG-5 已實作；其餘待下一週期由 [Agent架構與工具契約提案](hidden_docs/架構重構/Agent架構與工具契約提案.md) 取代或重構） | 是：SYS契約草案 VC-S2-3 |
+| V30 | LLM 自述核准不能消耗 approval | 週期 2 Part S（待立卡） | `uep/tools/registry.py`、`uep/tools/gateway.py`、`uep/agent/core.py` | `tests/uep/test_tool_spec.py`、`tests/uep/test_p3_s1_registry.py`、`tests/uep/test_agent_core.py` | — | 部分完成（TG-1／TG-5 已實作；其餘待下一週期由 [Agent架構與工具契約提案](hidden_docs/架構重構/Agent架構與工具契約提案.md) 取代或重構） | 是：VC-6-4；SYS契約草案 TG-7 反例、VC-S2-4 |
+| V31 | 參數變更後舊 approval 失效；global stop 不依賴 LLM | 週期 2 Part S（待立卡） | `uep/tools/registry.py`、`uep/tools/gateway.py`、`uep/agent/core.py` | `tests/uep/test_tool_spec.py`、`tests/uep/test_p3_s1_registry.py`、`tests/uep/test_agent_core.py` | — | 部分完成（TG-1／TG-5 已實作；其餘待下一週期由 [Agent架構與工具契約提案](hidden_docs/架構重構/Agent架構與工具契約提案.md) 取代或重構） | 是：VC-6-3；SYS契約草案 VC-S2-4、TG-11 |
 | V32 | 使用者電腦關機 Mac Core 仍運作 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 契約外 |
 | V33 | 重開機後只有重新授權的 Presence 到場 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 未涵蓋 |
 | V34 | 長時間運行資源有界 | 週期 4 P8（待立卡） | — | — | — | 未開始 | 契約外 |

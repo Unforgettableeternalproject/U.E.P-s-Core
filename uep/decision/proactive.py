@@ -1,6 +1,6 @@
 """``proactive.initiate`` 決策點（DL-6a）：ProactiveCandidate 契約、9 關規則仲裁與 shadow 日誌。
 
-設計依據：``docs/架構重構/Proactive決策契約草案.md``。
+設計依據：``hidden_docs/架構重構/Proactive決策契約草案.md``。
 
 - 候選（``ProactiveCandidate``）與仲裁當下的即時事實（``ProactiveContext``）分開：候選只有 ID／列舉／數值，
   不帶原文、不帶當下 Audience／Presence；授權只帶 ``authorization_ref``，查證結果由 context 注入。

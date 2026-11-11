@@ -67,6 +67,7 @@ from uep.decision.log import DecisionLogWriter
 from uep.decision.policy_publish import register_policy_publish
 from uep.echo.agent_wiring import attach_agent_tools, build_loop_entry
 from uep.echo.platform_context import PlatformContextProvider, PlatformShadow
+from uep.echo.proactive_wiring import ProactiveShadow, attach_proactive_shadow
 from uep.echo.services import EchoServices
 from uep.endpoint.auth import (
     DEFAULT_SKEW_SECONDS,
@@ -200,6 +201,7 @@ class CoreAssembly:
     supervisor_loop: SupervisorLoop | None = None  # Supervisor 啟用且 supervisor_interval 不為 0 時建立（與維護迴圈各自獨立）
     loop_launcher: Any = None  # agent_loop 的 production 啟動器（UEP_AGENT_LOOP_ENTRY）；入口停止段先關閉，早於 Supervisor 關機暫停
     module_events_unsubscribe: Callable[[], None] | None = None  # module.* 就緒事件訂閱的取消函式（暫定；UEP_TOOL_MODULE_EVENTS）
+    proactive_shadow: ProactiveShadow | None = None  # DL-6b：proactive.initiate 的 shadow 入口（有 echo 且決策日誌啟用時才有；不啟動 Run）
     dream_probe: StateBusForegroundProbe | None = None  # 做夢迴圈的前景 Probe（memory 啟用 dream_loop 且未自帶 Probe 時由組裝層建立）
 
     def start(self) -> None:
@@ -738,7 +740,13 @@ def assemble_core(
         dream_probe = StateBusForegroundProbe(state, bus, global_stop_fn=stop.is_engaged)
         memory.attach_dream_probe(dream_probe)
     writer: DecisionLogWriter | None = None
+    proactive_shadow: ProactiveShadow | None = None
     if echo is not None and _decision_log_enabled(decision_log):
+        # DL-6b：proactive.initiate 只在日誌啟用時登記（停用時零成本），須早於 attach 讓預設名單串到此 kind；
+        # shadow-only：沒有 producer、沒有計時器，不建立 Run、不投遞；capability_lookup 待工具層 S-H 標籤表接上（暫回 None）
+        proactive_shadow = attach_proactive_shadow(
+            echo.decision_hub, presence=presence, state=state, stop=stop, audience=presence_audience, clock=clock,
+        )
         writer = DecisionLogWriter(DbSink(session_factory))
         writer.attach(echo.decision_hub)
         # 政策發布記錄只在日誌啟用時登記（停用時零成本）；須在 Host 開始發布前（組裝階段）完成
@@ -752,4 +760,5 @@ def assemble_core(
         endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory, echo=echo,
         decision_log=writer, supervisor=supervisor_obj, supervisor_loop=supervisor_loop, loop_launcher=loop_launcher,
         module_events_unsubscribe=module_events_unsubscribe, dream_probe=dream_probe,
+        proactive_shadow=proactive_shadow,
     )

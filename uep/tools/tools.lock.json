@@ -7,6 +7,10 @@
     "schema_hash": "17bb5e0c3e39180560f459a53fc62e0ce1da649c6759c7cbd7e511dd1016ba49",
     "tool_version": 1
   },
+  "lore.delete": {
+    "schema_hash": "461830b9e9445e4af95de0df6a8fd0cfa6dd9282bff9ff72eefb5abe6324da10",
+    "tool_version": 1
+  },
   "lore.get": {
     "schema_hash": "6c32bf6ba8abcf9195a6a7b468e557760b4b70f1b7d779046899287b9a1693ba",
     "tool_version": 1
@@ -24,7 +28,7 @@
     "tool_version": 1
   },
   "lore.write": {
-    "schema_hash": "17242749fb90ce743934a4d2c69fa4048b1d2b3bc359c38f139753ffc0571749",
+    "schema_hash": "726d4ef085072ce49032547027016af5efba8b192f19187ca1a80492048e607a",
     "tool_version": 1
   },
   "member_recall": {

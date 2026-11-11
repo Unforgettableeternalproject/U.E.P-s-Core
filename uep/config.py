@@ -234,6 +234,8 @@ class UepSettings(BaseSettings):
     lore_vaults: str | None = Field(default=None, validation_alias="UEP_LORE_VAULTS")
     lore_default_space: Literal["dev", "lore"] = Field(default="lore", validation_alias="UEP_LORE_DEFAULT_SPACE")
     lore_author: str = Field(default="U.E.P", validation_alias="UEP_LORE_AUTHOR")
+    # lore.delete 的額外開關：Vault 端刪除介面定案前預設關閉（關閉時 lore.delete readiness 為 unavailable）
+    lore_delete_enabled: bool = Field(default=False, validation_alias="UEP_LORE_DELETE_ENABLED")
     lore_timeout_s: float = Field(default=10.0, gt=0, validation_alias="UEP_LORE_TIMEOUT_S")
     lore_max_chars: int = Field(default=6000, ge=500, le=50000, validation_alias="UEP_LORE_MAX_CHARS")
 

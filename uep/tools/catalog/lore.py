@@ -6,7 +6,8 @@ Lore Vault 是她自己的長期記憶與設定庫（原生能力），不屬於
 - 寫入兩工具（``lore.write``／``lore.update``，能力標籤 ``lore.write``）：照實分類 ``external_effect``，``approval_level=none``
   且 ``native=True``（Bernie 裁決：原生工具不受 Core 內部核准限制，寫入由 Lore Vault 端另行核准／事後在 UI 複審；RA-2a）。
   仍走完整四階段（create_action -> execute_action -> receipt），只是免 Core 核准。
-- 不開放 delete；只開放 ``dev`` 與 ``lore`` 兩個 space（schema 用 enum 收斂，executor 再驗一次）。
+- ``lore.delete``（Bernie 裁決新增，取代原本「不開放 delete」）：同為 ``external_effect``＋``native``，另受 ``UEP_LORE_DELETE_ENABLED``
+  控制 readiness（模組 ``lore_delete``，預設關閉）；不開放 undelete／upload。只開放 ``dev`` 與 ``lore`` 兩個 space（schema 用 enum 收斂，executor 再驗一次）。
 - 沒設定（URL／token／vault 範圍）時 readiness 為 unavailable：條目以 ``requires=("lore",)`` 宣告，
   ``with_lore`` 在未設定時對註冊表送 ``module.unavailable``，Gateway 不會投出也不會執行。
 """
@@ -19,6 +20,8 @@ from uep.tools.registry import ToolRegistry
 
 LORE_EXECUTOR = "core_lore"
 LORE_MODULE = "lore"  # readiness 模組名（requires 與 module.* 事件共用）
+LORE_DELETE_MODULE = "lore_delete"  # lore.delete 的額外開關（UEP_LORE_DELETE_ENABLED）
+REVIEW_STATES: tuple[str, ...] = ("none", "pending", "pending_delete", "verified", "rejected")
 LORE_READ_TAG = "lore.read"
 LORE_WRITE_TAG = "lore.write"
 LORE_TAGS: frozenset[str] = frozenset({LORE_READ_TAG, LORE_WRITE_TAG})
@@ -28,8 +31,9 @@ TOOL_GET = "lore.get"
 TOOL_LIST = "lore.list"
 TOOL_WRITE = "lore.write"
 TOOL_UPDATE = "lore.update"
+TOOL_DELETE = "lore.delete"
 LORE_READ_TOOLS: tuple[str, ...] = (TOOL_RECALL, TOOL_GET, TOOL_LIST)
-LORE_WRITE_TOOLS: tuple[str, ...] = (TOOL_WRITE, TOOL_UPDATE)
+LORE_WRITE_TOOLS: tuple[str, ...] = (TOOL_WRITE, TOOL_UPDATE, TOOL_DELETE)
 LORE_TOOLS: tuple[str, ...] = LORE_READ_TOOLS + LORE_WRITE_TOOLS
 
 SPACES: tuple[str, ...] = ("dev", "lore")  # 只開放這兩個 space；personal 與其他一律拒絕
@@ -62,6 +66,12 @@ LORE_OUTPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# 寫入類工具的結果：多一個選填的 review_state（Vault 審核契約合入前不會出現，出現時才帶）
+LORE_WRITE_OUTPUT_SCHEMA: dict[str, Any] = {
+    **LORE_OUTPUT_SCHEMA,
+    "properties": {**LORE_OUTPUT_SCHEMA["properties"], "review_state": {"type": "string", "enum": list(REVIEW_STATES)}},
+}
+
 RECALL_DESCRIPTION = (
     "查詢 Lore Vault（你自己的長期記憶與設定庫）：用關鍵字或一句話找相關的筆記與文件片段，只回標題與摘要。"
     "想回想世界觀、角色、過去的決策或開發脈絡時使用；找到後若需要全文，再用 lore.get。"
@@ -87,9 +97,21 @@ WRITE_USAGE_HINT = (
     "只記有證據、會影響未來判斷的內容；閒聊與一次性的結果不要寫。"
 )
 UPDATE_DESCRIPTION = (
-    "修改 Lore Vault 既有的筆記（標題、內文、主題）。需要帶上先前取得的 updated 作為 expected_updated，避免覆蓋他人較新的修改。"
+    "修改 Lore Vault 中「你自己寫的」筆記（標題、內文、主題）。需要帶上先前取得的 updated 作為 expected_updated，避免覆蓋較新的修改。"
+    "不能用來改 Bernie 寫的內容：要修正他的內容，請用 lore.write 另寫一篇，並用 supersedes 指向原篇的 id。"
 )
-UPDATE_USAGE_HINT = "先用 lore.get 取得最新的 updated 再修改；衝突（版本已變）時重新讀取後再決定，不要硬蓋。"
+UPDATE_USAGE_HINT = (
+    "先用 lore.get 看 author 與最新的 updated：author 是你自己才用 lore.update；是 Bernie 的就改用 lore.write 另寫一篇並帶 supersedes=原篇 id。"
+    "衝突（版本已變）時重新讀取後再決定，不要硬蓋。"
+)
+DELETE_DESCRIPTION = (
+    "刪除 Lore Vault 的一則筆記（只限筆記，不含文件）。dev 的刪除直接生效（Vault 端有墓碑可還原）；"
+    "lore 的刪除會變成待審的刪除請求，由 Bernie 在 Vault 審核後才生效。確認與核准流程由系統內部完成，你只需呼叫一次。"
+)
+DELETE_USAGE_HINT = (
+    "只刪你確定要移除的筆記（例如你自己寫錯、重複的）；內容有疑慮時優先用 lore.update 修正，或另寫新篇並用 supersedes 取代。"
+    "結果的 review_state 為 pending_delete 代表等待審核，不是已刪除。"
+)
 
 RECALL_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -141,10 +163,25 @@ WRITE_INPUT_SCHEMA: dict[str, Any] = {
         "title": {"type": "string", "minLength": 1, "maxLength": TITLE_MAX, "description": "筆記標題。"},
         "body": {"type": "string", "minLength": 1, "maxLength": BODY_MAX, "description": "筆記內文。"},
         "topics": _TOPICS_PROP,
+        "supersedes": {
+            "type": "string", "minLength": 1, "maxLength": ID_MAX,
+            "description": "要取代（更正）的原篇筆記 id；修正 Bernie 的內容時用，原篇會標示被取代。",
+        },
         "space": _SPACE_PROP,
         "vault": _VAULT_PROP,
     },
     "required": ["title", "body"],
+    "additionalProperties": False,
+}
+DELETE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": ID_MAX, "description": "要刪除的筆記 id（不接受 doc: 或 chunk: 開頭的 id）。"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 200, "description": "刪除原因（記在 Vault 的墓碑，省略用預設）。"},
+        "space": _SPACE_PROP,
+        "vault": _VAULT_PROP,
+    },
+    "required": ["id"],
     "additionalProperties": False,
 }
 UPDATE_INPUT_SCHEMA: dict[str, Any] = {
@@ -196,25 +233,29 @@ def lore_write_entries() -> list[ToolEntry]:
                 presence_bound=False, tool_version=1, capability=LORE_WRITE_TAG, approval_level="none", native=True,
             ),
             descriptor=ToolDescriptor(description=description, input_schema=schema, usage_hint=hint),
-            scope=ToolScope(), output_schema=LORE_OUTPUT_SCHEMA, timeout_s=WRITE_TIMEOUT_S, requires=(LORE_MODULE,),
+            scope=ToolScope(), output_schema=LORE_WRITE_OUTPUT_SCHEMA, timeout_s=WRITE_TIMEOUT_S,
+            requires=(LORE_MODULE, LORE_DELETE_MODULE) if name == TOOL_DELETE else (LORE_MODULE,),
         )
 
     return [
         entry(TOOL_WRITE, WRITE_DESCRIPTION, WRITE_USAGE_HINT, WRITE_INPUT_SCHEMA),
         entry(TOOL_UPDATE, UPDATE_DESCRIPTION, UPDATE_USAGE_HINT, UPDATE_INPUT_SCHEMA),
+        entry(TOOL_DELETE, DELETE_DESCRIPTION, DELETE_USAGE_HINT, DELETE_INPUT_SCHEMA),
     ]
 
 
-def with_lore(registry: ToolRegistry, *, configured: bool) -> ToolRegistry:
+def with_lore(registry: ToolRegistry, *, configured: bool, delete_enabled: bool = False) -> ToolRegistry:
     """在既有註冊表之上併入 lore 條目，回傳新的（已驗證、已凍結）註冊表；不改動傳入的實例，已含 lore 者原樣回傳（冪等）。
 
     ``configured=False`` 時對新註冊表送 ``module.unavailable``：readiness 為 unavailable，Gateway 不投出也不執行；
-    組裝不失敗、也不會因 requires 含未知模組而警告。"""
+    組裝不失敗、也不會因 requires 含未知模組而警告。``lore.delete`` 另需 ``delete_enabled``（模組 ``lore_delete``）。"""
     existing = registry.entries()
     if any(name in existing for name in LORE_TOOLS):
         return registry
     known = getattr(registry, "_known_modules", frozenset())  # 同套件內取（沒有公開存取子；與 with_testkit 一致）
-    built = ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, LORE_MODULE})
+    built = ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, LORE_MODULE, LORE_DELETE_MODULE})
     if not configured:
         built.apply_module_event("module.unavailable", {"module_id": LORE_MODULE, "revision": 1})
+    if not delete_enabled:
+        built.apply_module_event("module.unavailable", {"module_id": LORE_DELETE_MODULE, "revision": 1})
     return built

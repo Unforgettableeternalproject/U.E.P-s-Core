@@ -31,11 +31,13 @@ from uep.adapters.tool import ReceiptLookup, ToolCall, ToolReceipt, ToolResponse
 from uep.ids import new_id
 from uep.tools.catalog.lore import (
     LORE_TOOLS,
+    LORE_WRITE_TOOLS,
+    REVIEW_STATES,
     SPACES,
+    TOOL_DELETE,
     TOOL_GET,
     TOOL_LIST,
     TOOL_RECALL,
-    TOOL_UPDATE,
     TOOL_WRITE,
 )
 from uep.tools.outcomes import TurnOutcomeCache
@@ -50,6 +52,21 @@ _ITEM_FIELDS = (
 _TEXT_FIELDS = frozenset({"body", "text"})
 _SHORT_MAX = 400  # 非全文欄位（標題、摘要等）的長度上限
 _ERROR_MSG_MAX = 300
+
+@dataclass(frozen=True)
+class DeleteApi:
+    """lore.delete 對接 Vault 的小對應層（端點與兩步式欄位名）。Vault 的 feature/uep-review 定案後只改這一處。
+    目前假設：``POST /v1/{path}``，第一步（不帶 token）回規劃與 ``token_field``，第二步以完全相同的參數加 token 確認，
+    回應 ``executed_field`` 為真代表已執行。"""
+
+    path: str = "note_delete"
+    token_field: str = "confirm_token"
+    executed_field: str = "executed"
+    reason_field: str = "reason"
+    id_field: str = "id"
+
+
+DELETE_API = DeleteApi()
 
 Transport = Callable[[str, Mapping[str, str], bytes, float], tuple[int, bytes]]
 
@@ -74,6 +91,7 @@ class LoreConfig:
     author: str = "U.E.P"
     timeout_s: float = 10.0
     max_chars: int = 6000
+    delete_enabled: bool = False  # lore.delete 另受開關控制（Vault 端介面定案前預設關閉）
 
     @property
     def configured(self) -> bool:
@@ -96,6 +114,7 @@ class LoreConfig:
             author=(getattr(settings, "lore_author", "") or "").strip() or "U.E.P",
             timeout_s=float(getattr(settings, "lore_timeout_s", 10.0)),
             max_chars=int(getattr(settings, "lore_max_chars", 6000)),
+            delete_enabled=bool(getattr(settings, "lore_delete_enabled", False)),
         )
 
 
@@ -184,7 +203,9 @@ class LoreToolExecutor:
         cfg = self._config
         if tool not in LORE_TOOLS or params is None:
             return _fail("denied", f"工具 {tool!r} 不可用。")
-        if tool in (TOOL_WRITE, TOOL_UPDATE) and not self._allow_write:
+        if tool in LORE_WRITE_TOOLS and not self._allow_write:
+            return _fail("denied", f"工具 {tool!r} 尚未啟用。")
+        if tool == TOOL_DELETE and not cfg.delete_enabled:
             return _fail("denied", f"工具 {tool!r} 尚未啟用。")
         if not cfg.configured:
             return _fail("unavailable", "Lore Vault 尚未設定。", degraded=True)
@@ -196,10 +217,20 @@ class LoreToolExecutor:
             body = self._request_body(tool, params, space, vault)
         except ValueError as exc:
             return _fail("invalid_args", str(exc))
-        is_write = tool in (TOOL_WRITE, TOOL_UPDATE)
+        is_write = tool in LORE_WRITE_TOOLS
+        if tool == TOOL_DELETE:
+            return self._delete(body, space, vault)
+        posted = self._post(tool, tool.split(".", 1)[1], body, is_write=is_write)
+        if isinstance(posted, dict) and "success" in posted:
+            return posted
+        return self._shape(tool, posted, space, vault)
+
+    def _post(self, tool: str, path: str, body: Mapping[str, Any], *, is_write: bool) -> dict[str, Any]:
+        """送一次請求並解析 JSON；成功回服務端的 dict，失敗回 ``{"success": False, ...}`` 的結果形狀。"""
+        cfg = self._config
         try:
             status, raw = self._transport(
-                f"{cfg.url.rstrip('/')}/v1/{tool.split('.', 1)[1]}",
+                f"{cfg.url.rstrip('/')}/v1/{path}",
                 {"Authorization": f"Bearer {cfg.token}", "Content-Type": "application/json", "Accept": "application/json"},
                 json.dumps(body, ensure_ascii=False).encode("utf-8"), cfg.timeout_s,
             )
@@ -222,7 +253,28 @@ class LoreToolExecutor:
             return _fail("bad_response", f"Lore Vault 回應格式不符（HTTP {status}）。")
         if status >= 400:
             return self._http_error(status, data)
-        return self._shape(tool, data, space, vault)
+        return data
+
+    def _delete(self, body: dict[str, Any], space: str, vault: str) -> dict[str, Any]:
+        """兩步式刪除（Vault 的 note_delete）：先規劃取得 confirm_token，再以完全相同的參數帶 token 確認。
+        兩步都在 executor 內完成，模型只呼叫一次、看不到 token；已授權刪除（lore 的刪除在 Vault 端變成 pending 請求）。"""
+        plan = self._post(TOOL_DELETE, DELETE_API.path, body, is_write=False)  # 規劃階段不改資料，逾時不算結果未明
+        if "success" in plan:
+            return plan
+        if plan.get(DELETE_API.executed_field) is True:  # 服務端一步完成（沒有第二步）
+            return self._shape(TOOL_DELETE, plan, space, vault)
+        token = plan.get(DELETE_API.token_field)
+        if not isinstance(token, str) or not token:
+            return _fail("bad_response", "Lore Vault 沒有回傳刪除確認資訊。")
+        done = self._post(TOOL_DELETE, DELETE_API.path, {**body, DELETE_API.token_field: token}, is_write=True)
+        if "success" in done:
+            if done.get("code") == "failed" and "plan_changed" in str(done.get("result")):
+                done["result"] = json.dumps(
+                    {"ok": False, "error": "plan_changed", "message": "筆記在確認前已被修改，請重新讀取後再決定是否刪除。"},
+                    ensure_ascii=False,
+                )
+            return done
+        return self._shape(TOOL_DELETE, done, space, vault)
 
     def _scope(self, params: Mapping[str, Any]) -> tuple[str, str] | dict[str, Any]:
         cfg = self._config
@@ -269,7 +321,17 @@ class LoreToolExecutor:
             body.update(title=_require_str(params, "title"), body=_require_str(params, "body"))
             if params.get("topics") is not None:
                 body["topics"] = _str_list(params, "topics")
+            if params.get("supersedes") is not None:
+                body["supersedes"] = _require_str(params, "supersedes")
             return body
+        if tool == TOOL_DELETE:
+            item_id = _require_str(params, "id")
+            if item_id.startswith(("doc:", "chunk:")):
+                raise ValueError("lore.delete 只能刪筆記，不接受文件或段落 id。")
+            delete_body: dict[str, Any] = {**base, DELETE_API.id_field: item_id}
+            if params.get("reason") is not None:
+                delete_body[DELETE_API.reason_field] = _require_str(params, "reason")
+            return delete_body
         body.update(id=_require_str(params, "id"), expected_updated=_require_str(params, "expected_updated"))
         for key in ("title", "body"):
             if params.get(key) is not None:
@@ -296,14 +358,24 @@ class LoreToolExecutor:
     def _shape(self, tool: str, data: Mapping[str, Any], space: str, vault: str) -> dict[str, Any]:
         cfg = self._config
         payload: dict[str, Any] = {"ok": True, "source": "lore_vault", "space": space, "vault": vault}
-        if tool in (TOOL_WRITE, TOOL_UPDATE):
+        if tool in LORE_WRITE_TOOLS:
             for key in ("id", "updated", "author", "updated_by"):
                 if data.get(key) is not None:
                     payload[key] = _clean(data[key], _SHORT_MAX)
+            if tool == TOOL_DELETE:
+                payload["id"] = payload.get("id") or _clean(data.get(DELETE_API.id_field, ""), _SHORT_MAX)
+                payload["deleted"] = data.get(DELETE_API.executed_field) is True
+                if not payload["deleted"]:
+                    payload["note"] = "刪除已送出但尚未生效，需 Lore Vault 端審核。"
             dups = data.get("duplicates")
             if isinstance(dups, list) and dups:
                 payload["duplicates"] = [self._item(d) for d in dups[:5] if isinstance(d, Mapping)]
-            return {"success": True, "result": json.dumps(payload, ensure_ascii=False)}
+            payload.update(_review_fields(data))  # 審核標記是選填：Vault 契約合入前沒有也不報錯
+            outcome: dict[str, Any] = {"success": True, "result": json.dumps(payload, ensure_ascii=False)}
+            state = payload.get("review_state")
+            if state in REVIEW_STATES:
+                outcome["review_state"] = state
+            return outcome
         raw_items = data.get("items")
         items = [self._item(i) for i in raw_items if isinstance(i, Mapping)] if isinstance(raw_items, list) else []
         payload["items"] = items
@@ -345,7 +417,20 @@ class LoreToolExecutor:
                 item[key] = text
             elif isinstance(value, str):
                 item[key] = _clean(value, _SHORT_MAX)
+        item.update(_review_fields(raw))  # Vault 的審核標記（例如 unverified）原樣傳給模型
         return item
+
+
+def _review_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """挑出 Vault 回傳的審核欄位（鍵名以 review 開頭、值為短字串／布林／數字）；不存在就是空 dict。"""
+    found: dict[str, Any] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and key.startswith("review") and len(key) <= 40:
+            if isinstance(value, bool | int | float):
+                found[key] = value
+            elif isinstance(value, str):
+                found[key] = _clean(value, 80)
+    return found
 
 
 def _require_str(params: Mapping[str, Any], key: str) -> str:

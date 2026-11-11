@@ -643,7 +643,9 @@ def assemble_core(
             from uep.tools.executors.lore import LoreConfig, LoreToolExecutor
 
             lore_config = LoreConfig.from_settings(get_settings())
-            tool_resolver = with_lore(tool_resolver, configured=lore_config.configured)
+            tool_resolver = with_lore(
+                tool_resolver, configured=lore_config.configured, delete_enabled=lore_config.delete_enabled,
+            )
             executors = {**executors, LORE_EXECUTOR: LoreToolExecutor(lore_config, cache=agent_cache, allow_write=True)}
             lore_on = True
         if callable(getattr(tool_resolver, "entries", None)):

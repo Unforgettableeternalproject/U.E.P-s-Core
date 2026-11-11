@@ -21,6 +21,7 @@ from uep.tools.catalog.lore import (
     LORE_EXECUTOR,
     LORE_READ_TOOLS,
     LORE_TOOLS,
+    TOOL_DELETE,
     TOOL_GET,
     TOOL_LIST,
     TOOL_RECALL,
@@ -48,7 +49,7 @@ LORE_VAULT = "lore/main"
 def make_config(**overrides: Any) -> LoreConfig:
     base: dict[str, Any] = {
         "url": "http://lore.test", "token": TOKEN, "dev_vault": DEV, "vaults": (LORE_VAULT, "lore/other"),
-        "default_space": "lore", "author": "測試角色", "timeout_s": 3.0, "max_chars": 2000,
+        "default_space": "lore", "author": "測試角色", "timeout_s": 3.0, "max_chars": 2000, "delete_enabled": True,
     }
     base.update(overrides)
     return LoreConfig(**base)
@@ -66,7 +67,10 @@ class FakeHttp:
         self.calls.append((url, dict(headers), json.loads(body.decode("utf-8"))))
         if self.raises is not None:
             raise self.raises
-        status, payload = self.responses.get(url.rsplit("/", 1)[-1], (200, {}))
+        entry = self.responses.get(url.rsplit("/", 1)[-1], (200, {}))
+        if isinstance(entry, list):  # 同一路徑依序回不同回應（兩步式刪除）
+            entry = entry.pop(0)
+        status, payload = entry
         return status, json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
@@ -110,7 +114,7 @@ def test_schema_space_enum_only_dev_and_lore_and_no_delete():
         if space is not None:
             assert space["enum"] == ["dev", "lore"]
         assert "author" not in entry.descriptor.input_schema["properties"]  # 寫入者名稱只來自設定
-    assert not any("delete" in name for name in LORE_TOOLS)
+    assert not any(name in LORE_TOOLS for name in ("lore.undelete", "lore.upload", "lore.download"))
 
 
 def test_capability_tags_in_closed_set():
@@ -121,8 +125,8 @@ def test_capability_tags_in_closed_set():
 def test_write_entries_registered_honestly_native():
     """寫入如實標 external_effect；免核准靠 native=True（RA-2a），不是調低分類。"""
     entries = {e.name: e for e in lore_entries()}
-    assert {TOOL_WRITE, TOOL_UPDATE} <= set(entries)
-    for name in (TOOL_WRITE, TOOL_UPDATE):
+    assert {TOOL_WRITE, TOOL_UPDATE, TOOL_DELETE} <= set(entries)
+    for name in (TOOL_WRITE, TOOL_UPDATE, TOOL_DELETE):
         spec = entries[name].spec
         assert (spec.side_effect_class, spec.approval_level, spec.native, spec.capability) == (
             "external_effect", "none", True, "lore.write",
@@ -153,11 +157,30 @@ def test_unconfigured_readiness_unavailable_and_not_projected():
 
 
 def test_configured_readiness_ready_and_idempotent():
-    registry = with_lore(memory_registry(), configured=True)
+    registry = with_lore(memory_registry(), configured=True, delete_enabled=True)
     assert all(registry.readiness(n) == "ready" for n in LORE_TOOLS)
     assert {"lore.read", "lore.write"} <= registry.enabled_tags()
     assert with_lore(registry, configured=False) is registry  # 已含 lore：原樣回傳
     assert "lore.recall" not in memory_registry().entries()  # 不改動傳入的實例
+
+
+def test_delete_readiness_gated_by_separate_switch():
+    off = with_lore(memory_registry(), configured=True)  # delete_enabled 預設 False
+    assert off.readiness(TOOL_DELETE) == "unavailable"
+    assert off.readiness(TOOL_WRITE) == "ready" and off.readiness(TOOL_RECALL) == "ready"
+    assert with_lore(memory_registry(), configured=True, delete_enabled=True).readiness(TOOL_DELETE) == "ready"
+    assert with_lore(memory_registry(), configured=False, delete_enabled=True).readiness(TOOL_DELETE) == "unavailable"
+
+
+def test_update_and_write_guidance_mentions_supersedes():
+    entries = {e.name: e for e in lore_entries()}
+    update = entries[TOOL_UPDATE].descriptor
+    assert "supersedes" in update.description and "supersedes" in update.usage_hint and "Bernie" in update.description
+    assert "supersedes" in entries[TOOL_WRITE].descriptor.input_schema["properties"]
+    assert entries[TOOL_DELETE].descriptor.input_schema["additionalProperties"] is False
+    for name in (TOOL_WRITE, TOOL_UPDATE, TOOL_DELETE):
+        out = entries[name].output_schema["properties"]["review_state"]
+        assert out["enum"] == ["none", "pending", "pending_delete", "verified", "rejected"]
 
 
 def test_config_from_settings(monkeypatch: pytest.MonkeyPatch):
@@ -308,7 +331,7 @@ def test_default_space_follows_config():
 def test_delete_and_unknown_tools_denied():
     http = FakeHttp()
     ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
-    for tool in ("lore.delete", "lore.undelete", "recall"):
+    for tool in ("lore.undelete", "lore.upload", "recall"):
         receipt, _ = run(ex, tool, {"ids": ["n1"]})
         assert receipt.error_code == "denied" and not receipt.succeeded
     assert not http.calls
@@ -366,6 +389,103 @@ def test_write_scope_checked_like_reads():
     ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
     receipt, _ = run(ex, TOOL_WRITE, {"title": "t", "body": "b", "space": "personal"})
     assert receipt.error_code == "denied" and not http.calls
+
+
+# ---- 審核欄位（選填） ----
+
+def test_review_markers_passed_through_on_reads_and_absent_is_fine():
+    http = FakeHttp({"recall": (200, {"items": [
+        {"id": "n1", "title": "a", "review": "unverified"}, {"id": "n2", "title": "b"},
+    ]})})
+    _, outcome = run(LoreToolExecutor(make_config(), transport=http), TOOL_RECALL, {"query": "q"})
+    items = json.loads(outcome["result"])["items"]
+    assert items[0]["review"] == "unverified" and "review" not in items[1]
+
+
+def test_write_review_state_optional_and_validated():
+    ex = LoreToolExecutor(make_config(), allow_write=True, transport=FakeHttp({"write": [
+        (201, {"id": "n1"}), (201, {"id": "n2", "review_state": "pending"}), (201, {"id": "n3", "review_state": "weird"}),
+    ]}))
+    _, plain = run(ex, TOOL_WRITE, {"title": "t", "body": "b"})
+    _, pending = run(ex, TOOL_WRITE, {"title": "t", "body": "b"})
+    _, weird = run(ex, TOOL_WRITE, {"title": "t", "body": "b"})
+    assert "review_state" not in plain and pending["review_state"] == "pending" and "review_state" not in weird
+
+
+def test_write_supersedes_forwarded():
+    http = FakeHttp({"write": (201, {"id": "n2"})})
+    run(LoreToolExecutor(make_config(), transport=http, allow_write=True), TOOL_WRITE,
+        {"title": "更正", "body": "b", "supersedes": "n1"})
+    assert http.calls[0][2]["supersedes"] == "n1"
+
+
+# ---- lore.delete（兩步式，executor 內部完成） ----
+
+PLAN = (200, {"executed": False, "plan": {"id": "n1"}, "confirm_token": "CONFIRM-XYZ", "expires_at": "later"})
+
+
+def test_delete_two_step_flow_hides_token():
+    http = FakeHttp({"note_delete": [PLAN, (200, {"executed": True, "plan": {"id": "n1"}})]})
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    receipt, outcome = run(ex, TOOL_DELETE, {"id": "n1", "reason": "重複", "space": "dev"})
+    assert receipt.succeeded and len(http.calls) == 2
+    first, second = http.calls[0][2], http.calls[1][2]
+    assert "confirm_token" not in first and second["confirm_token"] == "CONFIRM-XYZ"
+    assert {k: v for k, v in second.items() if k != "confirm_token"} == first  # 其餘參數完全相同
+    assert first["space"] == "dev" and first["vault"] == DEV and first["reason"] == "重複"
+    assert http.calls[0][0].endswith("/v1/note_delete")
+    data = json.loads(outcome["result"])
+    assert data["deleted"] is True and "CONFIRM-XYZ" not in outcome["result"] + repr(receipt)
+
+
+def test_delete_in_lore_space_reports_pending():
+    http = FakeHttp({"note_delete": [PLAN, (200, {"executed": False, "review_state": "pending_delete"})]})
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=http, allow_write=True), TOOL_DELETE, {"id": "n1"})
+    data = json.loads(outcome["result"])
+    assert receipt.succeeded and data["deleted"] is False and outcome["review_state"] == "pending_delete"
+    assert http.calls[0][2]["space"] == "lore" and http.calls[0][2]["vault"] == LORE_VAULT
+
+
+def test_delete_guards():
+    http = FakeHttp({"note_delete": [PLAN]})
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    for params in ({"id": "n1", "space": "personal"}, {"id": "n1", "vault": "lore/secret"}):
+        receipt, _ = run(ex, TOOL_DELETE, params)
+        assert receipt.error_code == "denied"
+    for bad in ("doc:abc", "chunk:abc"):
+        _, outcome = run(ex, TOOL_DELETE, {"id": bad})
+        assert json.loads(outcome["result"])["error"] == "invalid_args"
+    off = LoreToolExecutor(make_config(delete_enabled=False), transport=http, allow_write=True)
+    assert run(off, TOOL_DELETE, {"id": "n1"})[0].error_code == "denied"
+    assert not http.calls
+
+
+def test_delete_plan_changed_missing_token_and_not_found():
+    changed = FakeHttp({"note_delete": [PLAN, (409, {"error": {"code": "plan_changed", "message": "x", "confirm_token": "NEW"}})]})
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=changed, allow_write=True), TOOL_DELETE, {"id": "n1"})
+    assert not receipt.succeeded and "NEW" not in outcome["result"] and "plan_changed" in outcome["result"]
+    no_token = FakeHttp({"note_delete": [(200, {"executed": False})]})
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=no_token, allow_write=True), TOOL_DELETE, {"id": "n1"})
+    assert not receipt.succeeded and json.loads(outcome["result"])["error"] == "bad_response"
+    gone = FakeHttp({"note_delete": [(404, {"error": {"code": "not_found", "message": "不存在"}})]})
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=gone, allow_write=True), TOOL_DELETE, {"id": "nope"})
+    assert not receipt.succeeded and json.loads(outcome["result"])["error"] == "not_found" and len(gone.calls) == 1
+
+
+def test_delete_timeout_semantics():
+    class Flaky(FakeHttp):
+        def __call__(self, url, headers, body, timeout):
+            if len(self.calls) == 1:  # 第二步（已送出確認）逾時：結果未明
+                self.calls.append((url, dict(headers), json.loads(body.decode("utf-8"))))
+                raise LoreTimeout
+            return super().__call__(url, headers, body, timeout)
+
+    ex = LoreToolExecutor(make_config(), transport=Flaky({"note_delete": [PLAN]}), allow_write=True)
+    with pytest.raises(ToolResponseLost):
+        ex.execute(call(TOOL_DELETE, {"id": "n1"}))
+    first_timeout = LoreToolExecutor(make_config(), transport=FakeHttp(raises=LoreTimeout()), allow_write=True)
+    receipt, _ = run(first_timeout, TOOL_DELETE, {"id": "n1"})  # 規劃階段逾時：沒改任何資料，一般失敗
+    assert not receipt.succeeded
 
 
 # ---- token 不洩漏 ----

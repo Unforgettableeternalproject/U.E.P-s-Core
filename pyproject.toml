@@ -106,6 +106,8 @@ inference = [
     "unidic-lite==1.0.8",
     # echo_tts 的英文分句
     "pysbd>=0.3.4",
+    # 決策模型 Laya（laya.shadow／微調）；0.4.30 依賴 vegaml 會把 transformers 升到 5，固定 0.4.22
+    "laya==0.4.22",
 ]
 # desktop：PyQt5 桌面寵物與系統互動
 desktop = [

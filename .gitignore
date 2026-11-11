@@ -457,3 +457,4 @@ outputs/e2e/
 # 決策模型訓練資料（見 train/decision/README.md）
 train/decision/pool_private/
 train/decision/out/
+train/decision/testset/en_test.jsonl

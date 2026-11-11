@@ -1,7 +1,7 @@
 # train/decision — Laya 決策模型訓練資料工具
 
 > 設計：[`hidden_docs/架構重構/決策模型訓練設計草案.md`](../../hidden_docs/架構重構/決策模型訓練設計草案.md)（草案，待裁）；標註規格：[`決策標註規格草案.md`](../../hidden_docs/架構重構/決策標註規格草案.md)。
-> 這裡是**純資料工具**，不 import `uep`，不改 production。**Laya 只用英文訓練**；題目與 state 值一律英文。
+> 這裡是**純資料工具**，不改 production；訓練資料工具不 import `uep`，評估端工具（`build_en_test`、`eval_testset`）需要載入 `uep` 的翻譯器與規則版 proposer。**Laya 只用英文訓練**；題目與 state 值一律英文。
 
 ## 目錄
 
@@ -13,7 +13,10 @@ train/decision/
 │   ├── synth.py        # 情境卡合成器（卡片決定標籤，LLM 只生文字）
 │   ├── split.py        # train/val 切分、測試集防洩漏檢查
 │   ├── resolve.py      # 盲標 disputed 規則化裁決、卡片重標、最終訓練集（final／train／val／stats）
-│   └── compound.py     # 既有資料的 compound 例外清單（預設 no）與定義
+│   ├── compound.py     # 既有資料的 compound 例外清單（預設 no）與定義
+│   ├── build_en_test.py  # 評估端：測試集 zh-TW 照線上流程翻成英文（testset/en_test.jsonl，不入版控）
+│   ├── overlap.py        # 評估端：測試集與 train／val 的逐列重疊報告（含 state 層級）
+│   └── eval_testset.py   # 評估端：Laya checkpoint（predict）、rules.default（rules）、指標與錯誤分析（report）
 ├── testset/zh_candidates_draft.jsonl   # 測試集 zh-TW 原句草稿（status=pending_review，待艾斯維爾核）
 ├── pool/           # synthetic 內容池（入庫；量產後才有）
 ├── pool_private/   # real_owner 日誌（.gitignore，不入 git）

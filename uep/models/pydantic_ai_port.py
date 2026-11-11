@@ -11,6 +11,7 @@ SDK（``pydantic_ai``）的 import 只允許出現在 ``uep/models/``（tests/ue
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -58,6 +59,7 @@ from uep.models.port import (
     ProviderCapabilities,
     ToolCallAssembler,
 )
+from uep.models.tool_names import decode_name, encode_name, wire_map
 from uep.tools.render import render_tools
 
 logger = logging.getLogger(__name__)
@@ -140,9 +142,10 @@ class PydanticAIModelPort:
     def _tool_defs(self, req: ModelRequest) -> tuple[list[ToolDefinition], list[dict[str, Any]]]:
         """``(要交給 SDK 的 ToolDefinition, 預期的 render_tools 結果)``；定義只來自 render_tools。"""
         expected = render_tools(req.capability_set)
+        wire = {internal: w for w, internal in wire_map(t["function"]["name"] for t in expected).items()}  # 碰撞／歧義即拋
         defs = [
             ToolDefinition(
-                name=t["function"]["name"], description=t["function"]["description"],
+                name=wire[t["function"]["name"]], description=t["function"]["description"],
                 parameters_json_schema=t["function"]["parameters"],
             )
             for t in expected
@@ -151,8 +154,9 @@ class PydanticAIModelPort:
 
     def _check_d60(self, req: ModelRequest, defs: list[ToolDefinition], expected: list[dict[str, Any]]) -> None:
         """送出前比對：把「實際交給 SDK 的 ToolDefinition」再經 render_tools 還原成 chat 形狀，與預期整份比對。"""
+        back = wire_map(t["function"]["name"] for t in expected)
         sent_cap = {"tools": [
-            {"tool": d.name, "description": d.description or "", "input_schema": d.parameters_json_schema} for d in defs
+            {"tool": decode_name(d.name, back), "description": d.description or "", "input_schema": d.parameters_json_schema} for d in defs
         ]}
         rr = RuntimeRequest(
             run_id="model_port", attempt_id=req.attempt_id, snapshot_ref="", capability_set=req.capability_set,
@@ -178,8 +182,8 @@ class PydanticAIModelPort:
             elif m.role == "assistant":
                 parts: list[Any] = [TextPart(m.content)] if m.content else []
                 for c in m.tool_calls:
-                    names[c["id"]] = c["name"]
-                    parts.append(ToolCallPart(c["name"], c.get("args") or {}, c["id"]))
+                    names[c["id"]] = _wire(c["name"])  # history 內是內部名稱，送出時同樣編成 provider 名稱
+                    parts.append(ToolCallPart(_wire(c["name"]), c.get("args") or {}, c["id"]))
                 out.append(SdkResponse(parts=parts))
             elif m.role == "tool":
                 out.append(SdkRequest(parts=[ToolReturnPart(
@@ -216,7 +220,8 @@ class PydanticAIModelPort:
         history = self._history(list(req.messages))
         finish: str = "stop"
         called: set[str] = set()  # 模型這次呼叫過的工具名稱（判斷是否為「未知工具」造成的中止）
-        known = {d.name for d in defs}
+        back = wire_map(t["function"]["name"] for t in expected)  # provider 名稱 -> 內部名稱
+        known = set(back.values())
         try:
             async with self._agent.run_stream_events(
                 None, message_history=history, toolsets=[toolset],
@@ -228,6 +233,8 @@ class PydanticAIModelPort:
                         break
                     for out in router.route(ev):
                         if out.kind == "tool_call_delta":
+                            if out.tool:  # provider 邊界轉譯：只解出本次送出過的名稱，表外原樣交給 Gateway 拒絕
+                                out = dataclasses.replace(out, tool=decode_name(out.tool, back))
                             assembler.feed(out)
                             if out.tool:
                                 called.add(out.tool)
@@ -348,6 +355,14 @@ class _PartRouter:
                 tool=d.tool_name_delta or "", args_fragment=_frag(d.args_delta),
             ))
         return self._drop(f"index={ev.index} 未知的 delta 型別 {type(d).__name__}")
+
+
+def _wire(name: str) -> str:
+    """history 內的歷史呼叫名稱 -> provider 名稱；無法轉譯者（已不在清單的舊名稱）原樣送出。"""
+    try:
+        return encode_name(name)
+    except ValueError:
+        return name
 
 
 def _frag(args: Any) -> str:

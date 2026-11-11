@@ -79,6 +79,11 @@ from uep.tasks.manager import (
 from uep.tasks.states import ActionStatus, RunStatus
 from uep.tools.cancel import cancel_executors
 from uep.tools.catalog.decision import CONSULT_TAG, CONSULT_TOOL, INJECTED_CONSULT
+from uep.tools.composite import (
+    COMPOSITE_STEP_SKIPPED,
+    CompositePathError,
+    resolve_params,
+)
 from uep.tools.gateway import (
     INVALID_TOOL_ARGS,
     TOOL_NOT_READY,
@@ -98,6 +103,8 @@ RESUME_REQUIRED_KEYS = (
     "child_context_ref", "history_hash", "frozen_tools", "frozen_tags", "visible_tools", "budget_counters", "step_id",
     "frozen_modalities", "frozen_platforms",
 )
+# composite 逐步狀態列整體 status 的嚴重度（取最差者）：unknown 最差（副作用可能已發生），其次 failed、rejected、blocked
+_SEVERITY: dict[str, int] = {"ok": 0, "blocked": 1, "rejected": 2, "failed": 3, "unknown": 4}
 FINALIZE_NOTE = "預算已用盡：請根據目前已取得的資訊直接收束並回覆，不要再呼叫任何工具。"
 
 
@@ -175,6 +182,23 @@ class _State:
     escalate_gap: str = ""  # escalate 的缺口碼（進終態 checkpoint，崩潰後仍可重送候選事件）
     unresolved: bool = False  # 本次執行中出現過 UNKNOWN 的 action：Run 不可宣稱 SUCCEEDED
     usage_seen: dict[str, int] = field(default_factory=dict)
+    composite_cursor: dict[str, Any] | None = None  # 進行中的 composite（§5.7.4）：進 checkpoint，完成即清除
+    batch: _BatchCtx | None = None  # 目前批次的呼叫／文字／已得結果（composite 逐步 checkpoint 重建 history 用）
+
+
+@dataclass
+class _BatchCtx:
+    calls: list[dict[str, Any]]
+    text: str
+    views: dict[int, Mapping[str, Any]]
+
+
+@dataclass(frozen=True)
+class _Halt:
+    """resume 時 composite 的待決步驟不能續跑：``"repark"``（缺／過期核准、暫時非 ready）或 ``LoopReason``（結束 Run）。"""
+
+    stop: LoopReason | Literal["repark"]
+    action_id: str
 
 
 @dataclass(frozen=True)
@@ -222,7 +246,11 @@ class AgentLoop:
         on_escalate: Callable[[EscalationCandidate], None] | None = None,
         run_cleanup: Callable[[str], None] | None = None,
         executors: Mapping[str, Any] | None = None, cancel_timeout_s: float = 5.0, cancel_grace_s: float = 2.0,
+        step_output: Callable[[str], Mapping[str, Any] | None] | None = None,
     ) -> None:
+        # ``step_output``（sub action_id -> 結構化輸出欄位）：composite 的 ``$.steps[k].output.x`` 路徑來源（§5.7.4）。
+        # 沒給時，輸出欄位取自回合範圍的結果來源（``content_lookup`` ⇒ ``text``）與 receipt 的 ``result_ref``
+        self._step_output = step_output
         # ``executors``（executor 名稱 -> ToolExecutor）只用於 ``parallel_one_shot`` 的逾時／取消路徑呼叫 ``executor.cancel``；
         # 沒給或該 executor 不支援 cancel ⇒ 逾時視為結果未明（unknown），不推定已停止（§6.4）
         self._executors = dict(executors) if executors is not None else {}
@@ -255,6 +283,7 @@ class AgentLoop:
             )
 
         lookup = with_consults if consults is not None else content_lookup
+        self._content_lookup = lookup
         self._core = AgentCore(runtime, tasks, gateway, worker_epoch=worker_epoch, injected=injected, content_lookup=lookup)
 
     # ───────────────────────── 入口 ─────────────────────────
@@ -325,13 +354,44 @@ class AgentLoop:
         st.frozen_platforms = frozenset(str(m) for m in checkpoint["frozen_platforms"])
         st.cap = self._offer(st, st.cap)
         st.consumed = list(checkpoint.get("consumed_action_ids") or ())
+        if checkpoint.get("composite_cursor") is not None:
+            st.composite_cursor = self._valid_cursor(checkpoint["composite_cursor"])
+            if st.composite_cursor is None:  # 形狀不合：不猜、不從頭重播已成功的步驟
+                logger.error("composite_cursor 形狀不合，不續跑：run=%s", run_id)
+                return self._guarded(st, lambda: self._finish(st, "failed", LoopReason.CHECKPOINT_INCOMPLETE))
         pending = frozenset(checkpoint.get("pending_approvals") or ())
+        if not self._resume_consistent(st, pending):  # pending／cursor 與 history 對不上：不猜，fail-closed
+            logger.error("checkpoint 的 pending_approvals／composite_cursor 與 history 不一致，不續跑：run=%s", run_id)
+            return self._guarded(st, lambda: self._finish(st, "failed", LoopReason.CHECKPOINT_INCOMPLETE))
         verdict = self._precheck_pending(st, projected, pending)
         if isinstance(verdict, LoopReason):
             return self._guarded(st, lambda: self._finish(st, "failed", verdict))
         if verdict is not None:  # (action_id,)：pending 工具暫時非 ready ⇒ 再 park，不丟掉核准
             return self._guarded(st, lambda: self._repark(st, verdict[0], write_checkpoint=False))
         return self._guarded(st, lambda: self._drive_inner(st, pending, approvals or {}))
+
+    def _resume_consistent(self, st: _State, pending: frozenset[str]) -> bool:
+        """pending 的每個 id 都必須對得上 history 中「尚缺 tool 訊息」的呼叫（一般工具：該呼叫的 id；composite：cursor 的待決子
+        步驟 id，composite 本身從不是 pending）；cursor 必須對得上一個尚缺 tool 訊息、名稱相同的 composite 呼叫。"""
+        cursor = st.composite_cursor
+        if not pending and cursor is None:
+            return True
+        assistant = next((m for m in reversed(st.transcript) if m.role == "assistant" and m.tool_calls), None)
+        if assistant is None:
+            return False
+        done = {m.tool_call_id for m in st.transcript if m.role == "tool"}
+        step_id = st.step_id or ""
+        expected: set[str] = set()
+        cursor_seen = False
+        for ordinal, call in enumerate(assistant.tool_calls):
+            if call["id"] in done:
+                continue
+            if self._composite_entry(call["name"]) is None:
+                expected.add(stable_action_id(st.run_id, step_id, ordinal))
+            elif cursor is not None and cursor["ordinal"] == ordinal and cursor["tool"] == call["name"]:
+                cursor_seen = True
+                expected.add(stable_action_id(st.run_id, step_id, ordinal, cursor["next"]))
+        return pending <= expected and (cursor is None or cursor_seen)
 
     def _precheck_pending(
         self, st: _State, projected: Mapping[str, Any], pending: frozenset[str],
@@ -355,16 +415,23 @@ class AgentLoop:
         step_id = st.step_id or ""
         current = {t["tool"]: int(t.get("version", 1)) for t in projected.get("tools", ())}
         for ordinal, call in enumerate(assistant.tool_calls):
-            if call["id"] in done or stable_action_id(st.run_id, step_id, ordinal) not in pending:
+            name, action_id = call["name"], stable_action_id(st.run_id, step_id, ordinal)
+            cursor = st.composite_cursor
+            if cursor is not None and cursor["ordinal"] == ordinal and call["id"] not in done:
+                # composite：待決的是子步驟（cursor.next），能力與版本檢查對的是子步驟工具
+                entry = self._composite_entry(name)
+                if entry is not None and cursor["next"] < len(entry.composite.steps):
+                    name = entry.composite.steps[cursor["next"]].tool
+                    action_id = stable_action_id(st.run_id, step_id, ordinal, cursor["next"])
+            if call["id"] in done or action_id not in pending:
                 continue
-            name = call["name"]
             if name not in st.frozen_tools:
                 logger.warning("resume 預檢：pending 工具 %s 不在凍結集合，Run 改轉 FAILED：run=%s", name, st.run_id)
                 return LoopReason.CAPABILITY_REVOKED
             if name not in current:
                 if self._temporarily_not_ready(name):
                     logger.warning("resume 預檢：pending 工具 %s 暫時非 ready，再 park（不消耗核准）：run=%s", name, st.run_id)
-                    return (stable_action_id(st.run_id, step_id, ordinal),)
+                    return (action_id,)
                 logger.warning("resume 預檢：pending 工具 %s 不在當下投影，Run 改轉 FAILED：run=%s", name, st.run_id)
                 return LoopReason.CAPABILITY_REVOKED
             if current[name] != st.frozen_tools[name]:
@@ -605,8 +672,10 @@ class AgentLoop:
             except Exception as exc:  # noqa: BLE001 - 清理失敗不影響 Run 終態
                 logger.warning("Run 終態清理失敗：%s", type(exc).__name__)
 
-    def _checkpoint(self, st: _State, semantic: str, pending: Sequence[str] = ()) -> None:
-        revision, digest = persist_child(self._store, st.child_ref, st.transcript)
+    def _checkpoint(
+        self, st: _State, semantic: str, pending: Sequence[str] = (), *, transcript: Sequence[ChatMessage] | None = None,
+    ) -> None:
+        revision, digest = persist_child(self._store, st.child_ref, st.transcript if transcript is None else transcript)
         st.counters.elapsed_s = self._elapsed(st)
         cp: dict[str, Any] = {
             "next_step_semantic": semantic, "pending_approvals": list(pending),
@@ -619,6 +688,8 @@ class AgentLoop:
             cp["last_decision_id"] = st.last_decision_id
         if st.escalate_gap:
             cp["escalate_gap"] = st.escalate_gap
+        if st.composite_cursor is not None:
+            cp["composite_cursor"] = st.composite_cursor
         if st.step_id:
             cp["step_id"] = st.step_id
         self._tasks.save_checkpoint(st.run_id, cp, worker_epoch=self._epoch)
@@ -897,7 +968,8 @@ class AgentLoop:
                 continue
             is_consult = calls[k]["name"] == CONSULT_TOOL
             res = self._core.screen_intent(
-                run_id=st.run_id, step_id=step_id, ordinal=k, capability_set=cap, tool=calls[k]["name"], args=it.get("args"),
+                run_id=st.run_id, step_id=step_id, ordinal=k, capability_set=cap, tool=calls[k]["name"],
+                args=self._prefill(calls[k]["name"], it.get("args")),
                 injected=self._consult_injected(st, step_id, k) if is_consult else self._run_injected(st),
             )
             if isinstance(res, IntentResult):
@@ -921,6 +993,7 @@ class AgentLoop:
         pending: list[str] = []
         unknown_block = False
         consult_digest: dict[int, dict[str, Any]] = {}
+        st.batch = _BatchCtx(calls, text, views)
         for wave in waves:
             members = [by_ordinal[i.index] for i in wave.items]
             if escalated is not None:
@@ -936,7 +1009,8 @@ class AgentLoop:
             self._gate(st)
             for m, res in self._execute_wave(wave, members, st):
                 views[m.ordinal], observed[m.ordinal] = res.view, str(res.view.get("status", "unknown"))
-                st.counters.tool_calls += 1
+                if self._composite_entry(m.tool) is None:  # composite 的子步驟已各自計次（_execute_composite）
+                    st.counters.tool_calls += 1
                 if res.view.get("status") == "unknown":
                     st.unresolved = True
                 if res.record.action_id and not res.approval_required:
@@ -955,10 +1029,11 @@ class AgentLoop:
                             escalated = (m.ordinal, gap, info)
                 if res.approval_required and parked_at is None:
                     parked_at = m.ordinal
-                    pending.append(m.action_id)
+                    pending.append(res.record.action_id or m.action_id)  # composite：待核准的是子步驟的 action
                 elif res.view.get("status") == "unknown" and not self._side_effect_is_read(m.tool):
                     unknown_block = True  # TC-3：未決副作用先解決，同批尚未開始的項不執行
 
+        st.batch = None
         no_progress: str | None = None
         for k in sorted(observed):
             args_for_fp = consult_digest.get(k, calls[k]["args"])
@@ -1003,7 +1078,7 @@ class AgentLoop:
         out: dict[int, IntentResult] = {}
         runnable: list[ScreenedIntent] = []
         for m in members:
-            early = self._core.create_screened(m)
+            early = None if self._composite_entry(m.tool) is not None else self._core.create_screened(m)  # composite 不建 action
             if early is not None:
                 out[m.ordinal] = early
             else:
@@ -1012,7 +1087,13 @@ class AgentLoop:
 
         def run_one(m: ScreenedIntent) -> None:
             try:
-                out[m.ordinal] = self._core.execute_screened(m)
+                entry = self._composite_entry(m.tool)
+                if entry is None:
+                    out[m.ordinal] = self._core.execute_screened(m)
+                else:  # composite 恆為 serial 單獨一波（scheduler）；全新執行沒有 cursor，不會有 _Halt
+                    result = self._execute_composite(st, m, entry)
+                    assert isinstance(result, IntentResult)
+                    out[m.ordinal] = result
             except StaleWorkerEpoch as exc:
                 stale.append(exc)
 
@@ -1030,6 +1111,267 @@ class AgentLoop:
         if stale:
             raise stale[0]
         return [(m, out[m.ordinal]) for m in members if m.ordinal in out]
+
+    # ───────────────────────── 內部：composite 的線性展開（§5.7.4） ─────────────────────────
+
+    def _composite_entry(self, tool: str) -> Any | None:
+        """composite 條目（``ToolEntry.composite`` 非 None）；一般工具與查不到的工具回 None。"""
+        try:
+            entry = self._registry.entry(tool)
+        except Exception:  # noqa: BLE001  查不到就當一般工具（screen 階段已有 tool_unknown 處理）
+            return None
+        return entry if getattr(entry, "composite", None) is not None else None
+
+    def _prefill(self, tool: str, args: Any) -> Any:
+        """``initial_params`` 預填：只補模型沒給的欄位（先於 Gateway 驗證，使本來要詢問的必填欄位不必再問）。"""
+        entry = self._composite_entry(tool)
+        if entry is None or not entry.composite.initial_params or not isinstance(args, Mapping):
+            return args
+        return {**{k: v for k, v in entry.composite.initial_params.items() if k not in args}, **args}
+
+    @staticmethod
+    def _valid_cursor(raw: Any) -> dict[str, Any] | None:
+        """checkpoint 的 ``composite_cursor`` 形狀檢查；不合回 None（呼叫端 fail-closed）。"""
+        if not isinstance(raw, Mapping):
+            return None
+        rows, ordinal, nxt, tool = raw.get("rows"), raw.get("ordinal"), raw.get("next"), raw.get("tool")
+        if not (isinstance(rows, list) and isinstance(ordinal, int) and isinstance(nxt, int) and isinstance(tool, str)):
+            return None
+        for index, row in enumerate(rows):
+            if not isinstance(row, Mapping) or row.get("step") != index or row.get("status") not in _SEVERITY:
+                return None
+            if not isinstance(row.get("tool"), str):
+                return None
+        version, digest = raw.get("version"), raw.get("schema_hash")
+        if nxt != len(rows) or not isinstance(version, int) or not isinstance(digest, str):
+            return None
+        return {"ordinal": ordinal, "tool": tool, "next": nxt, "rows": [dict(r) for r in rows], "version": version, "schema_hash": digest}
+
+    @staticmethod
+    def _cursor_matches(cursor: Mapping[str, Any], call_name: str, entry: Any) -> LoopReason | None:
+        """續跑前比對 cursor 與當下的 composite 宣告：名稱、步驟工具逐一相同、步數不超過宣告；composite 本身的 ``tool_version``／
+        ``schema_hash`` 與建立 cursor 時相同。不符 ⇒ 原因碼（呼叫端 fail-closed、不執行任何步驟）。"""
+        steps = entry.composite.steps
+        if cursor["tool"] != call_name or cursor["next"] > len(steps):
+            return LoopReason.CHECKPOINT_INCOMPLETE
+        if any(row["tool"] != steps[i].tool for i, row in enumerate(cursor["rows"])):
+            return LoopReason.CHECKPOINT_INCOMPLETE
+        if cursor["version"] != entry.spec.tool_version or cursor["schema_hash"] != entry.schema_hash:
+            return LoopReason.TOOL_VERSION_CHANGED
+        return None
+
+    @staticmethod
+    def _composite_inputs(entry: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+        """``$.input`` 的來源：驗證並預填後的輸入，缺的欄位補 schema 的 ``default``。"""
+        values = dict(args)
+        for name, prop in (entry.descriptor.input_schema.get("properties") or {}).items():
+            if name not in values and isinstance(prop, Mapping) and "default" in prop:
+                values[name] = prop["default"]
+        return values
+
+    def _step_outputs(self, action_id: str) -> dict[str, Any]:
+        """某個已成功子步驟的輸出欄位：回合範圍結果的 ``text``、receipt 的 ``result_ref``，再疊上注入的 ``step_output``。"""
+        out: dict[str, Any] = {}
+        text = self._content_lookup(action_id) if self._content_lookup is not None else None
+        if text is not None:
+            out["text"] = text
+        try:
+            receipt = self._tasks.get_receipt(action_id)
+        except Exception:  # noqa: BLE001  取不到 receipt 不影響其他欄位
+            receipt = None
+        ref = getattr(receipt, "result_ref", None)
+        if ref:
+            out["result_ref"] = ref
+        if self._step_output is not None:
+            extra = self._step_output(action_id)
+            if isinstance(extra, Mapping):
+                out.update(extra)
+        return out
+
+    @staticmethod
+    def _row(step: int, tool: str, status: str, **extra: Any) -> dict[str, Any]:
+        return {"step": step, "tool": tool, "status": status, **{k: v for k, v in extra.items() if v}}
+
+    def _row_of(self, step: int, tool: str, res: IntentResult) -> dict[str, Any]:
+        view = res.view
+        return self._row(
+            step, tool, str(view.get("status", "unknown")), action_id=res.record.action_id, reason_code=view.get("reason_code"),
+            degraded=bool(view.get("degraded")), fields=list(view.get("fields") or ()),
+        )
+
+    @staticmethod
+    def _cursor_of(ordinal: int, entry: Any, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """進 checkpoint 的 cursor：逐步狀態短碼（``fields`` 是巢狀清單且只對當次回饋有用，不存），加上 composite 當時的版本與
+        schema_hash（續跑時比對，宣告變了就不續跑）。"""
+        return {
+            "ordinal": ordinal, "tool": entry.name, "next": len(rows), "version": entry.spec.tool_version,
+            "schema_hash": entry.schema_hash,
+            "rows": [{k: v for k, v in row.items() if k != "fields"} for row in rows],
+        }
+
+    def _composite_progress(self, st: _State, m: ScreenedIntent, entry: Any, rows: Sequence[Mapping[str, Any]]) -> None:
+        """每完成一步就寫 checkpoint（崩潰後從 cursor 續跑、不重播已成功的步驟）。批次執行中 history 尚未寫入，所以在這裡
+        暫時補上 assistant 訊息與前序呼叫的 tool 訊息（與 park 的形狀相同：其餘呼叫的結果由 resume 補齊）。"""
+        st.composite_cursor = self._cursor_of(m.ordinal, entry, rows)
+        transcript = None
+        if st.batch is not None:
+            b = st.batch
+            transcript = [
+                *st.transcript, ChatMessage("assistant", b.text, tool_calls=tuple(b.calls)),
+                *(ChatMessage("tool", result_text(b.views[k]), tool_call_id=b.calls[k]["id"]) for k in range(m.ordinal) if k in b.views),
+            ]
+        self._checkpoint(st, "composite", transcript=transcript)
+
+    def _execute_composite(
+        self, st: _State, m: ScreenedIntent, entry: Any, *, cursor: Mapping[str, Any] | None = None,
+        approvals: Mapping[str, str] | None = None, pending: frozenset[str] = frozenset(),
+    ) -> IntentResult | _Halt:
+        """依序展開 composite 的子步驟；composite 本身不建 ActionIntent，每個子步驟走完整的 screen／create／execute。
+
+        回傳彙整結果（``IntentResult``）；子步驟需核准時回 ``approval_required=True`` 的結果（``record.action_id`` 是子 action，
+        ``st.composite_cursor`` 已更新、由呼叫端 park）。``cursor`` 只在 resume 時給：已成功的步驟不重播，從 ``cursor.next`` 續跑，
+        該步（待決的那一個）的結果依 ``_pending_stop`` 判定，不能續跑時回 ``_Halt``。``pending``：checkpoint 的待核准 action
+        （Run 此時是 WAITING_APPROVAL）；待決步驟連執行階段都到不了（能力、路徑、screen、建立被拒）也一樣回 ``_Halt``，
+        不回 rejected／blocked 視圖喚醒模型（同 ``_resume_pending``）。"""
+        steps = entry.composite.steps
+        rows = [dict(r) for r in cursor["rows"]] if cursor is not None else []
+        inputs = self._composite_inputs(entry, m.args)
+        sub_ids = [stable_action_id(m.run_id, m.step_id, m.ordinal, j) for j in range(len(steps))]
+        outputs: dict[int, dict[str, Any]] = {}
+
+        def output_of(k: int) -> Mapping[str, Any] | None:
+            if k >= len(rows) or rows[k]["status"] != "ok":
+                return None
+            if k not in outputs:
+                schema = self._registry.entry(steps[k].tool).output_schema or {}
+                declared = set(schema.get("properties") or {})  # 受 output_schema 約束：沒宣告的欄位不可引用
+                outputs[k] = {key: v for key, v in self._step_outputs(sub_ids[k]).items() if key in declared}
+            return outputs[k]
+
+        while len(rows) < len(steps) and all(r["status"] == "ok" for r in rows):
+            j = len(rows)
+            self._gate(st)
+            if sub_ids[j] not in pending and st.counters.tool_calls >= self._budget.max_tool_calls:  # 已核准的待決步驟不重複扣預算
+                step_result: dict[str, Any] | IntentResult | _Halt = self._row(j, steps[j].tool, "blocked", reason_code=DEFERRED_BUDGET)
+            else:
+                step_result = self._composite_step(
+                    st, m, j, steps[j].tool, steps[j].params, inputs, output_of, sub_ids[j], (approvals or {}).get(sub_ids[j]),
+                    sub_ids[j] in pending,
+                )
+            if isinstance(step_result, _Halt):
+                return step_result
+            if isinstance(step_result, IntentResult):  # 子步驟需核准：記下進度並停住（呼叫端 park）
+                st.composite_cursor = self._cursor_of(m.ordinal, entry, rows)
+                return step_result
+            rows.append(step_result)
+            self._composite_progress(st, m, entry, rows)
+
+        st.composite_cursor = None
+        if any(r["status"] == "unknown" for r in rows):
+            st.unresolved = True
+        return self._composite_result(m, steps, rows)
+
+    def _composite_step(
+        self, st: _State, m: ScreenedIntent, j: int, tool: str, params: Mapping[str, Any], inputs: Mapping[str, Any],
+        output_of: Callable[[int], Mapping[str, Any] | None], sub_id: str, approval_id: str | None, pending_step: bool,
+    ) -> dict[str, Any] | IntentResult | _Halt:
+        """一個子步驟：能力範圍 -> 路徑解析 -> screen -> create -> execute。回逐步狀態列（dict）、需核准的結果、或 ``_Halt``。
+
+        ``pending_step``：這一步是 resume 時有待核准 action 的步驟（Run 在 WAITING_APPROVAL）；它在抵達 execute 之前被擋下
+        一律回 ``_Halt``（原因碼對照 ``_pending_stop``），否則 composite 會回 rejected／blocked 視圖喚醒模型。"""
+        # AL-3：子步驟只能在 Run 凍結的能力範圍內（且當下仍可見）；不在範圍 ⇒ 這一步 blocked，composite 失敗
+        if tool not in st.frozen_tools or tool not in visible_tools(st.cap):
+            if pending_step:
+                return _Halt(LoopReason.CAPABILITY_REVOKED, sub_id)
+            return self._row(j, tool, "blocked", reason_code=TOOL_NOT_IN_SNAPSHOT)
+        try:
+            resolved = resolve_params(params, inputs=inputs, output_of=output_of)
+        except CompositePathError:
+            if pending_step:  # 引用的前步輸出已不可得（例如重啟後回合範圍暫存已清）：核准的參數無從重建
+                return _Halt(LoopReason.INTENT_REJECTED, sub_id)
+            return self._row(j, tool, "rejected", reason_code=INVALID_TOOL_ARGS, fields=[f"/steps/{j}/params"])
+        screened = self._core.screen_intent(
+            run_id=m.run_id, step_id=m.step_id, ordinal=m.ordinal, sub_index=j, capability_set=st.cap, tool=tool, args=resolved,
+            injected=self._run_injected(st),
+        )
+        if isinstance(screened, IntentResult):
+            stop = self._pending_stop(screened) if pending_step else None
+            return _Halt(stop, sub_id) if stop is not None else self._row_of(j, tool, screened)
+        early = self._core.create_screened(screened)
+        if early is not None:
+            stop = self._pending_stop(early) if pending_step else None
+            return _Halt(stop, sub_id) if stop is not None else self._row_of(j, tool, early)
+        res = self._core.execute_screened(screened, approval_id=approval_id)
+        if res.approval_required and not pending_step:
+            return res
+        if pending_step:  # 只有真正有待核准 action 的那一步套 _pending_stop；其餘步驟的行為與全新執行相同
+            if res.record.reason == "PresenceRequired" and res.retryable is False:
+                st.counters.tool_calls += 1  # 階段 1.5：核准已消耗、action 已 FAILED ⇒ 等同已執行且失敗
+                st.consumed.append(sub_id)
+                return self._row(j, tool, "failed", action_id=sub_id)
+            stop = self._pending_stop(res)
+            if stop is not None:
+                return _Halt(stop, sub_id)
+        if not res.approval_required:
+            st.counters.tool_calls += 1
+            if res.record.action_id:
+                st.consumed.append(res.record.action_id)
+        row = self._row_of(j, tool, res)
+        if res.block_code == ACTION_UNRESOLVED:  # 非待決步驟遇到結果未明的既有 action（例如崩潰在 EXECUTING）：記為 unknown
+            row["status"] = "unknown"
+        return row
+
+    def _composite_result(self, m: ScreenedIntent, steps: Sequence[Any], rows: Sequence[Mapping[str, Any]]) -> IntentResult:
+        """彙整結果：逐步狀態列為 ``items``（沒執行的步驟列為 blocked(composite_step_skipped)），整體 ``status`` 取最差者；
+        全部成功時，對外內容取最後一步的結果文字（若有）。經 Gateway 的 ``result_view`` 組成，不含例外文字與參數內容。"""
+        items = [dict(r) for r in rows]
+        items += [self._row(j, steps[j].tool, "blocked", reason_code=COMPOSITE_STEP_SKIPPED) for j in range(len(rows), len(steps))]
+        worst = max((str(r["status"]) for r in rows), key=_SEVERITY.__getitem__)
+        bad = next((r for r in rows if r["status"] != "ok"), {})
+        if worst == "ok" and len(rows) == len(steps) and self._content_lookup is not None:
+            content = self._content_lookup(str(rows[-1].get("action_id", "")))
+            if content is not None:
+                items[-1]["content"] = content
+        view = self._gateway.result_view(
+            worst, items=items, degraded=any(r.get("degraded") for r in rows), reason_code=bad.get("reason_code"),
+            fields=bad.get("fields") or (),
+        )
+        return IntentResult(IntentRecord(m.ordinal, m.tool, None, view["status"], bad.get("reason_code")), view)
+
+    def _resume_composite(
+        self, st: _State, ordinal: int, call: Mapping[str, Any], cursor: Mapping[str, Any], step_id: str,
+        pending: frozenset[str], allowed: frozenset[str], approvals: Mapping[str, str],
+    ) -> LoopOutcome | Mapping[str, Any]:
+        """resume（核准後或崩潰後）接續 composite：從 ``cursor.next`` 續跑，已成功的步驟不重播。回終局（再 park／結束 Run）或
+        要補進 history 的彙整視圖。待決子步驟的判定同 ``_resume_pending``（缺／過期核准 ⇒ 再 park；其餘依 ``_pending_stop``）。"""
+        entry = self._composite_entry(call["name"])
+        mismatch = self._cursor_matches(cursor, call["name"], entry)
+        if mismatch is not None:  # 先於任何執行：composite 宣告已不是建立 cursor 時的那一份
+            logger.warning("resume：composite_cursor 與當下宣告不符（%s），Run 改轉 FAILED：run=%s", mismatch.value, st.run_id)
+            return self._finish(st, "failed", mismatch)
+        sub_id = stable_action_id(st.run_id, step_id, ordinal, cursor["next"])
+        if call["name"] not in allowed:
+            if sub_id in pending:  # 與一般 pending 項相同：能力已被撤銷，核准不消耗
+                logger.warning("resume：composite %s 不在當下可見集合，Run 改轉 FAILED(capability_revoked)：run=%s", call["name"], st.run_id)
+                return self._finish(st, "failed", LoopReason.CAPABILITY_REVOKED)
+            st.composite_cursor = None
+            return self._blocked(TOOL_NOT_IN_SNAPSHOT)
+        screened = self._core.screen_intent(
+            run_id=st.run_id, step_id=step_id, ordinal=ordinal, capability_set=st.cap, tool=call["name"],
+            args=self._prefill(call["name"], call["args"]), injected=self._run_injected(st),
+        )
+        if isinstance(screened, IntentResult):
+            logger.warning("resume：composite %s 重新篩選被拒，Run 改轉 FAILED(intent_rejected)：run=%s", call["name"], st.run_id)
+            return self._finish(st, "failed", LoopReason.INTENT_REJECTED)
+        result = self._execute_composite(st, screened, entry, cursor=cursor, approvals=approvals, pending=pending)
+        if isinstance(result, _Halt):
+            if result.stop == "repark":
+                return self._repark(st, result.action_id)
+            logger.warning("resume：composite 待決步驟沒有執行，Run 改轉 FAILED(%s)：action=%s", result.stop.value, result.action_id)
+            return self._finish(st, "failed", result.stop)
+        if result.approval_required:  # 後面的步驟也需要核准：再次 park（cursor 已更新）
+            return self._repark(st, str(result.record.action_id))
+        return result.view
 
     # ───────────────────────── 內部：parallel_one_shot 的逾時與取消（§6.4） ─────────────────────────
 
@@ -1246,6 +1588,13 @@ class AgentLoop:
             if call["id"] in done:
                 continue
             action_id = stable_action_id(st.run_id, step_id, ordinal)
+            cursor = st.composite_cursor
+            if cursor is not None and cursor["ordinal"] == ordinal and self._composite_entry(call["name"]) is not None:
+                outcome = self._resume_composite(st, ordinal, call, cursor, step_id, pending, allowed, approvals or {})
+                if isinstance(outcome, LoopOutcome):
+                    return outcome
+                st.transcript.append(ChatMessage("tool", result_text(outcome), tool_call_id=call["id"]))
+                continue
             if action_id in pending and call["name"] not in allowed:
                 # pending 項的能力已被撤銷或收窄（預檢理應已攔下，這裡是保險）：Run 此時仍是 WAITING_APPROVAL
                 # （這個 action 還沒執行，Run 尚未回 RUNNING），該狀態不能轉 SUCCEEDED（states.py），繼續跑只會在收尾

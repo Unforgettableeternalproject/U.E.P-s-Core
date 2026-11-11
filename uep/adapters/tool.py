@@ -42,6 +42,9 @@ CAPABILITY_CEILING: Mapping[str, SideEffectClass] = {
     "web.fetch": "internal_read",
     "presentation.propose": "reversible_local",
     "decision.consult": "internal_read",
+    # 測試工具組（UEP_TOOL_TESTKIT）專用：test.approval 的上限是 external_effect，測試工具才能走核准路徑
+    "test.read": "internal_read",
+    "test.approval": "external_effect",
 }
 
 
@@ -109,9 +112,13 @@ class CompositeStep:
 
 @dataclass(frozen=True)
 class CompositeSpec:
-    """線性多步驟宣告；不是引擎。"""
+    """線性多步驟宣告；不是引擎。
+
+    ``initial_params``：composite 輸入的預填值（模型沒給的欄位才補；使本來需要互動詢問的欄位不必再問，§5.7.4）。
+    """
 
     steps: tuple[CompositeStep, ...]
+    initial_params: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -13,6 +13,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -180,6 +181,23 @@ def make_capability_tags_for(
     return tags_for
 
 
+def with_extra_capability_tags(
+    tags_for: Callable[[Any, Any], frozenset[str]], extra: frozenset[str], registry: ToolRegistry,
+) -> Callable[[Any, Any], frozenset[str]]:
+    """在決策層收窄**之後**併入額外標籤（測試工具組 ``UEP_TOOL_TESTKIT`` 用；決策層的 route 表不含這些標籤）。
+
+    只在 ``route=agent_loop`` 且收窄結果非空時併入（空即不啟動的 fail-closed 不被繞過）；併入的標籤限 ``CAPABILITY_CEILING`` 閉集
+    且必須是註冊表目前有工具的標籤（``registry.enabled_tags()``），所以不會憑空放寬或帶出沒有工具的標籤。"""
+
+    def wrapped(ticket: Any, proposal: Any) -> frozenset[str]:
+        tags = frozenset(tags_for(ticket, proposal))
+        if not tags or getattr(proposal, "route", None) != "agent_loop":
+            return tags
+        return tags | (extra & registry.enabled_tags() & CAPABILITY_CEILING.keys())
+
+    return wrapped
+
+
 class LoopLaunchRefused(RuntimeError):
     """入口明確拒絕啟動（並發上限、投影為空、關閉中）。orchestrator 看 ``loop_refused``：不算故障，回合退回 direct_chat。"""
 
@@ -197,6 +215,31 @@ class _RunCtx:
     delivery_uncertain: str | None = None  # 送出結果不確定時的 reason_code：不補發失敗訊息（避免使用者看到兩則）
     cancel_requested: bool = False  # 心跳讀到 Supervisor 的取消旗標（SV-2）
     text: str = ""
+    resumed: bool = False  # 核准後續跑的 Run：原 turn 已結束，取消判定不看 turn 終結狀態，結果不再經 Output Gate
+
+
+@dataclass(frozen=True)
+class ParkedLoop:
+    """停在 ``WAITING_APPROVAL`` 的 Run：續跑所需的記憶體端狀態（Task／Run 本身與 checkpoint 在 DB）。"""
+
+    ticket: Any
+    task_id: str
+    trigger: LoopTrigger
+    parent_id: str
+
+
+class LoopResumeRefused(RuntimeError):
+    """``LoopLauncher.resume`` 無法接手（不是 park 中的 Run、關閉中、並發上限、TaskManager 拒絕接手…）。"""
+
+
+@dataclass(frozen=True)
+class LoopResumeResult:
+    """續跑的結果摘要（``state`` 同 ``LoopOutcome.state``；``awaiting_approval`` 表示再次 park，Run 仍可續跑）。"""
+
+    run_id: str
+    state: str
+    text: str = ""
+    reason_code: str | None = None
 
 
 class LoopLauncher:
@@ -217,8 +260,10 @@ class LoopLauncher:
         persona_id: str = "uep", persona_version: int = 1, policy_version: int = 1, budget: LoopBudget | None = None,
         system_text: Callable[[Any], str] = lambda ticket: DEFAULT_LOOP_SYSTEM_TEXT,
         max_concurrent: int | None = None, close_timeout_s: float | None = None,
-        executors: Mapping[str, Any] | None = None,
+        executors: Mapping[str, Any] | None = None, platform_source: Callable[[], str | None] | None = None,
     ) -> None:
+        # 當下 Presence 平台的來源（Host 持有的 Lease／location）；未注入或回 None = 不帶場域，fail-closed 只投 global 工具
+        self._platform_source = platform_source
         # executor 名稱 -> ToolExecutor：``AgentLoop`` 對 parallel_one_shot 逾時／取消呼叫 ``executor.cancel`` 用（組裝層已檢查齊備）
         self._executors = dict(executors) if executors is not None else {}
         max_concurrent = DEFAULT_MAX_CONCURRENT_LOOPS if max_concurrent is None else max_concurrent
@@ -252,6 +297,7 @@ class LoopLauncher:
         self._active = 0
         self._threads: set[threading.Thread] = set()
         self._closing = threading.Event()
+        self._parked: dict[str, ParkedLoop] = {}  # run_id -> park 中的 Run（核准後由 ``resume`` 接手）
 
     # ---- 啟動 ----
 
@@ -263,9 +309,7 @@ class LoopLauncher:
                 raise LoopLaunchRefused("loop_busy")
             self._active += 1  # 先占名額，建 Task／Run 之前就會被擋下（不排隊）
         try:
-            capability_set = self._registry.project(
-                trigger.capability_tags, ProjectionContext(audience=getattr(ticket, "audience_scope", "private")),
-            )
+            capability_set = self._registry.project(trigger.capability_tags, self._projection_context(ticket))
             if not capability_set["tools"]:
                 raise LoopLaunchRefused("capability_projection_empty")  # 例如全部 warming：不啟動，回 direct_chat
             task, run = create_loop_run(
@@ -340,10 +384,21 @@ class LoopLauncher:
         orch = self._orchestrator
         return self._closing.is_set() or orch.is_ended(turn_id) or orch.cancel_reason_of(turn_id) is not None
 
+    def _cleanup(self, turn_id: str, run_id: str) -> None:
+        """Run 終態：回合結果暫存、文字暫存與 child／parent 暫存一併清理，不得無限增長。"""
+        if self._cache is not None:
+            self._cache.discard_turn(turn_id)
+        if self._texts is not None:
+            self._texts.discard_turn(turn_id)
+        discard = getattr(self._store, "discard_run", None)
+        if callable(discard):
+            discard(run_id)
+
     def _work(self, trigger: LoopTrigger, ctx: _RunCtx) -> None:
         ticket, run = ctx.ticket, ctx.run
         turn_id = ticket.turn_id
         facts = TurnEndFacts(status="failed", reason_code="loop_failed")
+        parked = False
         hb_stop = threading.Event()
         threading.Thread(target=self._heartbeat, args=(ctx, hb_stop), name=f"uep-loop-hb-{turn_id}", daemon=True).start()
         try:
@@ -362,17 +417,17 @@ class LoopLauncher:
                 raised = True
                 logger.exception("AgentLoop worker 失敗：turn=%s", turn_id)
             facts = self._conclude(ctx, outcome, raised)
+            parked = facts.reason_code == LOOP_PARKED_REASON and facts.status == "failed"
+            if parked:  # park 不是終態：保留 child／parent 暫存與回合結果暫存，核准後由 ``resume`` 接手
+                self._parked[run.run_id] = ParkedLoop(
+                    ticket, ctx.task_id, trigger, ticket.conversation_id or ticket.segment_id,
+                )
         except Exception:
             logger.exception("AgentLoop 收尾失敗：turn=%s", turn_id)
         finally:
             hb_stop.set()
-            if self._cache is not None:
-                self._cache.discard_turn(turn_id)
-            if self._texts is not None:
-                self._texts.discard_turn(turn_id)
-            discard = getattr(self._store, "discard_run", None)
-            if callable(discard):
-                discard(run.run_id)  # Run 終態：child／parent 暫存清理，不得無限增長
+            if not parked:
+                self._cleanup(turn_id, run.run_id)
             # 名額先釋放、再終結 turn：turn 終結（使用者看到完成）之後立刻到來的新 turn 不該被舊 Run 的名額誤擋；
             # 執行緒追蹤留到最後，shutdown 仍會等 on_turn_ended 完成
             self._release()
@@ -438,6 +493,16 @@ class LoopLauncher:
         except Exception:
             logger.exception("Task 終結失敗：task=%s", ctx.task_id)
 
+    def _projection_context(self, ticket: Any) -> ProjectionContext:
+        """投影脈絡：audience 取自 ticket，platform 取自 Core 持有的 Presence 來源（不取自模型輸入）；來源失敗 fail-closed 為 None。"""
+        platform: str | None = None
+        if self._platform_source is not None:
+            try:
+                platform = self._platform_source()
+            except Exception:
+                logger.warning("讀取 Presence 平台失敗，投影不帶場域（fail-closed）", exc_info=True)
+        return ProjectionContext.for_platform(platform, audience=getattr(ticket, "audience_scope", "private"))
+
     def _build_loop(self, ctx: _RunCtx) -> AgentLoop:
         from uep.agent.loop import AgentLoop, LoopSnapshots
         from uep.agent.runtime import ModelPortRuntime
@@ -445,18 +510,23 @@ class LoopLauncher:
         ticket, run = ctx.ticket, ctx.run
         snapshots = LoopSnapshots()
         registry = self._registry
-        context = ProjectionContext(audience=ticket.audience_scope)
 
         def projector(tags: frozenset[str], prior: frozenset[str] | None) -> Any:
-            return registry.project(tags, context, prior=prior)
+            # 每一步重取平台：Loop 執行期間 Presence 轉移時，下一步的投影不再含原平台的限定工具
+            return registry.project(tags, self._projection_context(ticket), prior=prior)
 
         return AgentLoop(
             runtime=ModelPortRuntime(self._port, snapshots.take, continue_after_tools=True, max_rounds=50),
             tasks=self._tasks, gateway=ToolGateway(registry), registry=registry, store=self._store, projector=projector,
             budget=self._budget, worker_epoch=run.worker_epoch, snapshots=snapshots,
             injected={"actor_id": ticket.actor_id, "audience": ticket.audience_scope, "segment_id": ticket.segment_id},
-            cancelled=lambda: ctx.cancel_requested or self._cancelled(ticket.turn_id),
-            deliver_result=lambda text: self._deliver(ctx, text),
+            cancelled=(
+                (lambda: ctx.cancel_requested or self._closing.is_set()) if ctx.resumed
+                else (lambda: ctx.cancel_requested or self._cancelled(ticket.turn_id))
+            ),
+            deliver_result=(
+                (lambda text: self._capture(ctx, text)) if ctx.resumed else (lambda text: self._deliver(ctx, text))
+            ),
             content_lookup=self._cache.text if self._cache is not None else None,
             run_cleanup=self._cache.discard_about_refs_run if self._cache is not None else None,
             executors=self._executors,
@@ -474,6 +544,89 @@ class LoopLauncher:
             return True
         ctx.delivery_uncertain = _DELIVERY_UNCERTAIN.get(status) if status is not None else None
         return False
+
+    @staticmethod
+    def _capture(ctx: _RunCtx, text: str) -> bool:
+        """核准後續跑的最終文字：原 turn 早已結束，不再經 Output Gate（Gate 以 turn 世代驗證，必被拒）；文字由 ``resume`` 的
+        結果回給呼叫端（Console 印出）。送到使用者端的路徑待 Host／平台的非同步回覆通道。"""
+        ctx.delivered, ctx.text = True, text
+        return True
+
+    # ---- 核准後續跑（提案 §8.2、E1） ----
+
+    def parked_runs(self) -> tuple[str, ...]:
+        """目前 park 中、可續跑的 Run。"""
+        with self._lock:
+            return tuple(self._parked)
+
+    def resume(self, run_id: str, approvals: Mapping[str, str] | None = None) -> Future[LoopResumeResult]:
+        """接手 park 中的 Run 並在背景續跑（Console、日後的 Host 與平台共用的公開入口）。
+
+        ``approvals``：``action_id -> approval_id``（Approval 通道已記錄的核准；缺核准＝再次 park；否決請先
+        ``TaskManager.record_rejection`` 再以空 approvals 呼叫，模型會看到 rejected）。接手走 ``TaskManager.resume_run``
+        （新 worker_epoch；park 已清心跳所以可立即接手），重驗（tool_version、approval、能力在凍結集合內）全由
+        ``AgentLoop.resume`` 與 Manager 判定，這裡不放寬。回傳的 Future 在續跑結束時給 ``LoopResumeResult``；
+        再次 park 時 Run 仍留在 ``parked_runs``。無法接手（非 park 中、關閉中、並發上限、Manager 拒絕）立即拋 ``LoopResumeRefused``。"""
+        with self._lock:
+            entry = self._parked.get(run_id)
+            if entry is None:
+                raise LoopResumeRefused(f"Run 不在 park 狀態：{run_id}")
+            if self._closing.is_set():
+                raise LoopResumeRefused("loop_closing")
+            if self._active >= self._max:
+                raise LoopResumeRefused("loop_busy")
+            self._active += 1
+        try:
+            plan = self._tasks.resume_run(run_id)
+        except Exception as exc:
+            self._release()
+            raise LoopResumeRefused(f"Manager 拒絕接手：{type(exc).__name__}：{exc}") from exc
+        ctx = _RunCtx(entry.ticket, entry.task_id, plan.run, resumed=True)
+        future: Future[LoopResumeResult] = Future()
+        thread = threading.Thread(
+            target=self._work_resume, args=(entry, ctx, dict(plan.checkpoint or {}), dict(approvals or {}), future),
+            name=f"uep-agent-resume-{run_id}", daemon=True,
+        )
+        with self._lock:
+            self._threads.add(thread)
+        thread.start()
+        return future
+
+    def _work_resume(
+        self, entry: ParkedLoop, ctx: _RunCtx, checkpoint: dict[str, Any], approvals: dict[str, str],
+        future: Future[LoopResumeResult],
+    ) -> None:
+        run_id, turn_id = ctx.run.run_id, ctx.ticket.turn_id
+        hb_stop = threading.Event()
+        threading.Thread(target=self._heartbeat, args=(ctx, hb_stop), name=f"uep-loop-hb-{turn_id}", daemon=True).start()
+        outcome = None
+        raised = False
+        state, code = "failed", None
+        try:
+            scope = self._cache.turn_scope(turn_id) if self._cache is not None else contextlib.nullcontext()
+            with scope:
+                outcome = self._build_loop(ctx).resume(
+                    run_id, checkpoint, trigger=entry.trigger, parent_id=entry.parent_id, approvals=approvals,
+                )
+        except Exception:
+            raised = True
+            logger.exception("AgentLoop 續跑失敗：run=%s", run_id)
+        finally:
+            hb_stop.set()
+            if outcome is not None:
+                state = str(outcome.state)
+                code = getattr(outcome.reason_code, "value", outcome.reason_code)
+            try:
+                if state != "awaiting_approval":  # 再次 park 時保留；其餘為終態：收尾並清理
+                    reason = "loop_exception" if raised else f"loop_{code or state}"
+                    self._settle(ctx, ok=state == "completed" and ctx.delivered, reason=reason)
+                    with self._lock:
+                        self._parked.pop(run_id, None)
+                    self._cleanup(turn_id, run_id)
+            finally:
+                self._release()
+                self._forget(threading.current_thread())
+                future.set_result(LoopResumeResult(run_id, state, ctx.text, None if code is None else str(code)))
 
     def _notify_failure(self, ctx: _RunCtx) -> None:
         """失敗時給使用者的固定系統訊息：經同一條 Output Gate；origin=system，不是角色發言，也不編造看似成功的回答。"""
@@ -510,17 +663,21 @@ class LoopLauncher:
 def build_loop_entry(
     *, tool_path: str, tasks: TaskManager, delivery: Any, orchestrator: Any, registry: ToolRegistry, model_port: Any,
     cache: TurnOutcomeCache | None, text_store: LoopTextStore | None, persona_id: str = "uep",
-    policy_ref: str = "pol_agent_loop", **launcher_kwargs: Any,
+    policy_ref: str = "pol_agent_loop", extra_capability_tags: frozenset[str] = frozenset(), **launcher_kwargs: Any,
 ) -> tuple[LoopEntry, LoopLauncher]:
     """組裝層用：production 的 ``(LoopEntry, LoopLauncher)``（capability 收窄 + 啟動器）。只在 ``tool_path == "agent"`` 可建。
     launcher 另回傳是為了讓 ``CoreAssembly.shutdown`` 能關閉它。``owner_for`` 取 ticket 的 ``actor_id``
-    （與 agent 路徑的回合 Task 一致；現有記憶工具不需核准）。"""
+    （與 agent 路徑的回合 Task 一致；現有記憶工具不需核准）。
+    ``extra_capability_tags``（預設空＝行為不變）：收窄後額外併入的標籤，見 ``with_extra_capability_tags``。"""
     launcher = LoopLauncher(
         tasks=tasks, delivery=delivery, orchestrator=orchestrator, registry=registry, model_port=model_port,
         text_store=text_store, cache=cache, persona_id=persona_id, **launcher_kwargs,
     )
+    tags_for = make_capability_tags_for(registry, orchestrator.metrics)
+    if extra_capability_tags:
+        tags_for = with_extra_capability_tags(tags_for, frozenset(extra_capability_tags), registry)
     entry = LoopEntry(
-        tool_path, capability_tags_for=make_capability_tags_for(registry, orchestrator.metrics), launch=launcher,
+        tool_path, capability_tags_for=tags_for, launch=launcher,
         policy_ref=policy_ref, owner_for=lambda ticket: ticket.actor_id,
     )
     return entry, launcher

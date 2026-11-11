@@ -38,12 +38,14 @@ StepEnd = Literal["completed", "runtime_error", "stale", "incomplete"]
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
-def stable_action_id(run_id: str, step_id: str, ordinal: int) -> str:
+def stable_action_id(run_id: str, step_id: str, ordinal: int, sub_index: int | None = None) -> str:
     """SA-4：由 ``run_id``＋``step_id``＋步內序號決定的 ``act_<26 字 Crockford>``（與 ``new_id`` 同格式）。
 
     同一 attempt 重放、或同步驟重跑，同一個 ``tool_intent`` 序號得到同一個 id。
+    ``sub_index``：composite 子步驟的序號（§5.7.4）；沒給（None）時與原本的 id 完全相同。
     """
-    digest = hashlib.sha256(f"{run_id}\x1f{step_id}\x1f{ordinal}".encode()).digest()
+    key = f"{run_id}\x1f{step_id}\x1f{ordinal}" + ("" if sub_index is None else f"\x1f{sub_index}")
+    digest = hashlib.sha256(key.encode()).digest()
     number = int.from_bytes(digest[:16], "big")  # 128 位元：首字元 <= 7，與 ULID 同值域
     chars = []
     for _ in range(26):
@@ -233,11 +235,11 @@ class AgentCore:
 
     def screen_intent(
         self, *, run_id: str, step_id: str, ordinal: int, capability_set: Mapping[str, Any], tool: str, args: Any,
-        injected: Mapping[str, Any] | None = None,
+        injected: Mapping[str, Any] | None = None, sub_index: int | None = None,
     ) -> ScreenedIntent | IntentResult:
         """Gateway 篩選（capability／schema／注入）。通過回 ``ScreenedIntent``（含驗證並注入後的參數與穩定 action_id），
-        被拒回帶 ``rejected`` 視圖的 ``IntentResult``（不建 action）。"""
-        action_id = stable_action_id(run_id, step_id, ordinal)
+        被拒回帶 ``rejected`` 視圖的 ``IntentResult``（不建 action）。``sub_index``：composite 子步驟序號（§5.7.4）。"""
+        action_id = stable_action_id(run_id, step_id, ordinal, sub_index)
         try:
             checked = self._gateway.check_intent(
                 tool, args, capability_set, injected=self._injected if injected is None else injected,

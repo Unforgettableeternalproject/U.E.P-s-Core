@@ -51,6 +51,7 @@ from uep.stream.contracts.types import Utterance
 from uep.stream.coordinator import TurnCoordinator
 from uep.stream.tracer import LatencyTracer
 
+from uep.contracts.platform import platform_from_presence_location
 from uep.contracts.presence import AcquireResult, GateDecision
 from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES, ROUTE_DIRECT_CHAT
 from uep.decision.hub import DecisionHub
@@ -271,6 +272,7 @@ class EchoPipelineHost:
         self._seq = 0
         self._control_sub: Any = None
         self._started = False
+        self._tools_refresh_pending = False  # Lease 變動時因忙碌延後的工具重投影（輪結束後補做）
         self._switching = False  # set_session 進行中：不簽新 ticket（audience 不得以舊值簽發）
         self._input_failed = False
         self._closed = False  # 宿主生命週期：停止開始後不再簽新 ticket（aclose 後的 submit 由 ES 回 VOIDED）
@@ -433,6 +435,16 @@ class EchoPipelineHost:
         """本機 Host 持有的 Presence location（V18 缺席端輸入比對的對象）。"""
         return self._location
 
+    def projection_platform(self) -> str | None:
+        """工具投影用的當下 Presence 平台：Host 持有 Lease（ACTIVE）時為本機 location，否則 None（她在主機、不在任何平台）。
+
+        這是刻意的授權邊界：工具投影以 Host 本機的 Lease 與 location 為準（與 V18 沿用 Host location 一致），
+        不用 PlatformContextProvider 的 peek——peek 是建議性快照，不作授權依據；決策層 consult 用 peek 只做建議與 placement。
+        兩邊不一致時投影偏保守（Lease 不在就不投平台限定工具），屬可接受。未知 location 同樣視為 None（fail-closed）。"""
+        if not self.presence_active:
+            return None
+        return platform_from_presence_location(self._location)
+
     def set_require_source_location(self, required: bool) -> None:
         """組裝層注入 ``UEP_REQUIRE_SOURCE_LOCATION``（Host 不自己讀設定）；開啟後缺 source_location 的輸入即否決。"""
         self.orchestrator.require_source_location = bool(required)
@@ -491,6 +503,7 @@ class EchoPipelineHost:
             self.lease_result = AcquireResult.DENIED
         if self.lease_result is AcquireResult.GRANTED:
             self._stopped_reason = None  # 新 Lease：先前的全域停止已解除
+            self._sync_tools()  # 平台限定工具的曝光依 Lease 而定；建構時尚無 Lease，取得後重投影一次
         else:
             logger.warning("EchoPipelineHost 沒有取得 Lease：%s", self.lease_result.value)
         return self.lease_result
@@ -887,6 +900,21 @@ class EchoPipelineHost:
             self._memory.set_session(ctx.segment_id)
         self._refresh_tools()
 
+    def _sync_tools(self) -> None:
+        """Lease 取得／遺失後重投影工具曝光。檢查與重投影都在 ``_intake_lock`` 內（期間不會簽新 ticket）；
+        忙碌（有進行中的輪）或 session 切換中時不跳過，而是記為待辦，由輪結束（``_finish_turn``）再補做。"""
+        with self._intake_lock:
+            if self._closed:
+                return
+            if self._switching or self._busy():
+                self._tools_refresh_pending = True
+                return
+            self._tools_refresh_pending = False
+            try:
+                self._refresh_tools()
+            except Exception:
+                logger.exception("Lease 變動後重投影工具失敗")
+
     def _refresh_tools(self) -> None:
         """D79：曝光給 LLM 的工具 = Access Layer 白名單內的工具；``member_recall`` 只在有 guild 的 session 曝光
         （只有那裡才有成員名單可解析）。只在沒有進行中的輪時呼叫（建構、session 切換）。"""
@@ -922,7 +950,9 @@ class EchoPipelineHost:
         try:
             capability_set = memory_registry().project(
                 self._DIRECT_CHAT_CAPABILITY_TAGS,
-                ProjectionContext(available_context=available, audience=self._session.audience_scope),
+                ProjectionContext.for_platform(
+                    self.projection_platform(), available_context=available, audience=self._session.audience_scope,
+                ),
             )
             self.think.tools = render_tools(capability_set)
         except Exception:
@@ -1249,6 +1279,8 @@ class EchoPipelineHost:
         rejected = self.orchestrator.cancel_reason_of(ticket.turn_id) in RETRACT_REASONS
         self.orchestrator.on_turn_ended(ticket.turn_id, facts)
         self._tool_seq.pop(ticket.turn_id, None)
+        if self._tools_refresh_pending:
+            self._sync_tools()  # 該輪已從 orchestrator 移除；仍有其他輪時會再延後
         if not rejected:
             self._store_memory(ticket, facts, tool_context or {})  # 被拒的輪不寫記憶
 
@@ -1300,6 +1332,8 @@ class EchoPipelineHost:
         targets = [t.turn_id for t in self.orchestrator.live_tickets() if gen is None or t.turn_generation <= gen]
         for turn_id in targets:
             self.orchestrator.cancel_turn(turn_id, notice.reason)
+        if notice.reason == "presence_lost":
+            self._sync_tools()  # Lease 遺失：平台限定工具不得殘留在 think.tools（輪還在取消中時延後到輪結束）
         if coordinator is None:
             return
         if gen is None:

@@ -40,6 +40,7 @@ from uep.adapters.tool import (
 )
 from uep.events.envelope import scope_rank
 from uep.tasks.manager import PolicyViolation, params_hash
+from uep.tools.composite import CompositePathError, validate_static
 from uep.tools.projection import ProjectionContext, audience_rank
 from uep.tools.schema import freeze as _freeze
 from uep.tools.schema import lint_subset, strict_schema
@@ -381,6 +382,13 @@ class ToolRegistry:
                 raise ToolRegistryError("RA-14", f"{name}: composite 不得巢狀（{step.tool!r}）")
             max_effect = max(max_effect, SIDE_EFFECT_ORDER.index(sub.spec.side_effect_class))
             max_approval = max(max_approval, APPROVAL_ORDER.index(sub.spec.approval_level))
+        try:  # 路徑引用：語法、線性、輸入／輸出欄位存在（受 output_schema 約束）
+            validate_static(
+                name, [(s.tool, s.params) for s in comp.steps], entry.descriptor.input_schema, comp.initial_params,
+                lambda tool: by_name[tool].output_schema,
+            )
+        except CompositePathError as exc:
+            raise ToolRegistryError("RA-14", str(exc)) from None
         if SIDE_EFFECT_ORDER.index(entry.spec.side_effect_class) < max_effect:
             raise ToolRegistryError("RA-14", f"{name}: side_effect_class 低於子步驟最大值")
         if APPROVAL_ORDER.index(entry.spec.approval_level) < max_approval:

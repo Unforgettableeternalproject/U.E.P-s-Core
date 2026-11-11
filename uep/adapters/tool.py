@@ -109,9 +109,13 @@ class CompositeStep:
 
 @dataclass(frozen=True)
 class CompositeSpec:
-    """線性多步驟宣告；不是引擎。"""
+    """線性多步驟宣告；不是引擎。
+
+    ``initial_params``：composite 輸入的預填值（模型沒給的欄位才補；使本來需要互動詢問的欄位不必再問，§5.7.4）。
+    """
 
     steps: tuple[CompositeStep, ...]
+    initial_params: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

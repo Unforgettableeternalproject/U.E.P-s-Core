@@ -89,6 +89,7 @@ CHECKPOINT_KEYS = frozenset({
     "child_context_ref", "child_revision", "history_hash", "frozen_tools", "frozen_tags", "step_id",
     "budget_counters", "visible_tools",
     "frozen_modalities", "frozen_platforms", "last_decision_id", "escalate_gap",
+    "composite_cursor",  # composite 進度（§5.7.4）：{ordinal, tool, next, rows[逐步狀態短碼]}，不含任何結果內容
 })
 
 

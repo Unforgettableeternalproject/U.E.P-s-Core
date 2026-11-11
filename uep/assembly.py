@@ -703,11 +703,9 @@ def assemble_core(
             # 開啟測試工具組時 loop 與 TaskManager 用同一個（已併入測試工具的）註冊表；其餘沿用記憶註冊表
             loop_registry = tool_resolver if (testkit_on or chatroom_on) else memory_registry()
             _check_loop_one_shot_executors(loop_registry, executors)
-            from uep.tools.catalog.chatroom import CHATROOM_TAGS
             from uep.tools.catalog.testkit import TESTKIT_TAGS
 
-            # 兩者都由 with_extra_capability_tags 與 enabled_tags 取交集：未設定的 Chatroom 工具 unavailable，不貢獻標籤
-            extra_tags = (TESTKIT_TAGS if testkit_on else frozenset()) | (CHATROOM_TAGS if chatroom_on else frozenset())
+            extra_tags = TESTKIT_TAGS if testkit_on else frozenset()
             loop_entry, loop_launcher = build_loop_entry(
                 tool_path=tool_path, tasks=tasks, delivery=delivery, orchestrator=echo.orchestrator,
                 registry=loop_registry, model_port=model_port, cache=agent_cache,

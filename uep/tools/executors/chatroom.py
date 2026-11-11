@@ -8,8 +8,8 @@
   加入房間由 executor 依白名單**自動**處理（首次使用某房間時 ``POST /api/rooms/{id}/join``，kind=other、role=agent），不另提供
   ``chatroom.join``：不在白名單的房間一律拒絕，不會有模型指定房間去加入的路徑。身分失效（閒置移出等）自動重新 join 一次；
   被踢（``participant_kicked``）不自動加回。
-- 游標：每個房間一個，保存在 executor 記憶體（模型不管 seq）。首次使用從 join 回的 ``joined_seq`` 起算（不重播加入前的歷史）。
-  ``wait`` 被取消時不推進游標（取到的訊息丟棄，下次還會收到）。行程重啟後游標回到 ``joined_seq``。
+- 游標：每個房間一個，保存在 executor 記憶體（模型不管 seq）。新行程第一次 join 時從房內目前最新的 seq 起算（不重讀歷史、不對舊訊息起反應）。
+  ``wait`` 被取消時不推進游標（取到的訊息丟棄，下次還會收到）。游標不持久化：行程重啟後同樣從當下最新的 seq 起算。
 - 房內訊息是外部內容：結果一律帶 ``untrusted=true`` 與固定提示，內容經清理（去控制字元）、單則與總量截斷，再放進回合結果暫存，
   由 Gateway 的 ``outcome_view`` 過濾後交給模型。
 - ``wait`` 以短切片 long-poll（每片不超過 ``slice_s``），片與片之間檢查取消旗標與期限；``cancel`` 先於 ``execute`` 到達也會記下。
@@ -64,6 +64,7 @@ UNREACHABLE = "unreachable"
 DEFAULT_SLICE_S = 3.0  # wait 每片 long-poll 秒數，也是取消生效的最大延遲
 HTTP_TIMEOUT_S = 10.0
 _MAX_PENDING_CANCELS = 256
+_SEQ_CEILING = 2**53  # 「比任何訊息都新」的 before_seq，用來取房內最新一則
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # 身分失效但重新 join 是正確處置的 Hub 代碼（participant_kicked 刻意不在內：移出是人為決定）
 _REJOIN_CODES = frozenset({
@@ -193,6 +194,7 @@ class ChatroomToolExecutor:
         self._clock = clock
         self._lock = threading.Lock()
         self._rooms: dict[str, _Room] = {}
+        self._cursors: dict[str, int] = {}  # 身分失效、重新 join 之間暫存的游標
         self._waiting: dict[str, threading.Event] = {}
         self._pending_cancels: dict[str, None] = {}
         self.executions: list[str] = []
@@ -296,14 +298,28 @@ class ChatroomToolExecutor:
         pid = data.get("participant_id")
         if not isinstance(pid, str) or not pid:
             raise ChatroomError("bad_response")
-        joined = data.get("joined_seq")
-        room = _Room(pid, joined if isinstance(joined, int) and not isinstance(joined, bool) else 0, str(data.get("display_name") or ""))
+        with self._lock:
+            cursor = self._cursors.pop(room_id, None)  # 身分失效後重新 join：沿用原游標
+        if cursor is None:  # 新行程第一次 join：從房內目前最新的 seq 起算，不重讀歷史（持久化游標留待之後）
+            cursor = self._latest_seq(room_id, pid)
+        room = _Room(pid, cursor, str(data.get("display_name") or ""))
         with self._lock:
             kept = self._rooms.get(room_id)
             if kept is not None:  # 並行 join：沿用既有游標，不倒退
                 room.cursor = max(room.cursor, kept.cursor)
             self._rooms[room_id] = room
         return room
+
+    def _latest_seq(self, room_id: str, participant_id: str) -> int:
+        """房內目前最新訊息的 seq（空房 0）：取 ``before_seq`` 很大時的最後一則。"""
+        assert self._client is not None
+        data = self._client.request(
+            "GET", f"/api/rooms/{room_id}/messages", participant_id=participant_id,
+            params={"before_seq": _SEQ_CEILING, "limit": 1},
+        )
+        raw = data.get("messages")
+        seqs = [m["seq"] for m in raw if isinstance(m, Mapping) and isinstance(m.get("seq"), int)] if isinstance(raw, list) else []
+        return max(seqs, default=0)
 
     def _room(self, room_id: str) -> _Room:
         with self._lock:
@@ -319,7 +335,9 @@ class ChatroomToolExecutor:
             if exc.code not in _REJOIN_CODES:
                 raise
             with self._lock:
-                self._rooms.pop(room_id, None)
+                stale = self._rooms.pop(room_id, None)
+                if stale is not None:
+                    self._cursors[room_id] = stale.cursor
             return call(self._join(room_id))
 
     def _advance(self, room_id: str, seq: int) -> None:

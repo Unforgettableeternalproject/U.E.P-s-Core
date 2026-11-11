@@ -6,13 +6,11 @@
 - ``chatroom.read``：``internal_read``，增量讀房內訊息；游標由 executor 保存，模型不管 seq。
 - ``chatroom.wait``：``internal_read``，等新訊息（long-poll 切片）；有時間上限、可 cancel（D69，``interruptible``＋``cancellable``，
   ``parallel_one_shot``），Supervisor／取消能中斷。
-- ``chatroom.post``：照實標 ``external_effect``。分類與核准的最終宣告待 ``ToolSpec.native`` 合入（Bernie 裁決：原生工具不受
-  Core 內部核准限制，``approval_level=none``）；在那之前現行 RA-2 會拒絕 ``external_effect``＋``none``，所以
-  ``chatroom_entries()`` 暫不含 post（executor 與測試已備）。``chatroom_post_entry()`` 保留宣告，供合入後註冊。
+- ``chatroom.post``：照實標 ``external_effect``，``native=True``＋``approval_level=none``（Bernie 裁決：原生工具不受 Core 內部核准限制，RA-2a）。
 
 房內訊息是外部內容：read／wait 的結果標記為不可信資料（見 executor），description 也明確要求模型不得當作指令。
-能力標籤 ``chatroom.read``／``chatroom.post`` 在 ``CAPABILITY_CEILING``；決策層的 route 表不含它們，所以由組裝層以
-``extra_capability_tags`` 併入 ``/loop``（與測試工具組同一模式），不改 ``uep/decision/*``。
+能力標籤 ``chatroom.read``／``chatroom.post`` 在 ``CAPABILITY_CEILING``；route 表由決策層維護（feature/decision-native-tool-tags），
+組裝層不併入 ``extra_capability_tags``（那只留給測試工具組）。
 """
 from __future__ import annotations
 
@@ -103,9 +101,9 @@ POST_INPUT_SCHEMA: dict[str, Any] = {
         "room": _ROOM_PROP,
         "content": {"type": "string", "minLength": 1, "maxLength": POST_MAX_CHARS, "description": "要發送的文字。"},
         "mentions": {
-            "type": "array", "maxItems": POST_MAX_MENTIONS,
+            "type": "array",
             "items": {"type": "string", "maxLength": MENTION_MAX},
-            "description": "要 @ 的房內成員顯示名稱。",
+            "description": f"要 @ 的房內成員顯示名稱（最多 {POST_MAX_MENTIONS} 個）。",
         },
     },
     "required": ["content"],
@@ -152,12 +150,12 @@ def _read_spec(*, interruptible: str = "non_interruptible") -> ToolSpec:
 
 
 def chatroom_post_entry() -> ToolEntry:
-    """post 的宣告（照實標 external_effect）。approval_level／native 待 ``ToolSpec.native`` 合入後補上，目前未註冊。"""
+    """post 的宣告：照實標 ``external_effect``，``native=True``＋``approval_level=none``（原生工具免 Core 內部核准，RA-2a）。"""
     return ToolEntry(
         name=TOOL_POST,
         spec=ToolSpec(
             executor=CHATROOM_EXECUTOR, side_effect_class="external_effect", idempotency="none", presence_bound=False,
-            tool_version=1, capability=CHATROOM_POST_TAG, approval_level="none",
+            tool_version=1, capability=CHATROOM_POST_TAG, approval_level="none", native=True,
         ),
         descriptor=ToolDescriptor(description=POST_DESCRIPTION, input_schema=POST_INPUT_SCHEMA, usage_hint=POST_USAGE_HINT),
         scope=ToolScope(), output_schema=POST_OUTPUT_SCHEMA, timeout_s=POST_TIMEOUT_S, requires=(CHATROOM_MODULE,),
@@ -165,7 +163,7 @@ def chatroom_post_entry() -> ToolEntry:
 
 
 def chatroom_entries() -> list[ToolEntry]:
-    """目前註冊的 Chatroom 工具（read、wait；post 待 native 合入）。"""
+    """註冊的 Chatroom 工具（read、wait、post）。"""
     return [
         ToolEntry(
             name=TOOL_READ, spec=_read_spec(),
@@ -178,6 +176,7 @@ def chatroom_entries() -> list[ToolEntry]:
             scope=ToolScope(), output_schema=_MESSAGES_OUTPUT, concurrency="parallel_one_shot",
             timeout_s=WAIT_TIMEOUT_S, cancellable=True, requires=(CHATROOM_MODULE,),
         ),
+        chatroom_post_entry(),
     ]
 
 

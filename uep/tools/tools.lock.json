@@ -1,4 +1,8 @@
 {
+  "chatroom.post": {
+    "schema_hash": "b75fb95391138d2323f7e04381468819dfe7655b4559847747a1f9fe18fb3910",
+    "tool_version": 1
+  },
   "chatroom.read": {
     "schema_hash": "61f5c7a6b8bbf5ae3739beb0a1e6935710b1bc3a4f6ec89d729cbf50b7dbdae3",
     "tool_version": 1

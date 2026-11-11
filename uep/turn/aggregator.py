@@ -4,6 +4,7 @@
 定期呼叫（處理等待逾時）。兩者回傳「已完成」的 ``AggregatedTurn``（0..n 個）。Orchestrator 不依賴具體實作。
 
 - ``PassThroughAggregator``：一句一個 turn、立即交出（Web／CLI、單一 STT 已切好 turn 的路徑）。
+- ``VoiceRoutedAggregator``：依 ``Segment.voice`` 分流：語音交給 ``BufferedAggregator``，文字逐句通過（不被緩衝延遲）。
 - ``BufferedAggregator``：搬自 bot ``echo_decision.aggregator.turn_buffer``：per-speaker 緩衝，
   段落間隔超過 merge_gap 或等待超過 max_wait 即完成；主動模式改用較短的 0.25s 門檻；被叫到的 turn 也用短門檻。
   時間由注入的 ``clock`` 提供。
@@ -56,6 +57,7 @@ class Segment:
     start_ts: float = 0.0  # 秒；只用來算 turn 長度（overflow）
     end_ts: float = 0.0
     payload: object = field(default=None, repr=False, compare=False)  # 宿主私有（原始 UtteranceFact）
+    voice: bool = False  # 來自語音輸入 stage（分流 aggregator 只緩衝語音）
 
 
 @dataclass(frozen=True)
@@ -183,6 +185,14 @@ class BufferedAggregator:
     def forget_replied(self, speaker_ref: str) -> None:
         """回覆被作廢／失敗（對方沒有真的聽到）：不算「回覆過」。"""
         self._replied_at.pop(speaker_ref, None)
+
+    @property
+    def pending_wait_s(self) -> float:
+        """目前模式下，最後一段抵達後最久還要等多久 turn 才會交出（被動 max_wait；主動模式含敘述中的安靜時間）。"""
+        wait = self.max_wait_s
+        if self._fast and self._cfg.narrative_enabled:
+            wait = max(wait, self._cfg.narrative_end_s)
+        return wait
 
     def is_narrating(self, speaker_ref: str) -> bool:
         """該說話者目前是否有進行中的敘述中 turn（僅主動模式）。"""
@@ -373,3 +383,66 @@ class BufferedAggregator:
             logger.debug("turn 太短，丟棄：%s", speaker)
             return []
         return [AggregatedTurn(speaker, text, tuple(buf.segments), state, buf.narrative)]
+
+
+class VoiceRoutedAggregator:
+    """依輸入來源分流：``Segment.voice`` 的句子交給 ``voice``（通常是 ``BufferedAggregator``），其餘交給 ``text``（預設逐句通過）。
+
+    文字輸入（``/say``、``submit_utterance`` 的文字）不能被緩衝：被動模式的等待是數秒，打字的人不該等。
+    宿主與 orchestrator 用到的選用入口（模式、urgent、聲音活動、回覆回饋、離場）一律轉給 ``voice``；
+    ``isinstance(..., PassThroughAggregator)`` 為假，因此 ``needs_tick`` 成立、tick 執行緒會啟動。
+    """
+
+    def __init__(self, voice: TurnAggregator, text: TurnAggregator | None = None) -> None:
+        self.voice = voice
+        self.text: TurnAggregator = text if text is not None else PassThroughAggregator()
+
+    def _pick(self, segment: Segment) -> TurnAggregator:
+        return self.voice if segment.voice else self.text
+
+    def feed(self, segment: Segment) -> list[AggregatedTurn]:
+        return self._pick(segment).feed(segment)
+
+    def tick(self) -> list[AggregatedTurn]:
+        return [*self.voice.tick(), *self.text.tick()]
+
+    def flush_all(self) -> list[AggregatedTurn]:
+        return [*self.voice.flush_all(), *self.text.flush_all()]
+
+    # ---- 選用入口：轉給語音聚合器（沒有該入口的實作視為無操作）----
+
+    def set_fast(self, fast: bool) -> None:
+        hook = getattr(self.voice, "set_fast", None)
+        if callable(hook):
+            hook(fast)
+
+    def set_urgent_predicate(self, predicate: Callable[[str], bool] | None) -> None:
+        hook = getattr(self.voice, "set_urgent_predicate", None)
+        if callable(hook):
+            hook(predicate)
+
+    def note_voice(self, speaker_ref: str, now: float | None = None) -> None:
+        hook = getattr(self.voice, "note_voice", None)
+        if callable(hook):
+            hook(speaker_ref, now)
+
+    def note_replied(self, speaker_ref: str, now: float | None = None) -> None:
+        hook = getattr(self.voice, "note_replied", None)
+        if callable(hook):
+            hook(speaker_ref, now)
+
+    def forget_replied(self, speaker_ref: str) -> None:
+        hook = getattr(self.voice, "forget_replied", None)
+        if callable(hook):
+            hook(speaker_ref)
+
+    def discard_speaker(self, speaker_ref: str) -> None:
+        for part in (self.voice, self.text):
+            hook = getattr(part, "discard_speaker", None)
+            if callable(hook):
+                hook(speaker_ref)
+
+    @property
+    def pending_wait_s(self) -> float:
+        """語音緩衝最久還要等多久（console 追 turn 的等待上限用）；語音聚合器沒有緩衝時為 0。"""
+        return float(getattr(self.voice, "pending_wait_s", 0.0))

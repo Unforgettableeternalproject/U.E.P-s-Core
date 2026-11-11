@@ -57,6 +57,9 @@ class UtteranceFact:
     # 只能由行程內的簽入點填入（Host 輸入 stage、Console）；外部 adapter 的值由 Core ingress 以已驗證 endpoint 簽發，不得從 wire 反序列化
     source_location: PresenceLocation | None = None
     source_endpoint_id: str | None = None  # 選填，對應 §10.2 endpoint 粒度；目前只記錄、不比對
+    # 這句是否由輸入 stage 辨識出來（語音路徑，由 Host 的 stage 消費點標記）：分流 aggregator 只緩衝語音，
+    # 文字輸入與 Console 的整段辨識（/mic）一律逐句通過
+    from_voice: bool = False
 
 
 @dataclass(frozen=True)

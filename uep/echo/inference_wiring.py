@@ -96,6 +96,45 @@ def _parse_vox_emotion_map(raw: str | None) -> dict[str, Any] | None:
     return value
 
 
+def stt_turn_kwargs(
+    mode: str, *, silence_threshold_s: float, min_utterance_s: float, vad_threshold: float, vad_hysteresis: float,
+    vad_hangover_s: float,
+) -> dict[str, Any]:
+    """斷句與 VAD 設定轉成 STT 輸入 stage 的建構參數：multichannel 用 ``policy`` 加 ``vad_factory``（每個聲道各一個 VAD），
+    single 用 ``policy`` 加 ``vad``。``TurnPolicy.max_wait_s`` 沒有讀取端，不設。"""
+    from uep.stream.audio.vad import EnergyVad
+    from uep.stream.contracts.turn import TurnPolicy
+
+    policy = TurnPolicy(silence_threshold_s=silence_threshold_s, min_utterance_s=min_utterance_s)
+
+    def make_vad() -> Any:
+        return EnergyVad(threshold=vad_threshold, hysteresis=vad_hysteresis, hangover_s=vad_hangover_s)
+
+    if mode == "single":
+        return {"policy": policy, "vad": make_vad()}
+    return {"policy": policy, "vad_factory": make_vad}
+
+
+def build_voice_aggregator(decision: Any | None = None) -> Any | None:
+    """語音路徑的 turn 聚合器：``BufferedAggregator`` 只收語音，文字逐句通過（``VoiceRoutedAggregator``）。
+
+    設定沿用 bot（``DecisionConfig.aggregator``）；每個 Host 各建一份（聚合器有狀態，不可共用）。
+
+    只有會回報頻道模式的 proposer（``rules.default``，具備 ``add_mode_listener``）才啟用：其他 proposer（laya、nlp、
+    respond.minimal）不會切到主動模式，語音會永遠用被動門檻多等數秒，這種情況回傳 None（呼叫端退回逐句）並記一行 INFO。
+    """
+    from uep.turn.aggregator import BufferedAggregator, VoiceRoutedAggregator
+    from uep.turn.decision_config import decision_config_from_settings
+    from uep.turn.rule_proposer import RuleProposer
+
+    cfg = decision if decision is not None else decision_config_from_settings()
+    proposer_id = getattr(cfg, "proposer_id", RuleProposer.proposer_id)
+    if proposer_id != RuleProposer.proposer_id:
+        logger.info("proposer %s 不具備頻道模式切換，不啟用語音聚合器（語音退回逐句，避免固定多等被動門檻）", proposer_id)
+        return None
+    return VoiceRoutedAggregator(BufferedAggregator(cfg.aggregator))
+
+
 @dataclass(frozen=True)
 class InferenceConfig:
     tts_repo: Path | None = None
@@ -112,6 +151,13 @@ class InferenceConfig:
     stt_language: str | None = None
     stt_job_timeout_s: float | None = 4.0  # multichannel 單 job 逾時（秒）；None 或 0＝停用
     stt_job_timeout_per_audio_s: float = 0.5  # 每秒音訊追加的逾時額度（秒）
+    # 斷句與 VAD（預設對齊 bot 現行值）；TurnPolicy.max_wait_s 沒有讀取端，刻意不提供
+    stt_silence_threshold_s: float = 0.8
+    stt_min_utterance_s: float = 0.3
+    stt_vad_threshold: float = 0.015
+    stt_vad_hysteresis: float = 0.6
+    stt_vad_hangover_s: float = 0.15
+    voice_aggregator: bool = True  # 語音路徑用 BufferedAggregator 聚合 turn（UEP_VOICE_AGGREGATOR）；文字永遠逐句通過
     llm_provider: str | None = None
     llm_model: str | None = None
     system_prompt: str = ""
@@ -163,6 +209,13 @@ class InferenceConfig:
                 self.host_start_timeout_s, total,
             )
 
+    def stt_turn_kwargs(self) -> dict[str, Any]:
+        return stt_turn_kwargs(
+            self.stt_mode, silence_threshold_s=self.stt_silence_threshold_s, min_utterance_s=self.stt_min_utterance_s,
+            vad_threshold=self.stt_vad_threshold, vad_hysteresis=self.stt_vad_hysteresis,
+            vad_hangover_s=self.stt_vad_hangover_s,
+        )
+
     @classmethod
     def from_settings(cls, settings: UepSettings | None = None) -> InferenceConfig:
         if settings is None:
@@ -184,6 +237,9 @@ class InferenceConfig:
             stt_mode=settings.infer_stt_mode, stt_language=settings.infer_stt_language,
             stt_job_timeout_s=settings.stt_job_timeout_s or None,
             stt_job_timeout_per_audio_s=settings.stt_job_timeout_per_audio_s,
+            stt_silence_threshold_s=settings.stt_silence_threshold_s, stt_min_utterance_s=settings.stt_min_utterance_s,
+            stt_vad_threshold=settings.stt_vad_threshold, stt_vad_hysteresis=settings.stt_vad_hysteresis,
+            stt_vad_hangover_s=settings.stt_vad_hangover_s, voice_aggregator=settings.voice_aggregator,
             llm_provider=settings.infer_llm_provider, llm_model=settings.infer_llm_model,
             system_prompt=settings.infer_system_prompt, think=settings.think_config(), prewarm=settings.llm_prewarm, disable_ecoqos=settings.disable_ecoqos,
             compress=settings.compress_config(),
@@ -476,6 +532,10 @@ class InferenceWiring:
             kwargs["prewarm_prompt"] = self.config.system_prompt
         if self.config.voice_retrieve_timeout_s is not None:
             kwargs["voice_retrieve_timeout_s"] = self.config.voice_retrieve_timeout_s
+        if self.config.voice_aggregator:
+            aggregator = build_voice_aggregator()  # 每次呼叫一份新的（一個 Host 一份）；proposer 不支援模式切換時為 None
+            if aggregator is not None:
+                kwargs["aggregator"] = aggregator
         if self.tool_path != "legacy":
             kwargs["tool_path"] = self.tool_path  # legacy 時不帶（Host 預設即 legacy；legacy 的鍵集合不變）
         return kwargs
@@ -538,7 +598,7 @@ def build_inference_wiring(
     # M3：echo_stt 已遷入 Core（subsystems/echo_stt），不再需要 UEP_INFER_STT_REPO；設了也忽略並警告
     if cfg.stt_repo is not None:
         _warn_stt_repo_ignored(cfg.stt_repo)
-    input_kwargs: dict[str, Any] = {"backend": stt_backend, "language": cfg.stt_language}
+    input_kwargs: dict[str, Any] = {"backend": stt_backend, "language": cfg.stt_language, **cfg.stt_turn_kwargs()}
     if cfg.stt_mode == "multichannel":
         # 逾時 None／0＝停用；單聲道 SttInputStage 沒有轉錄池，不傳
         input_kwargs["job_timeout_s"] = cfg.stt_job_timeout_s or None

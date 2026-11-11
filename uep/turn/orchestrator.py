@@ -423,7 +423,7 @@ class TurnOrchestrator:
         segment = Segment(
             speaker_ref=fact.speaker_ref, text=fact.text, ref=event.event_id,
             start_ts=now - (fact.duration_ms or 0) / 1000.0, end_ts=now,
-            payload=_Intake(fact, event.event_id, event.trace_id),
+            payload=_Intake(fact, event.event_id, event.trace_id), voice=fact.from_voice,
         )
         try:
             completed = self._aggregator.feed(segment)

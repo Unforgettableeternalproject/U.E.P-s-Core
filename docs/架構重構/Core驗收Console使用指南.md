@@ -210,3 +210,46 @@ $env:UEP_LLM_API_KEY = "<金鑰>"         # 或寫在 Core .env
 ## 5. 回報方式
 
 在開發房間貼：每項編號＋通過／不通過＋一句觀察；不通過時附 `/trace` 輸出或大概時間點。wav 輸出在 `outputs\e2e\`（已 gitignore）。
+
+
+## 6. 語音輸入：/mic、/stream、/wav（以本節為準）
+
+> 本節補充並**取代**前文對 `/mic`、`/wav` 與語音聚合的描述（2.1 表格、第 4 節限制中「`/mic` 沒有 VAD 自動斷句」等句）。只有 real STT（`--mode real` 或 `--stt real`）才有語音指令。
+
+### 6.1 三個語音指令
+
+| 指令 | 路徑 | 說明 |
+|---|---|---|
+| `/mic` | **整段辨識** | Enter 開始、再按 Enter 結束。整段錄音直接交給**已載入的** STT backend 辨識（不經 VAD、不經聚合器、不載第二份模型），結果當**一句** utterance 走正常 turn 流程，一定只有一個 turn。錄音存成 `outputs\e2e\<session>\mic-*.wav` 並印出路徑 |
+| `/stream` | **即時串流** | 麥克風持續收音，以真實時間餵進 Host：VAD 斷句、turn 判定、聚合、插話（barge-in）全走正式路徑。即時印出每句辨識（`STT 辨識`）、聚合後的 turn（`聚合 turn`）與 turn 結果；按 Enter 結束並回到指令列。輸入全程存成 `stream-*.wav`（不含結束時補的尾端靜音），結束時印出路徑、總秒數、utterance 數與 turn 數 |
+| `/wav <路徑>` | **真實時間餵入** | 以音檔當輸入，**以真實時間速度**餵進 Host（聚合器靠牆鐘判斷停頓，加速餵入會失真），所以**會花與音檔等長的時間**（外加約 1.6 秒尾端靜音，再加聚合等待）。fake 模式不變 |
+
+`/mic` 注意事項：整段辨識受 echo_stt 的 `multi_channel.direct_transcribe_timeout_s`（預設 10 秒）限制，錄音太長可能逾時而「無結果」；錄音達到該上限時會先提醒，長段落請改用 `/stream`。
+
+`/stream` 注意事項：
+- 需要 `sounddevice` 與真實 STT，缺少時會印繁中提示；`UEP_INFER_STT_MODE=single` 不支援（沒有即時 feed）。
+- 沒帶 `--play` 時只有文字、**沒有聲音**（TTS 仍會寫 wav）；要聽回應與測插話請帶 `--play` 並**戴耳機**，否則喇叭聲被麥克風收回會自我觸發。
+- 結束後會補一小段靜音讓最後一句收尾，並等聚合器把緩衝中的 turn 交出，所以按下 Enter 後可能多等數秒。
+
+### 6.2 語音聚合（BufferedAggregator）
+
+語音辨識出來的句子先進 `BufferedAggregator`（搬自 bot 的 turn_buffer，含「敘述中保持聆聽」）合併成 turn；**文字輸入（`/say`、打字）與 `/mic` 的整段辨識不經緩衝**，逐句立即處理。
+
+- 開關：`UEP_VOICE_AGGREGATOR`（預設開，只在有真實 STT 輸入時有作用）；關閉則語音一句一個 turn。
+- 等待門檻沿用 bot：被動模式 `merge_gap 1.5s`、`max_wait 3.0s`（被叫名字的 turn 縮為 0.25s）；主動模式 0.25s，並啟用敘述中保持聆聽（連續 2 段或 6 秒以上併成一輪，安靜 2.5 秒才交出）。
+- **Console 的頻道模式會自己翻成主動**：沒有 guild 時人數視為 1，`rules.default` proposer 在第一次決策就把耦合度算到 0.90（高於進入門檻 0.55）而翻成主動，之後 1 人最差 0.6 也不會退回（退出門檻 0.45）；日誌會有 `頻道模式 passive -> active`。因此：**第一個語音 turn** 仍以被動門檻在聚合器等待（段落間隔 1.5 秒內合併、最後一段後最多等 3 秒；點名「小U／U.E.P」只等 0.25 秒），**之後一律用主動門檻（0.25 秒）**，敘述中保持聆聽會觸發（連續 2 段或 6 秒以上併成一輪，安靜約 2.5 秒才交出）。
+- 只有會回報頻道模式的 proposer（`rules.default`）才啟用語音聚合器；`UEP_DECISION_PROPOSER` 設成 laya／nlp／respond.minimal 時不會切到主動模式，組裝會記一行 INFO 並讓語音退回逐句（一句一個 turn），避免固定多等 3 秒。
+
+### 6.3 斷句與 VAD 設定（`UEP_STT_*`）
+
+預設對齊 bot 現行值，`/stream`、`/wav` 與正式組裝共用。
+
+| 變數 | 預設 | 說明 |
+|---|---|---|
+| `UEP_STT_SILENCE_THRESHOLD_S` | 0.8 | 靜音多久判定一句話結束 |
+| `UEP_STT_MIN_UTTERANCE_S` | 0.3 | 短於此的語音不成一句（咳嗽、雜訊） |
+| `UEP_STT_VAD_THRESHOLD` | 0.015 | EnergyVad 進入語音的 RMS 門檻（int16 滿刻度為 1.0）；麥克風音量小可調低 |
+| `UEP_STT_VAD_HYSTERESIS` | 0.6 | 離開語音的門檻比例 |
+| `UEP_STT_VAD_HANGOVER_S` | 0.15 | 能量低於離開門檻後多久才切回靜音 |
+
+沒有 `max_wait_s` 設定：`TurnPolicy.max_wait_s` 在 Core 與 Echo-Stream 都沒有讀取端（偵測器不看它），bot 設的 12 秒實際上無效，故不提供假設定。要量測 VAD 切段，用 `/stream` 存下的 wav 重放（`/wav`）。

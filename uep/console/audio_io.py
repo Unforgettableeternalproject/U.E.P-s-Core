@@ -6,9 +6,14 @@
 """
 from __future__ import annotations
 
+import queue
 from typing import Any, Protocol
 
 MIC_SAMPLE_RATE = 16000
+MIC_STREAM_BLOCK_S = 0.1
+"""串流麥克風每塊的長度（秒）；Host 輸入 stage 吃 100 ms 一塊（與 /wav 餵入一致）。"""
+MIC_STREAM_QUEUE_MAX = 600
+"""串流佇列上限（約 60 秒）：消費端卡住時丟最新的塊並計數，不讓 PortAudio callback 阻塞或記憶體無限成長。"""
 INSTALL_HINT = "請在共用環境安裝：uv pip install sounddevice"
 
 
@@ -74,6 +79,63 @@ class SoundDeviceMic:
             finally:
                 stream.close()
         return b"".join(self._chunks)
+
+
+class MicStream(Protocol):
+    """即時麥克風串流（``/stream``）：``start`` 後以 ``read`` 逐塊取 16 kHz mono int16 PCM。"""
+
+    def start(self) -> None: ...
+
+    def read(self, timeout_s: float) -> bytes | None:
+        """取下一塊 PCM；``timeout_s`` 內沒有資料回 None。"""
+        ...
+
+    def stop(self) -> None: ...
+
+
+class SoundDeviceMicStream:
+    """以預設輸入裝置即時串流：PortAudio callback 只把塊放進佇列（不做任何耗時工作），由消費端 ``read`` 取走。"""
+
+    def __init__(self, device: int | str | None = None, block_s: float = MIC_STREAM_BLOCK_S) -> None:
+        self._device = device
+        self._block_s = block_s
+        self._stream: Any = None
+        self._queue: queue.Queue[bytes] = queue.Queue(maxsize=MIC_STREAM_QUEUE_MAX)
+        self.dropped = 0
+        """佇列滿而被丟棄的塊數（消費端跟不上時才會發生）。"""
+
+    def start(self) -> None:
+        sd = _import_sounddevice()
+
+        def callback(indata: Any, _frames: int, _time: Any, _status: Any) -> None:
+            try:
+                self._queue.put_nowait(bytes(indata))
+            except queue.Full:
+                self.dropped += 1
+
+        try:
+            self._stream = sd.RawInputStream(
+                samplerate=MIC_SAMPLE_RATE, channels=1, dtype="int16", device=self._device, callback=callback,
+                blocksize=int(MIC_SAMPLE_RATE * self._block_s),
+            )
+            self._stream.start()
+        except Exception as exc:  # 裝置錯誤轉成可讀訊息
+            self._stream = None
+            raise AudioIoError(f"無法開啟麥克風（{type(exc).__name__}：{exc}）") from exc
+
+    def read(self, timeout_s: float) -> bytes | None:
+        try:
+            return self._queue.get(timeout=timeout_s)
+        except queue.Empty:
+            return None
+
+    def stop(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+            finally:
+                stream.close()
 
 
 class Player(Protocol):

@@ -846,6 +846,7 @@ class EchoPipelineHost:
             # V18：來源由輸入 stage 自己宣告；Host 不用自己的 location 代簽（否則缺席端輸入會被蓋成本機而放行）
             source_location=getattr(self._input_stage, "source_location", None),
             source_endpoint_id=getattr(self._input_stage, "source_endpoint_id", None),
+            from_voice=True,  # 輸入 stage 辨識出來的句子：分流 aggregator 只緩衝這條路徑
         )
         try:
             self.submit_utterance(fact)

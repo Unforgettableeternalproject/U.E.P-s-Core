@@ -101,12 +101,24 @@ def stt_warmup(stage: Any) -> None:
 
 
 def build_stt_stage(settings: Any, warmups: MutableMapping[str, float]) -> Any:
-    """真實 STT 輸入 stage（echo_stt／faster-whisper，設定檔 ``stt_config.yaml``）；不載模型，prepare 時載入並暖機。"""
+    """真實 STT 輸入 stage（echo_stt／faster-whisper，設定檔 ``stt_config.yaml``）；不載模型，prepare 時載入並暖機。
+
+    斷句與 VAD 門檻取自 ``UEP_STT_*``（silence／min_utterance／vad threshold、hysteresis、hangover），與正式組裝共用同一個轉換。
+    """
+    from uep.echo.inference_wiring import stt_turn_kwargs
+
     if settings.infer_stt_mode == "single":
         from uep.stream.adapters.input_stt import SttInputStage as stage_cls
     else:
         from uep.stream.adapters.input_multichannel import MultiChannelSttInputStage as stage_cls
-    stage = stage_cls(language=settings.infer_stt_language)
+    stage = stage_cls(
+        language=settings.infer_stt_language,
+        **stt_turn_kwargs(
+            settings.infer_stt_mode, silence_threshold_s=settings.stt_silence_threshold_s,
+            min_utterance_s=settings.stt_min_utterance_s, vad_threshold=settings.stt_vad_threshold,
+            vad_hysteresis=settings.stt_vad_hysteresis, vad_hangover_s=settings.stt_vad_hangover_s,
+        ),
+    )
     timed_prepare(stage, "stt", warmups, after=stt_warmup)
     return stage
 

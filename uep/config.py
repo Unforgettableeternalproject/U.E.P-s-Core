@@ -144,6 +144,17 @@ class UepSettings(BaseSettings):
     # 預設 4.0／0.5（bot 實測值）。UEP_STT_JOB_TIMEOUT_S 設 0 代表停用（不丟棄卡住的 job）
     stt_job_timeout_s: float = Field(default=4.0, ge=0, validation_alias="UEP_STT_JOB_TIMEOUT_S")
     stt_job_timeout_per_audio_s: float = Field(default=0.5, ge=0, validation_alias="UEP_STT_JOB_TIMEOUT_PER_AUDIO_S")
+    # STT 斷句與 VAD（對齊 bot 現行 config/stt.yaml 的 es_input）：靜音多久判定一句話結束、短於多久不成一句，
+    # 以及 EnergyVad 的 RMS 門檻（int16 滿刻度 = 1.0）、遲滯比與 hangover。兩個 STT 輸入 stage 都吃這組設定。
+    # 注意：TurnPolicy.max_wait_s 在 Core 與 Echo-Stream 都沒有讀取端（SilenceTurnDetector 不看它），因此刻意不提供設定
+    stt_silence_threshold_s: float = Field(default=0.8, gt=0, validation_alias="UEP_STT_SILENCE_THRESHOLD_S")
+    stt_min_utterance_s: float = Field(default=0.3, ge=0, validation_alias="UEP_STT_MIN_UTTERANCE_S")
+    stt_vad_threshold: float = Field(default=0.015, gt=0, validation_alias="UEP_STT_VAD_THRESHOLD")
+    stt_vad_hysteresis: float = Field(default=0.6, gt=0, le=1, validation_alias="UEP_STT_VAD_HYSTERESIS")
+    stt_vad_hangover_s: float = Field(default=0.15, ge=0, validation_alias="UEP_STT_VAD_HANGOVER_S")
+    # 語音路徑的 turn 聚合（BufferedAggregator，搬自 bot turn_buffer）：預設啟用，只在組裝了真實 STT 輸入時才有作用；
+    # 文字輸入（/say、submit_utterance 的文字）永遠逐句通過，不受影響。關閉則語音一句一個 turn
+    voice_aggregator: bool = Field(default=True, validation_alias="UEP_VOICE_AGGREGATOR")
     infer_llm_provider: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_PROVIDER")
     infer_llm_model: str | None = Field(default=None, validation_alias="UEP_INFER_LLM_MODEL")
     # 人設 system prompt：留空（含未設）時用 repo 內受版控的預設（uep/persona/persona.yaml）；env 有值以 env 為準

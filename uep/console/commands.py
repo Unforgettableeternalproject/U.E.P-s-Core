@@ -5,9 +5,11 @@
 """
 from __future__ import annotations
 
+import threading
 import time
 import wave
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from sqlalchemy import select
@@ -31,13 +33,17 @@ FEED_SETTLE_S = 2.0
 """一個 turn 結束後，再等多久看有沒有同一段音訊的後續 utterance。長音檔中間的停頓超過 turn 門檻（0.7 秒）
 會被切成多句，各句各開一個 turn、後句依「同 owner 新回覆取代舊回覆」取消前句（設計行為，見計畫 §5.5）；
 console 要追到最後一個 turn 才算這個音檔跑完。"""
+AGGREGATOR_TICK_MARGIN_S = 0.5
+"""等聚合器交出緩衝中的 turn 時，在聚合等待之外加的餘裕（tick 間隔＋辨識延遲）。"""
+MIC_SAMPLE_RATE = 16000
 SUBSYSTEM_NAMESPACES = ("check",)
 
 HELP_TEXT = """\
 指令：
   /say <文字>        送出一句話（無指令的輸入行等同 /say），等該 turn 結束並顯示結果
   /loop <文字>       agent 路徑（UEP_TOOL_PATH=agent）：這一句導向 agent_loop，顯示 Run 狀態與工具呼叫（需 UEP_AGENT_LOOP_ENTRY=1）
-  /wav <路徑>       以音檔當輸入；real 模式經真實 STT（餵進 Host）跑整條 turn，fake 模式由 fake STT 產 utterance
+  /wav <路徑>       以音檔當輸入；real 模式經真實 STT（餵進 Host）跑整條 turn，以真實時間速度餵入（會花與音檔等長的時間）；
+                     fake 模式由 fake STT 產 utterance
   /cancel            取消進行中的 turn（宿主取消）
   /status            Presence／Interaction 軸、turn 狀態、host 健康
   /trace [all]       最近 turn 的 tracer 事件與延遲（all＝全部 turn 摘要）
@@ -45,7 +51,10 @@ HELP_TEXT = """\
   /mem recall <文字> real 模式：經 Core Access Layer 檢索（不排除任何 session）
   /session new       開新 session（新 conversation／segment：清 Think 歷史，記憶不再因同 session 被排除）
   /mem embed <文字> [--device cpu|cuda] [--n 次數]   (a) 隔離：量 query embedding 載入／首查／p50／p95（cuda 需 UEP_E2E_ALLOW_GPU=1）
-  /mic               麥克風輸入：Enter 開始、再按 Enter 結束，錄音送進 STT 跑整條 turn（需 real STT 與 sounddevice）
+  /mic               麥克風輸入：Enter 開始、再按 Enter 結束；整段錄音（存成 wav）直接交給 STT 辨識成一句話跑 turn，
+                     不經 VAD 與聚合器（需 real STT 與 sounddevice）
+  /stream            即時麥克風輸入＋即時輸出（bot 對話形式）：持續收音，VAD 斷句、聚合成 turn、可插話；按 Enter 結束
+                     （需 real STT 與 sounddevice；帶 --play 才有聲音輸出；輸入全程存成 wav）
   /stt <wav> [--model 名] [--lang 碼]   (a) 隔離：以 Core adapter＋echo_stt 辨識 wav，印文字與耗時
                      （未設 UEP_E2E_ALLOW_GPU=1 時強制 CPU＋base 模型）
   /llm <文字>        (a) 隔離：直接呼叫 Think（真實 LLM），印切句與耗時（需 UEP_LLM_API_KEY）
@@ -64,19 +73,21 @@ class Console:
         self, runtime: ConsoleRuntime, out: Callable[[str], None] = print, wait_s: float = DEFAULT_WAIT_S,
         *, input_fn: Callable[[str], str] = input, mic_factory: Callable[[], object] | None = None,
         stt_wait_s: float = STT_WAIT_S, feed_sleep: bool = True, settle_s: float = FEED_SETTLE_S,
+        stream_mic_factory: Callable[[], object] | None = None,
     ) -> None:
         self.rt = runtime
         self.out = out
         self.wait_s = wait_s
         self.input_fn = input_fn
         self.mic_factory = mic_factory
+        self.stream_mic_factory = stream_mic_factory
         self.stt_wait_s = stt_wait_s
         self.feed_sleep = feed_sleep
         self.settle_s = settle_s
         self.last_turn_id: str | None = None
         self._commands: dict[str, Callable[[str], None]] = {
             "say": self._say, "loop": self._loop, "wav": self._wav, "cancel": self._cancel, "status": self._status,
-            "trace": self._trace, "mem": self._mem, "session": self._session, "mic": self._mic, "help": self._help, "log": self._log, "stt": self._stt, "llm": self._llm, "tts": self._tts,
+            "trace": self._trace, "mem": self._mem, "session": self._session, "mic": self._mic, "stream": self._stream, "help": self._help, "log": self._log, "stt": self._stt, "llm": self._llm, "tts": self._tts,
         }
 
     def execute(self, line: str) -> bool:
@@ -175,38 +186,68 @@ class Console:
         except (OSError, wave.Error, EOFError, ValueError) as exc:
             self.out(f"無法讀取 wav：{path}（{type(exc).__name__}：{exc}）")
             return
-        self.out(f"真實 STT：{path.name}（{seconds:.1f} 秒）餵入 Host…")
+        if self.feed_sleep:
+            # 聚合器與 turn 判定靠牆鐘判斷停頓，加速餵入會失真：真實模式以真實時間速度餵入
+            self.out(
+                f"真實 STT：{path.name}（{seconds:.1f} 秒）以真實時間速度餵入 Host，"
+                f"會花與音檔等長的時間（約 {seconds + FEED_TAIL_SILENCE_S:.0f} 秒，含尾端靜音）…"
+            )
+        else:
+            self.out(f"真實 STT：{path.name}（{seconds:.1f} 秒）餵入 Host…")
         self._feed_audio(pcm)
 
     def _feed_audio(self, pcm: bytes) -> None:
-        """16 kHz mono int16 PCM 分塊餵進 Host 的輸入 stage（含尾端靜音），等 STT 產生 utterance 與整個 turn 結束。"""
+        """16 kHz mono int16 PCM 分塊餵進 Host 的輸入 stage（含尾端靜音），等 STT 產生 utterance 與整個 turn 結束。
+
+        ``feed_sleep`` 為真時以真實時間速度餵入（依截止時間配速，不累加 sleep 的誤差）；測試設為假則不等待。
+        """
         rt = self.rt
-        before = len(rt.submissions)
+        before = len(rt.intake_events)
         chunk = int(16000 * FEED_CHUNK_S) * 2
         pcm = pcm + bytes(int(16000 * FEED_TAIL_SILENCE_S) * 2)
         t0 = time.perf_counter()
-        for i in range(0, len(pcm), chunk):
+        pace0 = time.monotonic()
+        for n, i in enumerate(range(0, len(pcm), chunk)):
             if not rt.host.feed(CONSOLE_SPEAKER, pcm[i:i + chunk]):
                 self.out("音訊未被接受（Presence 非 ACTIVE 或輸入 stage 不可用）。")
                 return
             if self.feed_sleep:
-                time.sleep(FEED_CHUNK_S / 10)  # 不即時，但避免瞬間塞滿聲道佇列
+                delay = pace0 + (n + 1) * FEED_CHUNK_S - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
         deadline = time.monotonic() + self.stt_wait_s
-        while len(rt.submissions) <= before and time.monotonic() < deadline:
+        while len(rt.intake_events) <= before and time.monotonic() < deadline:
             time.sleep(0.05)
-        if len(rt.submissions) <= before:
+        if len(rt.intake_events) <= before:
             self.out(f"STT 在 {self.stt_wait_s:.0f} 秒內沒有產生 utterance（可能被幻覺過濾或為純雜訊）。")
             return
-        # 長音檔可能被 VAD 切成多句（每句各開一個 turn，後句取代前句）：逐句追到最後一個 turn 結束
+        # 長音檔可能被 VAD 切成多句；有 aggregator 時句子先緩衝、由 tick 合併成 turn。逐個事件追到最後一個 turn 結束
         index = before
-        while index < len(rt.submissions):
-            fact, result = rt.submissions[index]
+        while index < len(rt.intake_events):
+            kind, fact, result = rt.intake_events[index]
             index += 1
-            self.out(f"STT 辨識（餵入後 {time.perf_counter() - t0:.2f} 秒）：{fact.text}")
-            self._report_turn(result)
-            settle_deadline = time.monotonic() + self.settle_s
-            while len(rt.submissions) <= index and time.monotonic() < settle_deadline:
+            self.out(self._describe_event(kind, fact, result, time.perf_counter() - t0))
+            if not _is_buffered(result):
+                self._report_turn(result)
+            # 句子還在聚合器等待時，turn 要等聚合逾時才會被 tick 交出：等待上限要涵蓋它
+            wait = self.settle_s + (self._aggregator_wait_s() if _is_buffered(result) else 0.0)
+            settle_deadline = time.monotonic() + wait
+            while len(rt.intake_events) <= index and time.monotonic() < settle_deadline:
                 time.sleep(0.05)
+
+    def _aggregator_wait_s(self) -> float:
+        """語音聚合器最久還要等多久才會把緩衝中的 turn 交出（含 tick 間隔餘裕）；沒有聚合器為 0。"""
+        orchestrator = getattr(self.rt.host, "orchestrator", None)
+        pending = float(getattr(getattr(orchestrator, "aggregator", None), "pending_wait_s", 0.0) or 0.0)
+        return pending + AGGREGATOR_TICK_MARGIN_S if pending > 0 else 0.0
+
+    @staticmethod
+    def _describe_event(kind: str, fact, result, elapsed_s: float) -> str:
+        text = fact.text if fact is not None else ""
+        if kind == "turn":
+            return f"聚合 turn：{text}"
+        suffix = "（聚合中，等待併入 turn）" if _is_buffered(result) else ""
+        return f"STT 辨識（餵入後 {elapsed_s:.2f} 秒）：{text}{suffix}"
 
     def _submit(self, text: str, **over) -> None:
         rt = self.rt
@@ -384,9 +425,14 @@ class Console:
         self.out(f"已開新 session：conversation={ctx.conversation_id}（Think 歷史已清，記憶不排除舊 session 的 episode）")
 
     def _mic(self, _arg: str) -> None:
+        """按鍵控制的錄音：整段 PCM 直接交給已載入的 STT backend（不經 VAD、不開第二份模型），辨識結果當一句 utterance。"""
         rt = self.rt
         if rt.input_stage is None:
             self.out("/mic：需要真實 STT（--mode real 或 --stt real）。")
+            return
+        backend = getattr(rt.input_stage, "_backend", None)
+        if backend is None:
+            self.out("/mic：STT backend 尚未載入（Host 尚未完成啟動）。")
             return
         from uep.console.audio_io import AudioIoError, SoundDeviceMic
 
@@ -406,8 +452,158 @@ class Console:
         if not pcm:
             self.out("沒有錄到音訊。")
             return
-        self.out(f"錄到 {len(pcm) / 32000:.1f} 秒，送進 STT…")
-        self._feed_audio(pcm)
+        seconds = len(pcm) / 32000
+        path = self._save_wav(pcm, "mic")
+        self.out(f"錄到 {seconds:.1f} 秒，已存成 wav：{path}")
+        self.out("整段送進 STT（不經 VAD、不經聚合器）…")
+        t0 = time.perf_counter()
+        try:
+            result = backend.transcribe(pcm, MIC_SAMPLE_RATE)
+        except Exception as exc:  # noqa: BLE001 - 辨識失敗不中止 console
+            self.out(f"STT 辨識失敗：{type(exc).__name__}：{exc}")
+            return
+        text = result.text.strip() if result is not None else ""
+        if not text:
+            self.out("辨識結果：（空：無可用轉錄，可能被幻覺過濾或為純雜訊）")
+            return
+        min_confidence = float(getattr(rt.input_stage, "min_confidence", 0.0) or 0.0)
+        if result.confidence < min_confidence:
+            self.out(f"辨識結果信心過低（{result.confidence:.2f} < {min_confidence:.2f}），丟棄：{text}")
+            return
+        self.out(f"STT 辨識（{time.perf_counter() - t0:.2f} 秒）：{text}")
+        over: dict = {"duration_ms": int(seconds * 1000), "language": result.language, "confidence": result.confidence}
+        declared = getattr(rt.input_stage, "source_location", None)
+        if declared is not None:  # stage 有宣告輸入場域就用它，否則 _submit 預設為本機 Host 的 location
+            over["source_location"] = declared
+        self._submit(text, **over)
+
+    def _save_wav(self, pcm: bytes, prefix: str) -> Path:
+        """把 16 kHz mono int16 PCM 存成 session 目錄下的 wav 並回傳路徑。"""
+        path = _unique_wav_path(Path(self.rt.session_dir), prefix)
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(MIC_SAMPLE_RATE)
+            w.writeframes(pcm)
+        return path
+
+    def _stream(self, _arg: str) -> None:
+        """即時麥克風輸入＋即時輸出（模擬 bot 的對話形式）：麥克風 chunk 以真實時間持續 ``host.feed``，按 Enter 結束。
+
+        執行緒模型：PortAudio callback 只入列；pump 執行緒取出後寫 wav 並呼叫 ``host.feed``（``ChannelEngine.feed`` 是
+        thread-safe 入口，內部以 call_soon_threadsafe 交給 asyncio loop）；reporter 執行緒即時印出每句辨識與聚合 turn，
+        turn 的結果報告在單一 worker 依序執行（等 turn 結束會阻塞，不能卡住辨識的即時顯示）；主執行緒等 Enter。
+        """
+        rt = self.rt
+        if rt.input_stage is None:
+            self.out("/stream：需要真實 STT（--mode real 或 --stt real）。")
+            return
+        if not callable(getattr(rt.input_stage, "feed", None)):
+            self.out("/stream：此 STT 輸入 stage 不支援即時餵入（UEP_INFER_STT_MODE=single 時無 feed），請用 multichannel。")
+            return
+        from uep.console.audio_io import AudioIoError, SoundDeviceMicStream
+
+        mic = self.stream_mic_factory() if self.stream_mic_factory is not None else SoundDeviceMicStream()
+        if rt.player is None:
+            self.out("提醒：未帶 --play，TTS 回應只有文字、不會出聲（音訊仍會寫成 wav）。")
+        self.out("即時串流（建議戴耳機，外放會被麥克風收回而自我觸發）。")
+        try:
+            mic.start()
+        except AudioIoError as exc:
+            self.out(f"/stream：{exc}")
+            return
+        self.out("收音中，按 Enter 結束並回到指令列…")
+        path = _unique_wav_path(Path(rt.session_dir), "stream")
+        wav = wave.open(str(path), "wb")
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(MIC_SAMPLE_RATE)
+        start_index = len(rt.intake_events)
+        stop_pump = threading.Event()
+        stop_report = threading.Event()
+        state = {"bytes": 0, "rejected": 0, "last_event": time.monotonic()}
+        turn_ids: set[str] = set()
+        reports = ThreadPoolExecutor(max_workers=1, thread_name_prefix="console-stream-turn")
+        t0 = time.perf_counter()
+
+        def pump() -> None:
+            warned = False
+            while not stop_pump.is_set():
+                chunk = mic.read(0.1)
+                if not chunk:
+                    continue
+                wav.writeframes(chunk)
+                state["bytes"] += len(chunk)
+                if not rt.host.feed(CONSOLE_SPEAKER, chunk):
+                    state["rejected"] += 1
+                    if not warned:
+                        warned = True
+                        self.out("音訊未被接受（Presence 非 ACTIVE 或輸入 stage 不可用），仍持續錄音。")
+            while True:  # 停止後把佇列裡剩下的塊也寫進 wav、餵進 Host
+                chunk = mic.read(0.0)
+                if not chunk:
+                    return
+                wav.writeframes(chunk)
+                state["bytes"] += len(chunk)
+                rt.host.feed(CONSOLE_SPEAKER, chunk)
+
+        def report() -> None:
+            index = start_index
+            while True:
+                if index >= len(rt.intake_events):
+                    if stop_report.is_set():
+                        return
+                    time.sleep(0.05)
+                    continue
+                kind, fact, result = rt.intake_events[index]
+                index += 1
+                state["last_event"] = time.monotonic()
+                self.out(self._describe_event(kind, fact, result, time.perf_counter() - t0))
+                if result.ticket is not None:
+                    turn_ids.add(result.ticket.turn_id)
+                if not _is_buffered(result):
+                    reports.submit(self._report_turn_safe, result)  # 無 ticket 時只印「未開 turn：原因」
+
+        pump_thread = threading.Thread(target=pump, name="console-stream-pump", daemon=True)
+        report_thread = threading.Thread(target=report, name="console-stream-report", daemon=True)
+        pump_thread.start()
+        report_thread.start()
+        try:
+            self.input_fn("")
+        finally:
+            stop_pump.set()
+            pump_thread.join(timeout=5.0)
+            mic.stop()
+            wav.close()
+            # 收尾：補一段靜音（不寫進 wav）讓最後一句的 VAD／turn 判定結束，再等辨識與聚合器把緩衝中的 turn 交出
+            if state["bytes"]:
+                tail = bytes(int(MIC_SAMPLE_RATE * FEED_CHUNK_S) * 2)
+                for _ in range(int(FEED_TAIL_SILENCE_S / FEED_CHUNK_S)):
+                    rt.host.feed(CONSOLE_SPEAKER, tail)
+            quiet = time.monotonic()
+            tail_wait = self.settle_s + self._aggregator_wait_s()
+            deadline = time.monotonic() + self.stt_wait_s
+            while time.monotonic() < deadline and time.monotonic() - max(quiet, state["last_event"]) < tail_wait:
+                time.sleep(0.05)
+            stop_report.set()
+            report_thread.join(timeout=5.0)
+            reports.shutdown(wait=True)
+        seconds = state["bytes"] / 32000
+        events = rt.intake_events[start_index:]
+        utterances = sum(1 for kind, _f, _r in events if kind == "utterance")
+        self.out(
+            f"/stream 結束：輸入錄音 {path}；共 {seconds:.1f} 秒；utterance {utterances} 句；turn {len(turn_ids)} 個"
+            + (f"；{state['rejected']} 塊音訊未被 Host 接受" if state["rejected"] else "")
+        )
+        dropped = getattr(mic, "dropped", 0)
+        if dropped:
+            self.out(f"警告：消費端跟不上，麥克風佇列丟棄了 {dropped} 塊音訊。")
+
+    def _report_turn_safe(self, result) -> None:
+        try:
+            self._report_turn(result)
+        except Exception as exc:  # noqa: BLE001 - 單一 turn 的報告失敗不影響 /stream
+            self.out(f"turn 報告失敗：{type(exc).__name__}：{exc}")
 
     def _stt(self, arg: str) -> None:
         from uep.console.stt_cmd import run_stt
@@ -423,6 +619,23 @@ class Console:
         from uep.console.tts_cmd import run_tts
 
         run_tts(arg, self.out, out_dir=self.rt.session_dir)
+
+
+def _is_buffered(result) -> bool:
+    """這句 utterance 還在 aggregator 等待併入 turn（尚未開 turn）。"""
+    return result.ticket is None and result.reason_code == "buffered"
+
+
+def _unique_wav_path(directory: Path, prefix: str) -> Path:
+    """session 目錄下不重名的 wav 路徑（``<prefix>-HHMMSS[-n].wav``）。"""
+    directory.mkdir(parents=True, exist_ok=True)
+    base = f"{prefix}-{time.strftime('%H%M%S')}"
+    path = directory / f"{base}.wav"
+    n = 1
+    while path.exists():
+        n += 1
+        path = directory / f"{base}-{n}.wav"
+    return path
 
 
 def _wav_seconds(path: Path) -> float:

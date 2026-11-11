@@ -95,7 +95,9 @@ def test_建構不載模型且共用同一個預建_backend():
     assert w.speak._backend is tts  # 預建一次、注入（所有 turn 共用）
     assert w.speak.warmup is True  # 預設在 prepare（Host 啟動）做暖機
     assert {k: r.ready for k, r in w.readiness.items()} == {"speak": None, "think": None, "input": None}
-    assert set(w.host_kwargs()) == {"think", "speak", "input_stage", "start_timeout_s", "prewarm_prompt", "voice_retrieve_timeout_s"}
+    assert set(w.host_kwargs()) == {
+        "think", "speak", "input_stage", "start_timeout_s", "prewarm_prompt", "voice_retrieve_timeout_s", "aggregator",
+    }  # aggregator：語音聚合器預設啟用（UEP_VOICE_AGGREGATOR）
     assert not w.voice_ready
 
 

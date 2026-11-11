@@ -20,11 +20,26 @@ from uep.memory import MemoryHost, NamespaceSpec
 from uep.stream.contracts.types import Utterance
 
 
+class FakeBackend:
+    """假 STT backend：``/mic`` 整段辨識直接用它（不經 VAD）。"""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls: list[int] = []
+
+    def transcribe(self, pcm: bytes, sample_rate: int):
+        from uep.stream.adapters.input_stt import TranscriptionResult
+
+        self.calls.append(len(pcm))
+        return TranscriptionResult(text=self.text, language="zh", confidence=0.9)
+
+
 class FakeInputStage:
     """假 STT 輸入：收到「有聲後的靜音」就吐一句固定文字（模擬 VAD 斷句＋辨識）。"""
 
     def __init__(self, text: str = "你好小橘") -> None:
         self.text = text
+        self._backend = FakeBackend(text)
         self.prepared = False
         self.fed: list[tuple[str, int]] = []
         self._heard = False
@@ -244,15 +259,19 @@ def test_wav_real_餵進_host_輸入_stage_並跑完整個_turn(real_like, tmp_p
     assert rt.submissions and rt.submissions[0][0].text == "你好小橘"
 
 
-def test_mic_假音源_enter_開始結束後跑整條_turn(real_like):
+def test_mic_假音源_enter_開始結束後整段辨識成一句並跑整條_turn(real_like):
     console, rt, out, stage = real_like()
-    mic = FakeMic(_tone())
+    pcm = _tone()
+    mic = FakeMic(pcm)
     console.mic_factory = lambda: mic
     prompts = []
     console.input_fn = lambda p: prompts.append(p) or ""
     console.execute("/mic")
     assert mic.started and len(prompts) == 2
     assert "錄到" in out.text and "你好小橘" in out.text and "turn.completed" in out.text
+    assert stage.fed == [] and stage._backend.calls == [len(pcm)]  # 整段交給 backend，沒有經過 host.feed／VAD
+    assert len(rt.submissions) == 1 and out.text.count("turn.completed") == 1  # 只有一句、一個 turn
+    assert list((rt.session_dir).glob("mic-*.wav"))  # 錄音落地
 
 
 def test_mic_沒有真實_stt_時提示(session_factory, tmp_path):

@@ -120,6 +120,9 @@ class ConsoleRuntime:
     memory_root: Path | None = None
     warmups: dict[str, float] = field(default_factory=dict)
     submissions: list[tuple[Any, Any]] = field(default_factory=list)
+    # 語音路徑的接收事件（依發生順序）：("utterance", fact, result)＝STT 辨識出一句並交給 Host；
+    # ("turn", fact, result)＝聚合器逾時後由 tick 交出的 turn（fact.text 為合併後全文，插話時 fact 可能為 None）。有 aggregator 時 utterance 常回 buffered
+    intake_events: list[tuple[str, Any, Any]] = field(default_factory=list)
     player: Any = None
     decision_log: DecisionLogWriter | None = None  # DL-3：決策日誌寫入器（停用時為 None）
     tool_path: str = "legacy"  # 組裝的工具路徑（agent 時才有 loop_switch 與 model_port）
@@ -241,9 +244,21 @@ def _record_submissions(host: EchoPipelineHost, runtime: ConsoleRuntime) -> None
     def recorded(fact: Any) -> Any:
         result = original(fact)
         runtime.submissions.append((fact, result))
+        runtime.intake_events.append(("utterance", fact, result))
         return result
 
     host.submit_utterance = recorded  # type: ignore[method-assign]
+    original_tick = host.submit_tick
+
+    def recorded_tick() -> Any:
+        results = original_tick()
+        for item in results:
+            # 聚合器逾時交出的 turn（或被動模式插話）沒有 submit_utterance 回傳值：console 靠這裡找到新開的 turn
+            if item.ticket is not None:
+                runtime.intake_events.append(("turn", item.fact, item))
+        return results
+
+    host.submit_tick = recorded_tick  # type: ignore[method-assign]
 
 
 def real_think_factory() -> Callable[[LatencyTracer], Any]:
@@ -356,6 +371,13 @@ def build_runtime(
         settings = get_settings()
         if chosen_stt == "real":
             kwargs["input_stage"] = real_rig.build_stt_stage(settings, warmups)
+            if settings.voice_aggregator:
+                # 語音路徑接上 BufferedAggregator（文字逐句通過）；與正式組裝同一個建構函式，聚合器每個 runtime 一份
+                from uep.echo.inference_wiring import build_voice_aggregator
+
+                host_kwargs = dict(kwargs.get("host_kwargs") or {})
+                host_kwargs.setdefault("aggregator", build_voice_aggregator())
+                kwargs["host_kwargs"] = host_kwargs
             if chosen_tts != "real":  # 未接真實 TTS 時 Host 仍需涵蓋 STT 載入的啟動逾時
                 kwargs.setdefault("start_timeout_s", real_rig.host_start_timeout_s(settings, real_rig.tts_engine(settings)))
         if chosen_memory == "real":

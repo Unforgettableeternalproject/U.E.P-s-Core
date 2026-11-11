@@ -4,6 +4,9 @@
 - 金鑰只從環境變數讀（``UEP_LLM_API_KEY`` 或 ``OPENAI_API_KEY``），不寫檔、不印出。
 - 試產上限 ``TRIAL_CAP`` 筆；超過須 ``--budget-confirmed``。
 - 後端以 ``Backend`` 協定抽象，測試用 ``FakeBackend``。
+- 檔案式後端（不連網）：``--export-prompts`` 匯出每次呼叫的 prompt，由外部（人或其他模型）填回應，
+  再用 ``--import-responses`` 走同一條解析／去重／寫出流程。匯入須使用和匯出相同的
+  ``--kind``／``--max-samples``／``--per-call``／``--seed``，``call_id`` 才會對得上。
 """
 from __future__ import annotations
 
@@ -160,6 +163,27 @@ SYSTEM_PROMPT = (
 )
 
 
+class ReplayBackend:
+    """檔案式後端：依呼叫順序回放已存檔的回應（以 call_id 對應）。缺少的 call_id 視為後端錯誤。"""
+
+    def __init__(self, responses: Mapping[str, str], call_ids: Sequence[str]) -> None:
+        self._responses = dict(responses)
+        self._call_ids = list(call_ids)
+        self.calls = 0
+
+    def complete(self, system: str, user: str) -> str:
+        call_id = self._call_ids[self.calls]
+        self.calls += 1
+        try:
+            return self._responses[call_id]
+        except KeyError:
+            raise LookupError(f"缺少 {call_id} 的回應") from None
+
+
+def call_id_of(kind: str, idx: int) -> str:
+    return f"{kind}-{idx:04d}"
+
+
 def build_prompt(card: Card, style: str, topic: str, n: int) -> str:
     """產生給 LLM 的使用者提示。標籤不給 LLM；它只負責依描述生文字。"""
     lines = [
@@ -290,6 +314,7 @@ def generate(
     seed: int = 0,
     id_prefix: str = "synthetic-en",
     cards: Sequence[Card] | None = None,
+    call_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """產生合成列與統計。每次呼叫產出的樣本屬同一 group（供切分用）。"""
     cards = tuple(cards or CARDS[kind])
@@ -302,6 +327,8 @@ def generate(
     api_calls = 0
     for idx, (card, style, topic, n) in enumerate(plan_calls(cards, max_samples, per_call, rng)):
         api_calls += 1
+        if call_ids is not None:
+            call_ids.append(call_id_of(kind, idx))
         try:
             reply = backend.complete(SYSTEM_PROMPT, build_prompt(card, style, topic, n))
         except Exception as exc:  # noqa: BLE001 - 單次呼叫失敗只計數，不中斷
@@ -337,6 +364,36 @@ def generate(
     return rows, stats
 
 
+def export_prompts(kind: str, *, max_samples: int, per_call: int, seed: int) -> list[dict[str, Any]]:
+    """依 plan_calls／build_prompt 產生每次呼叫的 prompt 與中繼資料（不呼叫任何後端）。"""
+    plan = plan_calls(CARDS[kind], max_samples, per_call, random.Random(seed))
+    return [
+        {
+            "call_id": call_id_of(kind, idx), "kind": kind, "card": card.card_id, "style": style,
+            "topic": topic, "n": n, "hard": card.hard,
+            "system": SYSTEM_PROMPT, "user": build_prompt(card, style, topic, n),
+        }
+        for idx, (card, style, topic, n) in enumerate(plan)
+    ]
+
+
+def load_responses(path: Path) -> dict[str, str]:
+    """讀「每列 {call_id, response}」的 JSONL；call_id 重複視為錯誤。"""
+    out: dict[str, str] = {}
+    with path.open(encoding="utf-8") as f:
+        for no, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            cid, resp = rec.get("call_id"), rec.get("response")
+            if not isinstance(cid, str) or not isinstance(resp, str):
+                raise TypeError(f"第 {no} 列缺少字串型 call_id／response")
+            if cid in out:
+                raise ValueError(f"call_id 重複：{cid}")
+            out[cid] = resp
+    return out
+
+
 def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as f:
@@ -350,6 +407,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-samples", type=int, default=TRIAL_CAP)
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--per-call", type=int, default=PER_CALL, help="每次呼叫要幾筆（影響卡片×風格輪替密度）")
+    p.add_argument("--export-prompts", default=None, metavar="PATH", help="只把每次呼叫的 prompt 寫成 JSONL，不呼叫後端")
+    p.add_argument("--import-responses", default=None, metavar="PATH", help="讀 {call_id, response} JSONL，走解析／去重／寫出流程")
     p.add_argument("--model", default=None, help=f"覆寫模型（亦可用環境變數 {MODEL_ENV}；預設 {DEFAULT_MODEL}）")
     p.add_argument("--confirm-api", action="store_true", help="明示同意呼叫外部 API（否則只列出計畫）")
     p.add_argument("--budget-confirmed", action="store_true", help="超過試產上限時需要")
@@ -359,12 +419,30 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_samples > TRIAL_CAP and not args.budget_confirmed:
         print(f"超過試產上限 {TRIAL_CAP}；量產須經確認並加 --budget-confirmed", file=sys.stderr)
         return 2
+    if args.export_prompts and args.import_responses:
+        print("--export-prompts 與 --import-responses 不可同時使用", file=sys.stderr)
+        return 2
+    if args.export_prompts:
+        recs = export_prompts(args.kind, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed)
+        write_jsonl(Path(args.export_prompts), recs)
+        print(json.dumps({"exported_calls": len(recs), "samples": args.max_samples}, ensure_ascii=False))
+        return 0
+    if args.import_responses:
+        responses = load_responses(Path(args.import_responses))
+        ids: list[str] = []
+        planned = [call_id_of(args.kind, i) for i in range(len(plan_calls(CARDS[args.kind], args.max_samples, args.per_call, random.Random(args.seed))))]
+        backend_r = ReplayBackend(responses, planned)
+        rows, stats = generate(args.kind, backend_r, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed, call_ids=ids)
+        stats["unmatched_response_ids"] = sorted(set(responses) - set(planned))
+        write_jsonl(Path(args.out), rows)
+        print(json.dumps(stats, ensure_ascii=False, indent=2))
+        return 0
     if not args.confirm_api:
-        plan = plan_calls(CARDS[args.kind], args.max_samples, PER_CALL, random.Random(args.seed))
+        plan = plan_calls(CARDS[args.kind], args.max_samples, args.per_call, random.Random(args.seed))
         print(json.dumps({"dry_run": True, "api_calls_would_be": len(plan), "samples": args.max_samples}, ensure_ascii=False))
         return 0
     backend = OpenAIBackend(model=args.model)
-    rows, stats = generate(args.kind, backend, max_samples=args.max_samples, seed=args.seed)
+    rows, stats = generate(args.kind, backend, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed)
     write_jsonl(Path(args.out), rows)
     stats.update(model=backend.model, usage=dict(backend.usage))
     print(json.dumps(stats, ensure_ascii=False, indent=2))

@@ -194,6 +194,7 @@ def _host_stub(guild_id, audience="scope_private_owner", path="legacy"):
     stub._agent_tool_path = types.MethodType(EchoPipelineHost._agent_tool_path, stub)  # 路徑由建構參數注入
     stub._refresh_tools_agent = types.MethodType(EchoPipelineHost._refresh_tools_agent, stub)
     stub._DIRECT_CHAT_CAPABILITY_TAGS = EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS
+    stub.projection_platform = lambda: None  # 無 Lease：只投 global 工具（記憶工具皆為 global）
     return stub
 
 

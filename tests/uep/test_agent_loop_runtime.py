@@ -41,10 +41,10 @@ def test_loop_history_equals_runtime_history_over_a_path():
         returned = _has_return(messages)
         if returned == 0:
             yield "我先查"
-            yield {1: DeltaToolCall(name="read.a", json_args='{"path": "1"}', tool_call_id="c0")}
-            yield {2: DeltaToolCall(name="read.b", json_args='{"path": "2"}', tool_call_id="c1")}
+            yield {1: DeltaToolCall(name="read__a", json_args='{"path": "1"}', tool_call_id="c0")}
+            yield {2: DeltaToolCall(name="read__b", json_args='{"path": "2"}', tool_call_id="c1")}
         elif returned == 2:
-            yield {1: DeltaToolCall(name="read.lone", json_args='{"path": "3"}', tool_call_id="c2")}
+            yield {1: DeltaToolCall(name="read__lone", json_args='{"path": "3"}', tool_call_id="c2")}
         else:
             yield "完成了"
 
@@ -57,7 +57,7 @@ def test_loop_history_equals_runtime_history_over_a_path():
     assert child[:-1] == attempt.messages  # 迴圈 child 與 Runtime 內部 history 逐則相等
     assert child[-1].role == "assistant" and child[-1].content == "完成了"
     assert [m.role for m in child[-6:-1]] == ["assistant", "tool", "tool", "assistant", "tool"]
-    assert seen[0] == seen[-1] == {"read.a", "read.b", "read.lone", "write.s", "post.ask"}
+    assert seen[0] == seen[-1] == {"read__a", "read__b", "read__lone", "write__s", "post__ask"}  # provider 只看到編碼後的名稱
 
 
 def test_unknown_tool_is_rejected_without_extra_model_call():

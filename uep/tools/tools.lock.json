@@ -18,5 +18,21 @@
   "retract_about_me": {
     "schema_hash": "8eb0e2adce5f82b6dffc830415a81fa33c472e9a08740d8828ed5600aff76460",
     "tool_version": 1
+  },
+  "test_approval_echo": {
+    "schema_hash": "59fbff0ae435aee96c832036dd6330dda34d6620c5dec864bb15acf88c5f408d",
+    "tool_version": 1
+  },
+  "test_clock": {
+    "schema_hash": "bacb3af635631385359a579cdc37246900781052a5a6050809d1cb885bbba2c8",
+    "tool_version": 1
+  },
+  "test_echo": {
+    "schema_hash": "8c9893c1213befce1606c7a1f2ef2c3ab02d20a4dce5a90ff6ac5cfdac890504",
+    "tool_version": 1
+  },
+  "test_sleep": {
+    "schema_hash": "734b656f8a235f1bf0264d0738396e8d1199b27c8205e5b47e8c6ba2f0ffcfbf",
+    "tool_version": 1
   }
 }

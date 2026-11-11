@@ -538,6 +538,7 @@ def assemble_core(
     model_port: Any | None = None,
     loop_entry: Callable[[Any, Any], object] | None = None,
     agent_loop_entry: bool | None = None,
+    tool_testkit: bool | None = None,
     decision_log: bool | None = None,
     supervisor: bool | None = None,
     supervisor_interval: float | None = None,
@@ -558,6 +559,9 @@ def assemble_core(
     ``agent_loop_entry``：None 依 ``UEP_AGENT_LOOP_ENTRY``（預設關閉）。為 True 且 ``tool_path == "agent"``、有 ``echo``、
     未另給 ``loop_entry`` 時，組裝 production 的 ``LoopEntry``（``uep.echo.agent_wiring.build_loop_entry``）：``route=agent_loop`` 的
     回合由 ``AgentLoop`` 處理、交付只經 Output Gate，宿主不再為該回合啟動 direct_chat 回覆。legacy 下開啟即 ``AssemblyError``。
+    ``tool_testkit``：None 依 ``UEP_TOOL_TESTKIT``（預設關閉）。為 True 時（只在 ``tool_path == "agent"`` 有效，legacy 下即
+    ``AssemblyError``）：``tool_resolver`` 併入測試工具（必須是 ``ToolRegistry``）、executors 併入 ``TESTKIT_EXECUTOR``
+    （與記憶工具共用回合暫存），``/loop`` 的 capability_tags 於決策層收窄後併入測試標籤。關閉時以上皆不存在。
     ``decision_log``：None 依 ``UEP_DECISION_LOG``（預設啟用）；False 停用；True 啟用（覆寫 env 的停用）。僅在有 ``echo``
     且啟用時，用本函式的 ``session_factory`` 建 DB sink 與寫入器並掛到 ``echo.decision_hub``（連同政策發布記錄）；
     於所有驗證之後才建立，任何 ``AssemblyError`` 都不會留下寫入器，關閉由 ``CoreAssembly.shutdown`` 負責。
@@ -615,9 +619,28 @@ def assemble_core(
     loop_entry_on = get_settings().agent_loop_entry if agent_loop_entry is None else agent_loop_entry
     if loop_entry_on and loop_entry is None and (tool_path != "agent" or echo is None):
         raise AssemblyError("UEP_AGENT_LOOP_ENTRY 只能在 UEP_TOOL_PATH=agent 且有 echo 時啟用（legacy 下 agent_loop 不可達）")
+    testkit_on = get_settings().tool_testkit if tool_testkit is None else tool_testkit
+    if testkit_on and tool_path != "agent":
+        raise AssemblyError("UEP_TOOL_TESTKIT 只能在 UEP_TOOL_PATH=agent 下啟用（測試工具只經 agent 路徑曝光）")
     if tool_path == "agent":
         memory_executor, agent_cache = _prepare_agent_tools(echo, model_port)
         executors = {**executors, MEMORY_EXECUTOR: memory_executor}
+        if testkit_on:
+            from uep.tools.catalog.testkit import TESTKIT_EXECUTOR, with_testkit
+            from uep.tools.executors.testkit import TestkitToolExecutor
+            from uep.tools.registry import ToolRegistry
+
+            if not isinstance(tool_resolver, ToolRegistry):
+                raise AssemblyError("UEP_TOOL_TESTKIT 需要 ToolRegistry 型的 tool_resolver（才能併入測試工具）")
+            tool_resolver = with_testkit(tool_resolver)
+            executors = {**executors, TESTKIT_EXECUTOR: TestkitToolExecutor(cache=agent_cache)}
+        if callable(getattr(tool_resolver, "entries", None)):
+            from uep.models.tool_names import ToolNameError, wire_map
+
+            try:  # provider 名稱轉譯（. -> __）的碰撞／歧義在組裝時就失敗，不等到第一次呼叫模型
+                wire_map(tool_resolver.entries())
+            except ToolNameError as exc:
+                raise AssemblyError(f"工具名稱無法安全轉譯給 provider：{exc}") from exc
     _check_registry_executors(tool_resolver, executors, internal_executors)
     assert turn_generation_source is not None and presence_audience is not None
 
@@ -663,13 +686,18 @@ def assemble_core(
         platform_source = getattr(echo, "projection_platform", None)
         attach_agent_tools(echo.think, tasks, agent_cache, platform_source=platform_source)
         if loop_entry is None and loop_entry_on:
-            loop_registry = memory_registry()
+            # 開啟測試工具組時 loop 與 TaskManager 用同一個（已併入測試工具的）註冊表；其餘沿用記憶註冊表
+            loop_registry = tool_resolver if testkit_on else memory_registry()
             _check_loop_one_shot_executors(loop_registry, executors)
+            from uep.tools.catalog.testkit import TESTKIT_TAGS
+
+            extra_tags = TESTKIT_TAGS if testkit_on else frozenset()
             loop_entry, loop_launcher = build_loop_entry(
                 tool_path=tool_path, tasks=tasks, delivery=delivery, orchestrator=echo.orchestrator,
                 registry=loop_registry, model_port=model_port, cache=agent_cache,
                 text_store=getattr(echo, "loop_text", None), persona_id=persona_id, executors=executors,
                 platform_source=platform_source,
+                extra_capability_tags=extra_tags,
             )
         if loop_entry is not None:
             echo.orchestrator.bind_loop_entry(loop_entry)

@@ -110,13 +110,31 @@ def test_state_has_no_actor_fields_for_absent_intent() -> None:
     assert set(state) == {"assistant_name", "source_platform", "message"}
 
 
-def test_state_is_english_and_key_order_stable() -> None:
+def test_turn_reply_definitions_are_shared_with_inference_schema() -> None:
+    """訓練題目與 state 必須就是 uep/decision/laya_schema.py 的那一份（不另寫）。"""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "uep" / "decision" / "laya_schema.py"
+    spec = importlib.util.spec_from_file_location("laya_schema_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert kinds.QUESTIONS_TURN_REPLY == module.QUESTIONS
     state = kinds.build_state_turn_reply({
-        "message": "ok", "others": 2, "context": [{"speaker": "U.E.P", "text": "Shall I book it?"}],
+        "message": "ok", "others": 2,
+        "context": [{"speaker": "User", "text": "Book it?"}, {"speaker": "Assistant", "text": "Shall I book it?"}],
     })
+    assert state == module.build_state_dict(
+        assistant_name="Yuki", message="ok", participant_count=3,
+        recent_context=module.format_recent_context("Book it?", "Shall I book it?"),
+    )
     assert list(state) == ["assistant_name", "speaker", "other_people_present", "recent_context", "message"]
-    assert state["other_people_present"] == "2 other(s) present"
-    assert state["recent_context"] == "U.E.P: Shall I book it?"
+    assert state["assistant_name"] == "Yuki" and state["other_people_present"] == "2 other people present"
+    assert state["recent_context"] == "User: Book it?\nAssistant: Shall I book it?"
+
+
+def test_state_without_context_uses_shared_placeholders() -> None:
+    state = kinds.build_state_turn_reply({"message": "hi"})
+    assert state["recent_context"] == "(none)" and state["other_people_present"] == "none"
 
 
 def test_question_ids_are_unique_across_kinds() -> None:
@@ -134,7 +152,7 @@ def _fake_reply(n: int, *, context: bool = False, prefix: str = "item") -> str:
     for i in range(n):
         it: dict = {"message": f"{prefix} number {i} about something distinct {i * 7}"}
         if context:
-            it["context"] = [{"speaker": "U.E.P", "text": f"Do you want that {i}?"}]
+            it["context"] = [{"speaker": "Assistant", "text": f"Do you want that {i}?"}]
         items.append(it)
     return json.dumps(items)
 
@@ -155,9 +173,9 @@ def test_generate_schema_and_labels_from_cards() -> None:
         assert r["meta"]["group_id"]
     ack = [r for r in rows if r["meta"]["card"] == "ack_after_solicit"]
     assert ack and all(r["expected"] == {"reply_mode": "respond", "addressed": True, "route": "direct_chat"} for r in ack)
-    assert all(r["state"]["recent_context"].startswith("U.E.P:") for r in ack)
+    assert all(r["state"]["recent_context"].startswith("Assistant:") for r in ack)
     side = [r for r in rows if r["meta"]["card"] == "group_side_talk"]
-    assert all(r["expected"]["reply_mode"] == "pass" and r["state"]["other_people_present"] != "none" for r in side)
+    assert all(r["expected"]["reply_mode"] == "pass" and r["state"]["other_people_present"] == "2 other people present" for r in side)
     assert stats["hard"] == len(ack)
 
 
@@ -270,3 +288,9 @@ def test_testset_draft_is_wellformed_and_pending() -> None:
     assert all(r["status"] == "pending_review" for r in rows)
     for r in rows:
         kinds.get_spec(r["kind"]).validate_expected(r["intended"])
+
+
+def test_prompt_uses_placeholder_assistant_name() -> None:
+    card = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_named_chat")
+    prompt = synth.build_prompt(card, "mt_style", "weather", 3)
+    assert "Yuki" in prompt and "U.E.P" not in prompt

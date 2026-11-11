@@ -163,7 +163,7 @@ SYSTEM_PROMPT = (
 def build_prompt(card: Card, style: str, topic: str, n: int) -> str:
     """產生給 LLM 的使用者提示。標籤不給 LLM；它只負責依描述生文字。"""
     lines = [
-        f"Assistant name: {DEFAULT_ASSISTANT_NAME}.",
+        f"The assistant is always called \"{DEFAULT_ASSISTANT_NAME}\" (the translation layer replaces every alias with this name); whenever the speaker names the assistant, use exactly \"{DEFAULT_ASSISTANT_NAME}\".",
         f"Scenario: {card.description}",
         f"Write {n} DIFFERENT examples. Topic hint: {topic}. Style: {STYLES[style]}.",
         (
@@ -177,7 +177,7 @@ def build_prompt(card: Card, style: str, topic: str, n: int) -> str:
         if card.context:
             lines.append(
                 "Also include key \"context\": a list of 1-3 earlier lines, oldest first, each {\"speaker\": ..., \"text\": ...}. "
-                f"Use speaker \"{DEFAULT_ASSISTANT_NAME}\" for the assistant and \"User\" for the speaker. "
+                f"Use speaker \"Assistant\" for the assistant and \"User\" for the speaker. "
                 f"The context must realise: {card.context.replace('_', ' ')}."
             )
     lines.append("Do not include any label or explanation.")

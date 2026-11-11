@@ -18,6 +18,8 @@ train/decision/
 └── out/            # 產物（.gitignore）
 ```
 
+turn.reply 的題目與 state 取自 `uep/decision/laya_schema.py`（訓練與推論共用，不另寫）；助理名一律用 MT 佔位名 `Yuki`，測試集 zh 草稿中的「U.E.P」在 MT 後會成為 Yuki。
+
 已實作 kind：`turn.reply`（reply_mode／route／addressed，沿用既有 adapter 題目 ID）、`presence.absent_intent`（`absent.intent`／`absent.target_location`）。新增 kind＝在 `kinds.py` 加一份 `KindSpec` 與 `synth.py` 的情境卡。
 
 ## laya-train 格式（laya 0.4.22 原始碼確認）

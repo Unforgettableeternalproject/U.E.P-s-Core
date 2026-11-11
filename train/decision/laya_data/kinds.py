@@ -3,50 +3,43 @@
 每個 kind 一份 ``KindSpec``：題目（questions）、state 組裝、expected 驗證。
 題目 ID 規則：``turn.reply`` 沿用既有 adapter 的舊 ID（reply_mode／route／addressed）；
 其他 kind 一律加前綴，避免 laya-train 對同名題目的定義衝突。
-題目與 state 值一律英文（Laya 只用英文訓練）；推論端日後須與此處逐字一致。
+turn.reply 的題目與 state 一律取自 ``uep/decision/laya_schema.py``（訓練與推論共用的唯一定義，不另寫一份）；
+presence.absent_intent 的英文題目暫放此處，若要讓推論端共用，應搬進 ``uep/decision/laya_schema.py``。
 """
 from __future__ import annotations
 
+import importlib.util
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+
+def _load_laya_schema() -> Any:
+    """以檔案路徑載入共用定義（葉節點、無依賴），避免為了它 import 整個 ``uep.decision`` 套件。"""
+    path = Path(__file__).resolve().parents[3] / "uep" / "decision" / "laya_schema.py"
+    spec = importlib.util.spec_from_file_location("_uep_laya_schema", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"找不到共用定義：{path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("_uep_laya_schema", module)
+    spec.loader.exec_module(module)
+    return module
+
+
+laya_schema = _load_laya_schema()
+
 SCHEMA_VERSION = "1.0"
-DEFAULT_ASSISTANT_NAME = "U.E.P"
+# 推論輸入先經 MT，助理別名會被換成佔位名（UEP_TRANSLATE_PLACEHOLDER，預設 Yuki）；合成與 state 一律用它
+DEFAULT_ASSISTANT_NAME = "Yuki"
 
 REPLY_MODES = ("respond", "passive", "pass", "defer")
 ROUTES = ("direct_chat", "agent_loop", "task_request", "ignore")
 ABSENT_INTENTS = ("presence_request", "message", "other")
 TARGET_LOCATIONS = ("desktop", "discord", "website", "host", "none")
 
-QUESTIONS_TURN_REPLY: dict[str, dict[str, Any]] = {
-    "reply_mode": {
-        "type": "choice",
-        "instructions": "Given this conversation, which response mode should the assistant take right now?",
-        "criteria": {
-            "respond": "The assistant was addressed or asked something and should answer now",
-            "passive": "The assistant was not addressed; it may listen in the background and only chip in if necessary",
-            "pass": "Unrelated conversation, or nothing worth saying; stay silent",
-            "defer": "Not enough information or risky; confirm with the user first or handle it later",
-        },
-    },
-    "route": {
-        "type": "choice",
-        "instructions": "Which handling path should this message take?",
-        "criteria": {
-            "direct_chat": "Ordinary chat or a simple question; a conversational reply is enough",
-            "agent_loop": "A complex task needing multi-step reasoning, planning or several tool calls",
-            "task_request": "A single explicit command or tool request (toggle a device, check the calendar, send an email)",
-            "ignore": "Not said to the assistant; ignore it",
-        },
-    },
-    "addressed": {
-        "type": "noul",
-        "instructions": (
-            "Is this message said to the assistant (speaking to it directly, or continuing a conversation with it)?"
-        ),
-    },
-}
+QUESTIONS_TURN_REPLY: dict[str, dict[str, Any]] = laya_schema.QUESTIONS
 
 QUESTIONS_ABSENT_INTENT: dict[str, dict[str, Any]] = {
     "absent.intent": {
@@ -104,24 +97,27 @@ def validate_absent_expected(expected: Mapping[str, Any]) -> None:
 
 
 def build_state_turn_reply(facts: Mapping[str, Any]) -> dict[str, str]:
-    """turn.reply 的 state（鍵順序固定，屬於分佈的一部分）。
+    """turn.reply 的 state，直接呼叫共用的 ``build_state_dict``。
 
-    facts：``message``（必填，已是英文）、``assistant_name``、``speaker``、``others``（在場他人數）、
-    ``context``（list[{speaker,text}]，舊到新）。
+    facts：``message``（必填，已是英文）、``assistant_name``、``others``（在場他人數）、
+    ``context``（list[{speaker,text}]，舊到新；取最後一句 User 與最後一句 Assistant，格式依 ``format_recent_context``）。
     """
     message = str(facts.get("message", "")).strip()
     if not message:
         raise ValueError("message 不可為空")
     others = int(facts.get("others", 0) or 0)
-    context = facts.get("context") or []
-    lines = [f"{c['speaker']}: {str(c['text']).strip()}" for c in context]
-    return {
-        "assistant_name": str(facts.get("assistant_name") or DEFAULT_ASSISTANT_NAME),
-        "speaker": str(facts.get("speaker") or "User"),
-        "other_people_present": f"{others} other(s) present" if others > 0 else "none",
-        "recent_context": "\n".join(lines) if lines else "(none)",
-        "message": message,
-    }
+    user_en = reply_en = None
+    for c in facts.get("context") or []:
+        if str(c["speaker"]).strip().lower() == "assistant":
+            reply_en = str(c["text"])
+        else:
+            user_en = str(c["text"])
+    return laya_schema.build_state_dict(
+        assistant_name=str(facts.get("assistant_name") or DEFAULT_ASSISTANT_NAME),
+        message=message,
+        participant_count=others + 1 if others > 0 else None,
+        recent_context=laya_schema.format_recent_context(user_en, reply_en),
+    )
 
 
 def build_state_absent(facts: Mapping[str, Any]) -> dict[str, str]:

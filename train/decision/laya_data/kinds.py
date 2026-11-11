@@ -36,7 +36,7 @@ DEFAULT_ASSISTANT_NAME = "Yuki"
 
 REPLY_MODES = ("respond", "passive", "pass", "defer")
 ROUTES = ("direct_chat", "agent_loop", "task_request", "ignore")
-ABSENT_INTENTS = ("presence_request", "message", "other")
+ABSENT_INTENTS = ("presence_request", "message", "task", "other")
 TARGET_LOCATIONS = ("desktop", "discord", "website", "host", "none")
 
 QUESTIONS_TURN_REPLY: dict[str, dict[str, Any]] = laya_schema.QUESTIONS
@@ -47,8 +47,9 @@ QUESTIONS_ABSENT_INTENT: dict[str, dict[str, Any]] = {
         "instructions": "What does this message, sent while the assistant is not present, ask for?",
         "criteria": {
             "presence_request": "A request for the assistant to come, appear, or move to a place or platform",
-            "message": "Content to pass on to the assistant or someone else; not a request to move",
-            "other": "Anything else: chit-chat, questions, negations, past events, or unclear",
+            "message": "Plain content handled right away: a note to relay to another person with no timing or event condition, or something for the assistant to remember; not a request to move",
+            "task": "A request for the assistant to carry out an action without coming over: anything to do later at a given time or on an event (a reminder, scheduling, relaying something at a set time), or another job handed over such as booking or sending something",
+            "other": "Anything else: chit-chat, questions, negations, past events, a private note to oneself that does not ask the assistant for anything, or unclear",
         },
     },
     "absent.target_location": {

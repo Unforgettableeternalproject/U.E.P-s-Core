@@ -11,7 +11,9 @@ train/decision/
 │   ├── kinds.py        # 每個決策 kind 一份 KindSpec（題目、state builder、expected 驗證）
 │   ├── convert_nlp.py  # train/nlp -> laya-train JSONL（選用種子，只產 route）
 │   ├── synth.py        # 情境卡合成器（卡片決定標籤，LLM 只生文字）
-│   └── split.py        # train/val 切分、測試集防洩漏檢查
+│   ├── split.py        # train/val 切分、測試集防洩漏檢查
+│   ├── resolve.py      # 盲標 disputed 規則化裁決、卡片重標、最終訓練集（final／train／val／stats）
+│   └── compound.py     # 複合指示（一句兩個以上指示）標記，meta.compound=true，標註仍取第一個
 ├── testset/zh_candidates_draft.jsonl   # 測試集 zh-TW 原句草稿（status=pending_review，待艾斯維爾核）
 ├── pool/           # synthetic 內容池（入庫；量產後才有）
 ├── pool_private/   # real_owner 日誌（.gitignore，不入 git）
@@ -21,6 +23,15 @@ train/decision/
 turn.reply 的題目與 state 取自 `uep/decision/laya_schema.py`（訓練與推論共用，不另寫）；助理名一律用 MT 佔位名 `Yuki`，測試集 zh 草稿中的「U.E.P」在 MT 後會成為 Yuki。
 
 已實作 kind：`turn.reply`（reply_mode／route／addressed，沿用既有 adapter 題目 ID）、`presence.absent_intent`（`absent.intent`／`absent.target_location`）。新增 kind＝在 `kinds.py` 加一份 `KindSpec` 與 `synth.py` 的情境卡。
+
+## presence.absent_intent 的四類
+
+- `presence_request`：要她過來／移動到某處（`target_location` 只有此類可非 none）。
+- `message`：純內容、當下可完成：轉告他人（無時間／事件觸發）、要她記住的內容（`remember that…`）。
+- `task`：要她執行動作：提醒／排程（`remind me`、`ping me`、`don't let me forget`，沒說時間也算）、轉告但帶時間／事件觸發（`tell Anna at five…`）、不在場時交辦的其他動作（`book the table`）。
+- `other`：閒聊、提問、否定、過去的事、純自我筆記（`I need to remember to…`）、不明。
+- 一句多個指示先取第一個；`task` 與 `message` 的文字邊界由 `resolve.py` 的 `relay_vs_task` 規則判定，並須與盲標一致。
+- 對照卡（`synth.ABSENT_CONTRAST_CARDS`，`--card-set contrast`）另成一組，避免動到主卡組的 plan 而無法重現；卡片標籤改版後直接重跑 `python -m laya_data.resolve --mass-dir out/mass`（會依目前卡片重標 `synth_all.jsonl`、重算 accepted／disputed）。
 
 ## laya-train 格式（laya 0.4.22 原始碼確認）
 

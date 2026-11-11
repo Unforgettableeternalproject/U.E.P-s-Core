@@ -140,6 +140,7 @@ _NOPLACE = "Do not name any platform or machine; 'here' or 'over' only."
 _REQ_NONE = {"absent.intent": "presence_request", "absent.target_location": "none"}
 _OTHER = {"absent.intent": "other", "absent.target_location": "none"}
 _MSG = {"absent.intent": "message", "absent.target_location": "none"}
+_TASK = {"absent.intent": "task", "absent.target_location": "none"}
 
 
 def _req(loc: str) -> dict[str, str]:
@@ -166,17 +167,46 @@ _ABSENT_SPECS: tuple[tuple[str, str, dict[str, str], bool, str, str], ...] = (
     ("question_ability", "Asks whether the assistant is able to move somewhere, or why it does not.", _OTHER, True, "discord",
      "Make it unmistakably a question about ability or reason, e.g. 'Are you even able to switch to Discord right now, or can you only stay on the host?'. Never a bare 'Can you go to X?' or 'Could you come?', which are polite requests."),
     ("mention_place_only", "Merely mentions a platform or machine name in an unrelated remark.", _OTHER, True, "desktop", ""),
-    ("pass_message", "Asks the assistant to relay or remember something (tell Anna I will be late, remind me about the meeting).", _MSG, True, "discord", ""),
+    ("pass_message", "Asks the assistant to relay something to a named person right away, or to remember a fact (tell Anna I will be late, remember that the address is twelve Pine Street).", _MSG, True, "discord",
+     "No reminder requests for the speaker, and no timing or event condition on delivering the message."),
     ("message_leave_note", "Asks the assistant to leave or pass a short note to a named person.", _MSG, True, "website", ""),
     ("message_mentions_place", "Asks the assistant to tell a named person something that mentions a platform or machine (meet me on Discord at eight), but does not ask the assistant to move.", _MSG, True, "desktop", ""),
-    ("self_reminder", "Asks the assistant to remind the speaker themselves about something later.", _OTHER, True, "host", "The request is only a reminder for the speaker; nothing is passed to the assistant or to another person (message is limited to content relayed to the assistant or someone else)."),
+    ("self_reminder", "Asks the assistant to remind the speaker themselves about something later (remind me, ping me).", _TASK, True, "host",
+     "The request is addressed to the assistant: the speaker asks the assistant to remind or ping the speaker, with or without a time."),
 )
+# 訊息類卡片的 relay／提醒邊界由 resolve.py 的 relay_vs_task 規則逐筆判定（轉告帶觸發條件或夾帶「提醒我」→ task）
+_RELAY_CARDS = frozenset({"pass_message", "message_leave_note", "message_mentions_place"})
 ABSENT_CARDS: tuple[Card, ...] = tuple(
-    Card(f"absent_{cid}", _ABS, desc, exp, hard=hard, source_platform=plat, guidance=g, label_rule="first_place" if cid == "request_two_places" else "")
+    Card(f"absent_{cid}", _ABS, desc, exp, hard=hard, source_platform=plat, guidance=g, label_rule="first_place" if cid == "request_two_places" else "relay_vs_task" if cid in _RELAY_CARDS else "")
     for cid, desc, exp, hard, plat, g in _ABSENT_SPECS
 )
 
 CARDS: dict[str, tuple[Card, ...]] = {"turn.reply": TURN_REPLY_CARDS, "presence.absent_intent": ABSENT_CARDS}
+
+# 對照卡（task／message／other 的邊界）。另成一組，不併入 ABSENT_CARDS，否則 plan_calls 的配額會變、舊產物無法重現；
+# 以 ``--card-set contrast`` 使用，call_id 為 ``presence.absent_intent.contrast-NNNN``。
+_CONTRAST_SPECS: tuple[tuple[str, str, dict[str, str], str], ...] = (
+    ("self_note", "The speaker talks to themselves or jots a private note ('I need to remember to...', 'note to self', 'gotta remember...'); it is NOT a request to the assistant and never asks the assistant to remind, ping, tell or do anything.", _OTHER,
+     "No second-person address of the assistant, no 'remind me', no 'ping me', no request of any kind."),
+    ("remind_me", "Asks the assistant to remind or ping the speaker themselves later (remind me, ping me, don't let me forget, make sure I remember to X and ping me); a time may be given or left out.", _TASK,
+     "Use varied wordings: 'remind me', 'ping me', 'don't let me forget', 'make sure I remember ... ping me'. About half should give no time at all."),
+    ("relay_with_trigger", "Asks the assistant to tell or remind ANOTHER named person, but only at a set time or when an event happens (tell Anna at five that..., remind Rob when he gets home to...).", _TASK,
+     "The timing or event condition must be on WHEN the assistant delivers the message, e.g. 'at five', 'when he gets home', 'tomorrow morning', 'when you see her'."),
+    ("relay_no_trigger", "Asks the assistant to tell, remind or leave a note for ANOTHER named person with no timing or event condition on delivery (tell Anna..., remind Anna to bring the cake).", _MSG,
+     "Do not put any 'at <time>', 'when', 'later' or 'tomorrow' on the delivery. A time may appear only inside the content itself (the meeting is at five)."),
+    ("remember_that", "Asks the assistant to remember a fact or detail, phrased as 'remember that ...' or 'keep in mind that ...' (including appointments such as 'remember that I have the dentist on Friday').", _MSG,
+     "Always use 'remember that', 'keep in mind that' or 'note that'; never 'remind me', 'ping me' or 'don't let me forget'."),
+    ("delegate_action", "Hands the assistant a concrete job to do for the speaker while it is away (book a table for Friday, order more coffee, send an email, set up a calendar entry); it does not ask the assistant to come over.", _TASK,
+     "Each message is one state-changing job (book, order, send, schedule, cancel, buy). Do not ask for a reminder and do not ask the assistant to move anywhere."),
+)
+ABSENT_CONTRAST_CARDS: tuple[Card, ...] = tuple(
+    Card(f"absent_{cid}", _ABS, desc, exp, hard=True, source_platform="discord" if i % 2 else "desktop", guidance=g)
+    for i, (cid, desc, exp, g) in enumerate(_CONTRAST_SPECS)
+)
+CARD_SETS: dict[str, dict[str, tuple[Card, ...]]] = {
+    "main": CARDS,
+    "contrast": {"presence.absent_intent": ABSENT_CONTRAST_CARDS},
+}
 
 OTHER_USER_CONTEXTS = frozenset({"assistant_answered_other"})  # 前文的提問者不是目前說話者
 CONTEXT_DESC: dict[str, str] = {
@@ -425,6 +455,7 @@ def generate(
     id_prefix: str | None = None,
     cards: Sequence[Card] | None = None,
     call_ids: list[str] | None = None,
+    call_label_name: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """產生合成列與統計。每次呼叫產出的樣本屬同一 group（供切分用）。"""
     cards = tuple(cards or CARDS[kind])
@@ -440,7 +471,7 @@ def generate(
         api_calls += 1
         others = others_for(card, idx, len(cards))
         if call_ids is not None:
-            call_ids.append(call_id_of(kind, idx))
+            call_ids.append(call_id_of(call_label_name or kind, idx))
         try:
             reply = backend.complete(SYSTEM_PROMPT, build_prompt(card, style, topic, n, others))
         except Exception as exc:  # noqa: BLE001 - 單次呼叫失敗只計數，不中斷
@@ -477,14 +508,20 @@ def generate(
     return rows, stats
 
 
-def export_prompts(kind: str, *, max_samples: int, per_call: int, seed: int) -> list[dict[str, Any]]:
+def call_label(kind: str, card_set: str = "main") -> str:
+    """call_id 前綴：主卡組用 kind；其他卡組加後綴，避免和主卡組的回應檔 call_id 衝突。"""
+    return kind if card_set == "main" else f"{kind}.{card_set}"
+
+
+def export_prompts(kind: str, *, max_samples: int, per_call: int, seed: int, card_set: str = "main") -> list[dict[str, Any]]:
     """依 plan_calls／build_prompt 產生每次呼叫的 prompt 與中繼資料（不呼叫任何後端）。"""
-    plan = plan_calls(CARDS[kind], max_samples, per_call, random.Random(seed))
+    cards = CARD_SETS[card_set][kind]
+    plan = plan_calls(cards, max_samples, per_call, random.Random(seed))
     return [
         {
-            "call_id": call_id_of(kind, idx), "kind": kind, "card": card.card_id, "style": style,
+            "call_id": call_id_of(call_label(kind, card_set), idx), "kind": kind, "card": card.card_id, "style": style,
             "topic": topic, "n": n, "hard": card.hard,
-            "system": SYSTEM_PROMPT, "user": build_prompt(card, style, topic, n, others_for(card, idx, len(CARDS[kind]))),
+            "system": SYSTEM_PROMPT, "user": build_prompt(card, style, topic, n, others_for(card, idx, len(cards))),
         }
         for idx, (card, style, topic, n) in enumerate(plan)
     ]
@@ -520,6 +557,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-samples", type=int, default=TRIAL_CAP)
     p.add_argument("--out", default=None, help="輸出檔（合成、匯入回應、匯出盲標任務時使用）")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--card-set", default="main", choices=sorted(CARD_SETS), help="卡組；contrast＝task／message／other 邊界對照卡（匯入時 --id-prefix 另訂）")
+    p.add_argument("--id-prefix", default=None, help="匯入時的 sample_id 前綴（對照卡組必須另訂，避免和主卡組撞號）")
     p.add_argument("--per-call", type=int, default=PER_CALL, help="每次呼叫要幾筆（影響卡片×風格輪替密度）")
     p.add_argument("--export-prompts", default=None, metavar="PATH", help="只把每次呼叫的 prompt 寫成 JSONL，不呼叫後端")
     p.add_argument("--import-responses", default=None, metavar="PATH", help="讀 {call_id, response} JSONL，走解析／去重／寫出流程")
@@ -564,7 +603,7 @@ def main(argv: list[str] | None = None) -> int:
             print("需要 --out", file=sys.stderr)
             return 2
     if args.export_prompts:
-        recs = export_prompts(args.kind, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed)
+        recs = export_prompts(args.kind, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed, card_set=args.card_set)
         write_jsonl(Path(args.export_prompts), recs)
         print(json.dumps({"exported_calls": len(recs), "samples": args.max_samples}, ensure_ascii=False))
         return 0
@@ -573,11 +612,14 @@ def main(argv: list[str] | None = None) -> int:
             print("--import-responses 需要 --out", file=sys.stderr)
             return 2
         # 回應檔可含多個 kind（量產各 part 合併）；只取本 kind 的 call_id
-        responses = {k: v for k, v in load_responses(Path(args.import_responses)).items() if k.startswith(f"{args.kind}-")}
+        label = call_label(args.kind, args.card_set)
+        card_set = CARD_SETS[args.card_set][args.kind]
+        responses = {k: v for k, v in load_responses(Path(args.import_responses)).items() if k.startswith(f"{label}-")}
         ids: list[str] = []
-        planned = [call_id_of(args.kind, i) for i in range(len(plan_calls(CARDS[args.kind], args.max_samples, args.per_call, random.Random(args.seed))))]
+        planned = [call_id_of(label, i) for i in range(len(plan_calls(card_set, args.max_samples, args.per_call, random.Random(args.seed))))]
         backend_r = ReplayBackend(responses, planned)
-        rows, stats = generate(args.kind, backend_r, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed, call_ids=ids)
+        rows, stats = generate(args.kind, backend_r, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed, call_ids=ids,
+                               cards=card_set, id_prefix=args.id_prefix, call_label_name=label)
         stats["unmatched_response_ids"] = sorted(set(responses) - set(planned))
         write_jsonl(Path(args.out), rows)
         print(json.dumps(stats, ensure_ascii=False, indent=2))

@@ -36,9 +36,9 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "type": "choice",
         "instructions": "Which handling route should this message be sent to?",
         "criteria": {
-            "direct_chat": "Casual chat or a simple question; a conversational reply is enough",
+            "direct_chat": "Casual chat, a simple question, or a read-only lookup that changes nothing (weather, news, checking the calendar, recalling a memory); a conversational reply is enough",
             "agent_loop": "A complex task that needs multi-step reasoning, planning or several tool calls",
-            "task_request": "A single, clear command or tool request (switch a device, check the calendar, send an email, etc.)",
+            "task_request": "A single, clear command for one action that changes state (switch a device, set a reminder, send an email, etc.)",
             "ignore": "Not addressed to the assistant; ignore it",
         },
     },

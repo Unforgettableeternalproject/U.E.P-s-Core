@@ -11,7 +11,13 @@
    - 判不準（有 User 行但沒有取消語氣、提議但沒有回覆語氣）進人工清單。
    respond 時 addressed=True、route 採盲標；passive 時 addressed=False、route=ignore。
    與盲標一致才收；已 accepted 的這兩張卡若規則判為 respond，視為規則衝突，改進人工清單。
-3. ``route_follows_action``（defer_* 卡）：盲標 reply_mode 仍是 defer 且 addressed 才收，route 採盲標。
+3. ``relay_vs_task``（presence.absent_intent 的訊息類卡片）：邊界見艾斯維爾裁決——
+   - 「remind me／ping me／don't let me forget／make sure I remember」要她之後採取行動 → task（缺時間仍是 task）；
+   - 轉告他人但帶「何時／何事件才送」的觸發（at five tell…、remind X when he gets home、when you see her）→ task；
+   - 無觸發的轉告、單純 remember that… → message；
+   - 混合句取第一個指示（先出現轉告動詞再出現提醒 → message，反之 task；連鎖指示之後另行處理）。
+   與盲標一致才收，不一致進人工清單。
+4. ``route_follows_action``（defer_* 卡）：盲標 reply_mode 仍是 defer 且 addressed 才收，route 採盲標。
 """
 from __future__ import annotations
 
@@ -24,10 +30,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .blind import read_jsonl, write_jsonl
+from .blind import compare_labels, read_jsonl, write_jsonl
+from .compound import is_compound
 from .kinds import ROUTES, get_spec
 from .split import split_rows
-from .synth import CARDS
+from .synth import ABSENT_CONTRAST_CARDS, CARDS
 
 # 舊產物的 meta 沒有 label_rule，改由卡片定義查
 CARD_RULES: dict[str, str] = {c.card_id: c.label_rule for cards in CARDS.values() for c in cards if c.label_rule}
@@ -50,6 +57,25 @@ _CANCEL = re.compile(
 _OFFER = re.compile(r"\b(shall i|should i|want me to|would you like me|do you want me|i can|i could)\b", re.IGNORECASE)
 _PROMISE = re.compile(r"\b(i'?ll|i will)\b", re.IGNORECASE)
 _REPLY = re.compile(r"^\W*(yes|yeah|yep|no|nope|sure|ok|okay|please|go ahead|not now|that works|sounds good)\b", re.IGNORECASE)
+
+
+_SELF_REMIND = re.compile(r"\b(remind me|ping me|don'?t let me forget|do not let me forget|make sure i remember)\b", re.IGNORECASE)
+_RELAY_VERB = re.compile(r"\b(tell|let\b.{0,30}\bknow|pass|leave|inform|relay|ask|remind (?!me\b))", re.IGNORECASE)
+_DELIVERY_TRIGGER = re.compile(
+    r"\b(?:when|once|as soon as)\s+(?:you|she|he|they)\s+(?:see|meet|run into|talk to|speak to|get|gets|arrive|arrives|come|comes|are|is)\b"
+    r"|^\W*(?:please\s+)?(?:at|by|around)\s+\w+(?:\s+o'?clock)?\s*,?\s*(?:tell|remind|let|ask)\b"
+    r"|\b(?:tell|remind|let|ask)\b[^.?!]{0,40}\b(?:tomorrow morning|tonight at|later today|this evening)\b",
+    re.IGNORECASE,
+)
+
+
+def relay_intent(message: str) -> str:
+    """訊息類句子的 task／message 判定（規則 relay_vs_task）；僅對 absent_intent 的訊息類卡片使用。"""
+    own = _SELF_REMIND.search(message)
+    if own:
+        verb = _RELAY_VERB.search(message)
+        return "message" if verb and verb.start() < own.start() else "task"
+    return "task" if _DELIVERY_TRIGGER.search(message) else "message"
 
 
 def first_place(message: str) -> str | None:
@@ -103,6 +129,11 @@ def resolve_row(row: Mapping[str, Any], blind: Mapping[str, Any] | None) -> tupl
             return None, "first_place:blind_differs"
         exp = _expected_with(row, **{"absent.target_location": place})
         return {**row, "expected": exp}, "first_place"
+    if rule == "relay_vs_task":
+        label = relay_intent(row["state"]["message"])
+        if blind.get("absent.intent") != label:
+            return None, f"relay:rule_{label}_blind_{blind.get('absent.intent')}"
+        return {**row, "expected": _expected_with(row, **{"absent.intent": label, "absent.target_location": "none"})}, f"relay_{label}"
     if rule == "route_follows_action":
         if blind.get("reply_mode") != "defer" or blind.get("addressed") is not True or blind.get("route") not in ROUTES:
             return None, "defer:blind_not_defer"
@@ -161,16 +192,45 @@ def distribution(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     return {k: dict(sorted(v.items())) for k, v in sorted(dist.items())}
 
 
+CARD_EXPECTED: dict[str, dict[str, Any]] = {c.card_id: dict(c.expected) for cards in CARDS.values() for c in cards}
+CARD_EXPECTED.update({c.card_id: dict(c.expected) for c in ABSENT_CONTRAST_CARDS})
+
+
+def relabel_from_cards(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Counter[str]]:
+    """以目前的卡片定義重算 ``expected``（卡片標籤改版後不必重新合成；合成產物只存了舊標籤）。回傳 (列, 各卡重標筆數)。"""
+    out, changed = [], Counter()
+    for r in rows:
+        want = CARD_EXPECTED.get((r.get("meta") or {}).get("card", ""))
+        if want is not None and r["expected"] != want:
+            changed[r["meta"]["card"]] += 1
+            r = {**r, "expected": want}
+        # 題目說明一律取目前定義（schema 文字改版後，舊產物內嵌的 questions 跟著更新）
+        out.append({**r, "questions": {q: dict(get_spec(r["kind"]).questions[q]) for q in r["expected"]}})
+    return out, changed
+
+
 def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]:
-    data = {r["sample_id"]: r for r in read_jsonl(mass_dir / "synth_all.jsonl")}
+    rows, relabeled = relabel_from_cards(read_jsonl(mass_dir / "synth_all.jsonl"))
+    data = {r["sample_id"]: r for r in rows}
     labels = {r["sample_id"]: r["answers"] for r in read_jsonl(mass_dir / "labels.jsonl")}
-    accepted = read_jsonl(mass_dir / "blind" / "accepted.jsonl")
-    disputed = read_jsonl(mass_dir / "blind" / "disputed.jsonl")
+    accepted, disputed, blind_stats = compare_labels(rows, labels)[:3]
+    write_jsonl(mass_dir / "blind" / "accepted.jsonl", accepted)
+    write_jsonl(mass_dir / "blind" / "disputed.jsonl", disputed)
+    (mass_dir / "blind" / "stats.json").write_text(json.dumps(blind_stats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     resolved: list[dict[str, Any]] = []
     review: list[dict[str, Any]] = []
     counts: Counter[str] = Counter()
     final: list[dict[str, Any]] = []
     for r in accepted:
+        if rule_of(r) == "relay_vs_task":
+            out, tag = resolve_row(r, labels.get(r["sample_id"]))
+            if out is None:
+                review.append(_review_entry(r, labels.get(r["sample_id"]), tag))
+                counts[f"review:{tag}"] += 1
+            else:
+                final.append({**out, "meta": {**out["meta"], "blind_check": f"resolved:{tag}"}})
+                counts[f"resolved:{tag}"] += 1
+            continue
         if rule_of(r) == "promise_mode":
             verdict = judge_promise(r["state"])
             if verdict and verdict[0] == "respond" and r["expected"].get("reply_mode") != "respond":
@@ -189,6 +249,7 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
         resolved.append(out)
         counts[f"resolved:{tag}"] += 1
     final += resolved
+    final = [{**r, "meta": {**r["meta"], "compound": True}} if is_compound(r) else r for r in final]
     final.sort(key=lambda r: r["sample_id"])
     train, val = split_rows(final, val_ratio, seed)
     write_jsonl(mass_dir / "final.jsonl", final)
@@ -198,8 +259,8 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
     (mass_dir / "blind" / "review_for_bernie.md").write_text(build_summary(review), encoding="utf-8", newline="\n")
     stats = {
         "accepted": len(accepted), "disputed": len(disputed), "resolved": len(resolved),
-        "review": len(review), "final": len(final), "train": len(train), "val": len(val),
-        "rules": dict(sorted(counts.items())),
+        "review": len(review), "final": len(final), "compound": sum(1 for r in final if r["meta"].get("compound")), "train": len(train), "val": len(val),
+        "rules": dict(sorted(counts.items())), "relabeled_from_cards": dict(sorted(relabeled.items())),
         "final_distribution": distribution(final), "val_distribution": distribution(val),
     }
     (mass_dir / "final_stats.json").write_text(json.dumps(stats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")

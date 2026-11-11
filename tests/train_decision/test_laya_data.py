@@ -496,10 +496,55 @@ def test_import_responses_ignores_other_kind_ids(tmp_path: Path) -> None:
     assert len(split.read_rows(out)) == 1
 
 
-def test_self_reminder_is_other_not_message() -> None:
+def test_self_reminder_is_task_not_other() -> None:
     card = next(c for c in synth.ABSENT_CARDS if c.card_id == "absent_self_reminder")
-    assert card.expected == {"absent.intent": "other", "absent.target_location": "none"}
-    assert "relayed" in card.guidance
+    assert card.expected == {"absent.intent": "task", "absent.target_location": "none"}
+    assert kinds.ABSENT_INTENTS == ("presence_request", "message", "task", "other")
+    assert set(kinds.QUESTIONS_ABSENT_INTENT["absent.intent"]["criteria"]) == set(kinds.ABSENT_INTENTS)
+    kinds.validate_absent_expected({"absent.intent": "task", "absent.target_location": "none"})
+    with pytest.raises(ValueError):
+        kinds.validate_absent_expected({"absent.intent": "task", "absent.target_location": "discord"})  # 只有 presence_request 能帶地點
+
+
+def test_contrast_cards_are_a_separate_set_and_cover_the_boundaries() -> None:
+    by_id = {c.card_id: c.expected["absent.intent"] for c in synth.ABSENT_CONTRAST_CARDS}
+    assert by_id == {
+        "absent_self_note": "other", "absent_remind_me": "task", "absent_relay_with_trigger": "task",
+        "absent_relay_no_trigger": "message", "absent_remember_that": "message", "absent_delegate_action": "task",
+    }
+    main_ids = {c.card_id for c in synth.ABSENT_CARDS}
+    assert not main_ids & set(by_id)  # 不併入主卡組，主卡組的 plan_calls 才能重現
+    plan = synth.export_prompts("presence.absent_intent", max_samples=12, per_call=4, seed=0, card_set="contrast")
+    assert plan[0]["call_id"].startswith("presence.absent_intent.contrast-")
+    assert not plan[0]["call_id"].startswith("presence.absent_intent-")
+
+
+def test_relay_intent_boundaries() -> None:
+    from laya_data import resolve
+
+    task = [
+        "remind me about the landlord meeting tomorrow at ten", "ping me around one", "make sure i remember to call the client, ping me",
+        "don't let me forget the dentist", "remind anna to bring the snacks when you see her, Yuki", "at five tell Anna the sauce is ready",
+        "hey remind me to pick up garlic on the way home, and tell rob the recipe's in the fridge",
+    ]
+    message = [
+        "tell anna i will be late", "remind anna to bring the cake", "remember that I have the dentist on Friday",
+        "Remember that the new address is 12 Pine Street", "Tell Rob to meet me on Discord at eight tonight",
+        "tell rob the recipe is in the fridge, and remind me to buy garlic",  # 混合句取第一個
+    ]
+    assert all(resolve.relay_intent(m) == "task" for m in task)
+    assert all(resolve.relay_intent(m) == "message" for m in message)
+
+
+def test_resolve_row_relay_vs_task_needs_blind_agreement() -> None:
+    from laya_data import resolve
+
+    row = _res_row("absent_pass_message", "presence.absent_intent", {"message": "remind me about the landlord meeting"}, {"absent.intent": "message", "absent.target_location": "none"})
+    out, tag = resolve.resolve_row(row, {"absent.intent": "task", "absent.target_location": "none"})
+    assert tag == "relay_task" and out["expected"]["absent.intent"] == "task"
+    out, tag = resolve.resolve_row(row, {"absent.intent": "other", "absent.target_location": "none"})
+    assert out is None and tag == "relay:rule_task_blind_other"
+    assert resolve.rule_of(row) == "relay_vs_task"
 
 
 def test_another_user_context_matches_shared_definition() -> None:
@@ -606,3 +651,14 @@ def test_resolve_run_end_to_end(tmp_path: Path) -> None:
     review = split.read_rows(mass / "blind" / "review_for_bernie.jsonl")
     assert [r["sample_id"] for r in review] == ["d2"] and review[0]["blind_answers"]["reply_mode"] == "respond"
     assert (mass / "blind" / "review_for_bernie.md").read_text(encoding="utf-8").count("\n") <= 40
+
+
+def test_compound_marking_is_meta_only_and_keeps_first_instruction_label() -> None:
+    from laya_data import compound
+
+    two = {"sample_id": "x", "meta": {"card": "absent_request_two_places"}}
+    mixed = {"sample_id": "synthetic-en-presence.absent_intent-00405", "meta": {"card": "absent_pass_message"}}
+    plain = {"sample_id": "synthetic-en-presence.absent_intent-00001", "meta": {"card": "absent_request_generic"}}
+    assert compound.is_compound(two) and compound.is_compound(mixed) and not compound.is_compound(plain)
+    # 對照卡不得是複合句：每張卡的 guidance 都沒有要求兩個指示
+    assert not any("and tell" in c.description.lower() for c in synth.ABSENT_CONTRAST_CARDS)

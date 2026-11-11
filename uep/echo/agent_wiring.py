@@ -217,8 +217,10 @@ class LoopLauncher:
         persona_id: str = "uep", persona_version: int = 1, policy_version: int = 1, budget: LoopBudget | None = None,
         system_text: Callable[[Any], str] = lambda ticket: DEFAULT_LOOP_SYSTEM_TEXT,
         max_concurrent: int | None = None, close_timeout_s: float | None = None,
-        executors: Mapping[str, Any] | None = None,
+        executors: Mapping[str, Any] | None = None, platform_source: Callable[[], str | None] | None = None,
     ) -> None:
+        # 當下 Presence 平台的來源（Host 持有的 Lease／location）；未注入或回 None = 不帶場域，fail-closed 只投 global 工具
+        self._platform_source = platform_source
         # executor 名稱 -> ToolExecutor：``AgentLoop`` 對 parallel_one_shot 逾時／取消呼叫 ``executor.cancel`` 用（組裝層已檢查齊備）
         self._executors = dict(executors) if executors is not None else {}
         max_concurrent = DEFAULT_MAX_CONCURRENT_LOOPS if max_concurrent is None else max_concurrent
@@ -263,9 +265,7 @@ class LoopLauncher:
                 raise LoopLaunchRefused("loop_busy")
             self._active += 1  # 先占名額，建 Task／Run 之前就會被擋下（不排隊）
         try:
-            capability_set = self._registry.project(
-                trigger.capability_tags, ProjectionContext(audience=getattr(ticket, "audience_scope", "private")),
-            )
+            capability_set = self._registry.project(trigger.capability_tags, self._projection_context(ticket))
             if not capability_set["tools"]:
                 raise LoopLaunchRefused("capability_projection_empty")  # 例如全部 warming：不啟動，回 direct_chat
             task, run = create_loop_run(
@@ -438,6 +438,16 @@ class LoopLauncher:
         except Exception:
             logger.exception("Task 終結失敗：task=%s", ctx.task_id)
 
+    def _projection_context(self, ticket: Any) -> ProjectionContext:
+        """投影脈絡：audience 取自 ticket，platform 取自 Core 持有的 Presence 來源（不取自模型輸入）；來源失敗 fail-closed 為 None。"""
+        platform: str | None = None
+        if self._platform_source is not None:
+            try:
+                platform = self._platform_source()
+            except Exception:
+                logger.warning("讀取 Presence 平台失敗，投影不帶場域（fail-closed）", exc_info=True)
+        return ProjectionContext.for_platform(platform, audience=getattr(ticket, "audience_scope", "private"))
+
     def _build_loop(self, ctx: _RunCtx) -> AgentLoop:
         from uep.agent.loop import AgentLoop, LoopSnapshots
         from uep.agent.runtime import ModelPortRuntime
@@ -445,10 +455,10 @@ class LoopLauncher:
         ticket, run = ctx.ticket, ctx.run
         snapshots = LoopSnapshots()
         registry = self._registry
-        context = ProjectionContext(audience=ticket.audience_scope)
 
         def projector(tags: frozenset[str], prior: frozenset[str] | None) -> Any:
-            return registry.project(tags, context, prior=prior)
+            # 每一步重取平台：Loop 執行期間 Presence 轉移時，下一步的投影不再含原平台的限定工具
+            return registry.project(tags, self._projection_context(ticket), prior=prior)
 
         return AgentLoop(
             runtime=ModelPortRuntime(self._port, snapshots.take, continue_after_tools=True, max_rounds=50),

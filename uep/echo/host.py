@@ -51,6 +51,7 @@ from uep.stream.contracts.types import Utterance
 from uep.stream.coordinator import TurnCoordinator
 from uep.stream.tracer import LatencyTracer
 
+from uep.contracts.platform import platform_from_presence_location
 from uep.contracts.presence import AcquireResult, GateDecision
 from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES, ROUTE_DIRECT_CHAT
 from uep.decision.hub import DecisionHub
@@ -433,6 +434,13 @@ class EchoPipelineHost:
         """本機 Host 持有的 Presence location（V18 缺席端輸入比對的對象）。"""
         return self._location
 
+    def projection_platform(self) -> str | None:
+        """工具投影用的當下 Presence 平台：Host 持有 Lease（ACTIVE）時為本機 location，否則 None（她在主機、不在任何平台）。
+        只讀 Host 自己的 Lease／location，不 peek Presence；未知 location 同樣視為 None（fail-closed）。"""
+        if not self.presence_active:
+            return None
+        return platform_from_presence_location(self._location)
+
     def set_require_source_location(self, required: bool) -> None:
         """組裝層注入 ``UEP_REQUIRE_SOURCE_LOCATION``（Host 不自己讀設定）；開啟後缺 source_location 的輸入即否決。"""
         self.orchestrator.require_source_location = bool(required)
@@ -491,6 +499,8 @@ class EchoPipelineHost:
             self.lease_result = AcquireResult.DENIED
         if self.lease_result is AcquireResult.GRANTED:
             self._stopped_reason = None  # 新 Lease：先前的全域停止已解除
+            if not self._busy():
+                self._refresh_tools()  # 平台限定工具的曝光依 Lease 而定；建構時尚無 Lease，取得後重投影一次
         else:
             logger.warning("EchoPipelineHost 沒有取得 Lease：%s", self.lease_result.value)
         return self.lease_result
@@ -922,7 +932,9 @@ class EchoPipelineHost:
         try:
             capability_set = memory_registry().project(
                 self._DIRECT_CHAT_CAPABILITY_TAGS,
-                ProjectionContext(available_context=available, audience=self._session.audience_scope),
+                ProjectionContext.for_platform(
+                    self.projection_platform(), available_context=available, audience=self._session.audience_scope,
+                ),
             )
             self.think.tools = render_tools(capability_set)
         except Exception:

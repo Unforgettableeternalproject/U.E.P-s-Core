@@ -37,5 +37,12 @@ class ProjectionContext:
     def __post_init__(self) -> None:
         audience_rank(self.audience)  # 不合法的 audience 當場失敗，不留到投影時靜默通過
 
+    @classmethod
+    def for_platform(cls, platform: str | None, **kwargs: object) -> ProjectionContext:
+        """以「當下 Presence 所在平台」建立脈絡；``platform`` 取自 Core 持有的 Lease／location，不取自模型輸入。
+        platform=None（Presence 為 NONE、她在主機）⇒ 不帶任何場域：只投 global 工具，平台限定與 presence_bound 工具一律不投（fail-closed）。"""
+        active = frozenset({platform}) if platform is not None else frozenset()
+        return cls(platform=platform, presence_active_platforms=active, **kwargs)  # type: ignore[arg-type]
+
     def presence_active(self) -> bool:
         return self.platform is not None and self.platform in self.presence_active_platforms

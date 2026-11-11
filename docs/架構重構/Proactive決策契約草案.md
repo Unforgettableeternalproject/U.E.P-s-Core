@@ -287,8 +287,8 @@ def to_loop_trigger(
 
 | 切片 | 內容 | 前置 | 不含 |
 |---|---|---|---|
-| DL-6a 契約＋規則 engine＋shadow 日誌（**已實作**，`feature/decision-dl6a`；範圍含 `to_loop_trigger` 純函式與 `replay_proactive` 重播工具，見 9.2） | `uep/decision/proactive.py`（候選、context、reason_code、spec、engine、`log_quiet`）；`log.py` 兩處小修（candidate_id fallback、attach 預設清單）；`__init__` 匯出；測試（第 6 節除 S-H 外） | 無（不依賴工具層） | 轉換函式、assembly 組裝、候選 producer |
-| DL-6b 對接 S-H | `to_loop_trigger`、goal_code→標籤查表（工具層提供）、`ProactiveContext` 的真實注入（Presence／狀態／授權）、assembly 掛載（只掛日誌）、shadow-only 鎖 | DL-6a；Agent提案切片 D（`LoopTrigger` 已存在，`uep/agent/trigger.py`）；Q-A～Q-C 裁決 | 啟動 Run、投遞提醒、`presence.join_or_move`、`report.route` |
+| DL-6a 契約＋規則 engine＋shadow 日誌（**已實作**，`feature/decision-dl6a`；範圍含 `to_loop_trigger` 純函式與 `replay_proactive` 重播工具，見 9.2） | `uep/decision/proactive.py`（候選、context、reason_code、spec、engine、`log_quiet`）；`log.py` 兩處小修（candidate_id fallback、attach 預設清單）；`__init__` 匯出；測試（第 6 節除 S-H 外） | 無（不依賴工具層） | assembly 組裝、候選 producer（`to_loop_trigger`／`loop_trigger_decision` 已在本切片） |
+| DL-6b 對接 S-H（**已實作**，`feature/decision-dl6b`，見 9.3） | goal_code→標籤查表（工具層提供，尚未接，暫回 None）、`ProactiveContext` 的真實注入（Presence／狀態／授權）、assembly 掛載（只掛日誌）、shadow-only 鎖 | DL-6a；Agent提案切片 D（`LoopTrigger` 已存在，`uep/agent/trigger.py`）；Q-A～Q-C 裁決 | 啟動 Run、投遞提醒、`presence.join_or_move`、`report.route` |
 
 ## 8. 風險
 
@@ -332,3 +332,15 @@ def to_loop_trigger(
 | 註冊 | 照 `memory_dream` 模式 | `register_proactive(hub)`；DL-6a 不接進 `assembly.py` | assembly 掛載（只掛日誌）屬 DL-6b |
 
 reason_code 共 28（24 個判斷結果＋4 個 fallback），fixture 覆蓋 24 個判斷結果，4 個 fallback 由 engine 單元測試覆蓋。
+
+### 9.3 DL-6b 實作對照與偏離
+
+| 項目 | 草案 | 實作 | 理由 |
+|---|---|---|---|
+| 接線檔位置 | 未指定 | `uep/echo/proactive_wiring.py`（`attach_proactive_shadow`、`ProactiveShadow`） | 沿用 `agent_wiring`／`*_wiring` 慣例；`uep/decision` 保持不依賴 Presence／State／Stop；AST 鎖白名單只加此檔，assembly 只 import 接線檔，不直接碰受保護符號 |
+| 掛載條件與順序 | 只掛日誌 | `assembly.py` 在 `echo` 存在且決策日誌啟用的區塊內，於 `DecisionLogWriter.attach` 之前 `register_proactive`；停用時零成本；`CoreAssembly.proactive_shadow` 暴露入口 | 比照 `register_policy_publish`；預設名單已含 `proactive.initiate` |
+| 評估入口 | 候選 producer 未定 | `ProactiveShadow.evaluate(candidate)`：`build_request -> hub.submit -> loop_trigger_decision`；只把 `would_start` 與 `LT_*` 寫進 logger（決策本身由決策日誌落盤）；`LoopTrigger` 產生後即丟棄 | Phase 1 無 producer、無計時器；不建 Run、不投遞、不呼叫 `presence.join_or_move`／`report.route` |
+| `ProactiveContext` 注入 | 4.4 表 | `presence.peek()`（唯讀）、`state.current(INTERACTION／BEHAVIOR)`、`stop.is_engaged()`、assembly 的 `presence_audience`、`clock`；讀取失敗一律 fail-closed（Presence=RECOVERING、global_stop=True、muted=True） | `peek` 不觸發過期轉換，適合 shadow |
+| 暫定欄位 | `authorization`、`mute`、`activity` 待確認 | `grant=None`（授權服務未建）、`private_locations=()`、`ledger`／`budget_used` 由呼叫端傳入；`muted`＝Behavior 為 SLEEP；`activity_interruptible`＝Interaction 為 IDLE；`in_committed_interaction`＝SPEAKING／WAITING_USER；`activity_cost=0.0`；聽眾 scope 缺值取 `scope_public` | 保守預設（寧可不提醒），待 State 軸正式欄位與授權服務 |
+| `capability_lookup`／`snapshot_ref` | S-H 提供 | 預設回 None（-> `capability_empty`）；`snapshot_ref` 為 placeholder `snapshot_placeholder_dl6b` | 工具層標籤表與 `PROACTIVE_EVAL` 快照尚未接上；之後只需換掉 `ProactiveShadow` 的注入值 |
+| shadow-only 測試 | assembly 層 0 個 Run | `tests/uep/test_assembly_proactive_shadow.py`：評估前後 `session_factory` 零呼叫、`tasks`／`delivery` 零呼叫、`ready`＋lookup None -> `capability_empty`、決策日誌有紀錄；另有接線檔 import／符號鎖 | 以 DB session 零開啟證明沒有 Run／output_intents |

@@ -559,9 +559,10 @@ def test_to_loop_trigger_scope_is_not_wider_than_privacy_scope():
 # ---- Phase 1 無消費者鎖 ----
 
 _UEP = Path(__file__).resolve().parents[2] / "uep"
-# 只有這些檔案可以出現 proactive 決策點的符號：本體、重播工具（離線）、決策日誌（只認 kind 字串以串接 log_quiet）
-_PROACTIVE_MODULE_ALLOWED = {"decision/proactive.py", "decision/replay_proactive.py"}
-_KIND_STRING_ALLOWED = {"decision/proactive.py", "decision/log.py"}
+# 只有這些檔案可以出現 proactive 決策點的符號：本體、重播工具（離線）、DL-6b 的 shadow 接線（assembly 只 import 接線檔）、
+# 決策日誌（只認 kind 字串以串接 log_quiet）
+_PROACTIVE_MODULE_ALLOWED = {"decision/proactive.py", "decision/replay_proactive.py", "echo/proactive_wiring.py"}
+_KIND_STRING_ALLOWED = {"decision/proactive.py", "decision/log.py"}  # 接線檔用 KIND_PROACTIVE_INITIATE 常數，不寫字串
 _GUARDED_NAMES = {
     "register_proactive", "ProactiveEngine", "to_loop_trigger", "loop_trigger_decision", "KIND_PROACTIVE_INITIATE",
     "ProactiveInjections", "proactive_initiate_spec",
@@ -610,13 +611,24 @@ def test_proactive_lock_catches_violations():
 
 
 def test_no_consumer_starts_runs_from_proactive_results_in_phase_1():
-    """Phase 1：uep/ 內除本體、離線重播工具與日誌 kind 串接外，沒有任何模組引用 proactive 決策點，
-    因此沒有消費者會依 ready 啟動 Run 或投遞提醒；也沒有人把它掛進 assembly。"""
+    """Phase 1：uep/ 內除本體、離線重播工具、DL-6b shadow 接線檔與日誌 kind 串接外，沒有任何模組引用 proactive 決策點，
+    因此沒有消費者會依 ready 啟動 Run 或投遞提醒；assembly 只經接線檔掛載（見 test_assembly_proactive_shadow）。"""
     problems: list[str] = []
     for path in sorted(_UEP.rglob("*.py")):
         rel = path.relative_to(_UEP).as_posix()
         problems.extend(f"{rel}:{v}" for v in _proactive_violations(path.read_text(encoding="utf-8"), rel))
     assert problems == [], "Phase 1 不得有任何 proactive.initiate 的消費者：" + "; ".join(problems)
+
+
+def test_shadow_wiring_cannot_start_runs_or_deliver():
+    """DL-6b 接線檔只准讀 Presence／State 型別與決策層；不得 import 會建立 Run、投遞或路由的模組。"""
+    tree = ast.parse((_UEP / "echo" / "proactive_wiring.py").read_text(encoding="utf-8"))
+    imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module} | {
+        a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    forbidden = ("uep.agent", "uep.tasks", "uep.tools", "uep.turn", "uep.output", "uep.report")
+    assert not {m for m in imported if m.startswith(forbidden)}
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert not names & {"to_loop_trigger", "join_or_move", "route", "create_run", "launch", "AgentLoop"}
 
 
 def test_proactive_module_does_not_import_agent_loop_or_tasks():

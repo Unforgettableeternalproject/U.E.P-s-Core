@@ -229,7 +229,7 @@ def test_agent_path_direct_chat_projection_is_read_only(guild_id):
 
 
 def test_agent_path_direct_chat_tags_come_from_route_table(monkeypatch):
-    """黃金：經 Host 組裝的 direct_chat 投影輸入 == {memory.read}，且來源是決策層 route 表（DL-4 PR3）。"""
+    """黃金：經 Host 組裝的 direct_chat 投影輸入 == route 表的 direct_chat（memory.read＋原生唯讀標籤），來源是決策層 route 表（DL-4 PR3）。"""
     from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
 
     assert "memory.read" in EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS  # 原生唯讀標籤另見 test_decision_capability（seq 420）
@@ -246,8 +246,8 @@ def test_agent_path_direct_chat_tags_come_from_route_table(monkeypatch):
     monkeypatch.setattr("uep.echo.host.memory_registry", lambda: Spy())
     stub = _host_stub(None, audience="scope_private_owner", path="agent")
     EchoPipelineHost._refresh_tools(stub)
-    assert seen == [frozenset({"memory.read"})]
-    assert _names(stub.think.tools) == ["deep_recall"]
+    assert seen == [frozenset(ROUTE_DEFAULT_CAPABILITIES["direct_chat"])]
+    assert _names(stub.think.tools) == ["deep_recall"]  # 記憶註冊表只投出記憶工具；原生工具由各自註冊表投影
 
 
 def test_agent_path_fails_closed_on_projection_error():

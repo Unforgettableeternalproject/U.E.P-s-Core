@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from uep.agent.core import AgentCore
-from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES, ROUTE_DIRECT_CHAT
 from uep.tasks.manager import TaskManager
 from uep.tools.catalog.memory import GUILD_ROSTER_CONTEXT
 from uep.tools.gateway import ToolGateway
@@ -33,7 +32,9 @@ from uep.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 INJECTED_CONTEXT_KEYS = ("actor_id", "audience", "segment_id", "guild_id")
-DIRECT_CHAT_TAGS = frozenset(ROUTE_DEFAULT_CAPABILITIES[ROUTE_DIRECT_CHAT])  # Q-E：direct_chat 僅唯讀；取自決策層 route 預設表
+# 未注入標籤時的最小唯讀保底（Q-E）。production 一律由 echo.agent_wiring.attach_agent_tools 注入決策層 route 表的 direct_chat 標籤
+# （uep/agent 不得 import uep.decision，見 test_import_boundary）
+DIRECT_CHAT_TAGS = frozenset({"memory.read"})
 DEFAULT_FINISH_TIMEOUT_S = 2.0  # 回合收尾等在途工具的上限（沿用工具層的短逾時；逾時即標 UNKNOWN）
 
 

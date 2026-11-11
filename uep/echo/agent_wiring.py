@@ -68,6 +68,7 @@ def attach_agent_tools(
     if registry is None:
         resolver = getattr(tasks, "tool_resolver", None)
         registry = resolver if isinstance(resolver, ToolRegistry) else memory_registry()
+    kwargs.setdefault("capability_tags", route_base("direct_chat") or frozenset())  # direct_chat 標籤取自決策層 route 表
     turns = AgentToolTurns(tasks, registry, cache, **kwargs)
     bind(turns)
     return turns

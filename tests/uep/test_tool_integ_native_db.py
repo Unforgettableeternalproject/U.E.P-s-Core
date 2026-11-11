@@ -12,6 +12,7 @@ from pydantic import SecretStr
 
 from tests.uep.test_tool_platform_assembly_db import _core
 from uep.config import get_settings
+from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
 from uep.echo.agent_wiring import make_capability_tags_for
 from uep.tools.projection import ProjectionContext
 
@@ -104,6 +105,7 @@ def test_db_projection_and_execution_share_one_registry(session_factory, tmp_pat
         assert host._tool_registry is tasks_registry
         assert think._port._registry is tasks_registry
         assert core.loop_launcher._registry is tasks_registry
+        assert think._port._tags == ROUTE_DEFAULT_CAPABILITIES["direct_chat"]  # 回合工具 Port 的標籤取自 route 表
         # 投影出來的工具，TaskManager 的 resolver 都查得到
         for name in _direct_chat_names(think) | _loop_names(core, host):
             assert name in tasks_registry.entries()

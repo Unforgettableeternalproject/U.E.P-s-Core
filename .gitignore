@@ -365,6 +365,8 @@ FodyWeavers.xsd
 # Virtual environment
 env/
 .env
+.env.*
+!.env.example
 
 # 🤖 LLM/MEM/STT 模型相關
 *.pth

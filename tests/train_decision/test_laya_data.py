@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -280,12 +281,14 @@ def test_check_command_exit_code(tmp_path: Path) -> None:
     assert split.main(["check", "--train", str(train), "--test", str(test)]) == 0
 
 
-def test_testset_draft_is_wellformed_and_pending() -> None:
+def test_testset_draft_is_wellformed_and_reviewed() -> None:
     path = _TOOLS / "testset" / "zh_candidates_draft.jsonl"
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert 55 <= len(rows) <= 100
     assert len({r["id"] for r in rows}) == len(rows)
-    assert all(r["status"] == "pending_review" for r in rows)
+    # 艾斯維爾 11/12 已審訂；id 統一為三位數
+    assert all(r["status"] == "reviewed" for r in rows)
+    assert all(re.fullmatch(r"zt-\d{3}", r["id"]) for r in rows)
     for r in rows:
         kinds.get_spec(r["kind"]).validate_expected(r["intended"])
         # speaker：無 context 必為 n/a，有 context 則為 same_as_context_user／other_user

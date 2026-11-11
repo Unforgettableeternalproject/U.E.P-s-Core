@@ -27,7 +27,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from uep.adapters.tool import CompositeSpec, CompositeStep, ToolDescriptor, ToolEntry, ToolScope, ToolSpec
+from uep.adapters.tool import (
+    CompositeSpec,
+    CompositeStep,
+    ToolDescriptor,
+    ToolEntry,
+    ToolScope,
+    ToolSpec,
+)
 from uep.tools.registry import ToolRegistry
 
 TESTKIT_EXECUTOR = "core_testkit"

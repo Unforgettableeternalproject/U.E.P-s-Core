@@ -16,7 +16,7 @@
 
 U.E.P (Unified Experience Partner) 是長壽命的個人 AI 助理核心。本 repo 現為**新 Core**（`uep/`）與遷入的子系統（`subsystems/`）。
 
-> **Legacy 已移除**：舊的九模組事件驅動系統（`core/`、`modules/`、`utils/`、`devtools/`、`Entry.py`）已刪除，刪除前的最後狀態保留於 git tag `legacy-final-v0.9.4`；舊文件封存於 `docs/archive/legacy-v0.9.4/`（已棄用，僅供查閱）。
+> **Legacy 已移除**：舊的九模組事件驅動系統（`core/`、`modules/`、`utils/`、`devtools/`、`Entry.py`）已刪除，刪除前的最後狀態保留於 git tag `legacy-final-v0.9.4`；舊文件不再隨 repo 發布（需要時請查該 tag）。
 
 ## 專案結構
 
@@ -27,9 +27,8 @@ U.E.P-s-Core/
 ├── tests/uep/               # Core 測試
 ├── scripts/                 # 閘門腳本、環境建置、Index 檢查
 ├── docs/
-│   ├── 架構重構/            # 新架構：提案、契約、遷入計畫
-│   ├── index/               # Index／Tracking 查找表
-│   └── archive/legacy-v0.9.4/ # 已棄用的舊文件
+│   ├── 架構概觀.md          # 架構概觀（對外重點版）
+│   └── index/               # Index／Tracking 查找表
 ├── train/nlp/               # NLP 訓練資料（Laya 資料集種子）
 ├── arts/                    # 概念圖
 ├── alembic.ini              # PostgreSQL migration
@@ -42,13 +41,13 @@ U.E.P-s-Core/
 - 建置／更新共用推理環境：`scripts/setup_infer_env.ps1`（預設 `~/.uep/venv-inference-312-t211`）。
 - 全套測試閘門：`scripts/run_all_tests.ps1`；僅 Core 測試：`python -m pytest tests/uep -q`。
 - 檢查 Index 表：`python scripts/check_index.py`。
-- 驗收 Console：`python -m uep.console`（見 `docs/架構重構/Core驗收Console使用指南.md`）。
+- 驗收 Console：`python -m uep.console`（內部指南，不對外發布）。
 
 ## 文件資源
 
-- **架構、契約與遷入計畫**：`docs/架構重構/`（從 `子系統遷入Core計畫.md`、`Core契約草案.md` 開始）
+- **架構概觀**：`docs/架構概觀.md`（詳細設計與契約不公開）
 - **東西在哪／做到哪**：`docs/index/`（`INDEX.md`、`TRACKING.md`）
-- **Legacy（已棄用）**：`docs/archive/legacy-v0.9.4/`
+- **Legacy（已棄用）**：git tag `legacy-final-v0.9.4`
 
 ## 貢獻者
 

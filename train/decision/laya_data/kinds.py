@@ -1,4 +1,4 @@
-"""依決策 kind 擴充的題目與 state 定義（設計見 docs/架構重構/決策模型訓練設計草案.md）。
+"""依決策 kind 擴充的題目與 state 定義（設計見 hidden_docs/架構重構/決策模型訓練設計草案.md）。
 
 每個 kind 一份 ``KindSpec``：題目（questions）、state 組裝、expected 驗證。
 題目 ID 規則：``turn.reply`` 沿用既有 adapter 的舊 ID（reply_mode／route／addressed）；

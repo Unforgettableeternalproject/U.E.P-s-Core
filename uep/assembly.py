@@ -612,6 +612,7 @@ def assemble_core(
     assert adapter is not None and executors is not None and tool_resolver is not None
     agent_cache = None
     loop_launcher = None
+    chatroom_on = False
     tool_path = tool_path or get_settings().tool_path  # 工具路徑只在這裡決定一次；Host 與 think stage 必須與之一致
     _check_tool_path_consistency(tool_path, echo)
     if loop_entry is not None and (tool_path != "agent" or echo is None):
@@ -634,6 +635,19 @@ def assemble_core(
                 raise AssemblyError("UEP_TOOL_TESTKIT 需要 ToolRegistry 型的 tool_resolver（才能併入測試工具）")
             tool_resolver = with_testkit(tool_resolver)
             executors = {**executors, TESTKIT_EXECUTOR: TestkitToolExecutor(cache=agent_cache)}
+        from uep.tools.catalog.chatroom import CHATROOM_EXECUTOR, with_chatroom
+        from uep.tools.executors.chatroom import (
+            ChatroomToolExecutor,
+            chatroom_config_from_settings,
+        )
+        from uep.tools.registry import ToolRegistry as _ToolRegistry
+
+        if isinstance(tool_resolver, _ToolRegistry):
+            # Chatroom 原生工具：一律註冊；UEP_CHATROOM_* 不齊時 readiness 恆為 unavailable（不投出），組裝不失敗
+            chatroom_config = chatroom_config_from_settings(get_settings())
+            tool_resolver = with_chatroom(tool_resolver, configured=chatroom_config is not None)
+            executors = {**executors, CHATROOM_EXECUTOR: ChatroomToolExecutor(chatroom_config, cache=agent_cache)}
+            chatroom_on = True
         if callable(getattr(tool_resolver, "entries", None)):
             from uep.models.tool_names import ToolNameError, wire_map
 
@@ -687,11 +701,13 @@ def assemble_core(
         attach_agent_tools(echo.think, tasks, agent_cache, platform_source=platform_source)
         if loop_entry is None and loop_entry_on:
             # 開啟測試工具組時 loop 與 TaskManager 用同一個（已併入測試工具的）註冊表；其餘沿用記憶註冊表
-            loop_registry = tool_resolver if testkit_on else memory_registry()
+            loop_registry = tool_resolver if (testkit_on or chatroom_on) else memory_registry()
             _check_loop_one_shot_executors(loop_registry, executors)
+            from uep.tools.catalog.chatroom import CHATROOM_TAGS
             from uep.tools.catalog.testkit import TESTKIT_TAGS
 
-            extra_tags = TESTKIT_TAGS if testkit_on else frozenset()
+            # 兩者都由 with_extra_capability_tags 與 enabled_tags 取交集：未設定的 Chatroom 工具 unavailable，不貢獻標籤
+            extra_tags = (TESTKIT_TAGS if testkit_on else frozenset()) | (CHATROOM_TAGS if chatroom_on else frozenset())
             loop_entry, loop_launcher = build_loop_entry(
                 tool_path=tool_path, tasks=tasks, delivery=delivery, orchestrator=echo.orchestrator,
                 registry=loop_registry, model_port=model_port, cache=agent_cache,

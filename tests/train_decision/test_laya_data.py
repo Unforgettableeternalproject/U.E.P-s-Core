@@ -210,7 +210,7 @@ def test_backend_errors_do_not_abort() -> None:
         def complete(self, system: str, user: str) -> str:
             raise RuntimeError("boom")
 
-    rows, stats = synth.generate("turn.reply", Boom(), max_samples=3, per_call=3)
+    rows, stats = synth.generate("turn.reply", Boom(), max_samples=3, per_call=3, cards=synth.TURN_REPLY_CARDS[:1])
     assert rows == [] and stats["rejected"] == {"backend_error:RuntimeError": 1}
 
 
@@ -500,3 +500,23 @@ def test_self_reminder_is_other_not_message() -> None:
     card = next(c for c in synth.ABSENT_CARDS if c.card_id == "absent_self_reminder")
     assert card.expected == {"absent.intent": "other", "absent.target_location": "none"}
     assert "relayed" in card.guidance
+
+
+def test_another_user_context_matches_shared_definition() -> None:
+    ctx = [{"speaker": "Another user", "text": "What is the weather?"}, {"speaker": "Assistant", "text": "Sunny today."}]
+    st = kinds.build_state_turn_reply({"message": "same for me?", "others": 2, "context": ctx})
+    assert st["recent_context"] == kinds.laya_schema.format_recent_context("What is the weather?", "Sunny today.", same_speaker=False)
+    assert st["recent_context"].startswith("Another user: ")
+    same = kinds.build_state_turn_reply({"message": "and tomorrow?", "others": 2, "context": [{"speaker": "User", "text": "What is the weather?"}, ctx[1]]})
+    assert same["recent_context"] == kinds.laya_schema.format_recent_context("What is the weather?", "Sunny today.", same_speaker=True)
+    assert same["recent_context"].startswith("User: ")
+
+
+def test_other_user_cards_require_another_user_speaker() -> None:
+    other = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_other_follows_up")
+    same = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_followup")
+    ok = json.dumps([{"message": "same question for me", "context": [{"speaker": "Another user", "text": "weather?"}, {"speaker": "Assistant", "text": "Sunny."}]}])
+    plain = json.dumps([{"message": "same question for me", "context": [{"speaker": "User", "text": "weather?"}, {"speaker": "Assistant", "text": "Sunny."}]}])
+    assert len(synth.parse_items(other, ok)[0]) == 1 and synth.parse_items(other, plain)[1]["bad_context"] == 1
+    assert len(synth.parse_items(same, plain)[0]) == 1 and synth.parse_items(same, ok)[1]["bad_context"] == 1
+    assert "Another user" in synth.build_prompt(other, "clean", "pets", 2, 2)

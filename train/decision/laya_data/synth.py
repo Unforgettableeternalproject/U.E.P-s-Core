@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from .kinds import DEFAULT_ASSISTANT_NAME, make_row
+from .kinds import DEFAULT_ASSISTANT_NAME, laya_schema, make_row
 
 TRIAL_CAP = 200
 DEFAULT_MODEL = "gpt-5.6-luna"
@@ -177,7 +177,7 @@ CONTEXT_DESC: dict[str, str] = {
     "assistant_solicits_task": "the assistant's last line offers one specific tool action and asks whether to do it",
     "assistant_solicits_agent": "the assistant's last line offers a multi-step job and asks whether to go ahead",
     "assistant_states": "the assistant's last line is a plain statement with no question",
-    "assistant_answered_other": "a different person (speaker \"Another user\") asked something and the assistant answered them; the current speaker is a third party",
+    "assistant_answered_other": f"a different person (speaker \"{laya_schema.OTHER_USER_LABEL}\") asked something and the assistant answered them; the current speaker is a third party",
     "assistant_just_replied": "the assistant has just answered the speaker (user line first, then the assistant's answer)",
     "assistant_promised": "the assistant earlier promised or offered to do something concrete (remind, book, sign up, call)",
     "assistant_noted": "the assistant earlier said it noted a specific fact about the group (a preference, an allergy, a deadline)",
@@ -287,7 +287,7 @@ def build_prompt(card: Card, style: str, topic: str, n: int, others: int | None 
         else:
             lines.append("The speaker is alone with the assistant.")
         if card.context:
-            other_note = " (use speaker \"Another user\" for a different person's line)" if card.context in OTHER_USER_CONTEXTS else ""
+            other_note = f" (use speaker \"{laya_schema.OTHER_USER_LABEL}\" for a different person's line)" if card.context in OTHER_USER_CONTEXTS else ""
             lines.append(
                 "Also include key \"context\": a list of 1-3 earlier lines, oldest first, each {\"speaker\": ..., \"text\": ...}. "
                 f"Use speaker \"Assistant\" for the assistant and \"User\" for the speaker of \"message\"{other_note}. "
@@ -350,6 +350,10 @@ def parse_items(card: Card, text: str) -> tuple[list[dict[str, Any]], Counter]:
             ):
                 rejected["bad_context"] += 1
                 continue
+            others_in_ctx = [c for c in ctx if str(c["speaker"]).strip().lower() == laya_schema.OTHER_USER_LABEL.lower()]
+            if bool(others_in_ctx) != (card.context in OTHER_USER_CONTEXTS):
+                rejected["bad_context"] += 1  # 「另一人」前文與卡片不符（缺少或多出 Another user）
+                continue
             entry["context"] = [{"speaker": c["speaker"], "text": " ".join(c["text"].split())} for c in ctx]
         items.append(entry)
     return items, rejected
@@ -389,18 +393,17 @@ class Deduper:
 
 
 def plan_calls(cards: Sequence[Card], max_samples: int, per_call: int, rng: random.Random) -> list[tuple[Card, str, str, int]]:
-    """場景矩陣：卡片輪流 × 各卡內獨立輪替風格 × 隨機話題，直到湊滿 max_samples。"""
+    """場景矩陣：各卡平均分配 max_samples（餘數給前面的卡），每卡切成每次 per_call 筆，
+    卡片輪流呼叫；各卡內獨立輪替風格（以卡片序號錯開起點，整體分佈才均勻），話題隨機。"""
     styles = list(STYLES)
+    total, n_cards = max_samples, len(cards)
+    quotas = [total // n_cards + (1 if c < total % n_cards else 0) for c in range(n_cards)]
+    chunks = [[min(per_call, q - k * per_call) for k in range(-(-q // per_call))] for q in quotas]
     calls: list[tuple[Card, str, str, int]] = []
-    remaining, i = max_samples, 0
-    while remaining > 0:
-        card = cards[i % len(cards)]
-        # 每張卡自己的第 j 次呼叫輪替風格；以卡片序號錯開起點，整體分佈才均勻
-        style = styles[(i // len(cards) + i % len(cards)) % len(styles)]
-        n = min(per_call, remaining)
-        calls.append((card, style, rng.choice(TOPICS), n))
-        remaining -= n
-        i += 1
+    for j in range(max((len(x) for x in chunks), default=0)):
+        for c, card in enumerate(cards):
+            if j < len(chunks[c]):
+                calls.append((card, styles[(j + c) % len(styles)], rng.choice(TOPICS), chunks[c][j]))
     return calls
 
 

@@ -1,6 +1,6 @@
 """lore.* 原生工具：註冊表宣告、readiness、executor（fake HTTP，不打真服務）。
 
-真服務冒煙測試只在設了 ``UEP_LORE_URL``／``UEP_LORE_TOKEN``／（``UEP_LORE_DEV_VAULT`` 或 ``UEP_LORE_VAULTS``）時才跑。
+真服務冒煙測試只在設了 ``UEP_LORE_URL``／``UEP_LORE_TOKEN`` 時才跑。
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ LORE_VAULT = "lore/main"
 
 def make_config(**overrides: Any) -> LoreConfig:
     base: dict[str, Any] = {
-        "url": "http://lore.test", "token": TOKEN, "dev_vault": DEV, "vaults": (LORE_VAULT, "lore/other"),
+        "url": "http://lore.test", "token": TOKEN,
         "default_space": "lore", "author": "測試角色", "timeout_s": 3.0, "max_chars": 2000, "delete_enabled": True,
     }
     base.update(overrides)
@@ -86,10 +86,17 @@ def call(tool: str, params: dict[str, Any], action_id: str = "act_1") -> ToolCal
 _COUNTER = itertools.count(1)
 
 
-def run(executor: LoreToolExecutor, tool: str, params: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+def run_raw(executor: LoreToolExecutor, tool: str, params: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     action_id = f"act_{next(_COUNTER)}"  # 每次呼叫用新的 action（native 冪等會重放同 action 的 receipt）
     receipt = executor.execute(call(tool, params, action_id))
     return receipt, executor.outcome(action_id) or {}
+
+
+def run(executor: LoreToolExecutor, tool: str, params: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    """寫入類工具 vault 必填：未帶 vault 時補 ``LORE_VAULT``（要測缺 vault 用 ``run_raw``）。"""
+    if tool in (TOOL_WRITE, TOOL_UPDATE, TOOL_DELETE) and "vault" not in params:
+        params = {**params, "vault": LORE_VAULT}
+    return run_raw(executor, tool, params)
 
 
 # ---- 註冊表宣告 ----
@@ -147,6 +154,18 @@ def test_write_not_exempt_without_native():
     assert exc.value.rule == "RA-2"
 
 
+def test_vault_schema_optional_for_reads_and_required_for_writes():
+    entries = {e.name: e for e in lore_entries()}
+    for name in LORE_READ_TOOLS:
+        schema = entries[name].descriptor.input_schema
+        assert "vault" in schema["properties"]
+        assert "vault" not in schema.get("required", [])
+        assert "全部" in entries[name].descriptor.usage_hint + entries[name].descriptor.description
+    for name in (TOOL_WRITE, TOOL_UPDATE, TOOL_DELETE):
+        schema = entries[name].descriptor.input_schema
+        assert "vault" in schema["required"] and schema["properties"]["vault"]["minLength"] == 1
+
+
 # ---- readiness / 組裝 ----
 
 def test_unconfigured_readiness_unavailable_and_not_projected():
@@ -185,18 +204,17 @@ def test_update_and_write_guidance_mentions_supersedes():
 
 
 def test_config_from_settings(monkeypatch: pytest.MonkeyPatch):
-    for key in ("UEP_LORE_URL", "UEP_LORE_TOKEN", "UEP_LORE_DEV_VAULT", "UEP_LORE_VAULTS"):
+    for key in ("UEP_LORE_URL", "UEP_LORE_TOKEN"):
         monkeypatch.delenv(key, raising=False)
     empty = LoreConfig.from_settings(UepSettings(_env_file=None))
     assert not empty.configured and empty.default_space == "lore"
-    settings = UepSettings(
-        _env_file=None, UEP_LORE_URL="http://x", UEP_LORE_TOKEN=SecretStr("t"), UEP_LORE_VAULTS="a, b,*,",
-    )
+    settings = UepSettings(_env_file=None, UEP_LORE_URL="http://x", UEP_LORE_TOKEN=SecretStr("t"))
     cfg = LoreConfig.from_settings(settings)
-    assert cfg.configured and cfg.vaults == ("a", "b")  # 去空白、丟掉 "*"
+    assert cfg.configured  # 只要有 URL＋token 就算設定完成，不需要 vault 範圍
     assert cfg.delete_enabled and empty.delete_enabled  # lore.delete 預設開啟
     assert "token" not in repr(cfg)  # token 不進 repr
-    assert not LoreConfig(url="ftp://x", token="t", dev_vault="d").configured
+    assert not LoreConfig(url="ftp://x", token="t").configured
+    assert not LoreConfig(url="http://x").configured and not LoreConfig(token="t").configured  # 缺 URL 或 token 都未就緒
 
 
 # ---- 唯讀工具 ----
@@ -212,7 +230,7 @@ def test_recall_success_and_request_shape():
     url, headers, body = http.calls[0]
     assert url == "http://lore.test/v1/recall"
     assert headers["Authorization"] == f"Bearer {TOKEN}"
-    assert body["space"] == "lore" and body["vault"] == LORE_VAULT and body["query"] == "世界觀" and body["limit"] == 3
+    assert body["space"] == "lore" and body["vault"] == "*" and body["query"] == "世界觀" and body["limit"] == 3
     data = json.loads(outcome["result"])
     assert data["items"][0]["title"] == "標題" and "secret_field" not in data["items"][0]
     assert TOKEN not in outcome["result"] and TOKEN not in repr(receipt)
@@ -304,24 +322,76 @@ def test_space_outside_allowlist_denied(space: str):
     assert receipt.error_code == "denied" and not http.calls
 
 
-def test_dev_space_uses_project_vault_only():
-    http = FakeHttp({"recall": (200, {"items": []})})
+def test_read_without_vault_sends_cross_vault_wildcard():
+    http = FakeHttp({"recall": (200, {"items": []}), "list": (200, {"items": []}), "get": (200, {"items": []})})
     ex = LoreToolExecutor(make_config(), transport=http)
+    for tool, params in ((TOOL_RECALL, {"query": "q"}), (TOOL_LIST, {}), (TOOL_GET, {"ids": ["n1"]})):
+        receipt, _ = run(ex, tool, params)
+        assert receipt.succeeded
+    assert [c[2]["vault"] for c in http.calls] == ["*", "*", "*"]
+    assert [c[2]["space"] for c in http.calls] == ["lore", "lore", "lore"]
     run(ex, TOOL_RECALL, {"query": "q", "space": "dev"})
-    assert http.calls[0][2]["vault"] == DEV and http.calls[0][2]["space"] == "dev"
-    receipt, _ = run(ex, TOOL_RECALL, {"query": "q", "space": "dev", "vault": LORE_VAULT})
-    assert receipt.error_code == "denied" and len(http.calls) == 1
+    assert http.calls[-1][2]["vault"] == "*" and http.calls[-1][2]["space"] == "dev"
 
 
-def test_lore_vault_whitelist_and_no_wildcard():
-    http = FakeHttp({"recall": (200, {"items": []})})
+@pytest.mark.parametrize("space", ["dev", "lore"])
+def test_any_valid_vault_is_readable_without_allowlist(space: str):
+    http = FakeHttp({"recall": (200, {"items": []}), "get": (200, {"items": []}), "list": (200, {"items": []})})
     ex = LoreToolExecutor(make_config(), transport=http)
-    run(ex, TOOL_RECALL, {"query": "q", "vault": "lore/other"})
-    assert http.calls[0][2]["vault"] == "lore/other"
-    for bad in ("lore/secret", "*"):
-        receipt, _ = run(ex, TOOL_RECALL, {"query": "q", "vault": bad})
-        assert receipt.error_code == "denied"
-    assert len(http.calls) == 1
+    for vault in ("host.test/any/repo", "lore/whatever", "folder/其他", "global"):
+        for tool, params in ((TOOL_RECALL, {"query": "q"}), (TOOL_GET, {"ids": ["n1"]}), (TOOL_LIST, {})):
+            receipt, _ = run(ex, tool, {**params, "space": space, "vault": vault})
+            assert receipt.succeeded
+            assert http.calls[-1][2]["vault"] == vault and http.calls[-1][2]["space"] == space
+
+
+def test_read_explicit_wildcard_passes_through():
+    http = FakeHttp({"recall": (200, {"items": []})})
+    receipt, _ = run(LoreToolExecutor(make_config(), transport=http), TOOL_RECALL, {"query": "q", "vault": "*"})
+    assert receipt.succeeded and http.calls[0][2]["vault"] == "*"
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "a\x00b", "a\nb", "x" * 129, 5, ["a"]])
+def test_vault_format_is_checked_for_every_tool(bad: Any):
+    http = FakeHttp()
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    for tool, params in (
+        (TOOL_RECALL, {"query": "q"}), (TOOL_GET, {"ids": ["n1"]}), (TOOL_LIST, {}),
+        (TOOL_WRITE, {"title": "t", "body": "b"}), (TOOL_UPDATE, {"id": "n1", "expected_updated": "u", "body": "x"}),
+        (TOOL_DELETE, {"id": "n1"}),
+    ):
+        receipt, outcome = run(ex, tool, {**params, "vault": bad})
+        assert not receipt.succeeded and json.loads(outcome["result"])["error"] == "invalid_args"
+    assert not http.calls
+
+
+@pytest.mark.parametrize("tool,params", [
+    (TOOL_WRITE, {"title": "t", "body": "b"}),
+    (TOOL_UPDATE, {"id": "n1", "expected_updated": "u", "body": "x"}),
+    (TOOL_DELETE, {"id": "n1"}),
+])
+def test_write_tools_require_explicit_vault(tool: str, params: dict[str, Any]):
+    http = FakeHttp()
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    receipt, outcome = run_raw(ex, tool, params)
+    assert not receipt.succeeded and json.loads(outcome["result"])["error"] == "invalid_args"
+    receipt, outcome = run_raw(ex, tool, {**params, "vault": "*"})
+    assert not receipt.succeeded and json.loads(outcome["result"])["error"] == "invalid_args"
+    assert not http.calls
+
+
+def test_write_tools_accept_any_valid_single_vault():
+    http = FakeHttp({"write": (201, {"id": "n1"}), "update": (200, {"id": "n1"})})
+    ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
+    assert run(ex, TOOL_WRITE, {"title": "t", "body": "b", "vault": "lore/任意"})[0].succeeded
+    assert run(ex, TOOL_UPDATE, {"id": "n1", "expected_updated": "u", "body": "x", "vault": "host.test/a/b"})[0].succeeded
+    assert [c[2]["vault"] for c in http.calls] == ["lore/任意", "host.test/a/b"]
+
+
+def test_server_space_forbidden_maps_to_denied():
+    http = FakeHttp({"recall": (403, {"error": {"code": "uep_space_forbidden", "message": "x"}})})
+    receipt, outcome = run(LoreToolExecutor(make_config(), transport=http), TOOL_RECALL, {"query": "q"})
+    assert receipt.error_code == "denied" and json.loads(outcome["result"])["error"] == "uep_space_forbidden"
 
 
 def test_default_space_follows_config():
@@ -347,6 +417,24 @@ def test_unconfigured_executor_never_calls_http():
     assert not receipt.succeeded and json.loads(outcome["result"])["degraded"] is True and not http.calls
 
 
+@pytest.mark.parametrize("overrides", [{"url": ""}, {"token": ""}])
+def test_missing_url_or_token_is_unavailable_in_executor_and_registry(overrides: dict[str, Any]):
+    cfg = make_config(**overrides)
+    assert not cfg.configured
+    http = FakeHttp()
+    receipt, outcome = run(LoreToolExecutor(cfg, transport=http), TOOL_RECALL, {"query": "q"})
+    assert not receipt.succeeded and json.loads(outcome["result"])["error"] == "unavailable" and not http.calls
+    registry = with_lore(memory_registry(), configured=cfg.configured)
+    assert registry.readiness(TOOL_RECALL) == "unavailable"
+
+
+def test_url_and_token_alone_are_enough_for_ready():
+    cfg = LoreConfig(url="http://lore.test", token=TOKEN)  # 沒有任何 vault 設定
+    assert cfg.configured
+    registry = with_lore(memory_registry(), configured=cfg.configured)
+    assert registry.readiness(TOOL_RECALL) == "ready"
+
+
 # ---- 寫入（executor 先備；工具註冊待 native 豁免合入） ----
 
 def test_write_disabled_by_default():
@@ -367,7 +455,7 @@ def test_write_uses_config_author_and_ignores_llm_author():
 def test_write_timeout_raises_response_lost():
     ex = LoreToolExecutor(make_config(), transport=FakeHttp(raises=LoreTimeout()), allow_write=True)
     with pytest.raises(ToolResponseLost):
-        ex.execute(call(TOOL_WRITE, {"title": "t", "body": "b"}))
+        ex.execute(call(TOOL_WRITE, {"title": "t", "body": "b", "vault": LORE_VAULT}))
 
 
 def test_write_unreachable_is_plain_failure():
@@ -434,7 +522,7 @@ def test_delete_two_step_flow_hides_token():
     first, second = http.calls[0][2], http.calls[1][2]
     assert "confirm_token" not in first and second["confirm_token"] == "CONFIRM-XYZ"
     assert {k: v for k, v in second.items() if k != "confirm_token"} == first  # 其餘參數完全相同
-    assert first["space"] == "dev" and first["vault"] == DEV and first["reason"] == "重複"
+    assert first["space"] == "dev" and first["vault"] == LORE_VAULT and first["reason"] == "重複"
     assert http.calls[0][0].endswith("/v1/note_delete")
     data = json.loads(outcome["result"])
     assert data["deleted"] is True and "CONFIRM-XYZ" not in outcome["result"] + repr(receipt)
@@ -547,7 +635,7 @@ def test_review_guidance_and_list_tool_version():
     for name in (TOOL_UPDATE, TOOL_DELETE):
         hint = entries[name].descriptor.usage_hint
         assert "rejected" in hint and "pending_delete" in hint and "重新送審" in hint and "取消刪除請求" in hint
-    assert entries[TOOL_LIST].spec.tool_version == 2 and entries[TOOL_RECALL].spec.tool_version == 1
+    assert entries[TOOL_LIST].spec.tool_version == 3 and entries[TOOL_RECALL].spec.tool_version == 2
 
 
 def test_delete_enabled_by_default_in_settings_and_config():
@@ -558,9 +646,8 @@ def test_delete_enabled_by_default_in_settings_and_config():
 def test_delete_guards():
     http = FakeHttp({"note_delete": [PLAN]})
     ex = LoreToolExecutor(make_config(), transport=http, allow_write=True)
-    for params in ({"id": "n1", "space": "personal"}, {"id": "n1", "vault": "lore/secret"}):
-        receipt, _ = run(ex, TOOL_DELETE, params)
-        assert receipt.error_code == "denied"
+    receipt, _ = run(ex, TOOL_DELETE, {"id": "n1", "space": "personal", "vault": LORE_VAULT})
+    assert receipt.error_code == "denied"
     for bad in ("doc:abc", "chunk:abc"):
         _, outcome = run(ex, TOOL_DELETE, {"id": bad})
         assert json.loads(outcome["result"])["error"] == "invalid_args"
@@ -591,7 +678,7 @@ def test_delete_timeout_semantics():
 
     ex = LoreToolExecutor(make_config(), transport=Flaky({"note_delete": [PLAN]}), allow_write=True)
     with pytest.raises(ToolResponseLost):
-        ex.execute(call(TOOL_DELETE, {"id": "n1"}))
+        ex.execute(call(TOOL_DELETE, {"id": "n1", "vault": LORE_VAULT}))
     first_timeout = LoreToolExecutor(make_config(), transport=FakeHttp(raises=LoreTimeout()), allow_write=True)
     receipt, _ = run(first_timeout, TOOL_DELETE, {"id": "n1"})  # 規劃階段逾時：沒改任何資料，一般失敗
     assert not receipt.succeeded
@@ -651,20 +738,14 @@ def test_urllib_transport_against_local_server():
 # ---- 可選：真服務冒煙（只有設了 UEP_LORE_* 才跑） ----
 
 @pytest.mark.skipif(
-    not (
-        os.environ.get("UEP_LORE_URL") and os.environ.get("UEP_LORE_TOKEN")
-        and (os.environ.get("UEP_LORE_DEV_VAULT") or os.environ.get("UEP_LORE_VAULTS"))
-    ),
+    not (os.environ.get("UEP_LORE_URL") and os.environ.get("UEP_LORE_TOKEN")),
     reason="未設定 UEP_LORE_*，略過真服務冒煙測試",
 )
 def test_live_service_smoke_read_only():
     cfg = LoreConfig.from_settings(UepSettings(_env_file=None))
     assert cfg.configured
     ex = LoreToolExecutor(cfg)
-    space = "dev" if cfg.dev_vault and cfg.default_space == "dev" else "lore"
-    if space == "lore" and not cfg.vaults:
-        space = "dev"
-    receipt, outcome = run(ex, TOOL_LIST, {"space": space, "limit": 1})
+    receipt, outcome = run(ex, TOOL_LIST, {"space": cfg.default_space, "limit": 1})
     assert receipt.succeeded, outcome.get("result")
     assert json.loads(outcome["result"])["ok"] is True
 
@@ -746,16 +827,6 @@ def test_write_ids_are_stripped_before_sending():
     run(ex, TOOL_WRITE, {"title": "t", "body": "b", "supersedes": " n1 "})
     assert http.calls[0][2]["id"] == "n1" and http.calls[1][2]["supersedes"] == "n1"
 
-
-def test_dev_vault_wildcard_treated_as_unset(monkeypatch: pytest.MonkeyPatch):
-    for key in ("UEP_LORE_URL", "UEP_LORE_TOKEN", "UEP_LORE_DEV_VAULT", "UEP_LORE_VAULTS"):
-        monkeypatch.delenv(key, raising=False)
-    settings = UepSettings(_env_file=None, UEP_LORE_URL="http://x", UEP_LORE_TOKEN=SecretStr("t"), UEP_LORE_DEV_VAULT=" * ")
-    cfg = LoreConfig.from_settings(settings)
-    assert cfg.dev_vault == "" and not cfg.configured
-    http = FakeHttp()
-    receipt, _ = run(LoreToolExecutor(make_config(dev_vault=""), transport=http), TOOL_RECALL, {"query": "q", "space": "dev"})
-    assert receipt.error_code == "denied" and not http.calls
 
 
 def test_results_carry_untrusted_marker_first_with_fixed_key_order():

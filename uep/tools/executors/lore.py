@@ -3,8 +3,9 @@
 - 對接 Lore Vault HTTP API：``POST {UEP_LORE_URL}/v1/{recall|get|list|write|update}``，``Authorization: Bearer <token>``，
   請求與回應都是 JSON。token 只在這裡（executor 側）使用：不進 LLM 面 schema、不寫 log、不進結果與 receipt。
 - 範圍（fail-closed，執行當下再驗一次，不信任 Gateway 之前的檢查）：
-  只開放 ``dev``／``lore`` 兩個 space；``dev`` 只能用設定的本專案 vault；``lore`` 的 vault 必須在設定白名單內
-  （省略時用白名單第一個）。不支援 ``*``（跨 vault）、不提供 delete。
+  Core 端只檢查 space（``dev``／``lore``，第二道防線；服務端對 principal 另有強制）；不設 vault 白名單，
+  可讀取該 space 的全部 vault。讀取類（recall／get／list）的 vault 省略時送 ``*``（該 space 的全部 vault），
+  也可指定單一 vault；寫入類（write／update／delete）vault 必填、不可為 ``*``，是否可寫由服務端判定。
 - 寫入（``lore.write``／``lore.update``）的 ``author`` 一律用設定的角色名，LLM 不能指定。
   預設不啟用寫入（``allow_write=False``）；組裝層在寫入工具註冊後才開啟。
 - 結果過濾：只挑固定欄位、移除控制字元、全文與整體結果都有長度上限（``max_chars``），並標明截斷；
@@ -30,6 +31,8 @@ from urllib.parse import urlsplit
 from uep.adapters.tool import ReceiptLookup, ToolCall, ToolReceipt, ToolResponseLost
 from uep.ids import new_id
 from uep.tools.catalog.lore import (
+    ALL_VAULTS,
+    ID_MAX,
     LORE_TOOLS,
     LORE_WRITE_TOOLS,
     REVIEW_STATES,
@@ -45,6 +48,7 @@ from uep.tools.outcomes import TurnOutcomeCache
 logger = logging.getLogger("uep.tools.executors.lore")
 
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_VAULT_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")  # vault 名稱不允許任何控制字元（含換行、tab）
 _ITEM_FIELDS = (
     "id", "kind", "vault", "title", "summary", "body", "text", "topics", "author", "updated", "created",
     "locator", "truncated", "body_chars", "text_chars", "score", "supersedes", "superseded_by",
@@ -96,8 +100,6 @@ class LoreConfig:
 
     url: str = ""
     token: str = field(default="", repr=False)
-    dev_vault: str = ""
-    vaults: tuple[str, ...] = ()
     default_space: str = "lore"
     author: str = "U.E.P"
     timeout_s: float = 10.0
@@ -106,32 +108,22 @@ class LoreConfig:
 
     @property
     def configured(self) -> bool:
-        """URL、token 與至少一個可用的 vault 範圍都齊備才算設定完成。"""
+        """URL 與 token 齊備才算設定完成。"""
         scheme = urlsplit(self.url).scheme
-        return bool(
-            self.url and scheme in ("http", "https") and self.token and (self.dev_vault or self.vaults)
-        )
+        return bool(self.url and scheme in ("http", "https") and self.token)
 
     @classmethod
     def from_settings(cls, settings: Any) -> LoreConfig:
         token = getattr(settings, "lore_token", None)
-        raw_vaults = getattr(settings, "lore_vaults", None) or ""
         return cls(
             url=(getattr(settings, "lore_url", None) or "").strip(),
             token=token.get_secret_value().strip() if token is not None else "",
-            dev_vault=_not_wildcard((getattr(settings, "lore_dev_vault", None) or "").strip()),
-            vaults=tuple(v for v in (part.strip() for part in raw_vaults.split(",")) if v and v != "*"),
             default_space=getattr(settings, "lore_default_space", "lore"),
             author=(getattr(settings, "lore_author", "") or "").strip() or "U.E.P",
             timeout_s=float(getattr(settings, "lore_timeout_s", 10.0)),
             max_chars=int(getattr(settings, "lore_max_chars", 6000)),
             delete_enabled=bool(getattr(settings, "lore_delete_enabled", True)),
         )
-
-
-def _not_wildcard(value: str) -> str:
-    """vault 設定不接受 ``*``（跨 vault）：視為未設定。"""
-    return "" if value == "*" else value
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -230,7 +222,7 @@ class LoreToolExecutor:
             return _fail("denied", f"工具 {tool!r} 尚未啟用。")
         if not cfg.configured:
             return _fail("unavailable", "Lore Vault 尚未設定。", degraded=True)
-        scope = self._scope(params)
+        scope = self._scope(tool, params)
         if isinstance(scope, dict):
             return scope
         space, vault = scope
@@ -302,26 +294,26 @@ class LoreToolExecutor:
             return done
         return self._shape(TOOL_DELETE, done, space, vault)
 
-    def _scope(self, params: Mapping[str, Any]) -> tuple[str, str] | dict[str, Any]:
-        cfg = self._config
-        space = params.get("space", cfg.default_space)
+    def _scope(self, tool: str, params: Mapping[str, Any]) -> tuple[str, str] | dict[str, Any]:
+        """space 只接受 dev／lore；vault 只做格式檢查（不比對白名單）。
+        讀取類省略 vault 時送 ``*``（該 space 全部 vault）；寫入類 vault 必填且不可為 ``*``。"""
+        space = params.get("space", self._config.default_space)
         if space not in SPACES:
             return _fail("denied", f"space 只能是 {', '.join(SPACES)}。")
         vault = params.get("vault")
-        if vault is not None and (not isinstance(vault, str) or not vault.strip()):
+        is_write = tool in LORE_WRITE_TOOLS
+        if vault is None:
+            if is_write:
+                return _fail("invalid_args", "寫入類工具必須指定 vault（單一 vault 名稱）。")
+            return space, ALL_VAULTS
+        if not isinstance(vault, str) or not vault.strip():
             return _fail("invalid_args", "vault 必須是非空字串。")
-        if space == "dev":
-            if not cfg.dev_vault:
-                return _fail("denied", "dev space 未設定本專案 vault。")
-            if vault is not None and vault != cfg.dev_vault:
-                return _fail("denied", "dev space 只能使用本專案 vault。")
-            return "dev", cfg.dev_vault
-        if not cfg.vaults:
-            return _fail("denied", "lore space 未設定可用的 vault。")
-        chosen = vault if vault is not None else cfg.vaults[0]
-        if chosen not in cfg.vaults:
-            return _fail("denied", "此 vault 不在 lore space 的允許清單內。")
-        return "lore", chosen
+        vault = vault.strip()
+        if len(vault) > ID_MAX or _VAULT_CTRL_RE.search(vault):
+            return _fail("invalid_args", f"vault 格式不符（長度上限 {ID_MAX}，不可含控制字元）。")
+        if is_write and vault == ALL_VAULTS:
+            return _fail("invalid_args", "寫入類工具的 vault 必須是單一 vault，不可用 '*'。")
+        return space, vault
 
     def _request_body(self, tool: str, params: Mapping[str, Any], space: str, vault: str) -> dict[str, Any]:
         cfg = self._config

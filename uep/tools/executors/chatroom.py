@@ -41,6 +41,7 @@ from uep.adapters.tool import (
 )
 from uep.ids import new_id
 from uep.tools.catalog.chatroom import (
+    MENTION_MAX,
     MESSAGE_MAX_CHARS,
     POST_MAX_CHARS,
     POST_MAX_MENTIONS,
@@ -64,6 +65,9 @@ UNREACHABLE = "unreachable"
 DEFAULT_SLICE_S = 3.0  # wait 每片 long-poll 秒數，也是取消生效的最大延遲
 HTTP_TIMEOUT_S = 10.0
 _MAX_PENDING_CANCELS = 256
+CODE_MAX = 64
+LATEST_WINDOW = 50  # 起算游標時往回看的訊息數
+KICKED = "participant_kicked"
 _SEQ_CEILING = 2**53  # 「比任何訊息都新」的 before_seq，用來取房內最新一則
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # 身分失效但重新 join 是正確處置的 Hub 代碼（participant_kicked 刻意不在內：移出是人為決定）
@@ -122,7 +126,8 @@ class ChatroomError(Exception):
         super().__init__(code)
         self.code = code
         self.status = status
-        self.sent = sent  # 請求可能已抵達 Hub（回覆遺失）：post 不得假設未送出
+        self.sent = sent  # 請求可能已抵達 Hub（回覆遺失）
+        self.lost = False  # 只有實際 POST /messages 那一步的 sent 錯誤才會被標成 True（結果未明）
 
 
 class ChatroomClient:
@@ -154,7 +159,7 @@ class ChatroomClient:
             code = ""
             try:
                 detail = response.json().get("detail")
-                code = str(detail.get("code", "")) if isinstance(detail, dict) else ""
+                code = _safe_code(detail.get("code", "")) if isinstance(detail, dict) else ""
             except (ValueError, AttributeError):
                 pass
             raise ChatroomError(code or f"http_{response.status_code}", status=response.status_code)
@@ -165,6 +170,21 @@ class ChatroomClient:
         if not isinstance(data, dict):
             raise ChatroomError("bad_response")
         return data
+
+
+def _key(item: Mapping[str, Any], *, updates: bool) -> int:
+    """訊息在游標上的位置：/updates 用 max(seq, update_seq)，/messages 只用 seq；非整數視為 0。"""
+    out = 0
+    for name in (("seq", "update_seq") if updates else ("seq",)):
+        value = item.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            out = max(out, value)
+    return out
+
+
+def _safe_code(value: Any) -> str:
+    """Hub 回傳的 detail.code 是外部內容：限小寫英數與底線、最長 64 字，才放進結果與 receipt。"""
+    return re.sub(r"[^a-z0-9_]", "", str(value).lower())[:CODE_MAX]
 
 
 @dataclass
@@ -195,6 +215,7 @@ class ChatroomToolExecutor:
         self._lock = threading.Lock()
         self._rooms: dict[str, _Room] = {}
         self._cursors: dict[str, int] = {}  # 身分失效、重新 join 之間暫存的游標
+        self._kicked: set[str] = set()  # 被踢的房間：直接短路，不再打 Hub（移出是人為決定）
         self._waiting: dict[str, threading.Event] = {}
         self._pending_cancels: dict[str, None] = {}
         self.executions: list[str] = []
@@ -232,7 +253,7 @@ class ChatroomToolExecutor:
             outcome = self._run(call.action_id, call.tool, params)
         except ChatroomError as exc:
             outcome = {"success": False, "result": f"Chatroom request failed ({exc.code}).", "code": exc.code}
-            lost = exc.sent and call.tool == TOOL_POST
+            lost = exc.lost and call.tool == TOOL_POST
             if exc.code == UNREACHABLE:
                 outcome["degraded"] = True
         except Exception as exc:  # noqa: BLE001 - 單一工具失敗不拖垮整輪；只記例外類別
@@ -258,7 +279,7 @@ class ChatroomToolExecutor:
 
     @staticmethod
     def _json(payload: Mapping[str, Any]) -> str:
-        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(payload, ensure_ascii=False, sort_keys=False, separators=(",", ":"))
 
     @staticmethod
     def _fail(code: str, text: str) -> dict[str, Any]:
@@ -280,6 +301,8 @@ class ChatroomToolExecutor:
         room_id = self._resolve_room(params)
         if room_id is None:
             return self._fail("denied", "Room is not allowed or not specified.")
+        if room_id in self._kicked:
+            return self._fail(KICKED, "You were removed from this room.")
         if tool == TOOL_POST:
             return self._post(room_id, params)
         if tool == TOOL_READ:
@@ -302,6 +325,9 @@ class ChatroomToolExecutor:
             cursor = self._cursors.pop(room_id, None)  # 身分失效後重新 join：沿用原游標
         if cursor is None:  # 新行程第一次 join：從房內目前最新的 seq 起算，不重讀歷史（持久化游標留待之後）
             cursor = self._latest_seq(room_id, pid)
+            joined = data.get("joined_seq")
+            if not data.get("rejoined") and isinstance(joined, int) and not isinstance(joined, bool):
+                cursor = max(cursor, joined)  # 全新加入：joined_seq 就是房內最後一則
         room = _Room(pid, cursor, str(data.get("display_name") or ""))
         with self._lock:
             kept = self._rooms.get(room_id)
@@ -311,15 +337,17 @@ class ChatroomToolExecutor:
         return room
 
     def _latest_seq(self, room_id: str, participant_id: str) -> int:
-        """房內目前最新訊息的 seq（空房 0）：取 ``before_seq`` 很大時的最後一則。"""
+        """房內目前最新的游標值（空房 0）：取最新一批訊息的 ``max(seq, update_seq)``，
+        避免起點落在被 pin／刪除過的舊訊息的 update_seq 之前。"""
         assert self._client is not None
         data = self._client.request(
             "GET", f"/api/rooms/{room_id}/messages", participant_id=participant_id,
-            params={"before_seq": _SEQ_CEILING, "limit": 1},
+            params={"before_seq": _SEQ_CEILING, "limit": LATEST_WINDOW},
         )
         raw = data.get("messages")
-        seqs = [m["seq"] for m in raw if isinstance(m, Mapping) and isinstance(m.get("seq"), int)] if isinstance(raw, list) else []
-        return max(seqs, default=0)
+        if not isinstance(raw, list):
+            return 0
+        return max((_key(m, updates=True) for m in raw if isinstance(m, Mapping)), default=0)
 
     def _room(self, room_id: str) -> _Room:
         with self._lock:
@@ -328,10 +356,12 @@ class ChatroomToolExecutor:
 
     def _with_room(self, room_id: str, call: Callable[[_Room], dict[str, Any]]) -> dict[str, Any]:
         """身分失效（可重新 join 的代碼）時重新 join 並重試一次。"""
-        room = self._room(room_id)
         try:
+            room = self._room(room_id)
             return call(room)
         except ChatroomError as exc:
+            if exc.code == KICKED:
+                self._kicked.add(room_id)
             if exc.code not in _REJOIN_CODES:
                 raise
             with self._lock:
@@ -340,25 +370,39 @@ class ChatroomToolExecutor:
                     self._cursors[room_id] = stale.cursor
             return call(self._join(room_id))
 
-    def _advance(self, room_id: str, seq: int) -> None:
+    def _advance(self, room_id: str, position: int) -> None:
+        """游標只往前（單調）；讀寫都在 ``self._lock`` 內，是並行競態的第二道防線（第一道是 conflict_keys）。"""
         with self._lock:
             room = self._rooms.get(room_id)
-            if room is not None and seq > room.cursor:
-                room.cursor = seq
+            if room is not None and position > room.cursor:
+                room.cursor = position
+
+    def _cursor(self, room_id: str, fallback: int) -> int:
+        with self._lock:
+            room = self._rooms.get(room_id)
+            return room.cursor if room is not None else fallback
 
     def _view(
-        self, room_id: str, room: _Room, raw: list[Any], *, more: bool, timed_out: bool = False,
+        self, room_id: str, room: _Room, raw: list[Any], *, cursor: int, updates: bool, more: bool,
+        timed_out: bool = False,
     ) -> tuple[dict[str, Any], int]:
-        """組結果並回傳實際納入的最後 seq（游標只推進到這裡）。自己發的訊息略過但仍推進。"""
+        """組結果並回傳新的游標位置。
+
+        - 依游標位置（updates=True 為 max(seq, update_seq)，否則 seq）遞增處理；因總量截斷而沒納入的項目不推進，留給下一次。
+        - 略過但推進：自己發的、已刪除的、seq <= 起始游標的（已讀過的訊息即使被 pin／更新也不再投遞）。
+        """
+        entries = sorted(
+            (item for item in raw if isinstance(item, Mapping) and _key(item, updates=updates) > 0),
+            key=lambda item: _key(item, updates=updates),
+        )
         messages: list[dict[str, Any]] = []
         used = 0
-        last_seq = 0
-        for item in raw:
-            if not isinstance(item, Mapping) or isinstance(item.get("seq"), bool) or not isinstance(item.get("seq"), int):
-                continue
-            seq = item["seq"]
-            if item.get("sender_id") == room.participant_id or item.get("deleted"):
-                last_seq = seq
+        position = cursor
+        for item in entries:
+            seq = _key(item, updates=False)
+            key = _key(item, updates=updates)
+            if item.get("sender_id") == room.participant_id or item.get("deleted") or seq <= cursor:
+                position = max(position, key)
                 continue
             content, cut = _clean(item.get("content"), MESSAGE_MAX_CHARS)
             sender, _ = _clean(item.get("sender_name") or "系統", 80)
@@ -370,13 +414,14 @@ class ChatroomToolExecutor:
             if cut:
                 entry["truncated"] = True
             messages.append(entry)
-            last_seq = seq
+            position = max(position, key)
+        # 固定鍵序：untrusted 與 notice 在 messages 前面
         payload: dict[str, Any] = {
             "untrusted": True, "notice": UNTRUSTED_NOTICE, "room": room_id, "messages": messages, "more": more,
         }
         if timed_out:
             payload["timed_out"] = True
-        return {"success": True, "result": self._json(payload)}, last_seq
+        return {"success": True, "result": self._json(payload)}, position
 
     def _read(self, room_id: str, params: Mapping[str, Any]) -> dict[str, Any]:
         limit = params.get("limit", READ_LIMIT_DEFAULT)
@@ -385,16 +430,17 @@ class ChatroomToolExecutor:
         assert self._client is not None
 
         def fetch(room: _Room) -> dict[str, Any]:
+            cursor = self._cursor(room_id, room.cursor)
             data = self._client.request(
                 "GET", f"/api/rooms/{room_id}/messages", participant_id=room.participant_id,
-                params={"after_seq": room.cursor, "limit": limit},
+                params={"after_seq": cursor, "limit": limit},
             )
             raw = data.get("messages")
-            outcome, last = self._view(
-                room_id, room, raw if isinstance(raw, list) else [], more=bool(data.get("has_more")),
+            outcome, position = self._view(
+                room_id, room, raw if isinstance(raw, list) else [], cursor=cursor, updates=False,
+                more=bool(data.get("has_more")),
             )
-            if last:
-                self._advance(room_id, last)
+            self._advance(room_id, position)
             return outcome
 
         return self._with_room(room_id, fetch)
@@ -418,11 +464,11 @@ class ChatroomToolExecutor:
                     return self._fail(CANCELLED, "cancelled")
                 remaining = deadline - self._clock()
                 if remaining <= 0:
-                    outcome, _ = self._view(room_id, room, [], more=False, timed_out=True)
+                    outcome, _ = self._view(room_id, room, [], cursor=0, updates=True, more=False, timed_out=True)
                     return outcome
                 chunk = max(0.1, min(remaining, self._slice_s))
-                with self._lock:
-                    cursor = self._rooms[room_id].cursor if room_id in self._rooms else room.cursor
+                cursor = self._cursor(room_id, room.cursor)
+                started = self._clock()
                 data = self._client.request(
                     "GET", f"/api/rooms/{room_id}/updates", participant_id=room.participant_id,
                     params={"after_seq": cursor, "timeout": chunk}, timeout=chunk + HTTP_TIMEOUT_S,
@@ -430,15 +476,20 @@ class ChatroomToolExecutor:
                 if event.is_set():  # 取消：取到的訊息丟棄、不推進游標，下次仍會收到
                     return self._fail(CANCELLED, "cancelled")
                 raw = data.get("messages")
-                batch = raw if isinstance(raw, list) else []
-                outcome, last = self._view(room_id, room, batch, more=False)
-                head = data.get("last_seq")
-                if last:
-                    self._advance(room_id, last)
-                elif isinstance(head, int) and not isinstance(head, bool) and batch:
-                    self._advance(room_id, head)  # 只有自己的訊息：推進游標但繼續等
+                outcome, position = self._view(
+                    room_id, room, raw if isinstance(raw, list) else [], cursor=cursor, updates=True, more=False,
+                )
                 if json.loads(outcome["result"])["messages"]:
+                    self._advance(room_id, position)
                     return outcome
+                head = data.get("last_seq")  # Hub 的 last_seq 就是 max(seq, update_seq)；沒有可投遞訊息時直接跟到它
+                if isinstance(head, int) and not isinstance(head, bool):
+                    position = max(position, head)
+                self._advance(room_id, position)
+                # 空結果（沒新訊息、或只有略過的更新）：這一片要等滿才打下一片，避免 Hub 立刻回應時熱迴圈
+                pause = min(chunk - (self._clock() - started), max(deadline - self._clock(), 0))
+                if pause > 0 and event.wait(pause):
+                    return self._fail(CANCELLED, "cancelled")
 
         try:
             return self._with_room(room_id, poll)
@@ -452,16 +503,20 @@ class ChatroomToolExecutor:
         if (
             not isinstance(content, str) or not content.strip() or len(content) > POST_MAX_CHARS
             or not isinstance(mentions, list) or len(mentions) > POST_MAX_MENTIONS
-            or not all(isinstance(m, str) and m for m in mentions)
+            or not all(isinstance(m, str) and 0 < len(m) <= MENTION_MAX for m in mentions)
         ):
             return self._fail("failed", "Invalid arguments for 'chatroom.post'.")
         assert self._client is not None
         body = {"content": content, "mentions": mentions, "card_refs": [], "reply_to": None}
 
         def send(room: _Room) -> dict[str, Any]:
-            data = self._client.request(
-                "POST", f"/api/rooms/{room_id}/messages", participant_id=room.participant_id, body=body,
-            )
+            try:
+                data = self._client.request(
+                    "POST", f"/api/rooms/{room_id}/messages", participant_id=room.participant_id, body=body,
+                )
+            except ChatroomError as exc:
+                exc.lost = exc.sent  # 只有這一步（實際送出訊息）的 sent 錯誤才算結果未明；join／取游標階段不算
+                raise
             seq = data.get("seq")
             payload: dict[str, Any] = {"room": room_id, "posted": True}
             if isinstance(seq, int) and not isinstance(seq, bool):

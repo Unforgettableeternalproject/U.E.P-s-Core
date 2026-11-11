@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import replace
@@ -17,6 +18,7 @@ import pytest
 from pydantic import SecretStr
 
 from uep.adapters.tool import ToolCall, ToolResponseLost, supports_cancel
+from uep.agent.scheduler import SchedItem, plan_waves
 from uep.config import get_settings
 from uep.tools.catalog.chatroom import (
     CHATROOM_MODULE,
@@ -62,6 +64,7 @@ class FakeHub:
         self.read_error = False
         self.hold_updates_s = 0.0
         self.joins = 0
+        self.join_error = False
         self.posts: list[dict] = []
 
     def transport(self) -> httpx.MockTransport:
@@ -73,6 +76,8 @@ class FakeHub:
             raise httpx.ConnectError("down", request=request)
         path = request.url.path
         if path.endswith("/join"):
+            if self.join_error:
+                raise httpx.ReadTimeout("slow join", request=request)
             self.joins += 1
             return httpx.Response(200, json={
                 "participant_id": "p-me", "display_name": "Laya", "joined_seq": self.joined_seq, "session_key": "uep-test",
@@ -86,7 +91,11 @@ class FakeHub:
             older = [m for m in self.messages if m["seq"] < int(request.url.params["before_seq"])]
             return httpx.Response(200, json={"messages": older[-1:], "has_more": False})
         after = int(request.url.params.get("after_seq", 0))
-        fresh = [m for m in self.messages if m["seq"] > after]
+        if path.endswith("/updates"):  # Hub 的 /updates 以 MAX(seq, update_seq) 為游標
+            fresh = [m for m in self.messages if max(m["seq"], m.get("update_seq", 0)) > after]
+            fresh.sort(key=lambda m: max(m["seq"], m.get("update_seq", 0)))
+        else:
+            fresh = [m for m in self.messages if m["seq"] > after]
         if path.endswith("/messages") and request.method == "POST":
             body = json.loads(request.content)
             self.posts.append(body)
@@ -100,12 +109,13 @@ class FakeHub:
         if path.endswith("/updates"):
             if not fresh and self.hold_updates_s:
                 time.sleep(self.hold_updates_s)
-            return httpx.Response(200, json={"messages": fresh, "last_seq": fresh[-1]["seq"] if fresh else after})
+            head = max((max(m["seq"], m.get("update_seq", 0)) for m in fresh), default=after)
+            return httpx.Response(200, json={"messages": fresh, "last_seq": head})
         return httpx.Response(404, json={"detail": "nope"})
 
 
-def msg(seq: int, text: str, sender: str = "Alice", sender_id: str = "p-alice") -> dict:
-    return {"seq": seq, "sender_id": sender_id, "sender_name": sender, "content": text}
+def msg(seq: int, text: str, sender: str = "Alice", sender_id: str = "p-alice", **extra) -> dict:
+    return {"seq": seq, "sender_id": sender_id, "sender_name": sender, "content": text, **extra}
 
 
 def make(hub: FakeHub, **kw) -> ChatroomToolExecutor:
@@ -236,7 +246,7 @@ def test_read_joins_once_authenticates_and_keeps_cursor():
     assert all(r.headers["authorization"] == f"Bearer {TOKEN}" for r in hub.requests)
     join = next(r for r in hub.requests if r.url.path.endswith("/join"))
     assert join.headers["x-session-key"] == "uep-test" and json.loads(join.content)["preferred_name"] == "Laya"
-    assert any(r.url.params.get("after_seq") == "0" for r in hub.requests if r.url.path.endswith("/messages"))
+    assert any(r.url.params.get("after_seq") == "10" for r in hub.requests if r.url.path.endswith("/messages"))
     again = ex.execute(call(TOOL_READ))
     assert body(ex, again)["messages"] == []
     assert hub.joins == 1
@@ -310,6 +320,39 @@ def test_first_join_in_new_process_starts_from_latest_seq():
     assert [m["seq"] for m in body(ex, ex.execute(call(TOOL_READ)))["messages"]] == [7]
     fresh = make(hub)  # 模擬重啟：新行程從當下最新的 seq 起算
     assert body(fresh, fresh.execute(call(TOOL_READ)))["messages"] == []
+
+
+def test_result_key_order_puts_untrusted_marker_before_messages():
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    hub.messages = [msg(11, "hi")]
+    receipt = ex.execute(call(TOOL_READ))
+    text = ex.cache.text(receipt.action_id)
+    assert text.startswith('{"untrusted":true,"notice":') and text.index('"untrusted"') < text.index('"messages"')
+
+
+def test_hub_error_code_is_sanitized_and_capped():
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    hub.fail_next = [(500, {"code": "Bad-Code<script>\n" * 20})]
+    receipt = ex.execute(call(TOOL_READ))
+    assert receipt.error_code and re.fullmatch(r"[a-z0-9_]{1,64}", receipt.error_code)
+    assert "<" not in ex.cache.text(receipt.action_id)
+
+
+def test_kicked_room_short_circuits_without_hitting_the_hub():
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    hub.fail_next = [(403, {"code": "participant_kicked", "message": "x"})]
+    assert ex.execute(call(TOOL_READ)).error_code == "participant_kicked"
+    before = len(hub.requests)
+    for tool, params in ((TOOL_READ, {}), (TOOL_WAIT, {"timeout_s": 1}), (TOOL_POST, {"content": "x"})):
+        again = ex.execute(call(tool, params, effect="external_effect" if tool == TOOL_POST else "internal_read"))
+        assert not again.succeeded and again.error_code == "participant_kicked"
+    assert len(hub.requests) == before
 
 
 def test_unreachable_is_degraded_failure():
@@ -391,6 +434,74 @@ def test_cancel_before_execute_is_remembered():
     assert ex.cancel("unknown") == "stopped"
 
 
+def test_wait_does_not_redeliver_a_pinned_old_message():
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    hub.messages = [msg(11, "old")]
+    assert [m["seq"] for m in body(ex, ex.execute(call(TOOL_READ)))["messages"]] == [11]
+    hub.messages[0]["update_seq"] = 20  # 舊訊息被 pin：帶著新的 update_seq 再出現在 /updates
+    data = body(ex, ex.execute(call(TOOL_WAIT, {"timeout_s": 1})))
+    assert data["messages"] == [] and data["timed_out"] is True
+    assert body(ex, ex.execute(call(TOOL_READ)))["messages"] == []
+    hub.messages.append(msg(21, "new"))
+    assert [m["seq"] for m in body(ex, ex.execute(call(TOOL_WAIT, {"timeout_s": 2})))["messages"]] == [21]
+    assert body(ex, ex.execute(call(TOOL_WAIT, {"timeout_s": 1})))["messages"] == []  # 新訊息也只投遞一次
+
+
+def test_wait_does_not_spin_when_an_old_message_is_deleted():
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    hub.messages = [msg(11, "old")]
+    ex.execute(call(TOOL_READ))
+    hub.messages[0].update({"update_seq": 20, "deleted": True, "content": ""})
+    hub.requests.clear()
+    data = body(ex, ex.execute(call(TOOL_WAIT, {"timeout_s": 1})))
+    updates = [r for r in hub.requests if r.url.path.endswith("/updates")]
+    assert data["messages"] == [] and data["timed_out"] is True
+    assert len(updates) <= 14  # 每片至少 0.1 秒，1 秒最多約 10 片；熱迴圈會是數百次
+    assert updates[-1].url.params["after_seq"] == "20"  # 刪除項目推進了游標
+
+
+def test_wait_slice_pauses_when_the_hub_answers_instantly():
+    hub = FakeHub()  # 沒有 hold：永遠立即回空，模擬 subagent 事件或 board 變動造成的立即返回
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    hub.requests.clear()
+    ex.execute(call(TOOL_WAIT, {"timeout_s": 1}))
+    assert len([r for r in hub.requests if r.url.path.endswith("/updates")]) <= 14
+
+
+def test_first_cursor_uses_update_seq_of_recent_messages():
+    hub = FakeHub()
+    hub.messages = [msg(5, "pinned later", update_seq=40)]
+    ex = make(hub)
+    assert body(ex, ex.execute(call(TOOL_READ)))["messages"] == []
+    hub.requests.clear()
+    data = body(ex, ex.execute(call(TOOL_WAIT, {"timeout_s": 1})))
+    assert data["messages"] == []
+    assert next(r for r in hub.requests if r.url.path.endswith("/updates")).url.params["after_seq"] == "40"
+
+
+# ───────── 並行排程 ─────────
+
+def test_conflict_keys_serialize_same_room_and_fall_back_to_serial_without_room():
+    registry = with_chatroom(memory_registry(), configured=True)
+    for name in (TOOL_READ, TOOL_WAIT, TOOL_POST):
+        assert registry.entry(name).conflict_keys == ("chatroom:{room}",)
+
+    def waves(*rooms):
+        batch = [SchedItem(i, TOOL_WAIT, {"room": r} if r else {}) for i, r in enumerate(rooms)]
+        return plan_waves(batch, registry, max_parallel=4)
+
+    different = waves("a", "b")
+    assert len(different) == 1 and different[0].parallel and len(different[0].items) == 2  # 不同房可並行
+    assert len(waves("a", "a")) == 2  # 同房互斥
+    unspecified = waves(None)
+    assert len(unspecified) == 1 and unspecified[0].parallel is False  # room 省略：當 serial
+
+
 # ───────── post ─────────
 
 def test_post_sends_as_self_with_mentions():
@@ -412,6 +523,26 @@ def test_post_too_long_rejected_by_schema_and_executor():
     receipt = ex.execute(post_call({"content": "a" * (POST_MAX_CHARS + 1)}))
     assert not receipt.succeeded and hub.posts == [] and not any(r.url.path.endswith("/messages") for r in hub.requests)
     assert not ex.execute(post_call({"content": "   "})).succeeded
+
+
+def test_post_mention_over_limit_rejected():
+    hub = FakeHub()
+    ex = make(hub)
+    assert not ex.execute(post_call({"content": "hi", "mentions": ["a" * 65]})).succeeded
+    assert hub.posts == [] and hub.requests == []
+
+
+def test_post_ambiguous_error_before_the_post_step_is_a_plain_failure():
+    hub = FakeHub()
+    hub.join_error = True  # join 階段讀取逾時：訊息還沒送出
+    ex = make(hub)
+    receipt = ex.execute(post_call({"content": "hi"}))
+    assert not receipt.succeeded and receipt.error_code == "ambiguous"
+    hub2 = FakeHub()
+    hub2.read_error = True  # 取游標階段（/messages）逾時：同樣還沒送出
+    ex2 = make(hub2)
+    assert ex2.execute(post_call({"content": "hi"})).error_code == "ambiguous"
+    assert hub2.posts == []
 
 
 def test_post_unreachable_is_plain_failure_but_lost_reply_is_unknown():

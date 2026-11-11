@@ -178,7 +178,7 @@ $env:UEP_LLM_API_KEY = "<金鑰>"         # 或寫在 Core .env
 $env:UEP_TOOL_TESTKIT = "1"
 ```
 
-開啟後註冊 4 個沒有任何外部效果的工具（工具名用底線，因為 provider 的函式名不接受 `.`），標籤 `test.read`／`test.approval` 只在 `/loop`（`route=agent_loop`）併入，一般對話看不到；關閉時工具、executor、標籤都不存在：
+開啟後註冊 6 個（4 個基本工具＋2 個 composite）沒有任何外部效果的工具（工具名用底線，因為 provider 的函式名不接受 `.`），標籤 `test.read`／`test.approval` 只在 `/loop`（`route=agent_loop`）併入，一般對話看不到；關閉時工具、executor、標籤都不存在：
 
 | 工具 | 分類 | 用來驗 |
 |---|---|---|
@@ -186,8 +186,26 @@ $env:UEP_TOOL_TESTKIT = "1"
 | `test_clock` | internal_read／parallel_safe | 同上；回傳 UTC 與本地時間 |
 | `test_sleep` | internal_read／parallel_one_shot／interruptible，`seconds` 0–30，總時限 10 秒 | 逾時（睡超過 10 秒）、`/cancel` 取消（executor.cancel）、Supervisor |
 | `test_approval_echo` | external_effect＋per_action（如實借用外部效果類別以觸發核准，實際無任何效果）／serial | park（`WAITING_APPROVAL`）與 `/approve` 記錄核准 |
+| `test_clock_echo`（composite） | internal_read／serial；`test_clock` -> `test_echo`，第二步的 `text` = 第一步 receipt 的 `result_ref` | composite 線性展開、前步輸出代入（只引用 receipt 持久欄位） |
+| `test_echo_then_approve`（composite） | external_effect＋per_action／serial（取子步驟最大值）；`test_echo` -> `test_approval_echo` | composite 子步驟 park -> `/approve` -> 從 cursor 續跑，已成功的 `test_echo` 不重播 |
 
 步驟：`/loop 請同時呼叫 test_echo（text=你好）與 test_clock，再告訴我結果` -> `工具呼叫：test_echo[SUCCEEDED] > test_clock[SUCCEEDED]`；`/loop 請呼叫 test_sleep 睡 20 秒`：總時限 10 秒，應以 `failed(timeout)` 回餵模型、Run 仍可收尾（`/loop` 會等到 turn 結束，手動 `/cancel` 需另開輸入，逾時路徑較好驗）；`/loop 請呼叫 test_approval_echo 說「放行」` -> 印 `等待核准：<action_id>`，`/approve <action_id>` -> `已記錄核准 appr_…`、`續跑結果：Run run_…：completed`、`回應（續跑）：…`、`test_approval_echo[SUCCEEDED]`（核准單次消耗，副作用只發生一次）；改用 `/reject <action_id>` 則 action 轉 FAILED、模型看到被否決、Run 收尾。核准超過 10 分鐘會再次 park；工具升版或能力被撤銷時續跑被拒（`failed(tool_version_changed)`／`capability_revoked`），核准不被消耗。
+
+**composite 案例**（兩個 composite 的子步驟各自是一筆 action，composite 本身不建 action；對外內容取最後一步）：
+
+- 成功：`/loop 請呼叫 test_clock_echo` -> `工具呼叫：test_clock[SUCCEEDED] > test_echo[SUCCEEDED]`（子步驟各計一次）；`test_echo` 回傳的 `echo` 是 `blob_act_…`（第一步 receipt 的 `result_ref`），不是時間文字。
+- 核准續跑：`/loop 請呼叫 test_echo_then_approve，text 是「放行」` -> `test_echo` 先成功，再印 `等待核准：<action_id>`（這個 id 是第二步 `test_approval_echo` 的 action）、Run 停在 `WAITING_APPROVAL`；`/approve <action_id>` -> `已記錄核准 appr_…`、`續跑結果：Run run_…：completed`、`回應（續跑）：…`、`Run run_…：SUCCEEDED　工具呼叫：test_echo[SUCCEEDED] > test_approval_echo[SUCCEEDED]`。`test_echo` 不會重播（Run 的工具呼叫行各只出現一次，DB 的 action 列也各只一筆）。改用 `/reject <action_id>` 則第二步 FAILED、不執行，Run 收尾。
+
+**驗證清單**（開 `UEP_TOOL_TESTKIT=1`、`UEP_TOOL_PATH=agent`、`UEP_AGENT_LOOP_ENTRY=1`，逐項勾選）：
+
+- [ ] 並行：`/loop 請同時呼叫 test_echo（text=你好）與 test_clock` -> `工具呼叫：test_echo[SUCCEEDED] > test_clock[SUCCEEDED]`
+- [ ] 逾時：`/loop 請呼叫 test_sleep 睡 20 秒` -> 工具以 `failed(timeout)` 回餵模型，Run 仍收尾（總時限 10 秒）
+- [ ] 取消：`/loop 請呼叫 test_sleep 睡 25 秒` 後立刻另開輸入 `/cancel`（`/loop` 會阻塞等待 turn，需第二個輸入通道；不便時以自動測試 `test_loop_run_cancel_stops_a_sleeping_tool_via_executor_cancel` 為準）-> 睡眠被喚醒，action 轉為取消的失敗 receipt（`cancelled`）
+- [ ] 核准續跑：`/loop 請呼叫 test_approval_echo 說「放行」` -> `等待核准：<action_id>`；`/approve <action_id>` -> `已記錄核准 appr_…`、`續跑結果：…：completed`、`test_approval_echo[SUCCEEDED]`，副作用只發生一次
+- [ ] 否決：同上案例改 `/reject <action_id>` -> `已否決 <action_id>。`、action FAILED、不執行、Run 收尾
+- [ ] composite 成功：`/loop 請呼叫 test_clock_echo` -> `test_clock[SUCCEEDED] > test_echo[SUCCEEDED]`
+- [ ] composite 核准續跑：`/loop 請呼叫 test_echo_then_approve，text 是「放行」` -> 等待核准 -> `/approve <action_id>` -> `test_echo[SUCCEEDED] > test_approval_echo[SUCCEEDED]`，`test_echo` 不重播
+- [ ] 開關關閉：不設 `UEP_TOOL_TESTKIT`（預設）重啟，模型收到的工具清單（可在 `/loop` 請模型列出它看得到的工具）沒有任何 `test_*`；叫模型呼叫 `test_echo` 會被拒（工具未註冊，不會產生 action）
 
 工具名稱含 `.` 者（例如 `decision.consult`）送給 provider 時編成 `__`、回來再解碼（`uep/models/tool_names.py`）；編碼後碰撞或名稱本身含 `__` 會在組裝時失敗。
 

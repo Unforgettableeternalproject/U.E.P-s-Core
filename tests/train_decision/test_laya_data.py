@@ -159,7 +159,7 @@ def _fake_reply(n: int, *, context: bool = False, prefix: str = "item") -> str:
 
 def test_generate_schema_and_labels_from_cards() -> None:
     cards = (
-        next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "ack_after_solicit"),
+        next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "ack_after_solicit_chat"),
         next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_side_talk"),
     )
     backend = synth.FakeBackend([_fake_reply(4, context=True, prefix="alpha"), "```json\n" + _fake_reply(4, prefix="beta") + "\n```"])
@@ -171,11 +171,11 @@ def test_generate_schema_and_labels_from_cards() -> None:
         assert r["source"] == "synthetic" and r["lang"] == "en"
         assert set(r["expected"]) == {"reply_mode", "addressed", "route"}
         assert r["meta"]["group_id"]
-    ack = [r for r in rows if r["meta"]["card"] == "ack_after_solicit"]
+    ack = [r for r in rows if r["meta"]["card"] == "ack_after_solicit_chat"]
     assert ack and all(r["expected"] == {"reply_mode": "respond", "addressed": True, "route": "direct_chat"} for r in ack)
     assert all(r["state"]["recent_context"].startswith("Assistant:") for r in ack)
     side = [r for r in rows if r["meta"]["card"] == "group_side_talk"]
-    assert all(r["expected"]["reply_mode"] == "pass" and r["state"]["other_people_present"] == "2 other people present" for r in side)
+    assert all(r["expected"]["reply_mode"] == "pass" and r["meta"]["others"] in synth.GROUP and str(r["meta"]["others"]) in r["state"]["other_people_present"] for r in side)
     assert stats["hard"] == len(ack)
 
 
@@ -210,7 +210,7 @@ def test_backend_errors_do_not_abort() -> None:
         def complete(self, system: str, user: str) -> str:
             raise RuntimeError("boom")
 
-    rows, stats = synth.generate("turn.reply", Boom(), max_samples=3, per_call=3)
+    rows, stats = synth.generate("turn.reply", Boom(), max_samples=3, per_call=3, cards=synth.TURN_REPLY_CARDS[:1])
     assert rows == [] and stats["rejected"] == {"backend_error:RuntimeError": 1}
 
 
@@ -300,3 +300,223 @@ def test_prompt_uses_placeholder_assistant_name() -> None:
     card = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_named_chat")
     prompt = synth.build_prompt(card, "mt_style", "weather", 3)
     assert "Yuki" in prompt and "U.E.P" not in prompt
+
+
+# ---- 檔案式後端（匯出 prompt／匯入回應，不連網） ----
+
+def _args(kind: str, out: Path, *extra: str) -> list[str]:
+    return ["--kind", kind, "--max-samples", "12", "--per-call", "2", "--out", str(out), *extra]
+
+
+def test_export_prompts_matches_plan_and_hides_labels(tmp_path: Path) -> None:
+    exp = tmp_path / "prompts.jsonl"
+    assert synth.main(_args("turn.reply", tmp_path / "unused.jsonl", "--export-prompts", str(exp))) == 0
+    recs = split.read_rows(exp)
+    plan = synth.plan_calls(synth.CARDS["turn.reply"], 12, 2, __import__("random").Random(0))
+    assert [r["call_id"] for r in recs] == [f"turn.reply-{i:04d}" for i in range(len(plan))]
+    assert [(r["card"], r["style"], r["n"]) for r in recs] == [(c.card_id, s, n) for c, s, _t, n in plan]
+    for r in recs:
+        assert r["system"] == synth.SYSTEM_PROMPT and "Yuki" in r["user"]
+        assert "reply_mode" not in r["user"] and "route" not in r["user"]
+    assert not (tmp_path / "unused.jsonl").exists()
+
+
+def test_import_responses_matches_backend_path(tmp_path: Path) -> None:
+    reply = json.dumps([{"message": "hello there"}, {"message": "what is the weather like today"}])
+    exp = tmp_path / "p.jsonl"
+    synth.main(_args("turn.reply", tmp_path / "x.jsonl", "--export-prompts", str(exp)))
+    ids = [r["call_id"] for r in split.read_rows(exp)]
+    resp = tmp_path / "r.jsonl"
+    resp.write_text("".join(json.dumps({"call_id": i, "response": reply}) + "\n" for i in ids), encoding="utf-8")
+    out = tmp_path / "out.jsonl"
+    assert synth.main(_args("turn.reply", out, "--import-responses", str(resp))) == 0
+    imported = split.read_rows(out)
+    # 與 FakeBackend 路徑結果一致（相同回應、相同計畫）
+    rows, stats = synth.generate("turn.reply", synth.FakeBackend([reply]), max_samples=12, per_call=2, seed=0)
+    assert imported == rows
+    assert stats["samples"] == len(imported) >= 1
+
+
+def test_import_counts_missing_unparseable_and_unmatched(tmp_path: Path) -> None:
+    good = json.dumps([{"message": "ok so that works"}])
+    resp = tmp_path / "r.jsonl"
+    resp.write_text(
+        json.dumps({"call_id": "presence.absent_intent-0000", "response": good}) + "\n"
+        + json.dumps({"call_id": "presence.absent_intent-0001", "response": "not json"}) + "\n"
+        + json.dumps({"call_id": "presence.absent_intent-9999", "response": good}) + "\n",
+        encoding="utf-8",
+    )
+    ids: list[str] = []
+    plan_n = len(synth.plan_calls(synth.CARDS["presence.absent_intent"], 6, 2, __import__("random").Random(0)))
+    planned = [synth.call_id_of("presence.absent_intent", i) for i in range(plan_n)]
+    backend = synth.ReplayBackend(synth.load_responses(resp), planned)
+    rows, stats = synth.generate("presence.absent_intent", backend, max_samples=6, per_call=2, seed=0, call_ids=ids)
+    assert ids == planned and len(rows) == 1
+    assert stats["rejected"]["unparseable"] == 1
+    assert stats["rejected"]["backend_error:LookupError"] == plan_n - 2
+
+
+def test_load_responses_rejects_duplicates_and_bad_rows(tmp_path: Path) -> None:
+    dup = _write(tmp_path, [{"call_id": "a", "response": "x"}, {"call_id": "a", "response": "y"}])
+    with pytest.raises(ValueError, match="重複"):
+        synth.load_responses(dup)
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text(json.dumps({"call_id": "a"}) + "\n", encoding="utf-8")
+    with pytest.raises(TypeError, match="call_id"):
+        synth.load_responses(bad)
+
+
+def test_export_and_import_are_mutually_exclusive(tmp_path: Path) -> None:
+    assert synth.main(_args("turn.reply", tmp_path / "o.jsonl", "--export-prompts", "a", "--import-responses", "b")) == 2
+
+
+# ---- 情境卡規則、去重、盲標流程 ----
+
+def test_plan_rotates_styles_per_card_and_others_cover_zero_to_three_plus() -> None:
+    import random
+
+    cards = synth.CARDS["turn.reply"]
+    plan = synth.plan_calls(cards, len(cards) * 4 * 4, 4, random.Random(0))
+    by_card: dict[str, list[str]] = {}
+    for c, s, _t, _n in plan:
+        by_card.setdefault(c.card_id, []).append(s)
+    assert all(set(v) == set(synth.STYLES) for v in by_card.values())
+    seen = {synth.others_for(c, i, len(cards)) for i, (c, *_r) in enumerate(plan)}
+    assert {0, 1, 2} <= seen and max(seen) >= 3
+
+
+def test_topics_and_card_counts() -> None:
+    assert len(set(synth.TOPICS)) >= 40
+    assert synth.PER_CALL == 4
+    ids = {c.card_id for c in synth.TURN_REPLY_CARDS}
+    assert {"ack_after_solicit_chat", "ack_after_solicit_task", "ack_after_solicit_agent", "group_promise_update", "defer_busy_hands"} <= ids
+    modes = [c.expected["reply_mode"] for c in synth.TURN_REPLY_CARDS]
+    assert modes.count("passive") >= 3 and modes.count("defer") >= 4
+
+
+def test_route_follows_side_effect_cards() -> None:
+    by = {c.card_id: c.expected["route"] for c in synth.TURN_REPLY_CARDS}
+    assert by["private_lookup"] == "direct_chat" and by["private_task"] == "task_request"
+    assert by["ack_after_solicit_task"] == "task_request" and by["ack_after_solicit_agent"] == "agent_loop"
+
+
+def test_guidance_reaches_prompt_and_absent_rules() -> None:
+    tent = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_tentative_name")
+    assert "is that you" in synth.build_prompt(tent, "clean", "pets", 2, 2)
+    q = next(c for c in synth.ABSENT_CARDS if c.card_id == "absent_question_ability")
+    prompt = synth.build_prompt(q, "clean", "pets", 1)
+    assert "unmistakably" in prompt and "'she' only to mean the assistant" in prompt
+    go = next(c for c in synth.ABSENT_CARDS if c.card_id == "absent_request_discord")
+    assert "never 'come'" in synth.build_prompt(go, "clean", "pets", 1)
+
+
+def test_dedupe_is_per_card_and_short_text_exact_only() -> None:
+    d = synth.Deduper()
+    assert d.add("ok sure") and not d.add("OK, sure!")
+    assert d.add("sure go on")  # 短句不套 Jaccard
+    long_a = "please set a timer for ten minutes for the pasta tonight"
+    assert d.add(long_a) and not d.add(long_a + " thanks")
+    card_a, card_b = synth.TURN_REPLY_CARDS[0], synth.TURN_REPLY_CARDS[1]
+    reply = json.dumps([{"message": "hello there friend"}])
+    rows, stats = synth.generate("turn.reply", synth.FakeBackend([reply]), max_samples=2, per_call=1, cards=(card_a, card_b))
+    assert len(rows) == 2 and "duplicate" not in stats["rejected"]
+
+
+def _blind_rows(tmp_path: Path) -> Path:
+    cards = {c.card_id: c for c in synth.TURN_REPLY_CARDS}
+    rows = []
+    for i, (cid, msg) in enumerate([("private_task", "set a timer for ten minutes"), ("group_tentative_name", "that milk smells yucky"), ("private_filler", "hmm")]):
+        c = cards[cid]
+        rows.append(kinds.make_row(
+            "turn.reply", {"message": msg, "others": 0}, dict(c.expected), sample_id=f"s{i}", source="synthetic",
+            meta={"card": cid, "style": "clean", "hard": c.hard, **({"acceptable_modes": list(c.acceptable_modes)} if c.acceptable_modes else {})},
+        ))
+    path = tmp_path / "data.jsonl"
+    synth.write_jsonl(path, rows)
+    return path
+
+
+def test_export_label_tasks_hides_labels(tmp_path: Path) -> None:
+    data = _blind_rows(tmp_path)
+    out = tmp_path / "tasks.jsonl"
+    assert synth.main(["--export-label-tasks", str(data), "--out", str(out)]) == 0
+    tasks = split.read_rows(out)
+    assert [t["sample_id"] for t in tasks] == ["s0", "s1", "s2"]
+    blob = json.dumps(tasks)
+    for leak in ("private_task", "group_tentative_name", "hard", "expected", "card", "meta"):
+        assert leak not in blob
+    assert set(tasks[0]) == {"sample_id", "kind", "state", "questions"}
+    assert set(tasks[0]["questions"]) == {"reply_mode", "route", "addressed"}
+
+
+def test_import_labels_accept_dispute_and_acceptable_modes(tmp_path: Path) -> None:
+    data = _blind_rows(tmp_path)
+    labels = tmp_path / "labels.jsonl"
+    good = {"reply_mode": "respond", "route": "task_request", "addressed": True}
+    # s1：tentative_name 的 acceptable_modes 含 respond，落在範圍內算一致（addressed／route 不再比對）
+    alt = {"reply_mode": "respond", "route": "direct_chat", "addressed": True}
+    # s2：filler 被標成 respond，不一致
+    bad = {"reply_mode": "respond", "route": "direct_chat", "addressed": True}
+    labels.write_text("".join(json.dumps({"sample_id": s, "answers": a}) + "\n" for s, a in (("s0", good), ("s1", alt), ("s2", bad))), encoding="utf-8")
+    out = tmp_path / "res"
+    assert synth.main(["--import-labels", str(labels), "--data", str(data), "--out-dir", str(out)]) == 0
+    accepted = split.read_rows(out / "accepted.jsonl")
+    disputed = split.read_rows(out / "disputed.jsonl")
+    assert [r["sample_id"] for r in accepted] == ["s0", "s1"]
+    assert accepted[0]["meta"]["blind_check"] == "agree"
+    assert [d["sample_id"] for d in disputed] == ["s2"]
+    d = disputed[0]
+    assert d["card"] == "private_filler" and d["card_answers"]["reply_mode"] == "pass" and d["blind_answers"]["reply_mode"] == "respond"
+    stats = json.loads((out / "stats.json").read_text(encoding="utf-8"))
+    assert stats["total"] == 3 and stats["accepted"] == 2 and stats["unlabeled"] == 0
+    assert stats["per_card"]["private_filler"]["rate"] == 0.0 and stats["per_question"]["reply_mode"]["n"] == 3
+
+
+def test_import_labels_missing_invalid_and_duplicate(tmp_path: Path) -> None:
+    data = _blind_rows(tmp_path)
+    labels = tmp_path / "labels.jsonl"
+    labels.write_text(json.dumps({"sample_id": "s0", "answers": {"reply_mode": "shout", "route": "task_request"}}) + "\n", encoding="utf-8")
+    out = tmp_path / "res"
+    assert synth.main(["--import-labels", str(labels), "--data", str(data), "--out-dir", str(out)]) == 0
+    stats = json.loads((out / "stats.json").read_text(encoding="utf-8"))
+    assert stats["accepted"] == 0 and stats["unlabeled"] == 2
+    d0 = split.read_rows(out / "disputed.jsonl")[0]
+    assert d0["invalid"] == ["reply_mode"] and d0["missing"] == ["addressed"]
+    labels.write_text(json.dumps({"sample_id": "s0", "answers": {}}) + "\n" + json.dumps({"sample_id": "s0", "answers": {}}) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="重複"):
+        synth.main(["--import-labels", str(labels), "--data", str(data), "--out-dir", str(out)])
+
+
+def test_import_responses_ignores_other_kind_ids(tmp_path: Path) -> None:
+    reply = json.dumps([{"message": "hello there friend"}])
+    resp = tmp_path / "r.jsonl"
+    resp.write_text(json.dumps({"call_id": "presence.absent_intent-0000", "response": reply}) + "\n" + json.dumps({"call_id": "turn.reply-0000", "response": reply}) + "\n", encoding="utf-8")
+    out = tmp_path / "o.jsonl"
+    assert synth.main(["--kind", "turn.reply", "--max-samples", "1", "--per-call", "1", "--import-responses", str(resp), "--out", str(out)]) == 0
+    assert len(split.read_rows(out)) == 1
+
+
+def test_self_reminder_is_other_not_message() -> None:
+    card = next(c for c in synth.ABSENT_CARDS if c.card_id == "absent_self_reminder")
+    assert card.expected == {"absent.intent": "other", "absent.target_location": "none"}
+    assert "relayed" in card.guidance
+
+
+def test_another_user_context_matches_shared_definition() -> None:
+    ctx = [{"speaker": "Another user", "text": "What is the weather?"}, {"speaker": "Assistant", "text": "Sunny today."}]
+    st = kinds.build_state_turn_reply({"message": "same for me?", "others": 2, "context": ctx})
+    assert st["recent_context"] == kinds.laya_schema.format_recent_context("What is the weather?", "Sunny today.", same_speaker=False)
+    assert st["recent_context"].startswith("Another user: ")
+    same = kinds.build_state_turn_reply({"message": "and tomorrow?", "others": 2, "context": [{"speaker": "User", "text": "What is the weather?"}, ctx[1]]})
+    assert same["recent_context"] == kinds.laya_schema.format_recent_context("What is the weather?", "Sunny today.", same_speaker=True)
+    assert same["recent_context"].startswith("User: ")
+
+
+def test_other_user_cards_require_another_user_speaker() -> None:
+    other = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_other_follows_up")
+    same = next(c for c in synth.TURN_REPLY_CARDS if c.card_id == "group_followup")
+    ok = json.dumps([{"message": "same question for me", "context": [{"speaker": "Another user", "text": "weather?"}, {"speaker": "Assistant", "text": "Sunny."}]}])
+    plain = json.dumps([{"message": "same question for me", "context": [{"speaker": "User", "text": "weather?"}, {"speaker": "Assistant", "text": "Sunny."}]}])
+    assert len(synth.parse_items(other, ok)[0]) == 1 and synth.parse_items(other, plain)[1]["bad_context"] == 1
+    assert len(synth.parse_items(same, plain)[0]) == 1 and synth.parse_items(same, ok)[1]["bad_context"] == 1
+    assert "Another user" in synth.build_prompt(other, "clean", "pets", 2, 2)

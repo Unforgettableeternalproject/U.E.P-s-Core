@@ -107,16 +107,19 @@ def build_state_turn_reply(facts: Mapping[str, Any]) -> dict[str, str]:
         raise ValueError("message 不可為空")
     others = int(facts.get("others", 0) or 0)
     user_en = reply_en = None
+    same_speaker = True
     for c in facts.get("context") or []:
-        if str(c["speaker"]).strip().lower() == "assistant":
+        who = str(c["speaker"]).strip().lower()
+        if who == laya_schema.ASSISTANT_LABEL.lower():
             reply_en = str(c["text"])
         else:
             user_en = str(c["text"])
+            same_speaker = who != laya_schema.OTHER_USER_LABEL.lower()  # "Another user" = 前文提問者不是本句說話者
     return laya_schema.build_state_dict(
         assistant_name=str(facts.get("assistant_name") or DEFAULT_ASSISTANT_NAME),
         message=message,
         participant_count=others + 1 if others > 0 else None,
-        recent_context=laya_schema.format_recent_context(user_en, reply_en),
+        recent_context=laya_schema.format_recent_context(user_en, reply_en, same_speaker=same_speaker),
     )
 
 

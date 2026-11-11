@@ -24,7 +24,9 @@ from uep.decision.capability import (
     HINT_SOURCE_MODEL,
     REASON_CAPABILITY_EMPTY,
     REASON_SNAPSHOT_UNAVAILABLE,
+    READ_ONLY_NATIVE_TAGS,
     ROUTE_DEFAULT_CAPABILITIES,
+    WRITE_NATIVE_TAGS,
     NarrowResult,
     narrow_capability,
     record_narrow,
@@ -35,8 +37,12 @@ from uep.decision.contracts import DecisionCapability, DecisionPlan
 _UEP = Path(__file__).resolve().parents[2] / "uep"
 
 # 小詞彙：KNOWN 為已知閉集；BOGUS 為表外標籤
-KNOWN = frozenset({"memory.read", "memory.write", "web.fetch", CONSULT_TAG})
+KNOWN = frozenset({"memory.read", "memory.write", "desktop.file_read", CONSULT_TAG})
 BOGUS = "evil.exec"
+# 原生工具標籤（seq 420 裁決）：唯讀類進 direct_chat 與 agent_loop，寫入類只進 agent_loop
+_NATIVE_READ = frozenset({"lore.read", "chatroom.read", "web.search", "web.fetch", "image.read"})
+_NATIVE_WRITE = frozenset({"lore.write", "chatroom.post"})
+UNIVERSE_NATIVE = frozenset({"memory.read", CONSULT_TAG, *_NATIVE_READ, *_NATIVE_WRITE})
 UNIVERSE = sorted(KNOWN | {BOGUS})
 
 
@@ -59,8 +65,8 @@ def _all_cases():
 
 def test_route_table_initial_content_d4_4():
     assert dict(ROUTE_DEFAULT_CAPABILITIES) == {
-        "direct_chat": frozenset({"memory.read"}),
-        "agent_loop": frozenset({"memory.read", CONSULT_TAG}),  # D4-4 a：最小集合
+        "direct_chat": frozenset({"memory.read", *_NATIVE_READ}),
+        "agent_loop": frozenset({"memory.read", CONSULT_TAG, *_NATIVE_READ, *_NATIVE_WRITE}),
         "task_request": frozenset(),
         "ignore": frozenset(),
     }
@@ -77,13 +83,36 @@ def test_route_table_covers_all_routes_in_proposer():
 
 def test_route_base_unknown_route_is_none():
     assert route_base("nope") is None and route_base(None) is None and route_base(3) is None  # type: ignore[arg-type]
-    assert route_base("direct_chat") == frozenset({"memory.read"})
+    assert route_base("direct_chat") == frozenset({"memory.read", *_NATIVE_READ})
 
 
 def test_direct_chat_result_equals_host_constant():
-    """direct_chat 在寬鬆快照下算出 {memory.read}，與 host.py 寫死的常數一致（PR3 才改讀表）。"""
-    r = narrow_capability(route_base("direct_chat"), None, KNOWN, KNOWN, route="direct_chat")
-    assert r.tags == frozenset({"memory.read"}) and r.reason is None and r.route == "direct_chat"
+    """direct_chat 在寬鬆快照下算出 memory.read＋原生唯讀標籤，與 host.py 讀表的常數一致。"""
+    r = narrow_capability(route_base("direct_chat"), None, UNIVERSE_NATIVE, UNIVERSE_NATIVE, route="direct_chat")
+    assert r.tags == frozenset({"memory.read", *_NATIVE_READ}) and r.reason is None and r.route == "direct_chat"
+
+
+def test_native_tags_direct_chat_read_only_agent_loop_all():
+    """seq 420：direct_chat 不含任何寫入類；agent_loop 含全部 7 個原生標籤。"""
+    direct = ROUTE_DEFAULT_CAPABILITIES["direct_chat"]
+    loop = ROUTE_DEFAULT_CAPABILITIES["agent_loop"]
+    assert not (direct & _NATIVE_WRITE) and _NATIVE_READ <= direct
+    assert (_NATIVE_READ | _NATIVE_WRITE) <= loop
+    assert READ_ONLY_NATIVE_TAGS == _NATIVE_READ and WRITE_NATIVE_TAGS == _NATIVE_WRITE
+    assert all(not (ROUTE_DEFAULT_CAPABILITIES[r] & (_NATIVE_READ | _NATIVE_WRITE)) for r in ("task_request", "ignore"))
+
+
+def test_native_tags_still_intersected_with_snapshot_and_known():
+    """D4-5：未註冊（不在 known）或未 enabled（不在快照）的原生標籤仍被交集掉；hint 不能新增寫入類給 direct_chat。"""
+    base = route_base("agent_loop")
+    snap = frozenset({"memory.read", "lore.read", CONSULT_TAG})
+    r = narrow_capability(base, None, snap, UNIVERSE_NATIVE, route="agent_loop")
+    assert r.tags == snap
+    r = narrow_capability(base, None, UNIVERSE_NATIVE, frozenset({"memory.read", "lore.read", CONSULT_TAG}), route="agent_loop")
+    assert r.tags == frozenset({"memory.read", "lore.read", CONSULT_TAG})
+    r = narrow_capability(route_base("direct_chat"), ("lore.write", "chatroom.post", "lore.read"), UNIVERSE_NATIVE,
+                          UNIVERSE_NATIVE, route="direct_chat")
+    assert r.tags == frozenset({"lore.read"}) and set(r.ignored_wider) == {"lore.write", "chatroom.post"}
 
 
 # ---- 窮舉不變量 ----
@@ -124,7 +153,7 @@ def test_hint_narrowing_is_monotone_in_hint():
     """hint 越小結果越小：hint_a ⊆ hint_b 則 tags_a ⊆ tags_b（規則 proposer 路徑）。"""
     sets = [h for h in HINTS if h is not None]
     for route, snap in itertools.product(("agent_loop", "direct_chat"), SNAPSHOTS):
-        base = frozenset({"memory.read", "web.fetch", CONSULT_TAG})
+        base = frozenset({"memory.read", "desktop.file_read", CONSULT_TAG})
         for a, b in itertools.product(sets, sets):
             if set(a) <= set(b):
                 ta = narrow_capability(base, a, snap, KNOWN, route=route).tags
@@ -151,8 +180,8 @@ def test_out_of_table_tag_dropped_and_counted_without_invalidating():
 
 
 def test_hint_wider_than_base_is_ignored_and_counted():
-    r = narrow_capability(route_base("agent_loop"), ("memory.read", "web.fetch"), KNOWN, KNOWN, route="agent_loop")
-    assert "web.fetch" not in r.tags and r.ignored_wider == ("web.fetch",)
+    r = narrow_capability(route_base("agent_loop"), ("memory.read", "desktop.file_read"), KNOWN, KNOWN, route="agent_loop")
+    assert "desktop.file_read" not in r.tags and r.ignored_wider == ("desktop.file_read",)
     m: Counter = Counter()
     record_narrow(r, m)
     assert m[COUNT_HINT_IGNORED_WIDER] == 1
@@ -165,12 +194,12 @@ def test_empty_hint_means_empty_set_not_unrestricted():
 
 
 def test_empty_intersection_degrades_agent_loop():
-    r = narrow_capability(route_base("agent_loop"), ("web.fetch",), KNOWN, KNOWN, route="agent_loop")
+    r = narrow_capability(route_base("agent_loop"), ("desktop.file_read",), KNOWN, KNOWN, route="agent_loop")
     assert r.tags == frozenset() and r.route == "direct_chat" and r.reason == REASON_CAPABILITY_EMPTY and r.degraded
 
 
 def test_consult_always_kept_for_agent_loop_but_consult_alone_is_empty():
-    base = frozenset({"memory.read", "web.fetch", CONSULT_TAG})
+    base = frozenset({"memory.read", "desktop.file_read", CONSULT_TAG})
     r = narrow_capability(base, ("memory.read",), KNOWN, KNOWN, route="agent_loop")
     assert r.tags == frozenset({"memory.read", CONSULT_TAG})  # hint 沒列 consult 也保留
     only = narrow_capability(base, (CONSULT_TAG,), KNOWN, KNOWN, route="agent_loop")
@@ -245,7 +274,7 @@ def test_model_empty_hint_is_dropped_and_counted_not_degraded():
 # ---- 單調性：refine 不放寬 ----
 
 def test_refine_never_widens_exhaustive():
-    base = frozenset({"memory.read", "web.fetch", CONSULT_TAG})
+    base = frozenset({"memory.read", "desktop.file_read", CONSULT_TAG})
     firsts = [narrow_capability(base, h, KNOWN, KNOWN, route="agent_loop").tags for h in HINTS]
     for prev, snap, hint in itertools.product(set(firsts), SNAPSHOTS, HINTS):
         r = narrow_capability(base, hint, snap, KNOWN, route="agent_loop", previous_tags=prev)
@@ -254,7 +283,7 @@ def test_refine_never_widens_exhaustive():
 
 
 def test_refine_widen_is_rejected_and_counted():
-    base = route_base("agent_loop") | {"web.fetch"}
+    base = route_base("agent_loop") | {"desktop.file_read"}
     prev = narrow_capability(base, ("memory.read",), KNOWN, KNOWN, route="agent_loop").tags
     assert prev == frozenset({"memory.read", CONSULT_TAG})
     r = narrow_capability(base, None, KNOWN, KNOWN, route="agent_loop", previous_tags=prev)  # 後版移除 hint：想放寬
@@ -286,7 +315,7 @@ def test_plan_hint_and_trigger_cannot_exceed_table_exhaustive():
 def test_agent_loop_default_is_minimal_set_d4_4():
     r = narrow_capability(route_base("agent_loop"), None, KNOWN, KNOWN, route="agent_loop")
     assert r.tags == frozenset({"memory.read", CONSULT_TAG})
-    for forbidden in ("memory.write", "web.fetch"):
+    for forbidden in ("memory.write", "desktop.file_read"):
         assert forbidden not in r.tags
 
 

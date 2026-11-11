@@ -231,7 +231,8 @@ def test_agent_path_direct_chat_tags_come_from_route_table(monkeypatch):
     """黃金：經 Host 組裝的 direct_chat 投影輸入 == {memory.read}，且來源是決策層 route 表（DL-4 PR3）。"""
     from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
 
-    assert EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS == frozenset({"memory.read"})
+    assert "memory.read" in EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS  # 原生唯讀標籤另見 test_decision_capability（seq 420）
+    assert not EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS & {"memory.write", "lore.write", "chatroom.post"}
     assert EchoPipelineHost._DIRECT_CHAT_CAPABILITY_TAGS == ROUTE_DEFAULT_CAPABILITIES["direct_chat"]
     seen: list[frozenset[str]] = []
     real = memory_registry()

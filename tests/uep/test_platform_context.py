@@ -391,9 +391,15 @@ def test_platform_context_is_read_only_by_shadow_wiring():
 
 
 def test_consumers_do_not_reference_platform_context_names():
-    for rel in ("decision/loop_consult.py", "decision/proactive.py", "tools/projection.py", "tools/registry.py", "agent/bridge.py"):
+    # 第 5 步（決策層側）：loop_consult 已改為注入點，改由下一個測試鎖定它只讀快照、不碰組裝層
+    for rel in ("decision/proactive.py", "tools/projection.py", "tools/registry.py", "agent/bridge.py"):
         text = (UEP_ROOT / rel).read_text(encoding="utf-8")
         assert "PlatformContext" not in text and "platform_context" not in text, rel
+
+
+def test_loop_consult_injection_point_stays_decoupled_from_assembly_layer():
+    text = (UEP_ROOT / "decision" / "loop_consult.py").read_text(encoding="utf-8")
+    assert "uep.echo" not in text and "uep.presence" not in text and "peek" not in text
 
 
 def test_contract_layer_has_no_upward_imports():

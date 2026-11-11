@@ -249,12 +249,12 @@ def test_primary_row_platform_context_version_null_when_absent_or_invalid():
 
 
 def test_no_production_decision_point_supplies_platform_context_version():
-    """第 5 步前行為零變化：uep/ 內只有日誌／表定義讀寫此欄，沒有決策點把它放進 facts。"""
+    """第 5 步（決策層側）：只有 loop_consult 的注入點（placement）會把平台快照版本放進 facts；其他決策點不得帶。"""
     from pathlib import Path
 
     import uep
 
-    allowed = {"log.py", "db.py", "platform_context.py", "0018_decision_log_platform_context_version.py"}
+    allowed = {"log.py", "db.py", "platform_context.py", "loop_consult.py", "0018_decision_log_platform_context_version.py"}
     offenders = [
         str(p) for p in Path(uep.__file__).parent.rglob("*.py")
         if p.name not in allowed and "platform_context_version" in p.read_text(encoding="utf-8")

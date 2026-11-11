@@ -64,9 +64,18 @@ from uep.control.socket_transport import SocketControlServer
 from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
 from uep.decision.db import DbSink
 from uep.decision.log import DecisionLogWriter
+from uep.decision.loop_consult import (
+    KIND_LOOP_CONSULT,
+    placement_facts,
+    register_loop_consult,
+)
 from uep.decision.policy_publish import register_policy_publish
 from uep.echo.agent_wiring import attach_agent_tools, build_loop_entry
-from uep.echo.platform_context import PlatformContextProvider, PlatformShadow
+from uep.echo.platform_context import (
+    CoarseExecutorSource,
+    PlatformContextProvider,
+    PlatformShadow,
+)
 from uep.echo.proactive_wiring import ProactiveShadow, attach_proactive_shadow
 from uep.echo.services import EchoServices
 from uep.endpoint.auth import (
@@ -674,10 +683,19 @@ def assemble_core(
         ))
     if echo is not None and hasattr(echo, "set_require_source_location"):
         echo.set_require_source_location(require_source)
+    # 平台脈絡 provider：shadow 與 loop.consult 注入共用同一個（version 計數一致，decision_log 才對得上 shadow 記錄）；
+    # executors 先用粗粒度來源（F-1 退路），工具層 ToolRegistry.executors_for 接上後只換這個來源
+    platform_provider = PlatformContextProvider(presence, CoarseExecutorSource())
     shadow_on = get_settings().platform_shadow if platform_shadow is None else platform_shadow
     if shadow_on and echo is not None and hasattr(echo, "bind_platform_shadow"):
         # 平台脈絡 shadow（UEP_PLATFORM_SHADOW，預設關）：只記錄與比對，不改任何消費點的輸入；Presence 走唯讀 peek
-        echo.bind_platform_shadow(PlatformShadow(PlatformContextProvider(presence), echo.metrics))
+        echo.bind_platform_shadow(PlatformShadow(platform_provider, echo.metrics))
+    consult_hub = getattr(echo, "decision_hub", None)
+    if consult_hub is not None and consult_hub.engine(KIND_LOOP_CONSULT) is None:
+        # 平台宣告注入第 5 步（決策層側）：loop.consult 的 current_platform／available_executors 由系統注入，
+        # 模型自帶值一律覆蓋（Q26）；快照版本隨 facts 寫入決策日誌（平台快照版本欄）。
+        # 工具層的 ConsultToolExecutor 直接用這個 hub，不要再 register_loop_consult。
+        register_loop_consult(consult_hub, platform_facts=lambda: placement_facts(platform_provider.snapshot()))
     stop = GlobalStop(session_factory, presence, control, publisher=publisher, token=stop_token, **clock_kw)
     bridge = PresenceTaskBridge(bus, tasks, lambda: presence.current().status, persona_id=persona_id)
 

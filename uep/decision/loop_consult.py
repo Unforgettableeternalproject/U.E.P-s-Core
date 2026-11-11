@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Protocol
 
 from uep.decision.contracts import (
     DecisionEngineInfo,
@@ -226,6 +226,34 @@ def output_schema(sub_kind: str) -> dict[str, Any]:
 def _require_sub_kind(sub_kind: str) -> None:
     if sub_kind not in SUB_KINDS:
         raise ValueError(f"未知的 loop.consult sub_kind：{sub_kind!r}")
+
+
+# ---- 平台事實注入（平台宣告注入端契約草案 §3.1、第 5 步）----
+
+# 注入值的鍵：只能由組裝層提供，模型自帶一律覆蓋（見 ``LoopConsultEngine`` 的 ``platform_facts``）
+PLATFORM_FACT_KEYS: tuple[str, ...] = ("current_platform", "available_executors", "platform_context_version")
+
+
+class _PlatformSnapshot(Protocol):
+    """``uep.contracts.platform.PlatformContext`` 的結構子集（決策層只讀，不 import 組裝層）。"""
+
+    version: int
+    current_platform: str | None
+    available_executors: tuple[str, ...]
+
+
+PlatformFactsProvider = Callable[[], Mapping[str, Any] | None]
+
+
+def placement_facts(pc: _PlatformSnapshot) -> dict[str, Any]:
+    """平台快照 -> placement 注入事實（純函式）。``current_platform`` 為 None（Presence 非 ACTIVE）時不帶該鍵，
+    讓規則走 ``placement_review``；``available_executors`` 轉 list（不改 loop_consult 契約）；版本供 decision_log 稽核（Q26）。"""
+    facts: dict[str, Any] = {
+        "available_executors": list(pc.available_executors), "platform_context_version": pc.version,
+    }
+    if pc.current_platform is not None:
+        facts["current_platform"] = pc.current_platform
+    return facts
 
 
 # ---- 決定性 decision_id ----
@@ -503,7 +531,9 @@ class LoopConsultEngine:
         registry: DecisionPointRegistry | None = None,
         rules: Mapping[str, Rule] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        platform_facts: PlatformFactsProvider | None = None,
     ) -> None:
+        self._platform_facts = platform_facts
         self._registry = registry
         self._rules = dict(rules) if rules is not None else dict(DEFAULT_RULES)
         self._clock = clock
@@ -515,8 +545,34 @@ class LoopConsultEngine:
 
     # -- consult：回傳工具層需要的形狀 --
 
+    def _apply_platform_facts(self, facts: dict[str, Any]) -> None:
+        """設定了 ``platform_facts`` 時：先剝除 facts 內所有注入鍵（模型自帶值一律不信任，覆蓋而非拒收，
+        偽造值因此無效且不會把多餘欄位誤變成 invalid），再由 provider 重新注入；只有 placement 會注入
+        （也只有它使用平台快照，version 才進 decision_log）。provider 失敗或回 None -> 不注入，規則 fail-closed。
+        沒有設定 provider（獨立使用／舊測試）時不動 facts。就地修改，讓 hub 觀察者（決策日誌）看到同一份。"""
+        if self._platform_facts is None:
+            return
+        for key in PLATFORM_FACT_KEYS:
+            facts.pop(key, None)
+        if facts.get("sub_kind") != "placement":
+            return
+        try:
+            injected = self._platform_facts()
+        except Exception:
+            logger.exception("loop.consult 平台事實來源失敗（不注入，fail-closed）")
+            return
+        if isinstance(injected, Mapping):
+            facts.update({k: injected[k] for k in PLATFORM_FACT_KEYS if k in injected})
+
     def consult(self, facts: Mapping[str, Any], *, deadline: float | None = None, fallback_key: str = "") -> ConsultResult:
-        """永不拋例外。``fallback_key`` 只用於 facts 無法取得鍵時導出 ID（如 request_id）；
+        """永不拋例外。有 ``platform_facts`` 時在副本上注入（不改呼叫端的 facts）。"""
+        if self._platform_facts is not None and isinstance(facts, Mapping):
+            facts = dict(facts)
+            self._apply_platform_facts(facts)
+        return self._consult(facts, deadline=deadline, fallback_key=fallback_key)
+
+    def _consult(self, facts: Mapping[str, Any], *, deadline: float | None = None, fallback_key: str = "") -> ConsultResult:
+        """``fallback_key`` 只用於 facts 無法取得鍵時導出 ID（如 request_id）；
         為空字串時改用 ``new_id("dec")``。invalid 路徑不保證重放決定性。"""
         spec = self.spec
         try:
@@ -604,7 +660,9 @@ class LoopConsultEngine:
 
     def decide(self, request: DecisionRequest) -> DecisionResult:
         """hub 入口：把 ``ConsultResult`` 包成 ``DecisionResult``（plan=advice；escalate 以 outcome=\"escalate\" 表達）。"""
-        result = self.consult(request.facts, deadline=request.deadline, fallback_key=request.request_id)
+        if isinstance(request.facts, dict):
+            self._apply_platform_facts(request.facts)  # 就地注入：決策日誌觀察者讀同一份 facts 的 platform_context_version
+        result = self._consult(request.facts, deadline=request.deadline, fallback_key=request.request_id)
         return DecisionResult(
             decision_id=result.decision_id, request_id=request.request_id, kind=request.kind, outcome=result.outcome,
             plan=result.advice, confidence=result.confidence, reason_code=result.reason_code,
@@ -615,8 +673,11 @@ class LoopConsultEngine:
         )
 
 
-def register_loop_consult(hub: DecisionHub, engine: LoopConsultEngine | None = None) -> LoopConsultEngine:
-    """在 hub（及其 registry）登記 ``loop.consult``；engine 讀 hub 的 registry，spec 是預算與 reason 的唯一來源。"""
-    engine = engine or LoopConsultEngine(registry=hub.registry)
+def register_loop_consult(
+    hub: DecisionHub, engine: LoopConsultEngine | None = None, *, platform_facts: PlatformFactsProvider | None = None,
+) -> LoopConsultEngine:
+    """在 hub（及其 registry）登記 ``loop.consult``；engine 讀 hub 的 registry，spec 是預算與 reason 的唯一來源。
+    ``platform_facts`` 由組裝層提供 placement 的注入事實（只在自行建 engine 時不需傳）。"""
+    engine = engine or LoopConsultEngine(registry=hub.registry, platform_facts=platform_facts)
     hub.register(LOOP_CONSULT_SPEC, engine)
     return engine

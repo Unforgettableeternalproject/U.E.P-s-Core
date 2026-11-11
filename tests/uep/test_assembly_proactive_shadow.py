@@ -44,8 +44,9 @@ def _cand(**over) -> ProactiveCandidate:
 
 
 class _Presence:
-    def __init__(self, status=PresenceStatus.ACTIVE, location="desktop", transfer_id=None, generation=3):
-        self.view = SimpleNamespace(status=status, location=location, generation=generation, transfer_id=transfer_id)
+    def __init__(self, status=PresenceStatus.ACTIVE, location="desktop", transfer_id=None, generation=3, expires_at=None):
+        self.view = SimpleNamespace(status=status, location=location, generation=generation, transfer_id=transfer_id,
+                                    expires_at=expires_at)
 
     def peek(self):
         return self.view
@@ -171,6 +172,14 @@ def test_context_assembled_from_presence_state_stop(built, sinks):  # noqa: F811
     assert ctx.transfer_pending is True and ctx.audience_scope == "scope_group_g1"
     assert ctx.muted is True and ctx.activity_interruptible is False and ctx.in_committed_interaction is True
     assert ctx.global_stop is False and ctx.grant is None and ctx.private_locations == () and ctx.ledger == ()
+
+
+def test_expired_active_lease_is_treated_as_none(built, sinks):  # noqa: F811
+    """peek 不處理過期：ACTIVE 但 Lease 已過期須視同 NONE，不把過期位置當成 current_platform。"""
+    core, _, _ = built()
+    shadow = _fake_facts(core, presence=_Presence(expires_at=datetime(2000, 1, 1, tzinfo=UTC)))
+    ctx = shadow.build_context(_cand())
+    assert ctx.presence_status is PresenceStatus.NONE and ctx.current_platform is None
 
 
 def test_missing_data_uses_conservative_defaults(built, sinks):  # noqa: F811

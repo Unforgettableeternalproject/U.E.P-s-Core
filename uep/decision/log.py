@@ -96,7 +96,7 @@ def primary_row(
         sub_kind=_safe_token(request.facts.get("sub_kind")), trigger=_safe_token(request.trigger),
         namespace=_safe_token(request.subject.get("namespace")),
         snapshot_version=_safe_version(request.snapshot_versions.get("policy")),
-        # 選用：決策點尚未帶入時為 None（第 5 步才由 production 決策點提供）
+        # 選用：目前只有 loop.consult 的 placement 由注入點帶入（platform 第 5 步），其餘為 None
         platform_context_version=_safe_version(request.facts.get("platform_context_version")),
     )
     return row

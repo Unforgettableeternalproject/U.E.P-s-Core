@@ -1,5 +1,5 @@
 """平台 shadow 的 host 整合（不需 DB）：開啟時每個簽出的 turn 恰好 observe 一次且在 intake 鎖外；關閉時一次都不呼叫；
-UEP_PLATFORM_SHADOW 預設關閉；peek 只能被 platform_context 呼叫。"""
+UEP_PLATFORM_SHADOW 預設關閉；peek 只能被 platform_context 與 proactive shadow 呼叫。"""
 from __future__ import annotations
 
 import ast
@@ -112,7 +112,8 @@ def test_peek_is_only_called_from_platform_context():
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Attribute) and node.attr == "peek":
                 hits.append(rel)
-    assert set(hits) == {"echo/platform_context.py"}, hits
+    # proactive_wiring 是 DL-6b 的 shadow 評估（不建立 Run、不投遞），屬 peek 允許的 shadow 用途
+    assert set(hits) == {"echo/platform_context.py", "echo/proactive_wiring.py"}, hits
 
 
 @pytest.mark.parametrize("phrase", ["只供平台快照與 shadow 使用", "不處理過期", "不可作為 Lease 或授權判斷的依據"])

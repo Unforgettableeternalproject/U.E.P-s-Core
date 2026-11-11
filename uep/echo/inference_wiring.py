@@ -115,16 +115,24 @@ def stt_turn_kwargs(
     return {"policy": policy, "vad_factory": make_vad}
 
 
-def build_voice_aggregator(decision: Any | None = None) -> Any:
+def build_voice_aggregator(decision: Any | None = None) -> Any | None:
     """語音路徑的 turn 聚合器：``BufferedAggregator`` 只收語音，文字逐句通過（``VoiceRoutedAggregator``）。
 
     設定沿用 bot（``DecisionConfig.aggregator``）；每個 Host 各建一份（聚合器有狀態，不可共用）。
+
+    只有會回報頻道模式的 proposer（``rules.default``，具備 ``add_mode_listener``）才啟用：其他 proposer（laya、nlp、
+    respond.minimal）不會切到主動模式，語音會永遠用被動門檻多等數秒，這種情況回傳 None（呼叫端退回逐句）並記一行 INFO。
     """
     from uep.turn.aggregator import BufferedAggregator, VoiceRoutedAggregator
     from uep.turn.decision_config import decision_config_from_settings
+    from uep.turn.rule_proposer import RuleProposer
 
-    config = (decision if decision is not None else decision_config_from_settings()).aggregator
-    return VoiceRoutedAggregator(BufferedAggregator(config))
+    cfg = decision if decision is not None else decision_config_from_settings()
+    proposer_id = getattr(cfg, "proposer_id", RuleProposer.proposer_id)
+    if proposer_id != RuleProposer.proposer_id:
+        logger.info("proposer %s 不具備頻道模式切換，不啟用語音聚合器（語音退回逐句，避免固定多等被動門檻）", proposer_id)
+        return None
+    return VoiceRoutedAggregator(BufferedAggregator(cfg.aggregator))
 
 
 @dataclass(frozen=True)
@@ -525,7 +533,9 @@ class InferenceWiring:
         if self.config.voice_retrieve_timeout_s is not None:
             kwargs["voice_retrieve_timeout_s"] = self.config.voice_retrieve_timeout_s
         if self.config.voice_aggregator:
-            kwargs["aggregator"] = build_voice_aggregator()  # 每次呼叫一份新的（一個 Host 一份）
+            aggregator = build_voice_aggregator()  # 每次呼叫一份新的（一個 Host 一份）；proposer 不支援模式切換時為 None
+            if aggregator is not None:
+                kwargs["aggregator"] = aggregator
         if self.tool_path != "legacy":
             kwargs["tool_path"] = self.tool_path  # legacy 時不帶（Host 預設即 legacy；legacy 的鍵集合不變）
         return kwargs

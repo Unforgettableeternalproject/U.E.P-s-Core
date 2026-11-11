@@ -445,6 +445,12 @@ class _EchoSttBackend:
             compression_ratio=entry.compression_ratio,
         )
 
+    @property
+    def direct_timeout_s(self) -> float | None:
+        """``transcribe_segment`` 的同步阻塞上限（``multi_channel.direct_transcribe_timeout_s``）；逾時時 transcribe 回 None。"""
+        value = getattr(self._engine, "_direct_timeout", None)
+        return float(value) if value else None
+
     def close(self) -> None:
         self._engine.shutdown()
 

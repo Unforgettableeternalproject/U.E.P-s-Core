@@ -253,9 +253,9 @@ def _record_submissions(host: EchoPipelineHost, runtime: ConsoleRuntime) -> None
     def recorded_tick() -> Any:
         results = original_tick()
         for item in results:
-            # 聚合器逾時交出的 turn（或被動模式插話）沒有 submit_utterance 回傳值：console 靠這裡找到新開的 turn
-            if item.ticket is not None:
-                runtime.intake_events.append(("turn", item.fact, item))
+            # 聚合器逾時交出的 turn（或被動模式插話）沒有 submit_utterance 回傳值：console 靠這裡找到新開的 turn；
+            # 沒有 ticket（PASS／DEFER）的也記錄，讓 console 印出「未開 turn：原因」
+            runtime.intake_events.append(("turn", item.fact, item))
         return results
 
     host.submit_tick = recorded_tick  # type: ignore[method-assign]
@@ -375,9 +375,11 @@ def build_runtime(
                 # 語音路徑接上 BufferedAggregator（文字逐句通過）；與正式組裝同一個建構函式，聚合器每個 runtime 一份
                 from uep.echo.inference_wiring import build_voice_aggregator
 
-                host_kwargs = dict(kwargs.get("host_kwargs") or {})
-                host_kwargs.setdefault("aggregator", build_voice_aggregator())
-                kwargs["host_kwargs"] = host_kwargs
+                aggregator = build_voice_aggregator()
+                if aggregator is not None:  # proposer 不支援模式切換時為 None：語音逐句
+                    host_kwargs = dict(kwargs.get("host_kwargs") or {})
+                    host_kwargs.setdefault("aggregator", aggregator)
+                    kwargs["host_kwargs"] = host_kwargs
             if chosen_tts != "real":  # 未接真實 TTS 時 Host 仍需涵蓋 STT 載入的啟動逾時
                 kwargs.setdefault("start_timeout_s", real_rig.host_start_timeout_s(settings, real_rig.tts_engine(settings)))
         if chosen_memory == "real":

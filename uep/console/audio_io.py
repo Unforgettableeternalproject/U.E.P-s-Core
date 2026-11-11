@@ -119,7 +119,7 @@ class SoundDeviceMicStream:
                 blocksize=int(MIC_SAMPLE_RATE * self._block_s),
             )
             self._stream.start()
-        except Exception as exc:  # noqa: BLE001 - 裝置錯誤轉成可讀訊息
+        except Exception as exc:  # 裝置錯誤轉成可讀訊息
             self._stream = None
             raise AudioIoError(f"無法開啟麥克風（{type(exc).__name__}：{exc}）") from exc
 

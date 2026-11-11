@@ -14,8 +14,13 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from uep.console.rig import (
+    CONSOLE_ACTOR,
+    CONSOLE_SPEAKER,
+    PRIVATE_SCOPE,
+    ConsoleRuntime,
+)
 from uep.contracts.presence import PresenceLocation
-from uep.console.rig import CONSOLE_ACTOR, CONSOLE_SPEAKER, PRIVATE_SCOPE, ConsoleRuntime
 from uep.events.models import EventRow
 from uep.log import describe_levels, set_console_level, set_namespace_level
 from uep.state.coordinator import Axis
@@ -229,14 +234,15 @@ class Console:
             self.out(self._describe_event(kind, fact, result, time.perf_counter() - t0))
             if not _is_buffered(result):
                 self._report_turn(result)
-            # 句子還在聚合器等待時，turn 要等聚合逾時才會被 tick 交出：等待上限要涵蓋它
+            # 句子還在聚合器等待時，turn 要等聚合逾時才會被 tick 交出（依當下頻道模式：被動最多 3 秒，主動約 0.25 秒，
+            # 主動模式敘述中另需安靜 2.5 秒）：等待上限取聚合器目前的 pending_wait_s
             wait = self.settle_s + (self._aggregator_wait_s() if _is_buffered(result) else 0.0)
             settle_deadline = time.monotonic() + wait
             while len(rt.intake_events) <= index and time.monotonic() < settle_deadline:
                 time.sleep(0.05)
 
     def _aggregator_wait_s(self) -> float:
-        """語音聚合器最久還要等多久才會把緩衝中的 turn 交出（含 tick 間隔餘裕）；沒有聚合器為 0。"""
+        """語音聚合器依當下頻道模式最久還要等多久才會把緩衝中的 turn 交出（含 tick 間隔餘裕）；沒有聚合器為 0。"""
         orchestrator = getattr(self.rt.host, "orchestrator", None)
         pending = float(getattr(getattr(orchestrator, "aggregator", None), "pending_wait_s", 0.0) or 0.0)
         return pending + AGGREGATOR_TICK_MARGIN_S if pending > 0 else 0.0
@@ -455,6 +461,12 @@ class Console:
         seconds = len(pcm) / 32000
         path = self._save_wav(pcm, "mic")
         self.out(f"錄到 {seconds:.1f} 秒，已存成 wav：{path}")
+        limit = getattr(backend, "direct_timeout_s", None)
+        if limit and seconds >= limit:
+            self.out(
+                f"提醒：錄音 {seconds:.1f} 秒已達 STT 整段辨識的逾時上限（{limit:.0f} 秒，"
+                "echo_stt direct_transcribe_timeout_s），可能逾時而無結果；長段落建議改用 /stream。"
+            )
         self.out("整段送進 STT（不經 VAD、不經聚合器）…")
         t0 = time.perf_counter()
         try:
@@ -462,7 +474,10 @@ class Console:
         except Exception as exc:  # noqa: BLE001 - 辨識失敗不中止 console
             self.out(f"STT 辨識失敗：{type(exc).__name__}：{exc}")
             return
-        text = result.text.strip() if result is not None else ""
+        if result is None:
+            self.out("辨識結果：無結果（可能逾時、被過濾或純雜訊）")
+            return
+        text = result.text.strip()
         if not text:
             self.out("辨識結果：（空：無可用轉錄，可能被幻覺過濾或為純雜訊）")
             return
@@ -507,17 +522,6 @@ class Console:
         if rt.player is None:
             self.out("提醒：未帶 --play，TTS 回應只有文字、不會出聲（音訊仍會寫成 wav）。")
         self.out("即時串流（建議戴耳機，外放會被麥克風收回而自我觸發）。")
-        try:
-            mic.start()
-        except AudioIoError as exc:
-            self.out(f"/stream：{exc}")
-            return
-        self.out("收音中，按 Enter 結束並回到指令列…")
-        path = _unique_wav_path(Path(rt.session_dir), "stream")
-        wav = wave.open(str(path), "wb")
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(MIC_SAMPLE_RATE)
         start_index = len(rt.intake_events)
         stop_pump = threading.Event()
         stop_report = threading.Event()
@@ -525,27 +529,33 @@ class Console:
         turn_ids: set[str] = set()
         reports = ThreadPoolExecutor(max_workers=1, thread_name_prefix="console-stream-turn")
         t0 = time.perf_counter()
+        wav: wave.Wave_write | None = None
+        path: Path | None = None
+        mic_open = False
+        pump_thread: threading.Thread | None = None
+        report_thread: threading.Thread | None = None
+
+        def write_and_feed(chunk: bytes) -> bool:
+            assert wav is not None
+            wav.writeframes(chunk)
+            state["bytes"] += len(chunk)
+            return rt.host.feed(CONSOLE_SPEAKER, chunk)
 
         def pump() -> None:
             warned = False
-            while not stop_pump.is_set():
-                chunk = mic.read(0.1)
-                if not chunk:
-                    continue
-                wav.writeframes(chunk)
-                state["bytes"] += len(chunk)
-                if not rt.host.feed(CONSOLE_SPEAKER, chunk):
-                    state["rejected"] += 1
-                    if not warned:
-                        warned = True
-                        self.out("音訊未被接受（Presence 非 ACTIVE 或輸入 stage 不可用），仍持續錄音。")
-            while True:  # 停止後把佇列裡剩下的塊也寫進 wav、餵進 Host
-                chunk = mic.read(0.0)
-                if not chunk:
-                    return
-                wav.writeframes(chunk)
-                state["bytes"] += len(chunk)
-                rt.host.feed(CONSOLE_SPEAKER, chunk)
+            try:
+                while not stop_pump.is_set():
+                    chunk = mic.read(0.1)
+                    if not chunk:
+                        continue
+                    if not write_and_feed(chunk):
+                        state["rejected"] += 1
+                        if not warned:
+                            warned = True
+                            self.out("音訊未被接受（Presence 非 ACTIVE 或輸入 stage 不可用），仍持續錄音。")
+            except Exception as exc:  # noqa: BLE001 - 收音執行緒失敗要讓使用者知道，而不是靜默停止
+                stop_pump.set()
+                self.out(f"/stream：收音執行緒失敗（{type(exc).__name__}：{exc}），已停止收音；按 Enter 結束。")
 
         def report() -> None:
             index = start_index
@@ -558,36 +568,86 @@ class Console:
                 kind, fact, result = rt.intake_events[index]
                 index += 1
                 state["last_event"] = time.monotonic()
-                self.out(self._describe_event(kind, fact, result, time.perf_counter() - t0))
-                if result.ticket is not None:
-                    turn_ids.add(result.ticket.turn_id)
-                if not _is_buffered(result):
-                    reports.submit(self._report_turn_safe, result)  # 無 ticket 時只印「未開 turn：原因」
+                try:
+                    self.out(self._describe_event(kind, fact, result, time.perf_counter() - t0))
+                    if result.ticket is not None:
+                        turn_ids.add(result.ticket.turn_id)
+                    if not _is_buffered(result):
+                        reports.submit(self._report_turn_safe, result)  # 無 ticket 時只印「未開 turn：原因」
+                except Exception as exc:  # noqa: BLE001 - 單一事件顯示失敗不中止報告
+                    self.out(f"/stream：事件顯示失敗（{type(exc).__name__}：{exc}）")
 
-        pump_thread = threading.Thread(target=pump, name="console-stream-pump", daemon=True)
-        report_thread = threading.Thread(target=report, name="console-stream-report", daemon=True)
-        pump_thread.start()
-        report_thread.start()
+        def step(name: str, fn: Callable[[], object]) -> None:
+            """收尾的每一步各自獨立：一步失敗只印一行，不跳過後面的步驟。"""
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001
+                self.out(f"/stream：收尾「{name}」失敗（{type(exc).__name__}：{exc}）")
+
         try:
-            self.input_fn("")
+            try:
+                mic.start()
+                mic_open = True
+            except AudioIoError as exc:
+                self.out(f"/stream：{exc}")
+                return
+            self.out("收音中，按 Enter 結束並回到指令列…")
+            path = _unique_wav_path(Path(rt.session_dir), "stream")
+            wav = wave.open(str(path), "wb")  # noqa: SIM115 - 生命週期橫跨執行緒，由下方 finally 的 step 關閉
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(MIC_SAMPLE_RATE)
+            pump_thread = threading.Thread(target=pump, name="console-stream-pump", daemon=True)
+            report_thread = threading.Thread(target=report, name="console-stream-report", daemon=True)
+            pump_thread.start()
+            report_thread.start()
+            try:
+                self.input_fn("")
+            except KeyboardInterrupt:
+                self.out("/stream：收到中斷，開始收尾…")
         finally:
+            # 收尾順序：停 pump -> 先停麥克風 -> 排乾佇列（不掉最後一小段）-> 關 wav -> 補尾端靜音並等聚合器 -> 停 reporter
             stop_pump.set()
-            pump_thread.join(timeout=5.0)
-            mic.stop()
-            wav.close()
-            # 收尾：補一段靜音（不寫進 wav）讓最後一句的 VAD／turn 判定結束，再等辨識與聚合器把緩衝中的 turn 交出
-            if state["bytes"]:
-                tail = bytes(int(MIC_SAMPLE_RATE * FEED_CHUNK_S) * 2)
-                for _ in range(int(FEED_TAIL_SILENCE_S / FEED_CHUNK_S)):
-                    rt.host.feed(CONSOLE_SPEAKER, tail)
-            quiet = time.monotonic()
-            tail_wait = self.settle_s + self._aggregator_wait_s()
-            deadline = time.monotonic() + self.stt_wait_s
-            while time.monotonic() < deadline and time.monotonic() - max(quiet, state["last_event"]) < tail_wait:
-                time.sleep(0.05)
+            pump_alive = False
+            if pump_thread is not None:
+                step("等待收音執行緒", lambda: pump_thread.join(timeout=5.0))
+                pump_alive = pump_thread.is_alive()
+                if pump_alive:
+                    self.out("/stream：收音執行緒未能及時結束，不關閉 wav（避免寫入已關閉的檔案）。")
+            if mic_open:
+                step("停止麥克風", mic.stop)
+            if wav is not None and not pump_alive:
+                def drain() -> None:
+                    while True:
+                        chunk = mic.read(0.0)
+                        if not chunk:
+                            return
+                        write_and_feed(chunk)
+
+                step("排乾麥克風佇列", drain)
+                step("關閉 wav", wav.close)
+            if state["bytes"] and not pump_alive:
+                def tail_and_wait() -> None:
+                    # 補一段靜音（不寫進 wav）讓最後一句的 VAD／turn 判定結束，再等辨識與聚合器把緩衝中的 turn 交出
+                    tail = bytes(int(MIC_SAMPLE_RATE * FEED_CHUNK_S) * 2)
+                    for _ in range(int(FEED_TAIL_SILENCE_S / FEED_CHUNK_S)):
+                        rt.host.feed(CONSOLE_SPEAKER, tail)
+                    quiet = time.monotonic()
+                    tail_wait = self.settle_s + self._aggregator_wait_s()
+                    deadline = time.monotonic() + self.stt_wait_s
+                    try:
+                        while time.monotonic() < deadline and time.monotonic() - max(quiet, state["last_event"]) < tail_wait:
+                            time.sleep(0.05)
+                    except KeyboardInterrupt:
+                        self.out("/stream：已中斷等待，直接收尾。")
+
+                step("補尾端靜音並等待聚合", tail_and_wait)
             stop_report.set()
-            report_thread.join(timeout=5.0)
-            reports.shutdown(wait=True)
+            if report_thread is not None:
+                step("停止報告執行緒", lambda: report_thread.join(timeout=5.0))
+            step("等待 turn 報告", lambda: reports.shutdown(wait=True))
+        if path is None:
+            return
         seconds = state["bytes"] / 32000
         events = rt.intake_events[start_index:]
         utterances = sum(1 for kind, _f, _r in events if kind == "utterance")

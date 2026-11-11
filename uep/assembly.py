@@ -53,6 +53,7 @@ from uep.adapters.tool import (
     supports_cancel,
 )
 from uep.config import get_settings
+from uep.contracts.platform import platform_from_presence_location
 from uep.contracts.presence import PresenceStatus
 from uep.control.channel import (
     ControlChannel,
@@ -75,6 +76,7 @@ from uep.echo.platform_context import (
     CoarseExecutorSource,
     PlatformContextProvider,
     PlatformShadow,
+    ProductionInputs,
 )
 from uep.echo.proactive_wiring import ProactiveShadow, attach_proactive_shadow
 from uep.echo.services import EchoServices
@@ -657,7 +659,9 @@ def assemble_core(
     _assert_wired(tasks, delivery)
     if agent_cache is not None:
         assert echo is not None
-        attach_agent_tools(echo.think, tasks, agent_cache)
+        # 工具投影的平台取自 Host 本機的 Lease 與 location（授權邊界），不取 Presence peek
+        platform_source = getattr(echo, "projection_platform", None)
+        attach_agent_tools(echo.think, tasks, agent_cache, platform_source=platform_source)
         if loop_entry is None and loop_entry_on:
             loop_registry = memory_registry()
             _check_loop_one_shot_executors(loop_registry, executors)
@@ -665,6 +669,7 @@ def assemble_core(
                 tool_path=tool_path, tasks=tasks, delivery=delivery, orchestrator=echo.orchestrator,
                 registry=loop_registry, model_port=model_port, cache=agent_cache,
                 text_store=getattr(echo, "loop_text", None), persona_id=persona_id, executors=executors,
+                platform_source=platform_source,
             )
         if loop_entry is not None:
             echo.orchestrator.bind_loop_entry(loop_entry)
@@ -689,7 +694,13 @@ def assemble_core(
     shadow_on = get_settings().platform_shadow if platform_shadow is None else platform_shadow
     if shadow_on and echo is not None and hasattr(echo, "bind_platform_shadow"):
         # 平台脈絡 shadow（UEP_PLATFORM_SHADOW，預設關）：只記錄與比對，不改任何消費點的輸入；Presence 走唯讀 peek
-        echo.bind_platform_shadow(PlatformShadow(platform_provider, echo.metrics))
+        # production 的投影平台 = Host 本機 location（只有 Lease ACTIVE 才開 turn，turn 內即此值），與 shadow 比對才有意義
+        host_platform = platform_from_presence_location(getattr(echo, "location", None))
+        production = ProductionInputs(
+            projection_platform=host_platform,
+            presence_active_platforms=frozenset({host_platform}) if host_platform is not None else frozenset(),
+        )
+        echo.bind_platform_shadow(PlatformShadow(platform_provider, echo.metrics, production=production))
     consult_hub = getattr(echo, "decision_hub", None)
     if consult_hub is not None and consult_hub.engine(KIND_LOOP_CONSULT) is None:
         # 平台宣告注入第 5 步（決策層側）：loop.consult 的 current_platform／available_executors 由系統注入，

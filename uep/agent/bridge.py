@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -61,6 +61,7 @@ class AgentToolTurns:
         self, tasks: TaskManager, registry: ToolRegistry, cache: TurnOutcomeCache, *, persona_id: str = "uep",
         policy_ref: str = "pol_turn_tools", persona_version: int = 1, policy_version: int = 1,
         capability_tags: Iterable[str] = DIRECT_CHAT_TAGS, finish_timeout_s: float = DEFAULT_FINISH_TIMEOUT_S,
+        platform_source: Callable[[], str | None] | None = None,
     ) -> None:
         self._tasks = tasks
         self._registry = registry
@@ -72,6 +73,8 @@ class AgentToolTurns:
         self._policy_version = policy_version
         self._tags = frozenset(capability_tags)
         self._finish_timeout_s = finish_timeout_s
+        # 當下 Presence 平台的來源（Host 持有的 Lease／location）；未注入或回 None = 不帶場域，fail-closed 只投 global 工具
+        self._platform_source = platform_source
         self._turns: dict[str, _Turn] = {}
         self._lock = threading.Lock()  # 只保護 _turns 這個 dict
 
@@ -146,6 +149,16 @@ class AgentToolTurns:
                 turn.db = db
             return db
 
+    def _current_platform(self) -> str | None:
+        """當下 Presence 平台；來源失敗 fail-closed 為 None（不信任模型輸入或 context 以外的值）。"""
+        if self._platform_source is None:
+            return None
+        try:
+            return self._platform_source()
+        except Exception:
+            logger.warning("讀取 Presence 平台失敗，投影不帶場域（fail-closed）", exc_info=True)
+            return None
+
     def _run_tool(self, turn: _Turn, name: str, args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         audience = context.get("audience")
         if not isinstance(audience, str) or not audience:
@@ -153,7 +166,9 @@ class AgentToolTurns:
         db = self._db(turn, context)
         available = frozenset({GUILD_ROSTER_CONTEXT}) if context.get("guild_id") else frozenset()
         capability_set = self._registry.project(
-            self._tags, ProjectionContext(available_context=available, audience=audience)
+            self._tags, ProjectionContext.for_platform(
+                self._current_platform(), available_context=available, audience=audience,
+            ),
         )
         injected = {k: context[k] for k in INJECTED_CONTEXT_KEYS if k in context}
         injected["run_id"] = db.run_id  # 旁證編號的範圍（Run）；經注入值帶入，不靠執行緒區域

@@ -611,6 +611,7 @@ def assemble_core(
             )
     assert adapter is not None and executors is not None and tool_resolver is not None
     agent_cache = None
+    web_on = False
     loop_launcher = None
     chatroom_on = False
     tool_path = tool_path or get_settings().tool_path  # 工具路徑只在這裡決定一次；Host 與 think stage 必須與之一致
@@ -648,6 +649,15 @@ def assemble_core(
             tool_resolver = with_chatroom(tool_resolver, configured=chatroom_config is not None)
             executors = {**executors, CHATROOM_EXECUTOR: ChatroomToolExecutor(chatroom_config, cache=agent_cache)}
             chatroom_on = True
+        from uep.tools.registry import ToolRegistry as _Registry
+
+        if isinstance(tool_resolver, _Registry):
+            # web.search／web.fetch／image.read：條目一律註冊；未設定的工具 readiness 為 unavailable（不投出），組裝不失敗
+            from uep.tools.web_image import with_web_image
+
+            tool_resolver, web_executors = with_web_image(tool_resolver, cache=agent_cache)
+            executors = {**executors, **web_executors}
+            web_on = True
         if callable(getattr(tool_resolver, "entries", None)):
             from uep.models.tool_names import ToolNameError, wire_map
 
@@ -701,7 +711,7 @@ def assemble_core(
         attach_agent_tools(echo.think, tasks, agent_cache, platform_source=platform_source)
         if loop_entry is None and loop_entry_on:
             # 開啟測試工具組時 loop 與 TaskManager 用同一個（已併入測試工具的）註冊表；其餘沿用記憶註冊表
-            loop_registry = tool_resolver if (testkit_on or chatroom_on) else memory_registry()
+            loop_registry = tool_resolver if (testkit_on or chatroom_on or web_on) else memory_registry()
             _check_loop_one_shot_executors(loop_registry, executors)
             from uep.tools.catalog.testkit import TESTKIT_TAGS
 

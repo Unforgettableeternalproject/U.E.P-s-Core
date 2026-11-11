@@ -19,6 +19,10 @@
     "schema_hash": "17bb5e0c3e39180560f459a53fc62e0ce1da649c6759c7cbd7e511dd1016ba49",
     "tool_version": 1
   },
+  "image.read": {
+    "schema_hash": "6a1e8266446fd3aa75539c079604f9aac70756095c26a6ef7b9924117336d79c",
+    "tool_version": 1
+  },
   "member_recall": {
     "schema_hash": "6b65a7b86e688f0834c856bcdd725998e38dd1578d880c4002b6040396da6359",
     "tool_version": 1
@@ -53,6 +57,14 @@
   },
   "test_sleep": {
     "schema_hash": "734b656f8a235f1bf0264d0738396e8d1199b27c8205e5b47e8c6ba2f0ffcfbf",
+    "tool_version": 1
+  },
+  "web.fetch": {
+    "schema_hash": "dee0639150b95f71cf4d31dcb632dcd7121cb8b58bfcb6b19b6a1f5685f0e217",
+    "tool_version": 1
+  },
+  "web.search": {
+    "schema_hash": "c8d66e5d811c5351f4b1ab5fd32ae5c0cdd4d97bc7884d128e58fe3f3963a312",
     "tool_version": 1
   }
 }

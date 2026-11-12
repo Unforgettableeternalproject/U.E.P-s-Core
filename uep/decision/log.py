@@ -33,6 +33,7 @@ COLUMNS: tuple[str, ...] = (
     "engine", "proposer_id", "version", "outcome", "reason_code", "confidence", "elapsed_ms",
     "status", "agree", "fallback", "candidate_id", "participant_count", "addressed_hint", "utterance_refs",
     "sub_kind", "trigger", "namespace", "snapshot_version", "platform_context_version", "target",
+    "chain_id", "chain_seq",
 )
 
 # 新增四欄只收 ID／列舉類的安全字元短字串，原文般的內容一律記 None（不存原文原則）
@@ -47,6 +48,13 @@ def _safe_token(value: Any) -> str | None:
 
 def _safe_candidate_ref(value: Any) -> str | None:
     return value if isinstance(value, str) and _SAFE_CANDIDATE_REF.fullmatch(value) else None
+
+
+def _chain_seq(facts: dict[str, Any]) -> int | None:
+    """``facts["chain"]["seq"]``：0（母句）～SMALLINT 上限的整數；其他一律 None。"""
+    chain = facts.get("chain")
+    seq = chain.get("seq") if isinstance(chain, dict) else None
+    return seq if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq <= 32767 else None
 
 
 def _safe_version(value: Any) -> int | None:
@@ -107,6 +115,8 @@ def primary_row(
         # 目標位置取自 plan.placement.target_platform（過安全字元檢查）；不再拼進 reason_code。
         # 逾時／無效等 fallback 決策沒有 plan，此時記 None，不能讓整列寫入失敗
         target=_plan_target(result.plan),
+        # chain 關聯（Chain 契約 §3.8）：chain_id 含大寫 ULID，走 candidate ref 字元集，不可走 _SAFE_TOKEN
+        chain_id=_safe_candidate_ref(request.subject.get("chain_id")), chain_seq=_chain_seq(request.facts),
     )
     return row
 

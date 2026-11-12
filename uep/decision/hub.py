@@ -18,8 +18,8 @@ logger = logging.getLogger("uep.decision.hub")
 
 # spec 未設 on_invalid_reason 時，非白名單區段被剝除的預設 reason_code
 REASON_PLAN_SECTION_REJECTED = "plan_section_rejected"
-# 需在 spec.plan_sections 宣告才允許帶的區段（policy：僅政策發布事實；capability：DL-4 hint，proactive 不宣告）
-_GUARDED_SECTIONS = ("policy", "capability")
+# 需在 spec.plan_sections 宣告才允許帶的區段（policy：僅政策發布事實；capability：DL-4 hint，proactive 不宣告；chain：複合句提議，僅 turn.reply 宣告）
+_GUARDED_SECTIONS = ("policy", "capability", "chain")
 
 # 觀察者：decide 成功後以（request, result, spec, elapsed_ms）呼叫；必須非阻塞（如只丟進佇列），例外一律吞掉
 DecisionObserver = Callable[[DecisionRequest, DecisionResult, DecisionPointSpec, int], None]

@@ -124,6 +124,17 @@ class DecisionCapability:
 
 
 @dataclass(frozen=True)
+class DecisionChain:
+    """``DecisionPlan.chain``：複合句（一句含多個獨立指示）的提議載體（Chain 契約 §3.3）。
+
+    ``compound`` 為 None 表示 proposer 不支援該題；僅 ``turn.reply`` 的 spec 宣告 ``chain`` 區段。
+    目前只是欄位增補：沒有任何消費者依此改變行為（派發由後續 PR 負責）。
+    """
+
+    compound: bool | None = None
+
+
+@dataclass(frozen=True)
 class DecisionFollowup:
     """``DecisionPlan.followups`` 的一項：後續請求（如完成後回報）。"""
 
@@ -154,6 +165,7 @@ class DecisionPlan:
     followups: tuple[DecisionFollowup, ...] | None = None
     policy: DecisionPolicy | None = None  # 僅記錄（policy.snapshot／channel.mode），不被套用
     capability: DecisionCapability | None = None  # 只收窄的 hint 提議（DL-4）；最終標籤由純函式計算
+    chain: DecisionChain | None = None  # 複合句提議（Chain 契約 §3.3）；僅 turn.reply 可帶，目前無消費者
 
 
 def plan_to_dict(plan: DecisionPlan) -> dict[str, Any]:
@@ -173,6 +185,7 @@ def plan_from_dict(data: dict[str, Any]) -> DecisionPlan:
     reply, output, placement = data.get("reply"), data.get("output"), data.get("placement")
     loop, followups = data.get("loop"), data.get("followups")
     policy, capability = data.get("policy"), data.get("capability")
+    chain = data.get("chain")
     return DecisionPlan(
         route=data.get("route"),
         reply=_build(DecisionReply, reply) if reply is not None else None,
@@ -189,6 +202,7 @@ def plan_from_dict(data: dict[str, Any]) -> DecisionPlan:
         policy=_build(DecisionPolicy, policy) if policy is not None else None,
         # capability_hint 的型別驗證在 DecisionCapability.__post_init__（無效即 ValueError）；None 與 [] 保持區分
         capability=_build(DecisionCapability, capability) if capability is not None else None,
+        chain=_build(DecisionChain, chain) if chain is not None else None,
     )
 
 

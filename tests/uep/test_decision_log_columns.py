@@ -39,7 +39,7 @@ def _row_for(**request_kw) -> dict:
 
 
 def test_new_columns_are_appended_to_log_columns():
-    assert COLUMNS[-6:-2] == NEW_COLUMNS
+    assert COLUMNS[-8:-4] == NEW_COLUMNS
 
 
 def test_primary_row_fills_new_columns():
@@ -101,7 +101,7 @@ def test_shadow_row_new_columns_stay_none():
 def _legacy_rows() -> list[dict]:
     """沒有新四欄鍵的舊式列（舊 JSONL／舊 DB 版本輸出形狀）。"""
     now = datetime(2026, 11, 1, tzinfo=UTC)
-    base = dict.fromkeys(COLUMNS[:-6])
+    base = dict.fromkeys(COLUMNS[:-8])
     primary = {**base, "decision_id": "dec_p", "kind": KIND_TURN_REPLY, "created_at": now, "role": "primary",
                "outcome": "respond", "reason_code": "r", "status": "ok", "elapsed_ms": 4, "fallback": False}
     shadow = {**base, "decision_id": "dec_s", "kind": KIND_TURN_REPLY, "created_at": now + timedelta(seconds=1),
@@ -157,7 +157,7 @@ def test_migration_0014_revision_chain():
     assert rev is not None and rev.down_revision == "0013_run_supervisor_flags"
     assert callable(rev.module.upgrade) and callable(rev.module.downgrade)
     assert script.get_revision("0015_action_retry_of").down_revision == "0014_decision_log_columns"
-    assert script.get_heads() == ["0019_decision_log_target"]
+    assert script.get_heads() == ["0020_decision_log_chain"]
 
 
 def test_orm_model_has_new_columns_and_index():
@@ -231,7 +231,7 @@ def test_platform_context_version_is_last_nullable_column():
     import uep.db.models_registry  # noqa: F401
     from uep.db.base import Base
 
-    assert COLUMNS[-2] == "platform_context_version"
+    assert COLUMNS[-4] == "platform_context_version"
     col = Base.metadata.tables["decision_log"].columns["platform_context_version"]
     assert col.nullable and col.type.python_type is int
     assert not any("platform_context_version" in {c.name for c in ix.columns}
@@ -302,11 +302,11 @@ def test_db_migration_0018_roundtrip_and_sink(alembic_cfg, engine, session_facto
 
 # ---- migration 0019：target ----
 
-def test_target_is_last_nullable_column():
+def test_target_is_nullable_column_before_chain_columns():
     import uep.db.models_registry  # noqa: F401
     from uep.db.base import Base
 
-    assert COLUMNS[-1] == "target"
+    assert COLUMNS[-3] == "target"
     col = Base.metadata.tables["decision_log"].columns["target"]
     assert col.nullable and col.type.python_type is str
     assert ScriptDirectory.from_config(alembic_config("postgresql://x/y_test")).get_revision(

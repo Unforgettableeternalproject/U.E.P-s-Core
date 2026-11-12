@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 
 from uep.decision.contracts import (
     DecisionCapability,
+    DecisionChain,
     DecisionEngineInfo,
     DecisionPlan,
     DecisionReply,
@@ -61,6 +62,7 @@ class ShadowRecord:
     primary_decision_id: str | None = None  # 對照的 primary 決策 ID
     request_id: str | None = None
     kind: str = "turn.reply"
+    shadow_compound: bool | None = None  # shadow 提案的 compound（Chain 契約 §3.3，供 shadow 階段記錄 would_split）
 
 
 def turn_reply_spec(budget_ms: int) -> DecisionPointSpec:
@@ -69,7 +71,7 @@ def turn_reply_spec(budget_ms: int) -> DecisionPointSpec:
         outcomes=tuple(m.value for m in ReplyMode),
         budget_ms=budget_ms, on_timeout_reason=ON_TIMEOUT_REASON, on_busy_reason=ON_BUSY_REASON,
         on_error_reason=ON_ERROR_REASON, on_invalid_reason=ON_INVALID_REASON, shadow=True, allow_native=True,
-        plan_sections=("capability",),
+        plan_sections=("capability", "chain"),
     )
 
 
@@ -92,6 +94,8 @@ def proposal_to_result(proposal: Proposal, request: DecisionRequest, *, fallback
                 DecisionCapability(capability_hint=tuple(proposal.capability_hint))
                 if proposal.capability_hint is not None else None
             ),
+            # compound 為 None 時不輸出區段，與包裝前的 plan 位元級相同
+            chain=DecisionChain(compound=proposal.compound) if proposal.compound is not None else None,
         ),
         confidence=proposal.confidence, reason_code=proposal.reason_code,
         engine=DecisionEngineInfo(
@@ -115,6 +119,7 @@ def result_to_proposal(result: DecisionResult) -> Proposal:
         reason_code=result.reason_code,
         proposer_id=result.engine.id, proposer_version=result.engine.version,
         capability_hint=plan.capability.capability_hint if plan is not None and plan.capability is not None else None,
+        compound=plan.chain.compound if plan is not None and plan.chain is not None else None,
     )
 
 
@@ -229,6 +234,7 @@ class TurnReplyEngine:
         shadow_id = getattr(shadow, "proposer_id", type(shadow).__name__)
         mode: str | None = None
         reason: str | None = None
+        compound: bool | None = None
         status = "ok"
         try:
             result = future.result()
@@ -237,6 +243,7 @@ class TurnReplyEngine:
             else:
                 assert isinstance(result, Proposal)
                 mode, reason = result.reply_mode.value, result.reason_code
+                compound = result.compound
                 if result.proposer_id != "unknown":
                     shadow_id = result.proposer_id
                 if self.budget_s is not None and elapsed_ms > self.budget_s * 1000:
@@ -249,7 +256,7 @@ class TurnReplyEngine:
             shadow_mode=mode, shadow_reason=reason, agree=mode == primary.reply_mode.value, status=status,
             elapsed_ms=elapsed_ms, decision_id=new_id("dec"), primary_decision_id=primary_decision_id,
             request_id=request.request_id if request is not None else None,
-            kind=request.kind if request is not None else KIND_TURN_REPLY,
+            kind=request.kind if request is not None else KIND_TURN_REPLY, shadow_compound=compound,
         )
         self.shadow_log.append(record)
         self.metrics[f"shadow.{'agree' if record.agree else 'disagree'}"] += 1

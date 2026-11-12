@@ -176,7 +176,7 @@ def test_plan_sections_whitelist_strips_undeclared_capability():
 
 
 def test_turn_reply_spec_declares_capability_and_proactive_does_not():
-    assert turn_reply_spec(300).plan_sections == ("capability",)
+    assert turn_reply_spec(300).plan_sections == ("capability", "chain")
     from uep.decision.proactive import proactive_initiate_spec
 
     assert "capability" not in proactive_initiate_spec().plan_sections  # D4-2：Proactive 不吃 hint

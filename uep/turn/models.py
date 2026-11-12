@@ -98,6 +98,8 @@ class Proposal:
     proposer_version: str = "0"
     # DL-4：只能收窄的 capability 提議（None = 不收窄；() = 要求空集合）；最終標籤由決策層純函式計算，不由此欄決定
     capability_hint: tuple[str, ...] | None = None
+    # Chain 契約 §3.3：是否含兩個以上獨立指示（None = proposer 不支援）；目前只是欄位，不影響任何決策
+    compound: bool | None = None
 
 
 @dataclass(frozen=True)

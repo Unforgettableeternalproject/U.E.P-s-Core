@@ -18,6 +18,7 @@ from sqlalchemy import (
     Float,
     Index,
     Integer,
+    SmallInteger,
     String,
     insert,
     select,
@@ -62,6 +63,8 @@ class DecisionLogRow(Base):
     snapshot_version: Mapped[int | None] = mapped_column(Integer)  # 決策依據的 policy 快照版本
     platform_context_version: Mapped[int | None] = mapped_column(Integer)  # 決策當下平台快照版本（migration 0018）
     target: Mapped[str | None] = mapped_column(String)  # 決策指向的目標位置（placement.target_platform；migration 0019）
+    chain_id: Mapped[str | None] = mapped_column(String)  # 複合句 chain 的 ID（chain_<ULID>；migration 0020；舊列為 NULL）
+    chain_seq: Mapped[int | None] = mapped_column(SmallInteger)  # chain 內序號（0＝母句，1 起為段落；migration 0020）
 
     __table_args__ = (
         CheckConstraint("role IN ('primary', 'shadow')", name="role"),
@@ -70,6 +73,7 @@ class DecisionLogRow(Base):
         Index("ix_decision_log_request_id", "request_id"),
         Index("ix_decision_log_primary_decision_id", "primary_decision_id"),
         Index("ix_decision_log_kind_sub_kind", "kind", "sub_kind"),
+        Index("ix_decision_log_chain", "chain_id", "chain_seq"),
     )
 
 

@@ -230,8 +230,15 @@ def test_wiring_module_imports_without_memory_deps():
 def test_real_engine_smoke_through_host(tmp_path):
     pytest.importorskip("echo_memory")
     pytest.importorskip("llm_integration")
-    from uep.echo.memory_wiring import build_memory_wiring
+    import inspect
 
+    from echo_memory import MemoryEngine
+    from uep.echo.memory_wiring import build_memory_wiring, warmup_embedding
+
+    # 冷啟成本不屬於本測試要驗的範圍：sentence-transformers 首載實測 10~55 秒（隨磁碟快取與 CPU 負載浮動），
+    # 超過 store 預設逾時 10 秒；逾時的寫入仍在 executor 內跑，stop 時 adapter.aclose 要等它收尾，
+    # 又超過 drain_timeout_s=5 而記「adapter.aclose TimeoutError」。正式啟動（real_rig）也是先暖機再開工，這裡照做。
+    warmup_embedding(inspect.signature(MemoryEngine).parameters["embedding_model"].default, "cpu")
     wiring = build_memory_wiring(assess_mode="off")
     host = MemoryHost(
         data_root=tmp_path / "core_memory", namespaces=SPECS, identity=make_identity(),

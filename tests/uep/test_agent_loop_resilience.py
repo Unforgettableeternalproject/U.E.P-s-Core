@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from tests.uep.loop_support import Round, ScriptedRuntime
-from tests.uep.test_agent_loop import Rig, call
+from tests.uep.test_agent_loop import Board, Rig, call, one_shot_rig
 from uep.agent.budget import LoopBudget
 from uep.agent.event_pump import TIMED_OUT, EventPump
 from uep.agent.retry import RetryPolicy
@@ -113,6 +114,83 @@ def test_cancel_flag_is_honoured_while_waiting_for_the_model():
     out = rig.run()
     timer.cancel()
     assert out.state == "cancelled" and any(a for a, _ in runtime.cancels)
+
+
+class SlowStreamRuntime(ScriptedRuntime):
+    """每個事件前先睡 ``gap`` 秒；``hang_after_first``：第一個 attempt 吐出首個事件後卡住（直到 cancel）。"""
+
+    def __init__(self, rounds, gap=0.0, hang_after_first=False) -> None:
+        super().__init__(rounds)
+        self.gap, self.hang_after_first, self.streams = gap, hang_after_first, 0
+        self.released = threading.Event()
+
+    def cancel(self, attempt_id, reason):
+        self.released.set()
+        return super().cancel(attempt_id, reason)
+
+    def stream(self, attempt_id):
+        self.streams += 1
+        first = self.streams == 1
+        for ev in super().stream(attempt_id):
+            time.sleep(self.gap)
+            yield ev
+            if first and self.hang_after_first and ev.kind == "text_delta":
+                self.released.wait(5)
+                return
+
+
+def test_steady_event_stream_longer_than_step_timeout_still_succeeds():
+    """step_timeout_s 是事件閒置上限，不是整段串流上限。"""
+    runtime = SlowStreamRuntime([Round("一二三")], gap=0.2)
+    rig = Rig([], budget=LoopBudget(step_timeout_s=0.3, heartbeat_interval_s=0.05), runtime=runtime)
+    rig.loop = rig.new_loop(runtime=runtime)
+    started = time.monotonic()
+    out = rig.run()
+    assert out.state == "completed" and time.monotonic() - started >= 0.35
+
+
+def test_idle_gap_between_events_longer_than_step_timeout_is_retried():
+    runtime = SlowStreamRuntime([Round("開頭"), Round("好了")], hang_after_first=True)
+    rig = Rig([], budget=LoopBudget(step_timeout_s=0.2, heartbeat_interval_s=0.05), runtime=runtime)
+    rig.loop = rig.new_loop(runtime=runtime, retry=RetryPolicy(model_max=1, model_backoff_s=0.0), sleep=_no_sleep([]))
+    out = rig.run()
+    assert out.state == "completed" and len(runtime.requests) == 2
+
+
+def test_tool_execution_longer_than_step_timeout_does_not_fail_the_run():
+    """Step 計時只管模型等待：工具跑得比 step_timeout_s 久，波與波之間的 gate 不會讓 Run 失敗。"""
+    def slow(args):
+        time.sleep(0.4)
+        return "慢但成功"
+
+    rig = Rig(
+        [Round("", (call("read.lone", "1"),)), Round("", (call("read.lone", "2"),)), Round("完成")],
+        budget=LoopBudget(step_timeout_s=0.2, heartbeat_interval_s=0.05, repeat_limit=99), behaviors={"read.lone": slow},
+    )
+    out = rig.run()
+    assert (out.state, out.text) == ("completed", "完成")
+
+
+def test_step_timeout_zero_setting_disables_it():
+    from uep.config import UepSettings
+
+    assert UepSettings(UEP_AGENT_STEP_TIMEOUT_S=0).agent_step_timeout_s == 0
+    from uep import assembly
+    from uep.assembly import _loop_resilience_kwargs
+
+    class _S:
+        agent_step_timeout_s = 0.0
+        agent_model_retry_max = 2
+        agent_model_retry_backoff_s = 1.0
+        agent_tool_retry_max = 1
+        agent_tool_retry_backoff_s = 0.5
+
+    original = assembly.get_settings
+    assembly.get_settings = lambda: _S()
+    try:
+        assert _loop_resilience_kwargs()["step_timeout_s"] is None
+    finally:
+        assembly.get_settings = original
 
 
 # ---- 模型錯誤重試 ----
@@ -251,3 +329,36 @@ def test_event_pump_reraises_source_errors():
     else:
         raise AssertionError("應該重新拋出")
     pump.close()
+
+
+# ---- parallel_one_shot 收到 deadline 旗標 ----
+
+def test_deadline_flag_during_one_shot_wave_fails_run_with_flag_reason():
+    board = Board("stopped")
+    rig = one_shot_rig(
+        board, [Round("", (call("once.a", "p1"), call("once.b", "p2"))), Round("好")], timeout_s=30.0,
+        behaviors={"once.a": board.hang, "once.b": board.hang},
+    )
+    rig.budget = rig.loop._budget = LoopBudget(max_parallel=2, repeat_limit=99, heartbeat_interval_s=0.05)
+    timer = threading.Timer(0.2, lambda: setattr(rig.tasks, "cancel_signal", CancelSignal("run_deadline", None)))
+    timer.start()  # 波開始執行之後才出現旗標
+    try:
+        out = rig.run()
+    finally:
+        timer.cancel()
+        board.release_all()
+    assert (out.state, out.reason_code) == ("failed", "run_deadline") and board.cancels
+
+
+# ---- 工具重試遵守牆鐘 ----
+
+def test_tool_retry_is_skipped_when_run_deadline_flag_is_set():
+    rig = Rig(
+        [Round("", (call("read.lone", "1"),)), Round("完成")], budget=LoopBudget(heartbeat_interval_s=0.0),
+        retry=RetryPolicy(tool_max=1, tool_backoff_s=0.0), sleep=_no_sleep([]),
+    )
+    rig.tasks.fail_tools.add("read.lone")
+    rig.tasks.fail_codes["read.lone"] = "timeout"
+    rig.tasks.cancel_signal = CancelSignal("run_deadline", None)
+    rig.run()
+    assert not rig.tasks.retries

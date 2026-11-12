@@ -478,3 +478,18 @@ def test_non_pending_step_counts_against_tool_call_budget_on_resume():
     assert out.state == "completed"
     assert [t for _, t in rig.tasks.executions].count("fs.write") == 0  # 預算已滿：第二步 blocked(deferred_budget)，不執行
     assert next(m for m in rig.child() if m.role == "tool").content == "tool blocked: deferred_budget"
+
+
+def test_composite_resume_rejection_counts_towards_rejected_limit():
+    """composite 待決子步驟被否決（結果 rejected）：resume 時累計 rejected_streak，達 rejected_limit 結束 Run、不喚醒模型。"""
+    from uep.agent.core import IntentRecord, IntentResult
+
+    rig, _ = _park()
+    cp = dict(rig.tasks.checkpoints[-1])
+    cp["budget_counters"] = {**cp["budget_counters"], "rejected": 2}
+    loop = _crash(rig, 2, rounds=[Round("不該到這裡")])
+    denied = IntentResult(IntentRecord(0, "notes.publish", "act_x", "rejected", "approval_denied"),
+                          loop._core._gateway.result_view("rejected", reason_code="approval_denied"))
+    loop._execute_composite = lambda *a, **k: denied
+    out = loop.resume(RUN, cp, trigger=trigger(rig.tags), parent_id="ctx_parent", approvals={})
+    assert (out.state, out.reason_code) == ("failed", "no_progress") and rig.last_runtime.requests == []

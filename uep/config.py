@@ -48,9 +48,9 @@ class UepSettings(BaseSettings):
     agent_loop_dir: Path | None = Field(default=None, validation_alias="UEP_AGENT_LOOP_DIR")
     # chatroom.* 工具的讀取游標持久目錄（依 session key＋房間一檔）；未設 = ~/.uep/chatroom_cursors
     chatroom_cursor_dir: Path | None = Field(default=None, validation_alias="UEP_CHATROOM_CURSOR_DIR")
-    # AgentLoop 的單一 Step 逾時（秒）與重試政策（F-4）：Step 逾時 = 模型呼叫或工具執行卡住的上限；
+    # AgentLoop 的 Step 逾時（秒，0 = 關閉）與重試政策（F-4）：Step 逾時 = 等待下一個模型事件的閒置上限（不含工具執行）；
     # 模型呼叫的暫時性錯誤（逾時／5xx／rate limit）退避重試至多 N 次；工具只對 internal_read 的暫時性失敗重試（至多 1 次）
-    agent_step_timeout_s: float = Field(default=120.0, gt=0, validation_alias="UEP_AGENT_STEP_TIMEOUT_S")
+    agent_step_timeout_s: float = Field(default=120.0, ge=0, validation_alias="UEP_AGENT_STEP_TIMEOUT_S")
     agent_model_retry_max: int = Field(default=2, ge=0, validation_alias="UEP_AGENT_MODEL_RETRY_MAX")
     agent_model_retry_backoff_s: float = Field(default=1.0, ge=0, validation_alias="UEP_AGENT_MODEL_RETRY_BACKOFF_S")
     agent_tool_retry_max: int = Field(default=1, ge=0, validation_alias="UEP_AGENT_TOOL_RETRY_MAX")

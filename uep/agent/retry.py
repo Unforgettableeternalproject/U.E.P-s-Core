@@ -4,6 +4,8 @@
   以退避重新開一個 attempt（從已提交的 history 重來，未完成的串流內容丟棄）。連續失敗次數有上限，每次成功推進後歸零。
 - 工具呼叫：只重試 ``internal_read`` 且 receipt 的 ``error_code`` 屬暫時性者；重試是**新 action**（``retry_of`` 指向失敗的那一個，
   一個 action 至多被重試一次）。``reversible_local``／``external_effect``／``high_impact`` 一律不自動重試。
+- 不重試的範圍：``parallel_one_shot`` 工具（有自己的逾時／cancel 語意）與 composite 子步驟。失敗 attempt 的 token 用量不計入
+  ``max_tokens``（usage 只在 attempt 成功結束或批次提交時累計），重試的成本由連續次數上限約束。
 - 預設全關（次數 0）：``LoopBudget`` 之外獨立設定，由組裝層依 ``UEP_AGENT_*`` 環境變數建立。
 """
 from __future__ import annotations

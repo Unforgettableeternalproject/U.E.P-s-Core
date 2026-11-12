@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import logging
 import threading
 import time
@@ -270,6 +271,7 @@ class LoopLauncher:
         max_concurrent: int | None = None, close_timeout_s: float | None = None,
         executors: Mapping[str, Any] | None = None, platform_source: Callable[[], str | None] | None = None,
         memory_store: Callable[[Any, TurnEndFacts], None] | None = None, retry: RetryPolicy | None = None,
+        step_timeout_s: float | None = None,
     ) -> None:
         self._retry = retry  # None = 不自動重試（組裝層依 UEP_AGENT_* 傳入）
         # 記憶寫入（與 direct_chat 同一條路徑：Host 的 ``store_turn_memory``）；None = 不寫（例如未接記憶的組裝）
@@ -299,6 +301,8 @@ class LoopLauncher:
         self._persona_version = persona_version
         self._policy_version = policy_version
         self._budget = budget or LoopBudget(run_deadline_s=300.0)
+        if step_timeout_s is not None:  # 組裝層依 UEP_AGENT_STEP_TIMEOUT_S 套進預算（其餘欄位沿用）
+            self._budget = dataclasses.replace(self._budget, step_timeout_s=step_timeout_s)
         self._system_text = system_text
         self._max = max_concurrent
         self._close_timeout_s = DEFAULT_CLOSE_TIMEOUT_S if close_timeout_s is None else close_timeout_s

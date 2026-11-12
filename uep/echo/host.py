@@ -40,40 +40,27 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from uep.state.coordinator import Axis, BehaviorState, InteractionState
-from uep.stream.contracts.cancellation import CancellationToken
-from uep.stream.contracts.output import (
-    CommitMode,
-    OutcomeStatus,
-    TurnRequest,
-    TurnTicket,
-)
-from uep.stream.contracts.stages import AudioSink
-from uep.stream.contracts.types import Utterance
-from uep.stream.coordinator import TurnCoordinator
-from uep.stream.tracer import LatencyTracer
-
-from uep.contracts.platform import platform_from_presence_location
 from uep.config import get_settings
+from uep.contracts.platform import platform_from_presence_location
 from uep.contracts.presence import AcquireResult, GateDecision
 from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES, ROUTE_DIRECT_CHAT
 from uep.decision.hub import DecisionHub
 from uep.echo.config import EchoOutputConfig
 from uep.echo.endpoint import DeferredCoreApi, EchoEndpoint, StopNotice
 from uep.echo.loop import EsLoop
-from uep.echo.memory import GuildRoster, make_memory_resolver
 from uep.echo.loop_text import LoopTextStore
+from uep.echo.memory import GuildRoster, make_memory_resolver
 from uep.echo.metrics import Metrics
+from uep.echo.outcomes import facts_from_outcome
 from uep.echo.platform_context import PlatformShadow
+from uep.echo.policy import CAUSE_TTL_REFRESH, CoreYieldPolicy, HostPolicySource
 from uep.echo.resume_return import (
     ResumeCause,
-    ResumedRunResult,
     ResumeDisposition,
+    ResumedRunResult,
     ResumeOutcome,
     ResumePending,
 )
-from uep.echo.outcomes import facts_from_outcome
-from uep.echo.policy import CAUSE_TTL_REFRESH, CoreYieldPolicy, HostPolicySource
 from uep.echo.services import EchoServices
 from uep.echo.sink import AdmittingSink, SentenceEvidence
 from uep.echo.tools import CoreToolExecutor
@@ -87,6 +74,18 @@ from uep.memory.protocol import MemoryPort
 from uep.output.delivery import DeliveryEvidence
 from uep.output.delivery import DeliveryStatus as DS
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
+from uep.state.coordinator import Axis, BehaviorState, InteractionState
+from uep.stream.contracts.cancellation import CancellationToken
+from uep.stream.contracts.output import (
+    CommitMode,
+    OutcomeStatus,
+    TurnRequest,
+    TurnTicket,
+)
+from uep.stream.contracts.stages import AudioSink
+from uep.stream.contracts.types import Utterance
+from uep.stream.coordinator import TurnCoordinator
+from uep.stream.tracer import LatencyTracer
 from uep.tools.catalog.memory import GUILD_ROSTER_CONTEXT, memory_registry
 from uep.tools.projection import ProjectionContext
 from uep.tools.registry import ToolRegistry
@@ -1348,6 +1347,9 @@ class EchoPipelineHost:
         COMPLETED 且有文字才送：activity 綁定的 ``OutputIntent``（turn_* 為 None），授權於送出當下重取 ``lease_auth()``，
         經 DeliveryManager／Output Gate。送達後才寫記憶（key 掛回原 turn 的 ``turn:<orig>``），``cause=REJECTED`` 不寫。
 
+        FAILED 的 Run（含預算中斷的 partial）改送呼叫端帶來的固定失敗訊息：``SYSTEM_NOTICE``／``origin=SYSTEM``，走同一條 Gate 路徑
+        （可進 pending）、不寫記憶；CANCELLED 不送。
+
         暫時不能送的情況進 pending 佇列（記憶體，TTL／上限走設定，``flush_resume_pending`` 補送）：無 Lease、muted（Behavior=SLEEP）、
         busy（有進行中的回合、SPEAKING／WAITING_USER）、Gate 回 NO_PRESENCE／REVOKED／EXPIRED／AUDIENCE／NOT_INTERACTION、
         STALE 重試一次後仍 STALE。UNKNOWN／ENQUEUED 不重送（UNCERTAIN）；SEND_FAILED 等確定失敗為 DROPPED。
@@ -1405,6 +1407,11 @@ class EchoPipelineHost:
                     self.metrics.inc(f"echo.resume_flushed.{trigger}")
                 self._settle_resumed(key, disposition)
         return sent
+
+    def resume_should_cancel(self) -> bool:
+        """續跑中的 Run 該不該取消（D107 Q7）：本機 Lease 遺失，或全域停止成立（``_stopped_reason``，直到取得新 Lease）。
+        供 ``LoopLauncher`` 在 Step 邊界判斷；原 turn 已結束，沒有 live turn 可由 ``cancel_turn`` 取消它。"""
+        return self.endpoint.lease_auth() is None or self._stopped_reason is not None
 
     def _request_resume_flush(self, trigger: str) -> None:
         """任意執行緒觸發 flush：交給 Core 工作緒（與 ``_finish_turn`` 同一條，不與 turn 收尾競態）；工作緒未啟動就地執行。"""
@@ -1469,8 +1476,9 @@ class EchoPipelineHost:
 
     def _deliver_resumed(self, result: ResumedRunResult) -> tuple[ResumeDisposition, str]:
         """單次送出嘗試。回傳 ``(處置, 原因)``：PENDING＝暫時不能送（呼叫端入列或保留）；DROPPED＝確定不送；其餘為終局。"""
-        if result.outcome is not ResumeOutcome.COMPLETED:
-            return ResumeDisposition.NOT_APPLICABLE, "outcome"  # FAILED／CANCELLED：不送、不寫（失敗訊息屬後續 PR）
+        failed = result.outcome is ResumeOutcome.FAILED
+        if result.outcome is ResumeOutcome.CANCELLED or (not failed and result.outcome is not ResumeOutcome.COMPLETED):
+            return ResumeDisposition.NOT_APPLICABLE, "outcome"  # CANCELLED（Lease 撤銷／closing／取消）：不送、不寫
         services = self._services
         if services is None or result.activity_id is None or not result.text.strip():
             return ResumeDisposition.DROPPED, "unavailable"
@@ -1486,7 +1494,8 @@ class EchoPipelineHost:
             ref = f"resume:{result.run_id}:{result.worker_epoch}:{attempt}"
             self.loop_text.put(ref, ticket.turn_id, result.text)
             intent = OutputIntent(
-                output_id=output_id, sequence=0, kind=OutputKind.TEXT, origin=OutputOrigin.PERSONA,
+                output_id=output_id, sequence=0, kind=OutputKind.SYSTEM_NOTICE if failed else OutputKind.TEXT,
+                origin=OutputOrigin.SYSTEM if failed else OutputOrigin.PERSONA,  # 失敗訊息是中性服務回條，不以她的口吻
                 persona_id=auth.persona_id, endpoint_id=auth.endpoint_id, lease_id=auth.lease_id,
                 fencing_epoch=auth.fencing_epoch, core_epoch=auth.core_epoch, presence_generation=auth.presence_generation,
                 activity_id=result.activity_id, audience_scope=ticket.audience_scope, content_ref=ref,
@@ -1499,7 +1508,7 @@ class EchoPipelineHost:
                 self.loop_text.discard(ref)  # 端點在 dispatch 內同步解析並渲染；送出後暫存即可清掉
             status = record.status
             if status in (DS.SENT, DS.ACCEPTED, DS.RENDERED_PLAYED):
-                if result.cause is ResumeCause.APPROVED:  # 送達後才寫；REJECTED 不寫
+                if result.cause is ResumeCause.APPROVED and not failed:  # 送達後才寫；REJECTED、失敗訊息都不寫
                     self.store_turn_memory(ticket, TurnEndFacts(
                         status="completed", generation_ok=True, generated_len=len(result.text), spoken_text=result.text,
                         snapshot_version=ticket.snapshot_version,

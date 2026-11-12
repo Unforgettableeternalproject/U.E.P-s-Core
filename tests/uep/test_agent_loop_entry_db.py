@@ -984,3 +984,51 @@ def test_tick_flush_requests_are_deduplicated_while_one_is_queued(session_factor
         assert len(stores) == 1 and len(queued) == 1  # 佇列已空，不再排
     finally:
         rig.core.shutdown()
+
+
+# ---- PR-C：resumed 失敗訊息（真實 Gate／Delivery／端點）----
+
+def test_failed_resumed_result_sends_a_system_notice_and_never_writes_memory(session_factory, tmp_path):
+    from uep.echo.agent_wiring import LOOP_FAILURE_TEXT
+    from uep.echo.resume_return import ResumeDisposition, ResumeOutcome
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        before = len(rig.deliveries())
+        result = _resumed(ticket, activity, outcome=ResumeOutcome.FAILED, text=LOOP_FAILURE_TEXT)
+        assert rig.host.accept_resumed_result(result) is ResumeDisposition.DELIVERED
+        shown = [t for t in rig.host.endpoint.rendered_texts() if t.text == LOOP_FAILURE_TEXT]
+        assert len(shown) == 1 and shown[0].system is True  # 中性系統訊息，不是角色發言
+        assert len(rig.deliveries()) == before + 1 and stores == []
+        assert rig.host.accept_resumed_result(result) is ResumeDisposition.DELIVERED  # 冪等：不重送
+        assert len(rig.deliveries()) == before + 1
+    finally:
+        rig.core.shutdown()
+
+
+def test_failed_resumed_result_can_go_pending_and_still_sends_no_memory(session_factory, tmp_path):
+    from uep.echo.agent_wiring import LOOP_FAILURE_TEXT
+    from uep.echo.resume_return import ResumeDisposition, ResumeOutcome
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        real = rig.host.endpoint.lease_auth
+        rig.host.endpoint.lease_auth = lambda: None
+        result = _resumed(ticket, activity, outcome=ResumeOutcome.FAILED, text=LOOP_FAILURE_TEXT)
+        assert rig.host.accept_resumed_result(result) is ResumeDisposition.PENDING
+        rig.host.endpoint.lease_auth = real
+        assert rig.host.flush_resume_pending(trigger="lease") == 1 and stores == []
+    finally:
+        rig.core.shutdown()
+
+
+def test_rejected_cause_failure_notice_is_still_sent(session_factory, tmp_path):
+    from uep.echo.agent_wiring import LOOP_FAILURE_TEXT
+    from uep.echo.resume_return import ResumeCause, ResumeDisposition, ResumeOutcome
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        result = _resumed(ticket, activity, outcome=ResumeOutcome.FAILED, cause=ResumeCause.REJECTED, text=LOOP_FAILURE_TEXT)
+        assert rig.host.accept_resumed_result(result) is ResumeDisposition.DELIVERED and stores == []
+    finally:
+        rig.core.shutdown()

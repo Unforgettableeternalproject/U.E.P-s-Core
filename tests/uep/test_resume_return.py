@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.uep.test_agent_loop_entry import _stub_launcher, _ticket
-from uep.echo.agent_wiring import _RunCtx
+from uep.echo.agent_wiring import LOOP_FAILURE_TEXT, _RunCtx
 from uep.echo.resume_return import (
     ResumeCause,
     ResumeDisposition,
@@ -38,15 +38,25 @@ def test_completed_state_maps_to_completed_result_with_identity_and_text():
     assert r.outcome is ResumeOutcome.COMPLETED and r.cause is ResumeCause.APPROVED and r.text == "完成了"
 
 
-@pytest.mark.parametrize(("state", "raised", "expected"), [
-    ("failed", False, ResumeOutcome.FAILED), ("completed", True, ResumeOutcome.FAILED),
-    ("cancelled", False, ResumeOutcome.CANCELLED), ("stale", False, ResumeOutcome.CANCELLED),
+@pytest.mark.parametrize(("state", "raised", "expected", "text"), [
+    ("failed", False, ResumeOutcome.FAILED, LOOP_FAILURE_TEXT), ("completed", True, ResumeOutcome.FAILED, LOOP_FAILURE_TEXT),
+    ("cancelled", False, ResumeOutcome.CANCELLED, ""), ("stale", False, ResumeOutcome.CANCELLED, ""),
 ])
-def test_other_states_carry_no_text(state, raised, expected):
+def test_failed_carries_the_fixed_failure_text_and_cancelled_carries_nothing(state, raised, expected, text):
     seen: list[ResumedRunResult] = []
     launcher = _launcher(lambda r: seen.append(r) or ResumeDisposition.NOT_APPLICABLE)
     launcher._return_to_host(_ctx(), state, "x", raised)
-    assert seen[0].outcome is expected and seen[0].text == ""
+    assert seen[0].outcome is expected and seen[0].text == text
+
+
+def test_budget_abort_partial_in_a_resumed_run_sends_only_the_fixed_failure_text():
+    """續跑中預算 abort（state=failed、code=budget_exhausted、ctx.text 為部分結果）：固定失敗訊息，部分結果文字不送。"""
+    seen: list[ResumedRunResult] = []
+    launcher = _launcher(lambda r: seen.append(r) or ResumeDisposition.DELIVERED)
+    ctx = _ctx()
+    ctx.text = "已取得的部分結果"
+    launcher._return_to_host(ctx, "failed", "budget_exhausted", False)
+    assert seen[0].outcome is ResumeOutcome.FAILED and seen[0].text == LOOP_FAILURE_TEXT and seen[0].reason_code == "budget_exhausted"
 
 
 def test_cause_is_carried_to_host():
@@ -174,3 +184,106 @@ def test_settings_defaults_match_the_decision():
 
     s = UepSettings()
     assert (s.resume_pending_ttl_s, s.resume_pending_max) == (1800.0, 8)
+
+
+# ---- PR-C：Task 狀態與送達解耦（Q4）、resumed 取消納入 Lease／global_stop（Q7）----
+
+class _FakeResumeTasks:
+    """_work_resume 用的最小 TaskManager：Run 已 SUCCEEDED（迴圈自己轉的），記錄 launcher 對 Task 的收尾。"""
+
+    heartbeat_stale_after = None
+
+    def __init__(self, run_status="SUCCEEDED", epoch=3):
+        self.run_status, self.epoch = run_status, epoch
+        self.task_calls: list = []
+        self.run_calls: list = []
+
+    def get_run(self, run_id):
+        return SimpleNamespace(worker_epoch=self.epoch, status=self.run_status)
+
+    def transition_run(self, run_id, to, *, worker_epoch):
+        self.run_calls.append(to)
+
+    def transition_task(self, task_id, to, **kw):
+        self.task_calls.append((to, kw.get("reason_code")))
+
+    def heartbeat(self, *a, **k):
+        return None
+
+
+def _run_work_resume(outcome_state, *, delivered, run_status, callback):
+    from concurrent.futures import Future
+
+    from uep.agent.loop import LoopOutcome
+    from uep.echo.agent_wiring import ParkedLoop
+
+    launcher = _stub_launcher(on_resumed=callback)
+    tasks = _FakeResumeTasks(run_status=run_status)
+    launcher._tasks = tasks
+    ctx = _ctx()
+    ctx.delivered = delivered
+    launcher._active = 1
+    launcher._build_loop = lambda c: SimpleNamespace(
+        resume=lambda *a, **k: LoopOutcome(outcome_state, "run_1", "budget_exhausted" if outcome_state == "failed" else None, "完成了"),
+    )
+    entry = ParkedLoop(_ticket(), "task_1", SimpleNamespace(), "parent")
+    future: Future = Future()
+    launcher._work_resume(entry, ctx, {}, {}, future)
+    return future.result(5), tasks
+
+
+def test_task_succeeds_when_work_completed_even_if_the_reply_was_not_delivered():
+    """Q4：SUCCEEDED 只代表工作完成；文字有沒有送達（這裡是 DROPPED）不影響。"""
+    from uep.tasks.states import RunStatus
+
+    result, tasks = _run_work_resume("completed", delivered=False, run_status="SUCCEEDED", callback=lambda r: ResumeDisposition.DROPPED)
+    assert tasks.task_calls == [(RunStatus.SUCCEEDED, None)] and result.disposition is ResumeDisposition.DROPPED
+
+
+def test_task_fails_when_the_run_failed_and_the_failure_notice_is_requested():
+    from uep.tasks.states import RunStatus
+
+    seen: list[ResumedRunResult] = []
+    result, tasks = _run_work_resume(
+        "failed", delivered=True, run_status="FAILED", callback=lambda r: seen.append(r) or ResumeDisposition.DELIVERED,
+    )
+    assert tasks.task_calls[0][0] is RunStatus.FAILED
+    assert seen[0].outcome is ResumeOutcome.FAILED and seen[0].text == LOOP_FAILURE_TEXT and result.disposition is ResumeDisposition.DELIVERED
+
+
+def test_resumed_loop_cancel_includes_lease_loss_and_global_stop_when_host_says_so():
+    state = {"cancel": False}
+    launcher = _stub_launcher(resume_cancel_check=lambda: state["cancel"])
+    ctx = _ctx()
+    loop = launcher._build_loop(ctx)
+    assert loop._cancelled() is False
+    state["cancel"] = True
+    assert loop._cancelled() is True  # Lease 遺失／global_stop
+    state["cancel"] = False
+    ctx.cancel_requested = True
+    assert loop._cancelled() is True  # 原本的旗標仍有效
+
+
+def test_resumed_loop_without_a_host_check_behaves_as_before_and_check_errors_do_not_cancel():
+    launcher = _stub_launcher()
+    assert launcher._build_loop(_ctx())._cancelled() is False
+
+    def boom():
+        raise RuntimeError("x")
+
+    broken = _stub_launcher(resume_cancel_check=boom)
+    assert broken._build_loop(_ctx())._cancelled() is False
+
+
+def test_host_resume_should_cancel_on_lease_loss_and_global_stop():
+    from uep.echo.host import EchoPipelineHost
+
+    host = EchoPipelineHost.__new__(EchoPipelineHost)
+    host.endpoint = SimpleNamespace(lease_auth=lambda: object())
+    host._stopped_reason = None
+    assert host.resume_should_cancel() is False
+    host._stopped_reason = "global_stop"
+    assert host.resume_should_cancel() is True
+    host._stopped_reason = None
+    host.endpoint = SimpleNamespace(lease_auth=lambda: None)
+    assert host.resume_should_cancel() is True

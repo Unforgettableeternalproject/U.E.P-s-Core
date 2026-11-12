@@ -312,7 +312,10 @@ class LoopLauncher:
         memory_store: Callable[[Any, TurnEndFacts], None] | None = None, retry: RetryPolicy | None = None,
         step_timeout_s: float | None = None, budget_policies: BudgetPolicyTable | None = None,
         on_resumed: Callable[[ResumedRunResult], ResumeDisposition] | None = None,
+        resume_cancel_check: Callable[[], bool] | None = None,
     ) -> None:
+        # 續跑中的 Run 的額外取消條件（Q7）：Host 的 ``resume_should_cancel``（Lease 遺失或 global_stop）；None = 只看 cancel_requested／closing
+        self._resume_cancel_check = resume_cancel_check
         # 續跑的 Run 到達終態時回 Host 的入口（``EchoPipelineHost.accept_resumed_result``）；None = 退回舊行為（只回 LoopResumeResult）
         self._on_resumed = on_resumed
         # 預算門檻事件的決策日誌記錄器 (run_id, task_id, kind)；由組裝層在日誌啟用時以 set_budget_recorder 掛上，None = 不記
@@ -454,6 +457,19 @@ class LoopLauncher:
             self._threads.discard(thread)
 
     # ---- worker ----
+
+    def _resume_should_cancel(self) -> bool:
+        """續跑中的 Run 是否該取消：Host 回報 Lease 遺失或 global_stop（原 turn 已結束，沒有 live turn 可被 ``cancel_turn`` 取消）。
+        TaskManager 的 ``action_guard`` 只在 Runtime STOPPING 或全域停止旗標成立時擋 action 進入，``presence_check`` 只管
+        ``presence_bound`` 的 Task／action（loop 的 Task 不是），所以 Lease 遺失不會被 Manager 擋下，要靠這裡在 Step 邊界取消。"""
+        check = self._resume_cancel_check
+        if check is None:
+            return False
+        try:
+            return bool(check())
+        except Exception:
+            logger.warning("續跑取消檢查失敗，視為不取消", exc_info=True)
+            return False
 
     def _cancelled(self, turn_id: str) -> bool:
         orch = self._orchestrator
@@ -621,7 +637,7 @@ class LoopLauncher:
             on_budget=lambda kind: self._on_budget(ctx, kind),
             injected={"actor_id": ticket.actor_id, "audience": ticket.audience_scope, "segment_id": ticket.segment_id},
             cancelled=(
-                (lambda: ctx.cancel_requested or self._closing.is_set()) if ctx.resumed
+                (lambda: ctx.cancel_requested or self._closing.is_set() or self._resume_should_cancel()) if ctx.resumed
                 else (lambda: ctx.cancel_requested or self._cancelled(ticket.turn_id))
             ),
             deliver_result=(
@@ -729,7 +745,9 @@ class LoopLauncher:
             try:
                 if state != "awaiting_approval":  # 再次 park 時保留；其餘為終態：收尾並清理
                     reason = "loop_exception" if raised else f"loop_{code or state}"
-                    self._settle(ctx, ok=state == "completed" and ctx.delivered, reason=reason)
+                    # Q4：續跑路徑的 Task 狀態與送達解耦——SUCCEEDED 只代表工作完成（工具副作用已發生）；文字有沒有送達使用者由
+                    # disposition 表示。首跑路徑（``_conclude``）仍用 ``ok=ctx.delivered``，兩者刻意不對稱：首跑的回覆就是該回合的結果
+                    self._settle(ctx, ok=state == "completed", reason=reason)
                     disposition = self._return_to_host(ctx, state, code, raised)  # 文字暫存清理之前（端點送出時要解析 content_ref）
                     with self._lock:
                         self._parked.pop(run_id, None)
@@ -760,10 +778,11 @@ class LoopLauncher:
             outcome = ResumeOutcome.COMPLETED
         else:
             outcome = ResumeOutcome.CANCELLED
+        # FAILED（含預算中斷的 partial）送固定的失敗訊息（不經 LLM、SYSTEM_NOTICE），部分結果文字不送；CANCELLED 不送
+        text = ctx.text if outcome is ResumeOutcome.COMPLETED else (LOOP_FAILURE_TEXT if outcome is ResumeOutcome.FAILED else "")
         result = ResumedRunResult(
             run_id=run.run_id, worker_epoch=run.worker_epoch, task_id=ctx.task_id, activity_id=ctx.activity_id,
-            ticket=ctx.ticket, outcome=outcome, cause=ctx.cause, text=ctx.text if outcome is ResumeOutcome.COMPLETED else "",
-            reason_code=None if code is None else str(code),
+            ticket=ctx.ticket, outcome=outcome, cause=ctx.cause, text=text, reason_code=None if code is None else str(code),
         )
         try:
             return self._on_resumed(result)

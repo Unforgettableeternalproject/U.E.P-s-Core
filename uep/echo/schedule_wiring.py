@@ -37,8 +37,9 @@ class PlanBackedRestWindowPolicy:
     降級順序（保住夜間做夢）：
     1. 行程暫時讀不到（reader 例外／unavailable）：若最後一次成功取得的窗口仍涵蓋 ``now``，沿用到窗口結束（遲滯），
        避免窗口進行中因短暫故障被切斷；窗口已結束或沒有快取才退回 ``fallback``（FixedWindowPolicy）。
-    2. 行程可讀但根本沒有 ``rest_window`` 項（reader 提供 ``has_rest_window()`` 時才檢查）：退回 ``fallback`` 並記一次
-       warning；啟動、每次從降級恢復時檢查，缺項狀態下每 ``recheck_s`` 秒再檢查一次。
+    2. 行程可讀但沒有 ``rest_window`` 項（reader 提供 ``has_rest_window()`` 時才檢查）：退回 ``fallback`` 並記一次
+       warning；啟動、每次從降級恢復時檢查，之後在窗口外每 ``recheck_s`` 秒重查一次（啟動後項被刪除也會察覺），
+       窗口進行中突然不再是窗口時立即重查。
     窗口的 tz 取自 rest_window 項自己的時區（``slot.tz``），拿不到時用 ``tz`` 固定字串。
     """
 
@@ -77,10 +78,15 @@ class PlanBackedRestWindowPolicy:
             return True
 
     def verify(self) -> bool:
-        """啟動時檢查 rest_window 項是否存在；不存在記一次 warning（之後 window_at 會降級）。"""
+        """檢查 rest_window 項是否存在（啟動時，以及之後每 ``recheck_s`` 秒在窗口外重查）。
+
+        不存在記一次 warning（之後 window_at 降級成 fallback）；缺項後又出現記一次 info。
+        """
         exists = self._rest_window_exists()
         if not exists and self._item_known is not False:
             logger.warning("plan 模式但行程沒有 rest_window 項，休息時段退回固定時窗")
+        elif exists and self._item_known is False:
+            logger.info("行程的 rest_window 項已恢復，休息時段改回由行程提供")
         self._item_known = exists
         self._last_missing_check = self._monotonic()
         return exists
@@ -101,9 +107,11 @@ class PlanBackedRestWindowPolicy:
             logger.info("行程恢復可用，休息時段改回由行程提供")
         if slot.source != PlanSource.REST_WINDOW:
             # 窗口外：要分辨「真的不在窗口」與「根本沒有 rest_window 項」
-            if self._item_known is None or (
-                    self._item_known is False and self._monotonic() - self._last_missing_check >= self._recheck_s):
-                self.verify()
+            cached = self._cached
+            window_vanished = cached is not None and cached.start <= now < cached.end  # 窗口進行中卻不再是窗口
+            if (self._item_known is None or window_vanished
+                    or self._monotonic() - self._last_missing_check >= self._recheck_s):
+                self.verify()  # 啟動後項目被刪除也要察覺：定期（recheck_s）重查，窗口提早消失時立即重查
             self._cached = None
             if self._item_known is False:
                 return self._fallback.window_at(now)
@@ -111,6 +119,7 @@ class PlanBackedRestWindowPolicy:
         if slot.ends_at is None:  # 窗口一定有終點；沒有代表資料不一致
             return self._degrade("rest_window 缺少終點", now)
         self._item_known = True
+        self._last_missing_check = self._monotonic()  # 窗口本身就證明項存在
         window = RestWindow(slot.starts_at, slot.ends_at, slot.tz or self._tz)
         self._cached = window
         return window

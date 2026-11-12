@@ -258,3 +258,54 @@ def test_build_plan_policy_verifies_on_start(caplog):
         policy = build_rest_window_policy(Settings("plan"), None, None, store=store)
     assert isinstance(policy, PlanBackedRestWindowPolicy)
     assert any("沒有 rest_window 項" in r.message for r in caplog.records)
+
+
+# ---- 啟動後 rest_window 項被刪除：定期重查並降級（N1）----
+
+def test_deleted_rest_window_item_after_startup_is_noticed_and_degrades(caplog):
+    now = [0.0]
+    reader = Controllable([window_item(time(1), time(2))])
+    policy = PlanBackedRestWindowPolicy(reader, recheck_s=60.0, monotonic=lambda: now[0])
+    assert policy.window_at(tpe(2026, 11, 12, 6)) is None  # 啟動後第一次：確認項存在（checks=1）
+    for _ in range(10):  # 項健在：60 秒內不重複查 DB
+        assert policy.window_at(tpe(2026, 11, 12, 6)) is None
+    assert reader.checks == 1
+    reader.items, reader.exists = [], False  # 啟動後被刪除
+    now[0] = 30.0
+    assert policy.window_at(tpe(2026, 11, 12, 4)) is None  # 還沒到重查時間：維持原判定
+    now[0] = 61.0
+    with caplog.at_level(logging.WARNING, logger="uep.echo.schedule_wiring"):
+        window = policy.window_at(tpe(2026, 11, 12, 4))
+        policy.window_at(tpe(2026, 11, 12, 4, 30))
+    assert window is not None and window.start == tpe(2026, 11, 12, 3)  # 降級成 fixed 03:00–05:30
+    assert reader.checks == 2
+    assert sum("沒有 rest_window 項" in r.message for r in caplog.records) == 1
+
+
+def test_window_vanishing_mid_window_rechecks_immediately_and_keeps_degraded(caplog):
+    now = [0.0]
+    reader = Controllable([window_item(time(1), time(2))])
+    policy = PlanBackedRestWindowPolicy(reader, recheck_s=60.0, monotonic=lambda: now[0])
+    assert policy.window_at(tpe(2026, 11, 12, 1, 10)) is not None  # 進入窗口（快取）
+    reader.items, reader.exists = [], False
+    with caplog.at_level(logging.INFO, logger="uep.echo.schedule_wiring"):
+        # 窗口進行中突然不再是窗口：不等 recheck_s，立即重查 → 缺項 → 降級
+        assert policy.window_at(tpe(2026, 11, 12, 1, 30)) is None  # fixed 此時不在 03:00 窗口
+        assert policy.window_at(tpe(2026, 11, 12, 4)) is not None  # 之後維持降級（fixed 窗口）
+    assert any("沒有 rest_window 項" in r.message for r in caplog.records)
+    reader.items, reader.exists = [window_item(time(1), time(2))], True
+    now[0] = 100.0
+    with caplog.at_level(logging.INFO, logger="uep.echo.schedule_wiring"):
+        assert policy.window_at(tpe(2026, 11, 12, 4)) is None  # 項恢復：改回由行程判定
+    assert any("已恢復" in r.message for r in caplog.records)
+
+
+def test_truncated_window_does_not_trigger_recheck_and_stays_plan_backed():
+    reader = Controllable([window_item(time(3), time(5, 30)),
+                           PlanItem("w", ActivityKind.WORK, "discord", "weekly", weekdays=(1, 2, 3, 4, 5, 6, 7),
+                                    local_start=time(4), local_end=time(4, 30), tz=TZ)])
+    policy = PlanBackedRestWindowPolicy(reader, recheck_s=60.0, monotonic=lambda: 0.0)
+    assert policy.window_at(tpe(2026, 11, 12, 3, 30)) is not None
+    assert policy.window_at(tpe(2026, 11, 12, 4, 10)) is None  # 被明確行程截斷：項仍在，不降級
+    assert reader.checks == 0  # 截斷時窗口格本來就在該處結束，不觸發立即重查（只有定期重查）
+    assert policy.window_at(tpe(2026, 11, 12, 5)) is not None

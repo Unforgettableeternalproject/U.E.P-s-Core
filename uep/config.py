@@ -135,6 +135,8 @@ class UepSettings(BaseSettings):
     dream_window_start: str | None = Field(default=None, validation_alias="UEP_DREAM_WINDOW_START")
     dream_window_end: str | None = Field(default=None, validation_alias="UEP_DREAM_WINDOW_END")
     dream_window_tz: str | None = Field(default=None, validation_alias="UEP_DREAM_WINDOW_TZ")
+    # 休息時段的來源（PP-2）：fixed＝現行 FixedWindowPolicy（預設）；plan＝由行程的 rest_window 項提供（需要 DB，行程不可用時退回 fixed）
+    schedule_rest_window: str = Field(default="fixed", validation_alias="UEP_SCHEDULE_REST_WINDOW")
 
     # 系統日誌（uep/log.py，只在進入點 configure_logging 讀取）：UEP_LOG_LEVEL 優先於 UEP_LOG_DEPTH（1..4＝KEY／INFO／DEBUG／TRACE）；
     # log_levels 為 "uep.decision=DEBUG,echo_tts=WARNING" 的命名空間覆寫；console 輸出到 stderr；檔案每行程一組，JSONL 供查核

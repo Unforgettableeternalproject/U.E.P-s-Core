@@ -163,8 +163,10 @@ def build_memory_host(
 ) -> MemoryHost:
     """真實記憶 Host（EM engine、bge-m3、assess 關閉以免額外 LLM 呼叫）；資料根由呼叫端決定。"""
     from uep.echo.memory_wiring import build_dream_loop_config, build_memory_wiring
+    from uep.echo.schedule_wiring import build_rest_window_policy
 
     dream_loop, dream_rest_policy = build_dream_loop_config(settings)
+    dream_rest_policy = build_rest_window_policy(settings, dream_rest_policy, session_factory)  # 預設 fixed：不變
     wiring = build_memory_wiring(
         device=memory_device(settings), embedding_backend=settings.memory_embedding_backend,
         embedding_model=settings.memory_embedding_model, min_similarity=settings.memory_min_similarity,

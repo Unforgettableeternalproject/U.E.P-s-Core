@@ -662,6 +662,46 @@ class PlanStore:
 
         return self._write(expected_revision, "rest_window", body)
 
+    def seed_rest_window(self, local_start: time, local_end: time, tz: str, *,
+                         overwrite: bool = False) -> Literal["created", "updated", "kept"]:
+        """系統種子（非 owner 寫入，PP-2）：沒有休息窗口項時建立；已存在時只有 ``overwrite=True`` 且值不同才改寫。
+
+        用於啟動時以 ``UEP_DREAM_WINDOW_*`` 建立／覆寫（供白天驗證）。同一交易 revision +1；無變更不 bump。
+        """
+        if local_start == local_end:
+            raise ValueError("休息窗口的 start 與 end 不得相同")
+        if not _tz_ok(tz):
+            raise ValueError(f"無效的時區：{tz}")
+        now = self._now()
+        with self._sf() as s, s.begin():
+            self._lock_meta(s)
+            row = s.execute(text(
+                "SELECT item_id, local_start, local_end, tz FROM presence_plan_items WHERE persona_id = :p "
+                "AND role = 'rest_window' AND deleted_at IS NULL FOR UPDATE"), {"p": self._persona}).first()
+            if row is not None and (not overwrite or (row.local_start, row.local_end, row.tz) == (
+                    local_start, local_end, tz)):
+                return "kept"
+            params = {"p": self._persona, "ls": local_start, "le": local_end, "tz": tz, "by": "system:seed",
+                      "now": now}
+            if row is not None:
+                s.execute(text(
+                    "UPDATE presence_plan_items SET local_start = :ls, local_end = :le, tz = :tz, "
+                    "version = version + 1, updated_by = :by, updated_at = :now WHERE item_id = :id"),
+                    {**params, "id": row.item_id})
+                outcome, ref = "updated", row.item_id
+            else:
+                ref = new_id("plan")
+                s.execute(text(
+                    "INSERT INTO presence_plan_items (item_id, persona_id, role, activity_kind, location, recurrence, "
+                    "weekdays, local_start, local_end, tz, priority, created_by, updated_by, created_at, updated_at) "
+                    "VALUES (:id, :p, 'rest_window', 'rest', NULL, 'weekly', :wd, :ls, :le, :tz, :pr, :by, :by, "
+                    ":now, :now)"),
+                    {**params, "id": ref, "wd": list(_ALL_WEEKDAYS), "pr": REST_WINDOW_PRIORITY})
+                outcome = "created"
+            revision = self._bump(s, now)
+        self._notify(revision, "rest_window", ref)
+        return outcome  # type: ignore[return-value]
+
     def set_tz(self, actor: PlanActor, tz: str, *, expected_revision: int) -> WriteResult:
         """變更行程時區（輪次日界取此值；之後新建的 override／mark 以新時區計算）。"""
         if (denied := self._owner_gate(actor)) is not None:

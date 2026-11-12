@@ -463,3 +463,37 @@ def test_set_tz_recomputes_open_round_ends(store, clock):  # m8
     with store._sf() as s:
         mark_end = s.execute(text("SELECT round_end_at FROM presence_plan_slot_marks")).scalar_one()
     assert mark_end == new_end
+
+
+# ---- PP-2：休息窗口播種與行程提供的窗口（DB）----
+
+def test_seed_rest_window_created_kept_overwritten(store):
+    assert store.seed_rest_window(time(3), time(5, 30), TZ) == "created"
+    rev = store.revision()
+    assert store.seed_rest_window(time(1), time(2), TZ) == "kept"  # 已存在且不覆寫
+    assert store.seed_rest_window(time(3), time(5, 30), TZ, overwrite=True) == "kept"  # 值相同不 bump
+    assert store.revision() == rev
+    assert store.seed_rest_window(time(9), time(18), TZ, overwrite=True) == "updated"
+    assert store.revision() == rev + 1
+    assert store.resolve(tpe(2026, 11, 12, 10)).source == PlanSource.REST_WINDOW
+    with pytest.raises(ValueError):
+        store.seed_rest_window(time(3), time(3), TZ)
+    with pytest.raises(ValueError):
+        store.seed_rest_window(time(3), time(4), "Not/AZone")
+
+
+def test_plan_backed_policy_with_real_store(sf, clock):
+    from uep.echo.schedule_wiring import PlanBackedRestWindowPolicy
+
+    store = PlanStore(sf, clock=clock)
+    store.seed_rest_window(time(3), time(5, 30), TZ)
+    policy = PlanBackedRestWindowPolicy(store, tz=store.tz)
+    window = policy.window_at(tpe(2026, 11, 12, 4))
+    assert (window.start, window.end, window.tz) == (tpe(2026, 11, 12, 3), tpe(2026, 11, 12, 5, 30), TZ)
+    assert policy.window_at(tpe(2026, 11, 12, 6)) is None
+
+    def broken():
+        raise OperationalError("select", {}, Exception("db down"))
+
+    down = PlanBackedRestWindowPolicy(PlanStore(broken, clock=clock))  # 儲存不可用 → 退回固定時窗
+    assert down.window_at(tpe(2026, 11, 12, 4)) is not None

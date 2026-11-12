@@ -128,7 +128,7 @@ def test_turn_reply_definitions_are_shared_with_inference_schema() -> None:
         assistant_name="Yuki", message="ok", participant_count=3,
         recent_context=module.format_recent_context("Book it?", "Shall I book it?"),
     )
-    assert list(state) == ["assistant_name", "speaker", "other_people_present", "recent_context", "message"]
+    assert list(state) == ["assistant_name", "speaker", "other_people_present", "recent_context", "available_capabilities", "message"]
     assert state["assistant_name"] == "Yuki" and state["other_people_present"] == "2 other people present"
     assert state["recent_context"] == "User: Book it?\nAssistant: Shall I book it?"
 
@@ -679,8 +679,9 @@ def test_compound_cards_follow_priority_and_counterexamples_are_no() -> None:
     singles = [c.expected for c in (*synth.TURN_SINGLE_CARDS, *synth.ABSENT_SINGLE_CARDS)]
     assert all(e.get("compound") is False or e.get("absent.compound") is False for e in singles)
     assert next(c for c in synth.TURN_SINGLE_CARDS if c.card_id == "single_conditional").expected["route"] == "agent_loop"
-    ids = [c.card_id for cs in synth.CARD_SETS.values() for sets in cs.values() for c in sets]
-    assert len(ids) == len(set(ids))  # 卡片 ID 不得跨卡組／kind 重複
+    cards = {id(c): c for cs in synth.CARD_SETS.values() for sets in cs.values() for c in sets}  # r4 卡組會重用同一張卡物件
+    ids = [c.card_id for c in cards.values()]
+    assert len(ids) == len(set(ids))  # 不同的卡片物件 ID 不得跨卡組／kind 重複
 
 
 def test_existing_rows_default_to_compound_no_with_few_exceptions() -> None:

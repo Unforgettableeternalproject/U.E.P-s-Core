@@ -128,6 +128,7 @@ def build_state_turn_reply(facts: Mapping[str, Any]) -> dict[str, str]:
         message=message,
         participant_count=others + 1 if others > 0 else None,
         recent_context=laya_schema.format_recent_context(user_en, reply_en, same_speaker=same_speaker),
+        capabilities=facts.get("capabilities"),  # None＝現行預設清單
     )
 
 

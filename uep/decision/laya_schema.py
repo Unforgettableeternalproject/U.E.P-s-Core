@@ -9,6 +9,7 @@ state 欄位只有助理名稱、泛稱的說話者、在場人數、近期脈�
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 SPEAKER_LABEL = "user"  # 泛稱的說話者，不送 speaker_ref
@@ -20,25 +21,45 @@ OTHER_USER_LABEL = "Another user"  # 上一輪使用者與本句說話者不同�
 ASSISTANT_LABEL = "Assistant"
 WARMUP_MESSAGE = "Hello, are you there?"  # warmup 假推論用的固定短句
 
+# 能力類別（粗粒度，給模型判斷「她做不做得到」）。來源：工具層 CAPABILITY_CEILING 的標籤（memory／lore／chatroom／desktop.file_*／
+# web／image 等）歸入 query／messaging／files，其餘類別（booking／calling／media_control／timer_alarm／host_control／device_control）
+# 對應訓練資料中出現的能力與艾斯維爾裁決的範圍。新增功能只要在工具層登記並映射到類別，模型即知道她做得到，不必重訓標註規則。
+CAPABILITY_CATEGORIES: tuple[str, ...] = (
+    "query", "booking", "messaging", "calling", "files", "media_control", "timer_alarm", "host_control", "device_control",
+)
+# 現行預設清單：系統內與通訊能力；不含 device_control（燈、門鎖、恆溫器、窗戶等外部實體裝置）。工具層清單接上之前由此提供。
+DEFAULT_CAPABILITIES: tuple[str, ...] = tuple(c for c in CAPABILITY_CATEGORIES if c != "device_control")
+NO_CAPABILITIES = "none"
+
+
+def format_capabilities(capabilities: "Iterable[str] | None" = None) -> str:
+    """能力清單 -> state 字面值（依類別固定順序，逗號分隔；空集合為 ``none``）。None 取現行預設清單。"""
+    caps = set(DEFAULT_CAPABILITIES if capabilities is None else capabilities)
+    unknown = caps - set(CAPABILITY_CATEGORIES)
+    if unknown:
+        raise ValueError(f"不認得的能力類別：{sorted(unknown)}")
+    ordered = [c for c in CAPABILITY_CATEGORIES if c in caps]
+    return ", ".join(ordered) if ordered else NO_CAPABILITIES
+
 # 問題集（laya 的 choice／noul 題型）；選項說明是給零樣本模型看的
 QUESTIONS: dict[str, dict[str, Any]] = {
     "reply_mode": {
         "type": "choice",
-        "instructions": "Based on this conversation, which reply mode should the assistant take right now?",
+        "instructions": "Based on this conversation, which reply mode should the assistant take right now? A request that needs a capability missing from available_capabilities is something it cannot do.",
         "criteria": {
-            "respond": "The assistant was called or asked something and should answer right away",
-            "passive": "The assistant was not called, but may listen in the background and chime in briefly only if necessary",
-            "pass": "The conversation has nothing to do with the assistant; stay silent and do not reply",
-            "defer": "Information is insufficient or the request is risky; confirm with the user first or postpone",
+            "respond": "The assistant was called or asked something and should answer right away (if the request needs a capability it lacks, it still answers and says it cannot)",
+            "passive": "The assistant was not called, but has a concrete reason to speak up: the talk touches something it promised, noted or said that is still in progress or about to be used, or someone asks the room a question it can answer, or asks the room for something it can do; otherwise pass",
+            "pass": "The conversation has nothing to do with the assistant or gives it no good reason to speak (talk between other people, praise or recollection of what it did, relayed news, muttering, an unaddressed request for something it cannot do); stay silent and do not reply",
+            "defer": "A key detail is missing, the request is risky, or the user asks to come back to it later; confirm with the user first or postpone",
         },
     },
     "route": {
         "type": "choice",
         "instructions": "Which handling route should this message be sent to?",
         "criteria": {
-            "direct_chat": "Casual chat, a simple question, or a read-only lookup that changes nothing (weather, news, checking the calendar, recalling a memory); a conversational reply is enough",
+            "direct_chat": "Casual chat, a simple question, a read-only lookup that changes nothing (weather, news, checking the calendar, recalling a memory), or telling the user it cannot do something; a conversational reply is enough",
             "agent_loop": "A complex task that needs multi-step reasoning, planning or several tool calls",
-            "task_request": "A single, clear command for one action that changes state (switch a device, set a reminder, send an email, etc.)",
+            "task_request": "A single, clear command for one action that changes state (change a setting, set a reminder or timer, send an email, etc.)",
             "ignore": "Not addressed to the assistant; ignore it",
         },
     },
@@ -78,6 +99,7 @@ def format_recent_context(user_en: str | None, reply_en: str | None, *, same_spe
 
 def build_state_dict(
     *, assistant_name: str, message: str, participant_count: int | None = None, recent_context: str = NO_CONTEXT,
+    capabilities: Iterable[str] | None = None,
 ) -> dict[str, str]:
     """組 laya 的 state dict（訓練與推論共用）。"""
     return {
@@ -85,5 +107,6 @@ def build_state_dict(
         "speaker": SPEAKER_LABEL,
         "other_people_present": others_present(participant_count),
         "recent_context": recent_context or NO_CONTEXT,
+        "available_capabilities": format_capabilities(capabilities),
         "message": message,
     }

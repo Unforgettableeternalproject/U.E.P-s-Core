@@ -40,7 +40,9 @@ from pathlib import Path
 from typing import Any
 
 from .blind import compare_labels, read_jsonl, write_jsonl
+from .capabilities import apply_capabilities
 from .compound import COMPOUND_QID, is_compound
+from .leak_filter import filter_rows, fuzzy_pairs, test_entries
 from .kinds import ROUTES, get_spec
 from .split import split_rows
 from .synth import CARD_SETS, CARDS
@@ -70,7 +72,8 @@ RULINGS.update({
     "synthetic-en-turn.reply-00018": _tr("respond", True, "direct_chat"),
     "synthetic-en-turn.reply-00019": _tr("respond", True, "direct_chat"),
     "synthetic-en-turn.reply-00099": _tr("passive", False, "ignore"),
-    "synthetic-en-turn.reply-00107": _tr("passive", False, "ignore"),
+    # 對其他成員說的話，她沒有開口的理由（艾斯維爾 11/12 改判；原為 passive）
+    "synthetic-en-turn.reply-00107": _tr("pass", False, "ignore"),
     "synthetic-en-turn.reply-00228": _tr("passive", False, "ignore"),
     "synthetic-en-turn.reply-00233": _tr("respond", True, "task_request"),
     "synthetic-en-turn.reply-00375": _tr("respond", True, "direct_chat"),
@@ -87,8 +90,8 @@ RULINGS.update({
 # 判準：她插話時在場的人會覺得被打斷——例如只是複述／附和她記下的事、自言自語、旁人互相的陳述。
 PASSIVE_NARROW: frozenset[str] = frozenset(
     f"synthetic-en-turn.reply-{n}" for n in (
-        "00097", "00104", "00105", "00106", "00227", "00229", "00235", "00236", "00237", "00238",
-        "00359", "00365", "00366", "00368", "00486", "00488", "00489", "00494", "00495", "00496",
+        "00097", "00104", "00105", "00227", "00229", "00235", "00236", "00237", "00238",
+        "00357", "00359", "00365", "00366", "00368", "00486", "00489", "00494", "00495", "00496",
         "00497", "00610", "00613", "00618", "00619", "00620", "00621", "00740", "00741", "00746",
         "00747", "00748", "00749", "00867", "00874", "00875", "00876", "00877",
     )
@@ -121,6 +124,66 @@ DROPPED: dict[str, str] = {
 
 def sid_is_r4(row: Mapping[str, Any]) -> bool:
     return str(row["sample_id"]).startswith("r4-")
+
+
+# defer 比例調降（艾斯維爾 11/12 裁決 8）：r4 新增的 defer 與 respond 請求比例失衡（ft-r2 把沒有 Yuki 稱呼的完整請求判成 defer），
+# 補了成對的 respond 樣本之外，再各砍掉一部分資訊不足／高風險卡（依 sha1 決定，可重現）。
+DEFER_TRIM: dict[str, int] = {"defer_missing_info": 10, "defer_risky": 10}
+
+
+def trim_defer(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    import hashlib
+
+    drop: set[str] = set()
+    for card, n in DEFER_TRIM.items():
+        cand = sorted((r["sample_id"] for r in rows if (r.get("meta") or {}).get("card") == card),
+                      key=lambda x: hashlib.sha1(f"trim:{x}".encode()).hexdigest())
+        drop.update(cand[:n])
+    return [r for r in rows if r["sample_id"] not in drop], sorted(drop)
+
+
+def drop_overlaps(rows: list[dict[str, Any]], testset_dir: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """訓練資料與測試集（en_test／en_reference／en_independent）的近似重複，以及訓練資料內部的近似重複。
+
+    - 對測試集：字詞 Jaccard >= 0.7（短句比本句＋前文 >= 0.85），加上正規化後的字元三連詞 Jaccard >= 0.8（抓錯字差異）；命中即刪。
+    - 內部：三連詞 Jaccard >= 0.8 且標籤完全相同者，刪後出現的那筆；標籤不同的只列出、保留。
+    測試集檔不在時略過對測試集的比對（回報 ``testset_checked=False``）。"""
+    stats: dict[str, Any] = {"testset_checked": False, "test_word_level": 0, "test_fuzzy": 0, "internal_removed": 0, "internal_kept_diff_label": 0}
+    drop: set[str] = set()
+    try:
+        tests = test_entries(testset_dir)
+        stats["testset_checked"] = True
+    except FileNotFoundError:
+        tests = []
+    if tests:
+        _, hit = filter_rows(rows, tests, 0.7)
+        word = {h["sample_id"] for h in hit}
+        stats["test_word_level"] = len(word)
+        drop |= word
+        raw = []
+        import json as _json
+
+        for fname in ("en_test.jsonl", "en_test_reference.jsonl", "en_independent.jsonl"):
+            f = testset_dir / fname
+            if f.exists():
+                raw += [_json.loads(x) for x in f.read_text(encoding="utf-8").splitlines() if x.strip() and _json.loads(x)["kind"] == "turn.reply"]
+        tr = [r for r in rows if r["kind"] == "turn.reply"]
+        fuzzy = {tr[i]["sample_id"] for i, _, _ in fuzzy_pairs(tr, raw, 0.8)} - word
+        stats["test_fuzzy"] = len(fuzzy)
+        drop |= fuzzy
+    for kind in ("turn.reply", "presence.absent_intent"):
+        sub = [r for r in rows if r["kind"] == kind and r["sample_id"] not in drop]
+        for i, j, _ in fuzzy_pairs(sub, None, 0.8):
+            if sub[j]["sample_id"] in drop or sub[i]["sample_id"] in drop:
+                continue
+            same = sub[i]["expected"] == sub[j]["expected"] and sub[i]["state"].get("available_capabilities") == sub[j]["state"].get("available_capabilities")
+            if same:
+                drop.add(sub[j]["sample_id"])
+                stats["internal_removed"] += 1
+            else:
+                stats["internal_kept_diff_label"] += 1
+    stats["removed_ids"] = sorted(drop)
+    return [r for r in rows if r["sample_id"] not in drop], stats
 
 
 def rule_of(row: Mapping[str, Any]) -> str:
@@ -364,6 +427,9 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
     final += resolved
     final, narrowed = apply_passive_narrow(final)
     counts["passive_narrow"] = len(narrowed)
+    final, trimmed = trim_defer(final)
+    final, overlap_stats = drop_overlaps(final, Path("testset"))
+    final, cap_stats = apply_capabilities(final)
     final.sort(key=lambda r: r["sample_id"])
     train, val = split_rows(final, val_ratio, seed)
     write_jsonl(mass_dir / "final.jsonl", final)
@@ -374,7 +440,7 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
     stats = {
         "accepted": len(accepted), "disputed": len(disputed), "resolved": len(resolved),
         "review": len(review), "final": len(final), "compound": {k: sum(1 for r in final if r["kind"] == k and r["expected"].get(q)) for k, q in COMPOUND_QID.items()}, "train": len(train), "val": len(val),
-        "rules": dict(sorted(counts.items())), "dropped": dict(sorted(DROPPED.items())), "relabeled_from_cards": dict(sorted(relabeled.items())),
+        "capabilities": cap_stats, "defer_trimmed": len(trimmed), "overlaps": overlap_stats, "rules": dict(sorted(counts.items())), "dropped": dict(sorted(DROPPED.items())), "relabeled_from_cards": dict(sorted(relabeled.items())),
         "final_distribution": distribution(final), "val_distribution": distribution(val),
     }
     (mass_dir / "final_stats.json").write_text(json.dumps(stats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")

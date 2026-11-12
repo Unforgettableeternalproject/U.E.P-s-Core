@@ -356,6 +356,31 @@ R4_INFO_CARDS: tuple[Card, ...] = (
 )
 CARD_SETS["r4_info"] = {"turn.reply": R4_INFO_CARDS}
 
+# ---- r3 補強卡組：defer 成對（資訊完整＝respond）、轉頭對同伴說話（zt-030／076 型）、host_control ----
+R3_PAIR_CARDS: tuple[Card, ...] = (
+    _tr("respond_complete_request", f"One user gives {A} one clear action to carry out, with every detail it needs stated outright (who, what, when or where): send a named person a specific message, book a named place for a stated day and time, order a named item in a stated quantity, set a timer, alarm or reminder for a stated time, call a named person, or open or save a named file.", "respond", True, "task_request", hard=True, others_choices=MIXED,
+        guidance="Nothing may be missing or vague: name the recipient, the content, the time or the item concretely, and avoid bare 'it', 'that' or 'the thing'. Vary the verbs and the sentence shapes; some with Yuki's name, some without."),
+    _tr("respond_lowrisk_request", f"One user asks {A} for a small, harmless and easily reversible action (mute notifications until a stated time, save a link to a reading list, rename a file, pause the music, archive an old email, set the volume, add a calendar entry); the request is fully specific.", "respond", True, "task_request", hard=True, others_choices=MIXED,
+        guidance="Nothing risky: no deleting everything, no spending money, no messages to a boss. Concrete objects and values; avoid bare 'it' or 'that'."),
+    _tr("respond_now_request", f"One user asks {A} to do one specific thing right now or at a stated time (no deferral, no 'later', no 'after dinner'); the user is not busy and just wants it done, for example 'remind me at five thirty to ...', 'text Mia now that ...', 'start a ten minute timer'.", "respond", True, "task_request", hard=True, others_choices=MIXED,
+        guidance="Do not mention being busy or coming back to it later. Concrete content."),
+)
+R3_TURN_CARDS: tuple[Card, ...] = (
+    _tr("turn_away_you", f"{A} just answered this speaker in a group; the speaker now turns to a companion in the room and talks to that person directly using 'you' (asks them something, invites them, asks their opinion), without naming {A}.", "pass", False, "ignore", context="assistant_just_replied", hard=True, others_choices=GROUP,
+        guidance=f"The words are for the companion, never for {A}; use 'you' and do not name the companion; do not name {A}. Vary the topics widely (not only food or places) and the sentence shapes (invitation, question, plan, offer)."),
+    _tr("turn_away_we", f"{A} just answered this speaker in a group; the speaker now turns to a companion and talks about what 'we' or 'let's' will do together (a plan, a suggestion, a decision), without naming {A}.", "pass", False, "ignore", context="assistant_just_replied", hard=True, others_choices=GROUP,
+        guidance=f"Use 'we', 'let's' or 'our'; the words are for the companion, never for {A}; do not name {A}. Vary the topics widely (not only food or places)."),
+    _tr("other_turns_away", f"{A} just answered a different person in the group; the current speaker (a third person) now talks to a companion, using 'you', 'we' or 'let's', and is not talking to {A}.", "pass", False, "ignore", context="assistant_answered_other", hard=True, others_choices=GROUP,
+        guidance=f"Use 'you', 'we' or 'let's' toward the companion; do not name {A}. Vary the topics widely (not only food or places) and the sentence shapes."),
+)
+R3_HOST_CARDS: tuple[Card, ...] = (
+    _tr("host_control_request", f"One user asks {A} to operate the host computer itself: shut it down at a stated time, restart it, put it to sleep, lock the screen, or log out.", "respond", True, "task_request", hard=True, others_choices=MIXED,
+        guidance="Concrete and specific (a stated time or condition is fine). Vary the wording."),
+)
+CARD_SETS["r3_pair"] = {"turn.reply": R3_PAIR_CARDS}
+CARD_SETS["r3_turn"] = {"turn.reply": R3_TURN_CARDS}
+CARD_SETS["r3_host"] = {"turn.reply": R3_HOST_CARDS}
+
 OTHER_USER_CONTEXTS = frozenset({"assistant_answered_other"})  # 前文的提問者不是目前說話者
 CONTEXT_DESC: dict[str, str] = {
     "assistant_solicits_chat": "the assistant's last line is a casual question or request for the user's opinion",

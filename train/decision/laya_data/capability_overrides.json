@@ -1,25 +1,4 @@
 {
- "relabel": [
-  "r4-defer-00044",
-  "r4-mtturn-00003",
-  "synthetic-en-turn.reply-00696",
-  "synthetic-en-turn.reply-00109",
-  "synthetic-en-turn.reply-00766",
-  "r4-defer-00057",
-  "r4-defer-00010",
-  "r4-defer-00073",
-  "synthetic-en-turn.reply-00769",
-  "synthetic-en-turn.reply-00767",
-  "r4-defer-00011",
-  "r4-defer-00081",
-  "synthetic-en-turn.reply-00056",
-  "r4-defer-00075",
-  "r4-defer-00034",
-  "r4-defer-00083",
-  "r4-defer-00072",
-  "r4-defer-00046",
-  "r4-defer-00035"
- ],
  "drop": [
   "r4-pair-00029"
  ],

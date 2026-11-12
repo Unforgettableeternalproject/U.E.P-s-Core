@@ -45,9 +45,9 @@ def format_capabilities(capabilities: "Iterable[str] | None" = None) -> str:
 QUESTIONS: dict[str, dict[str, Any]] = {
     "reply_mode": {
         "type": "choice",
-        "instructions": "Based on this conversation, which reply mode should the assistant take right now? A request that needs a capability missing from available_capabilities is something it cannot do.",
+        "instructions": "Based on this conversation, which reply mode should the assistant take right now? Use available_capabilities only for requests made to the room without naming the assistant: it may offer help (passive) if it has the matching capability, otherwise stay silent (pass). A request made directly to the assistant is handled by its intent whatever the list says.",
         "criteria": {
-            "respond": "The assistant was called or asked something and should answer right away (if the request needs a capability it lacks, it still answers and says it cannot)",
+            "respond": "The assistant was called or asked something and should answer right away (even if it turns out the assistant cannot do it, it still answers)",
             "passive": "The assistant was not called, but has a concrete reason to speak up: the talk touches something it promised, noted or said that is still in progress or about to be used, or someone asks the room a question it can answer, or asks the room for something it can do; otherwise pass",
             "pass": "The conversation has nothing to do with the assistant or gives it no good reason to speak (talk between other people, praise or recollection of what it did, relayed news, muttering, an unaddressed request for something it cannot do); stay silent and do not reply",
             "defer": "A key detail is missing, the request is risky, or the user asks to come back to it later; confirm with the user first or postpone",
@@ -57,9 +57,9 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "type": "choice",
         "instructions": "Which handling route should this message be sent to?",
         "criteria": {
-            "direct_chat": "Casual chat, a simple question, a read-only lookup that changes nothing (weather, news, checking the calendar, recalling a memory), or telling the user it cannot do something; a conversational reply is enough",
+            "direct_chat": "Casual chat, a simple question, or a read-only lookup that changes nothing (weather, news, checking the calendar, recalling a memory); a conversational reply is enough",
             "agent_loop": "A complex task that needs multi-step reasoning, planning or several tool calls",
-            "task_request": "A single, clear command for one action that changes state (change a setting, set a reminder or timer, send an email, etc.)",
+            "task_request": "A single, clear command for one action that changes state (switch a device, change a setting, set a reminder or timer, send an email, etc.); routed by what is asked, whether or not it can be done",
             "ignore": "Not addressed to the assistant; ignore it",
         },
     },

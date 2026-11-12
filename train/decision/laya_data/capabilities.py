@@ -1,10 +1,9 @@
 """能力清單（state.available_capabilities）的標註處理：預設清單、成對樣本、隨機清單、她自己說的話。
 
-艾斯維爾裁決：能力是模型的輸入，不是標註規則。標註依清單條件判斷——
-- 有對應能力：對她的請求 respond／task_request；群組裡沒點名的請求依 passive 第 3 條判斷。
-- 沒有對應能力：對她說的 respond／direct_chat（她回答做不到）；群組裡沒點名的 pass。
-多數樣本使用現行預設清單（不含 device_control，含其他系統內與通訊能力）；成對樣本把同一句話配上有／沒有某項能力兩個版本；
-少數樣本隨機抽清單（只抽不影響標籤的變動），讓模型學會看清單而不是記動作。
+艾斯維爾裁決（r4a 修訂）：能力是模型的輸入，不是標註規則；route 照意圖分。
+- 直接對她說的請求：route 一律照意圖標（「關燈」＝task_request），不看清單；能不能做由工具層判斷。成對樣本只差清單、標籤相同。
+- 群組裡沒點名的請求：清單有對應能力 → passive（第 3 條），沒有 → pass。成對樣本只差清單、標籤切換。
+多數樣本使用現行預設清單（不含 device_control，含其他系統內與通訊能力）；少數樣本隨機抽清單（只抽不影響標籤的變動）。
 
 這個模組只做資料轉換，不改 ``resolve`` 的盲標邏輯；``resolve.run`` 在切分前呼叫 ``apply_capabilities``。
 """
@@ -66,34 +65,31 @@ _NOT_PROMISE = frozenset({SID + "00102", SID + "00350", SID + "00360"})
 # 成對樣本只取「明確對她下的單一請求」卡片；依前文才成立的 respond（取消承諾、接續追問）不做孿生
 PAIR_CARDS = frozenset({"private_task", "group_named_task", "filler_then_task", "respond_complete_request", "respond_lowrisk_request",
                         "respond_now_request", "host_control_request"})
-# 能力審核後改標 respond／direct_chat 的列中，缺的是實體裝置（不是金融轉帳這類任何清單都沒有的能力）者，另產生一個配有
-# device_control、保留原標籤的孿生句。
-DEVICE_RELABEL_PAIRS: frozenset[str] = frozenset(
+# 實體裝置的 defer／task_request 請求（r3 能力審核挑出）：另產生一個配有 device_control 的孿生句，標籤相同（route 照意圖）。
+DEVICE_SAME_LABEL_PAIRS: frozenset[str] = frozenset(
     ["r4-defer-00072", "r4-defer-00073", "r4-defer-00075", "r4-defer-00011", "r4-defer-00034", "r4-defer-00083", "r4-mtturn-00003"]
     + [SID + n for n in ("00696", "00109", "00766", "00769", "00767")]
 )
-PAIR_PER_CATEGORY = 8
+SAME_LABEL_PER_CATEGORY = 4
+GROUP_PASS_PER_CATEGORY = 6
+RANDOM_DEVICE_RATE = 0.08
+RANDOM_DROP_RATE = 0.08
 
-# 盲標審核的人工紀錄（逐筆 sample_id，可重現）：relabel＝依能力清單改標 respond／direct_chat（她做不到）、drop＝盲標員之間不一致而剔除、
+# 盲標審核的人工紀錄（逐筆 sample_id，可重現）：drop＝盲標員之間不一致而剔除、
 # twin_reject＝孿生句盲標與標籤不一致而不產生。檔案與程式一起入版控。
 _OVERRIDES_PATH = Path(__file__).with_name("capability_overrides.json")
 
 
 def load_overrides() -> dict[str, frozenset[str]]:
     data = json.loads(_OVERRIDES_PATH.read_text(encoding="utf-8")) if _OVERRIDES_PATH.exists() else {}
-    return {k: frozenset(data.get(k, ())) for k in ("relabel", "drop", "twin_reject")}
+    return {k: frozenset(data.get(k, ())) for k in ("drop", "twin_reject")}
 
 
-def no_capability_label(row: Mapping[str, Any], expected: Mapping[str, Any]) -> dict[str, Any]:
-    """缺少所需能力時的標籤：對她說的（點名、私聊或接續前文）respond／direct_chat；群組裡沒點名也沒前文的 pass。"""
+def unnamed_group_request(row: Mapping[str, Any]) -> bool:
+    """群組裡沒點名也沒有前文的請求（在場有其他人、沒有 Yuki 稱呼、沒有可接續的前文）。"""
     st = row["state"]
-    unnamed_group = (st.get("other_people_present", "none") != "none" and "yuki" not in str(st.get("message", "")).lower()
-                     and st.get("recent_context", "(none)") == "(none)")
-    if unnamed_group:
-        return {**expected, "reply_mode": "pass", "addressed": False, "route": "ignore", "compound": False}
-    return {**expected, "reply_mode": "respond", "addressed": True, "route": "direct_chat", "compound": False}
-RANDOM_DEVICE_RATE = 0.08
-RANDOM_DROP_RATE = 0.08
+    return (st.get("other_people_present", "none") != "none" and "yuki" not in str(st.get("message", "")).lower()
+            and st.get("recent_context", "(none)") == "(none)")
 
 
 def _hash01(key: str) -> float:
@@ -140,23 +136,13 @@ def apply_capabilities(rows: list[dict[str, Any]], seed: int = 0) -> tuple[list[
     rng = random.Random(seed)
     ov = load_overrides()
     rows = [r for r in rows if r["sample_id"] not in ov["drop"]]
-    relabeled = 0
-    fixed = []
-    twins_pre: list[dict[str, Any]] = []
-    for r in rows:
-        if r["sample_id"] in ov["relabel"] and r["kind"] == "turn.reply":
-            if r["sample_id"] in DEVICE_RELABEL_PAIRS:
-                twins_pre.append(_twin(r, "dev", [*DEFAULT, DEVICE], dict(r["expected"]), "capability_pair"))
-            r = {**r, "expected": no_capability_label(r, r["expected"]), "meta": {**r["meta"], "label_rule": "capability_relabel"}}
-            relabeled += 1
-        fixed.append(r)
-    rows = fixed
     stats: dict[str, Any] = {"default": 0, "device_pairs": 0, "device_compound_caps": 0, "assistant_device_context": 0,
-                             "unnamed_device_pairs": 0, "relabeled_by_capability": 0, "category_pairs": {}, "random_device": 0, "random_drop": 0}
+                             "unnamed_device_pairs": 0, "same_label_device_pairs": 0, "category_pairs": {}, "group_pass_pairs": {}, "random_device": 0, "random_drop": 0}
     base: list[dict[str, Any]] = []
-    twins: list[dict[str, Any]] = list(twins_pre)
+    twins: list[dict[str, Any]] = []
     assistant_ids: list[str] = []
     cat_pool: dict[str, list[dict[str, Any]]] = {c: [] for c in NEEDS}
+    group_pool: dict[str, list[dict[str, Any]]] = {c: [] for c in NEEDS}
     for r in rows:
         if r["kind"] != "turn.reply":
             base.append(r)
@@ -164,9 +150,13 @@ def apply_capabilities(rows: list[dict[str, Any]], seed: int = 0) -> tuple[list[
         sid = r["sample_id"]
         dev_lines = assistant_device_lines(r)
         if sid in DEVICE_REQUEST_IDS:
-            twins.append(_twin(r, "nodev", list(DEFAULT), no_capability_label(r, r["expected"]), "capability_pair"))
+            twins.append(_twin(r, "nodev", list(DEFAULT), dict(r["expected"]), "capability_pair"))  # 只差清單、標籤相同
             r = set_caps(r, [*DEFAULT, DEVICE])
             stats["device_pairs"] += 1
+        elif sid in DEVICE_SAME_LABEL_PAIRS:
+            twins.append(_twin(r, "dev", [*DEFAULT, DEVICE], dict(r["expected"]), "capability_pair"))
+            r = set_caps(r, list(DEFAULT))
+            stats["same_label_device_pairs"] += 1
         elif sid in DEVICE_COMPOUND_IDS:
             r = set_caps(r, [*DEFAULT, DEVICE])
             stats["device_compound_caps"] += 1
@@ -183,21 +173,32 @@ def apply_capabilities(rows: list[dict[str, Any]], seed: int = 0) -> tuple[list[
             stats["default"] += 1
             exp = r["expected"]
             need = needed_categories(r)
-            if (exp.get("reply_mode") == "respond" and exp.get("route") == "task_request" and len(need) == 1
-                    and r["meta"].get("card") in PAIR_CARDS and not DEVICE_ACTION.search(r["state"]["message"])):
-                cat_pool[next(iter(need))].append(r)
+            if len(need) == 1 and not DEVICE_ACTION.search(r["state"]["message"]):
+                cat = next(iter(need))
+                if exp.get("reply_mode") == "respond" and exp.get("route") == "task_request" and r["meta"].get("card") in PAIR_CARDS:
+                    cat_pool[cat].append(r)
+                elif exp.get("reply_mode") == "passive" and r["meta"].get("card") == "passive_unnamed_request_do" and cat != "query":
+                    group_pool[cat].append(r)
         base.append(r)
-    # 其他能力類別的成對樣本：同一句話配上沒有該能力的清單 -> respond／direct_chat（她回答做不到）
+    # 其他能力類別的成對樣本。直接對她說的請求：配上沒有該能力的清單，標籤不變（route 照意圖）；
+    # 群組裡沒點名的請求（passive）：配上沒有該能力的清單 -> pass。
     picked: set[str] = set()
     for cat, pool in cat_pool.items():
-        pool = sorted(pool, key=lambda x: _hash01(x["sample_id"] + cat))[:PAIR_PER_CATEGORY]
+        pool = sorted(pool, key=lambda x: _hash01(x["sample_id"] + cat))[:SAME_LABEL_PER_CATEGORY]
         for r in pool:
-            caps = [c for c in DEFAULT if c != cat]
             if f"{r['sample_id']}-no-{cat}" in ov["twin_reject"]:
                 continue
-            twins.append(_twin(r, f"no-{cat}", caps, no_capability_label(r, r["expected"]), "capability_pair"))
+            twins.append(_twin(r, f"no-{cat}", [c for c in DEFAULT if c != cat], dict(r["expected"]), "capability_pair"))
             picked.add(r["sample_id"])
         stats["category_pairs"][cat] = len(pool)
+    for cat, pool in group_pool.items():
+        pool = sorted(pool, key=lambda x: _hash01(x["sample_id"] + cat))[:GROUP_PASS_PER_CATEGORY]
+        for r in pool:
+            if f"{r['sample_id']}-no-{cat}" in ov["twin_reject"]:
+                continue
+            twins.append(_twin(r, f"no-{cat}", [c for c in DEFAULT if c != cat], {**r["expected"], "reply_mode": "pass", "addressed": False, "route": "ignore"}, "capability_pair"))
+            picked.add(r["sample_id"])
+        stats["group_pass_pairs"][cat] = len(pool)
     # 隨機清單：只做不影響標籤的變動（加上無關的 device_control，或抽掉句子用不到的類別）
     out: list[dict[str, Any]] = []
     for r in base:
@@ -220,7 +221,6 @@ def apply_capabilities(rows: list[dict[str, Any]], seed: int = 0) -> tuple[list[
                 stats["random_drop"] += 1
         out.append(r)
     twins = [t for t in twins if t["sample_id"] not in ov["twin_reject"]]
-    stats["relabeled_by_capability"] = relabeled
     stats["assistant_device_context_ids"] = assistant_ids
     stats["twins"] = len(twins)
     return out + twins, stats

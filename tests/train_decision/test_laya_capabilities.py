@@ -38,20 +38,25 @@ def test_device_request_gets_pair_with_and_without_device_control() -> None:
     assert "device_control" in with_dev["state"]["available_capabilities"]
     assert with_dev["expected"]["route"] == "task_request"
     assert "device_control" not in twin["state"]["available_capabilities"]
-    assert (twin["expected"]["reply_mode"], twin["expected"]["addressed"], twin["expected"]["route"]) == ("respond", True, "direct_chat")
+    # route 照意圖分：同一句話配不同清單，標籤相同（能不能做由工具層判斷）
+    assert twin["expected"] == with_dev["expected"]
     assert stats["device_pairs"] == 1 and twin["meta"]["pair_of"] == sid
 
 
-def test_missing_capability_in_group_without_name_or_context_is_pass() -> None:
+def test_unnamed_group_request_detection_and_group_pass_pairs() -> None:
     private = _row("p", "Turn off the lights.", others=0)
     group = _row("g", "Turn off the lights.", others=2)
     named = _row("n", "Yuki, turn off the lights.", others=2)
     followup = _row("f", "Turn off the lights.", others=2, context=[{"speaker": "User", "text": "Hi"}, {"speaker": "Assistant", "text": "Hello"}])
-    assert cap.no_capability_label(private, private["expected"])["reply_mode"] == "respond"
-    assert cap.no_capability_label(named, named["expected"])["route"] == "direct_chat"
-    assert cap.no_capability_label(followup, followup["expected"])["addressed"] is True
-    out = cap.no_capability_label(group, group["expected"])
-    assert (out["reply_mode"], out["addressed"], out["route"]) == ("pass", False, "ignore")
+    assert [cap.unnamed_group_request(r) for r in (private, group, named, followup)] == [False, True, False, False]
+    # 群組未點名的請求（passive）配沒有該能力的清單 -> pass；有該能力 -> passive
+    rows = [_row(f"unit-{i:03d}", f"Could someone email the flyer number {i} to the whole building?", others=2,
+                 expected={"reply_mode": "passive", "addressed": False, "route": "ignore", "compound": False}, card="passive_unnamed_request_do")
+            for i in range(20)]
+    out, stats = cap.apply_capabilities(rows)
+    twins = [r for r in out if r["meta"].get("pair_of")]
+    assert twins and all("messaging" not in cap.caps_of(t) and t["expected"]["reply_mode"] == "pass" for t in twins)
+    assert stats["group_pass_pairs"]["messaging"] == len(twins)
 
 
 def test_assistant_offer_of_physical_action_adds_device_control() -> None:

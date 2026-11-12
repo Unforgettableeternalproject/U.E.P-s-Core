@@ -193,7 +193,8 @@ def arbitrate_request(
         # 放棄工作（明示）或非工作格的「回主機」（外推 §9.1 (c)：視為放棄當前行程項）→ mark(abandon)。
         # 先算 mark 再判斷 already_at_target：她已在主機、但行程格還在，仍要放棄該格（投影轉 REST）
         mark = abandon or (slot.source == PlanSource.ITEM and slot.item_ref is not None
-                           and slot.slot_state != "abandoned")
+                           and slot.slot_state != "abandoned"
+                           and slot.location != PRESENCE_TARGET_HOST)  # 本來就在主機的格：放棄沒有意義
         if actual == PRESENCE_TARGET_HOST:
             if mark:
                 return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "mark_abandon", None)

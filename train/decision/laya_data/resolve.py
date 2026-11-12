@@ -18,6 +18,11 @@
    - 混合句取第一個指示（先出現轉告動詞再出現提醒 → message，反之 task；連鎖指示之後另行處理）。
    與盲標一致才收，不一致進人工清單。
 4. ``route_follows_action``（defer_* 卡）：盲標 reply_mode 仍是 defer 且 addressed 才收，route 採盲標。
+6. ``passive_narrow``（艾斯維爾裁決，passive 收窄）：她要有具體理由開口才標 passive——(1) 與她答應過或記下的事有關，
+   且內容有衝突、變更或待確認；(2) 沒點名、她答得出來的提問；(3) 沒點名、她確實做得到的請求（裝置控制不算）。
+   其餘（第三人稱稱讚或回憶她做過的事、旁人之間的陳述、轉述消息、無可答問題的自言自語、人們已自行照記下的事行動）一律 pass。
+   既有 passive 逐筆重審的結果列在 ``PASSIVE_NARROW``：改標 reply_mode=pass（addressed=False、route=ignore 不變），
+   meta 記 ``label_rule=passive_narrow``。人工裁決（RULINGS）過的 passive 不動，另行回報。
 5. ``ack_ruling``（ack_after_statement）：艾斯維爾裁決——她剛說完陳述、使用者回裸附和，這句是對她的回應，
    addressed=True，但她不必回話（reply_mode=pass、route=ignore）。盲標當時依舊規則標 addressed=False，
    以裁決為準：盲標 reply_mode=pass 且 route=ignore 即收（addressed 不比對）；否則進人工清單。
@@ -77,6 +82,30 @@ RULINGS.update({
     "synthetic-en-turn.reply-00739": _tr("respond", True, "direct_chat"),
     "synthetic-en-turn.reply-00805": _tr("respond", True, "agent_loop"),
 })
+
+# passive 收窄重審：違反新界線而改標 pass 的既有句（sample_id 流水號；皆為 turn.reply）。
+# 判準：她插話時在場的人會覺得被打斷——例如只是複述／附和她記下的事、自言自語、旁人互相的陳述。
+PASSIVE_NARROW: frozenset[str] = frozenset(
+    f"synthetic-en-turn.reply-{n}" for n in (
+        "00097", "00104", "00105", "00106", "00227", "00229", "00235", "00236", "00237", "00238",
+        "00359", "00365", "00366", "00368", "00486", "00488", "00489", "00494", "00495", "00496",
+        "00497", "00610", "00613", "00618", "00619", "00620", "00621", "00740", "00741", "00746",
+        "00747", "00748", "00749", "00867", "00874", "00875", "00876", "00877",
+    )
+)
+
+
+def apply_passive_narrow(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """把 ``PASSIVE_NARROW`` 內且目前仍是 passive 的列改標 pass；回傳 (列, 實際改標的 sample_id)。"""
+    out, changed = [], []
+    for r in rows:
+        if r["sample_id"] in PASSIVE_NARROW and r["expected"].get("reply_mode") == "passive":
+            r = {**r, "expected": _expected_with(r, reply_mode="pass", addressed=False, route="ignore"),
+                 "meta": {**r["meta"], "label_rule": "passive_narrow", "passive_narrow": "passive->pass"}}
+            changed.append(r["sample_id"])
+        out.append(r)
+    return out, changed
+
 
 # 剔除（不進 final／review）：句子與前文接不上等，原因必須寫明
 DROPPED: dict[str, str] = {
@@ -307,6 +336,8 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
         resolved.append(out)
         counts[f"resolved:{tag}"] += 1
     final += resolved
+    final, narrowed = apply_passive_narrow(final)
+    counts["passive_narrow"] = len(narrowed)
     final.sort(key=lambda r: r["sample_id"])
     train, val = split_rows(final, val_ratio, seed)
     write_jsonl(mass_dir / "final.jsonl", final)

@@ -95,13 +95,19 @@ PASSIVE_NARROW: frozenset[str] = frozenset(
 )
 
 
+# 能力依據（艾斯維爾定案）：做得到＝電腦與各平台內的操作（查詢、訂位訂場、檔案與程式操作）加通訊（打電話、傳訊息、寄信）；
+# 訓練資料沒出現過的能力一律視為做不到。下列沒點名的請求要的是翻譯，訓練資料沒有這類能力 -> pass。
+PASSIVE_CAPABILITY: frozenset[str] = frozenset({"r4-passive-00019", "r4-passive-00058", "r4-passive-00098"})
+
+
 def apply_passive_narrow(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     """把 ``PASSIVE_NARROW`` 內且目前仍是 passive 的列改標 pass；回傳 (列, 實際改標的 sample_id)。"""
     out, changed = [], []
     for r in rows:
-        if r["sample_id"] in PASSIVE_NARROW and r["expected"].get("reply_mode") == "passive":
+        if (r["sample_id"] in PASSIVE_NARROW or r["sample_id"] in PASSIVE_CAPABILITY) and r["expected"].get("reply_mode") == "passive":
+            rule = "passive_capability" if r["sample_id"] in PASSIVE_CAPABILITY else "passive_narrow"
             r = {**r, "expected": _expected_with(r, reply_mode="pass", addressed=False, route="ignore"),
-                 "meta": {**r["meta"], "label_rule": "passive_narrow", "passive_narrow": "passive->pass"}}
+                 "meta": {**r["meta"], "label_rule": rule, "passive_narrow": "passive->pass"}}
             changed.append(r["sample_id"])
         out.append(r)
     return out, changed

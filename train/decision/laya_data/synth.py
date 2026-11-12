@@ -345,6 +345,17 @@ CARD_SET_STYLES: dict[str, tuple[str, ...]] = {
     "r4_passive": ("clean", "casual", "stt_noise", "mt_style"),
 }
 
+# passive 第 1 條補充（艾斯維爾 11/12）：她給過的資訊／做過的事「現在還在進行或正要被使用」才有開口理由；已核對或已結束一律 pass。
+R4_INFO_CARDS: tuple[Card, ...] = (
+    _tr("passive_info_in_use", f"People talk to each other, not to {A}; one of them points out that the information {A} gave earlier may be wrong, outdated or inconsistent with what they now see, while they are about to rely on it right now (about to leave, order, cook, pay, submit).", "passive", False, "ignore", context="assistant_gave_info", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " The doubt must be about the specific information in the context, and the speaker or someone present must be about to act on it; do not say it was already checked."),
+    _tr("pass_info_checked", f"People talk to each other, not to {A}; {A} gave some information earlier that may have been wrong, but they have already checked it themselves, fixed it or finished using it, so nothing is left to correct.", "pass", False, "ignore", context="assistant_gave_info", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " Make it clear the matter is settled (they double-checked, already corrected, already done); no question or request."),
+    _tr("pass_task_done", f"People talk to each other, not to {A}, about something {A} reported doing earlier (booked, sent, set up) that is already finished and over, for example how it turned out; nothing is pending.", "pass", False, "ignore", context="assistant_did", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " The task is complete and no longer in use; no question or request."),
+)
+CARD_SETS["r4_info"] = {"turn.reply": R4_INFO_CARDS}
+
 OTHER_USER_CONTEXTS = frozenset({"assistant_answered_other"})  # 前文的提問者不是目前說話者
 CONTEXT_DESC: dict[str, str] = {
     "assistant_solicits_chat": "the assistant's last line is a casual question or request for the user's opinion",
@@ -356,6 +367,8 @@ CONTEXT_DESC: dict[str, str] = {
     "assistant_promised_user": "the user asked the assistant to do something and the assistant promised to (User line first, then the Assistant's promise)",
     "assistant_promised": "the assistant earlier promised or offered to do something concrete (remind, book, sign up, call)",
     "assistant_noted": "the assistant earlier said it noted a specific fact about the group (a preference, an allergy, a deadline)",
+    "assistant_gave_info": "the user asked something and the assistant answered with one concrete piece of information (a time, a measurement, a route, a price, a recipe amount); User line first, then the Assistant line",
+    "assistant_did": "the assistant reported having already done something concrete for the user (booked, sent, set up); Assistant line, optionally preceded by the User request",
 }
 
 

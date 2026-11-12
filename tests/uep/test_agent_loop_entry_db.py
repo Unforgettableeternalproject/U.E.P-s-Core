@@ -586,3 +586,129 @@ def test_unknown_delivery_is_uncertain_and_not_remembered(session_factory, tmp_p
         assert len(rig.deliveries()) == before
     finally:
         rig.core.shutdown()
+
+
+# 註：「park -> 核准 -> resume -> Gate -> 記憶」沒有串成單一測試：核准工具（testkit）加完整 Host rig 的成本高，
+# 改成兩段互鎖——resume 端（核准後 Run 終態 -> on_resumed 的映射）見 test_resume_return.py，送出與記憶端（真實 Gate／Delivery／端點）
+# 見上面各測試；兩段以 ResumedRunResult 為介面，各自鎖住。
+
+def _patch_dispatch(rig, status, code=None):
+    """攔截 delivery.dispatch，回指定狀態（不經 Gate）；回傳呼叫計數與還原函式。"""
+    from types import SimpleNamespace
+
+    calls = {"n": 0}
+    services = rig.host._services
+    original = services.delivery.dispatch
+
+    def fake(intent):
+        calls["n"] += 1
+        return SimpleNamespace(status=status, failure={"code": code} if code else None)
+
+    services.delivery.dispatch = fake
+    return calls, lambda: setattr(services.delivery, "dispatch", original)
+
+
+def test_resumed_result_is_dropped_when_muted_or_busy_before_lease_is_even_read(session_factory, tmp_path):
+    from types import SimpleNamespace
+
+    from uep.echo.resume_return import ResumeDisposition
+    from uep.state.coordinator import Axis, BehaviorState
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        before = len(rig.deliveries())
+        state = rig.host._services.state
+        real_current = state.current
+        state.current = lambda axis: SimpleNamespace(state=BehaviorState.SLEEP.value) if axis is Axis.BEHAVIOR else real_current(axis)
+        try:
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity, run_id="run_muted")) is ResumeDisposition.DROPPED
+        finally:
+            state.current = real_current
+        assert rig.host.metrics["echo.resume_dropped.muted"] == 1
+        rig.host.orchestrator.live_tickets = lambda: [object()]
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity, run_id="run_busy")) is ResumeDisposition.DROPPED
+        assert rig.host.metrics["echo.resume_dropped.busy"] == 1
+        assert len(rig.deliveries()) == before and stores == []
+    finally:
+        rig.core.shutdown()
+
+
+def test_two_threads_with_the_same_key_send_exactly_once(session_factory, tmp_path):
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        before = len(rig.deliveries())
+        results: list = []
+        barrier = threading.Barrier(2)
+
+        def call():
+            barrier.wait()
+            results.append(rig.host.accept_resumed_result(_resumed(ticket, activity)))
+
+        threads = [threading.Thread(target=call) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        assert len(results) == 2 and results[0] is results[1]
+        assert len(rig.deliveries()) == before + 1 and len(stores) == 1 and _resume_texts(rig) == [RESUMED_TEXT]
+    finally:
+        rig.core.shutdown()
+
+
+def test_enqueued_delivery_is_uncertain_and_never_resent(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+    from uep.output.delivery import DeliveryStatus
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        calls, restore = _patch_dispatch(rig, DeliveryStatus.ENQUEUED)
+        try:
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.UNCERTAIN
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.UNCERTAIN
+        finally:
+            restore()
+        assert calls["n"] == 1 and stores == []
+    finally:
+        rig.core.shutdown()
+
+
+@pytest.mark.parametrize("code", ["REJECT_AUDIENCE", "REJECT_REVOKED", "REJECT_EXPIRED", "REJECT_NO_PRESENCE"])
+def test_gate_rejections_drop_without_memory_and_without_retry(session_factory, tmp_path, code):
+    from uep.echo.resume_return import ResumeDisposition
+    from uep.output.delivery import DeliveryStatus
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        calls, restore = _patch_dispatch(rig, DeliveryStatus.REJECTED, code)
+        try:
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DROPPED
+        finally:
+            restore()
+        assert calls["n"] == 1 and stores == [] and rig.host.metrics[f"echo.resume_dropped.{code.lower()}"] == 1
+    finally:
+        rig.core.shutdown()
+
+
+def test_send_failed_is_not_retried(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+    from uep.output.delivery import DeliveryStatus
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        calls, restore = _patch_dispatch(rig, DeliveryStatus.FAILED, "SEND_FAILED")
+        try:
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DROPPED
+        finally:
+            restore()
+        assert calls["n"] == 1 and stores == []
+    finally:
+        rig.core.shutdown()
+
+
+def test_resume_text_is_cleared_from_loop_text_after_sending(session_factory, tmp_path):
+    rig, ticket, activity, _ = _resume_rig(session_factory, tmp_path)
+    try:
+        rig.host.accept_resumed_result(_resumed(ticket, activity))
+        assert len(rig.host.loop_text) == 0
+    finally:
+        rig.core.shutdown()

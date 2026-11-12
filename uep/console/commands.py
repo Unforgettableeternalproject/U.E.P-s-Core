@@ -25,7 +25,7 @@ from uep.console.rig import (
     ConsoleRuntime,
 )
 from uep.contracts.presence import PresenceLocation
-from uep.echo.resume_return import ResumeCause
+from uep.echo.resume_return import ResumeCause, ResumeDisposition
 from uep.events.models import EventRow
 from uep.log import describe_levels, set_console_level, set_namespace_level
 from uep.state.coordinator import Axis
@@ -405,7 +405,7 @@ class Console:
         self.out(f"續跑結果：Run {result.run_id}：{result.state}" + (f"（{result.reason_code}）" if result.reason_code else ""))
         if result.disposition is not None:
             self.out(f"回覆處置：{result.disposition.value}")
-        if result.text:
+        if result.text and result.disposition is not ResumeDisposition.DELIVERED:  # 已經過 Gate 由端點渲染的文字不再印第二次
             self.out(f"回應（續跑）：{result.text}")
         with self.rt.session_factory() as s:
             run = s.get(RunRow, run_id)

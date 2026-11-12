@@ -71,3 +71,56 @@ def test_host_exception_becomes_uncertain_not_a_crash():
         raise RuntimeError("x")
 
     assert _launcher(boom)._return_to_host(_ctx(), "completed", None, False) is ResumeDisposition.UNCERTAIN
+
+
+# ---- Console：/reject 傳 cause、已渲染的文字不重複印 ----
+
+def _console_with(launcher):
+    from contextlib import contextmanager
+
+    from uep.console.commands import Console
+
+    @contextmanager
+    def session():
+        yield SimpleNamespace(get=lambda *a: None, scalars=lambda *a: [])
+
+    rt = SimpleNamespace(core=SimpleNamespace(loop_launcher=launcher), session_factory=session)
+    lines: list[str] = []
+    return Console(rt, out=lines.append, wait_s=1), lines
+
+
+def _fake_launcher(disposition, text="結果"):
+    from concurrent.futures import Future
+
+    from uep.echo.agent_wiring import LoopResumeResult
+
+    seen: dict = {}
+
+    class _L:
+        def resume(self, run_id, approvals=None, *, cause=ResumeCause.APPROVED):
+            seen["cause"] = cause
+            f: Future = Future()
+            f.set_result(LoopResumeResult(run_id, "completed", text, None, disposition))
+            return f
+
+    return _L(), seen
+
+
+def test_console_reject_passes_rejected_cause_and_approve_passes_approved():
+    launcher, seen = _fake_launcher(None)
+    console, _ = _console_with(launcher)
+    console._resume("run_1", {}, cause=ResumeCause.REJECTED)
+    assert seen["cause"] is ResumeCause.REJECTED
+    console._resume("run_1", {})
+    assert seen["cause"] is ResumeCause.APPROVED
+
+
+def test_console_does_not_print_text_the_endpoint_already_rendered():
+    launcher, _ = _fake_launcher(ResumeDisposition.DELIVERED)
+    console, lines = _console_with(launcher)
+    console._resume("run_1", {})
+    assert not [line for line in lines if line.startswith("回應（續跑）")] and any("delivered" in line for line in lines)
+    launcher2, _ = _fake_launcher(ResumeDisposition.DROPPED)
+    console2, lines2 = _console_with(launcher2)
+    console2._resume("run_1", {})
+    assert [line for line in lines2 if line.startswith("回應（續跑）")]  # 沒送出的才由 Console 補印

@@ -29,6 +29,10 @@ class LoopTextStore:
             found = self._texts.get(ref)
         return found[1] if found is not None else None
 
+    def discard(self, ref: str) -> None:
+        with self._lock:
+            self._texts.pop(ref, None)
+
     def discard_turn(self, turn_id: str) -> None:
         with self._lock:
             for ref in [r for r, (tid, _text) in self._texts.items() if tid == turn_id]:

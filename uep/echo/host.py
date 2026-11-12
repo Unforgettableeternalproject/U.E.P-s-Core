@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from uep.state.coordinator import Axis, BehaviorState, InteractionState
 from uep.stream.contracts.cancellation import CancellationToken
 from uep.stream.contracts.output import (
     CommitMode,
@@ -1326,7 +1327,10 @@ class EchoPipelineHost:
         以 ``(run_id, worker_epoch)`` 為冪等鍵：同鍵再呼叫回原處置，不重送、不重寫。COMPLETED 且有文字才送：activity 綁定的
         ``OutputIntent``（turn_* 為 None），授權於送出當下重取 ``lease_auth()``，經 DeliveryManager／Output Gate。
         送達後才寫記憶（key 掛回原 turn 的 ``turn:<orig>``），``cause=REJECTED`` 不寫。Gate 拒絕本階段一律 DROPPED
-        （STALE 先重取 Lease 重試一次）；UNKNOWN／ENQUEUED 不重送。"""
+        （STALE 先重取 Lease 重試一次）；UNKNOWN／ENQUEUED 不重送。
+
+        送出之前先判斷 muted（Behavior=SLEEP）與 busy（有進行中的回合、SPEAKING／WAITING_USER）：任一成立回 DROPPED 並記
+        ``echo.resume_dropped.muted``／``busy``。R2 會把這兩類（以及 Lease 暫時不可用）改成進 pending 佇列、之後 flush。"""
         key = (result.run_id, result.worker_epoch)
         with self._resume_lock:
             settled = self._resume_settled.get(key)
@@ -1343,12 +1347,31 @@ class EchoPipelineHost:
                 self._resume_settled.popitem(last=False)
             return disposition
 
+    def _resume_blocked(self, services: Any) -> str | None:
+        """現在不適合出聲的原因：``muted``（Behavior=SLEEP，讀不到 State 也視為 muted，fail-closed）或 ``busy``（有進行中的回合、
+        或 Interaction 在 SPEAKING／WAITING_USER；判定同 proactive shadow 的 muted／committed）。可送回 None。"""
+        try:
+            interaction = services.state.current(Axis.INTERACTION).state
+            behavior = services.state.current(Axis.BEHAVIOR).state
+        except Exception:
+            logger.warning("續跑回覆讀取 State 失敗，視為 muted", exc_info=True)
+            return "muted"
+        if behavior == BehaviorState.SLEEP.value:
+            return "muted"
+        if self.orchestrator.live_tickets() or interaction in (InteractionState.SPEAKING.value, InteractionState.WAITING_USER.value):
+            return "busy"
+        return None
+
     def _deliver_resumed(self, result: ResumedRunResult) -> ResumeDisposition:
         if result.outcome is not ResumeOutcome.COMPLETED:
             return ResumeDisposition.NOT_APPLICABLE  # FAILED／CANCELLED：不送、不寫（失敗訊息屬後續 PR）
         services = self._services
         if services is None or result.activity_id is None or not result.text.strip():
             self.metrics.inc("echo.resume_dropped.unavailable")
+            return ResumeDisposition.DROPPED
+        blocked = self._resume_blocked(services)
+        if blocked is not None:  # 先於 Lease 檢查：muted／正在進行的回合都不插嘴（R2 會改成進 pending）
+            self.metrics.inc(f"echo.resume_dropped.{blocked}")
             return ResumeDisposition.DROPPED
         ticket = result.ticket
         for attempt in (1, 2):  # STALE 時重取 Lease 重試一次
@@ -1366,8 +1389,11 @@ class EchoPipelineHost:
                 activity_id=result.activity_id, audience_scope=ticket.audience_scope, content_ref=ref,
                 valid_until=datetime.now(UTC) + timedelta(seconds=self.RESUME_VALID_S),
             )
-            services.delivery.prepare(intent)
-            record = services.delivery.dispatch(intent)
+            try:
+                services.delivery.prepare(intent)
+                record = services.delivery.dispatch(intent)
+            finally:
+                self.loop_text.discard(ref)  # 端點在 dispatch 內同步解析並渲染；送出後暫存即可清掉
             status = record.status
             if status in (DS.SENT, DS.ACCEPTED, DS.RENDERED_PLAYED):
                 if result.cause is ResumeCause.APPROVED:  # 送達後才寫；REJECTED 不寫

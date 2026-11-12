@@ -18,6 +18,7 @@ train/decision/
 │   ├── overlap.py        # 評估端：測試集與 train／val 的逐列重疊報告（含 state 層級）
 │   └── eval_testset.py   # 評估端：Laya checkpoint（predict）、rules.default（rules）、指標與錯誤分析（report）
 ├── testset/zh_candidates_draft.jsonl   # 測試集 zh-TW 原句草稿（status=pending_review，待艾斯維爾核）
+├── testset/en_reference.jsonl          # 84 筆中文測試集的人工參考英譯（id／text_en／context_en；uild_en_test --reference 用）
 ├── pool/           # synthetic 內容池（入庫；量產後才有）
 ├── pool_private/   # real_owner 日誌（.gitignore，不入 git）
 └── out/            # 產物（.gitignore）

@@ -1,0 +1,84 @@
+{"id": "zt-001", "text_en": "It looks like a nice day today. Do you think it's a good time to go out for a walk?", "context_en": []}
+{"id": "zt-002", "text_en": "I've been wondering lately whether to learn the piano.", "context_en": []}
+{"id": "zt-003", "text_en": "Set a timer for ten minutes from now for me.", "context_en": []}
+{"id": "zt-004", "text_en": "Turn off the lights in the living room.", "context_en": []}
+{"id": "zt-005", "text_en": "Check whether there's a meeting tomorrow at three in the afternoon.", "context_en": []}
+{"id": "zt-006", "text_en": "Help me plan a five-day trip to Kyoto next month, including transportation and a budget.", "context_en": []}
+{"id": "zt-007", "text_en": "Go through all of this week's emails, pick out the important ones, and then draft replies for me.", "context_en": []}
+{"id": "zt-008", "text_en": "Mm.", "context_en": []}
+{"id": "zt-009", "text_en": "Hahaha.", "context_en": []}
+{"id": "zt-010", "text_en": "Okay.", "context_en": [{"speaker": "Assistant", "text": "Do you want me to sort out your schedule for tomorrow?"}]}
+{"id": "zt-011", "text_en": "Yeah.", "context_en": [{"speaker": "Assistant", "text": "You like this song too, don't you?"}]}
+{"id": "zt-012", "text_en": "ok", "context_en": [{"speaker": "Assistant", "text": "I'll book a table for seven tonight for you first, is that okay?"}]}
+{"id": "zt-013", "text_en": "Okay.", "context_en": [{"speaker": "Assistant", "text": "It's going to rain this afternoon, so remember to bring an umbrella."}]}
+{"id": "zt-014", "text_en": "Mm-hm.", "context_en": [{"speaker": "Assistant", "text": "I've already saved the file."}]}
+{"id": "zt-015", "text_en": "Got it.", "context_en": []}
+{"id": "zt-016", "text_en": "Okay.", "context_en": []}
+{"id": "zt-017", "text_en": "Yuki, is there any news today?", "context_en": []}
+{"id": "zt-018", "text_en": "Hey, Yuki, what do you think of this restaurant?", "context_en": []}
+{"id": "zt-019", "text_en": "Yuki, turn the music down a bit for me.", "context_en": []}
+{"id": "zt-020", "text_en": "Could you please set tomorrow morning's alarm for seven, Yuki?", "context_en": []}
+{"id": "zt-021", "text_en": "Yuki, compare these three laptops for us, list the pros and cons, and then give a recommendation.", "context_en": [{"speaker": "User", "text": "I'm considering these three: Swift 14, Zenbook 14, and XPS 13."}]}
+{"id": "zt-022", "text_en": "Yuki, put what we just discussed into meeting minutes and send it to everyone.", "context_en": []}
+{"id": "zt-023", "text_en": "What should we have for dinner?", "context_en": []}
+{"id": "zt-024", "text_en": "Did you watch that game yesterday?", "context_en": []}
+{"id": "zt-025", "text_en": "I think next Friday would be more convenient. What about you?", "context_en": []}
+{"id": "zt-026", "text_en": "Can you send that report to the boss for me?", "context_en": []}
+{"id": "zt-027", "text_en": "Could you go open the window for me, please?", "context_en": []}
+{"id": "zt-028", "text_en": "What about tomorrow's weather, then?", "context_en": [{"speaker": "User", "text": "Yuki, is it going to rain today?"}, {"speaker": "Assistant", "text": "There will be rain after three this afternoon."}]}
+{"id": "zt-029", "text_en": "Then tell me a bit more.", "context_en": [{"speaker": "User", "text": "Yuki, is this movie any good?"}, {"speaker": "Assistant", "text": "It's well reviewed, and the story is tightly paced."}]}
+{"id": "zt-030", "text_en": "Hey, let's go to that place together next time.", "context_en": [{"speaker": "User", "text": "Yuki, recommend a ramen place."}, {"speaker": "Assistant", "text": "The one next to the station is highly recommended by a lot of people."}]}
+{"id": "zt-031", "text_en": "Oh, by the way, Xiaohua, are you free this weekend?", "context_en": [{"speaker": "User", "text": "Yuki, what time is it now?"}, {"speaker": "Assistant", "text": "It's ten past four in the afternoon."}]}
+{"id": "zt-032", "text_en": "I think I just heard someone call for Yuki. Did I hear that wrong?", "context_en": []}
+{"id": "zt-033", "text_en": "Who was that person whose name starts with U, again?", "context_en": []}
+{"id": "zt-034", "text_en": "We agreed last time that Yuki would remind me to hand in the report. I wonder if she still remembers.", "context_en": []}
+{"id": "zt-035", "text_en": "I'm going to run the tests and the deployment for the whole project first. This will take a long time, so give me a moment.", "context_en": []}
+{"id": "zt-036", "text_en": "This piece of code keeps throwing an IndexError: for i in range(len(a) + 1): print(a[i]). Can you take a look at it for me?", "context_en": []}
+{"id": "zt-037", "text_en": "Uh... um... let me think.", "context_en": []}
+{"id": "zt-038", "text_en": "I'm in a bit of a bad mood today and don't really feel like talking.", "context_en": []}
+{"id": "zt-039", "text_en": "Remind me to call the dentist at ten o'clock tomorrow morning.", "context_en": []}
+{"id": "zt-040", "text_en": "Research which kind of insurance suits me best and put it into a comparison table.", "context_en": []}
+{"id": "zt-041", "text_en": "Come here.", "context_en": []}
+{"id": "zt-042", "text_en": "Come over here for a moment.", "context_en": []}
+{"id": "zt-043", "text_en": "Come to Discord.", "context_en": []}
+{"id": "zt-044", "text_en": "Let's switch to Discord, everyone is over here.", "context_en": []}
+{"id": "zt-045", "text_en": "Go to the desktop.", "context_en": []}
+{"id": "zt-046", "text_en": "Switch to the desktop.", "context_en": []}
+{"id": "zt-047", "text_en": "Go back to the host.", "context_en": []}
+{"id": "zt-048", "text_en": "Move over to the website.", "context_en": []}
+{"id": "zt-049", "text_en": "Show yourself for a moment.", "context_en": []}
+{"id": "zt-050", "text_en": "Don't come over.", "context_en": []}
+{"id": "zt-051", "text_en": "Don't go back to the host.", "context_en": []}
+{"id": "zt-052", "text_en": "Yuki went back to the host yesterday.", "context_en": []}
+{"id": "zt-053", "text_en": "Someone just came to Discord a moment ago.", "context_en": []}
+{"id": "zt-054", "text_en": "Why won't Yuki come to Discord?", "context_en": []}
+{"id": "zt-055", "text_en": "Can you come over?", "context_en": []}
+{"id": "zt-056", "text_en": "The host's fan is so loud.", "context_en": []}
+{"id": "zt-057", "text_en": "I saw a really funny meme on Discord.", "context_en": []}
+{"id": "zt-058", "text_en": "Please tell Bernie I'll be there later.", "context_en": []}
+{"id": "zt-059", "text_en": "Tell Ajie that tomorrow's meeting has been moved to three in the afternoon.", "context_en": []}
+{"id": "zt-060", "text_en": "Tell Xiaomei I've arrived.", "context_en": []}
+{"id": "zt-061", "text_en": "I wonder whether Yuki finished the backup yesterday.", "context_en": []}
+{"id": "zt-062", "text_en": "I wonder whether the flights I asked Yuki to look up last time turned up anything.", "context_en": []}
+{"id": "zt-063", "text_en": "Does anyone remember what time the meeting tomorrow afternoon is?", "context_en": []}
+{"id": "zt-064", "text_en": "I think someone said this printer needs a new ink cartridge. Is there any left now?", "context_en": []}
+{"id": "zt-065", "text_en": "I remember Yuki once set up a daily reminder for us to drink water. Why hasn't it gone off lately?", "context_en": []}
+{"id": "zt-066", "text_en": "What's the date today? Is the weekly report due today?", "context_en": []}
+{"id": "zt-067", "text_en": "Delete all the old data on my hard drive.", "context_en": []}
+{"id": "zt-068", "text_en": "Send him an email for me.", "context_en": []}
+{"id": "zt-069", "text_en": "I'm driving right now. Tell me today's schedule when I get home.", "context_en": []}
+{"id": "zt-070", "text_en": "I'm in a meeting, so there's no need to reply for now. Let's talk later.", "context_en": []}
+{"id": "zt-071", "text_en": "Transfer all the money in my account to my younger brother.", "context_en": []}
+{"id": "zt-072", "text_en": "Book that one.", "context_en": [{"speaker": "Assistant", "text": "There are two to choose from, one next to the station and one by the river."}]}
+{"id": "zt-073", "text_en": "Yuki, just report the results once our meeting is over.", "context_en": [{"speaker": "User", "text": "Yuki, help us cross-check last quarter's sales figures."}, {"speaker": "Assistant", "text": "Okay, I'm cross-checking them now, and it should take about ten minutes."}]}
+{"id": "zt-074", "text_en": "Okay.", "context_en": [{"speaker": "Assistant", "text": "Do you want me to turn off the lights in the living room?"}]}
+{"id": "zt-075", "text_en": "Yuki, I wanted to ask too, is there a parking lot nearby?", "context_en": [{"speaker": "User", "text": "Yuki, recommend a ramen place."}, {"speaker": "Assistant", "text": "The one next to the station is highly recommended by a lot of people."}]}
+{"id": "zt-076", "text_en": "I want ramen too. Shall we go together later?", "context_en": [{"speaker": "User", "text": "Yuki, recommend a ramen place."}, {"speaker": "Assistant", "text": "The one next to the station is highly recommended by a lot of people."}]}
+{"id": "zt-077", "text_en": "Go find everyone on Discord.", "context_en": []}
+{"id": "zt-078", "text_en": "Come to the desktop.", "context_en": []}
+{"id": "zt-079", "text_en": "Come over to the website.", "context_en": []}
+{"id": "zt-080", "text_en": "Can you switch to Discord right now? Or can you only stay on the host?", "context_en": []}
+{"id": "zt-081", "text_en": "Remind me to take my medicine at eight tonight.", "context_en": []}
+{"id": "zt-082", "text_en": "Book a restaurant for me for six o'clock on Friday evening.", "context_en": []}
+{"id": "zt-083", "text_en": "I have to remember to bring an umbrella tomorrow.", "context_en": []}
+{"id": "zt-084", "text_en": "Remind me to go buy garlic, and also tell Ajie that the recipe is in the fridge.", "context_en": []}

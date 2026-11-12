@@ -11,6 +11,8 @@
 
 用法（於 ``train/decision/`` 下）：
     python -m laya_data.build_en_test --out testset/en_test.jsonl --report out/en_test_report.json
+    # 改用人工參考英譯（不載入 MT、不用 GPU）：
+    python -m laya_data.build_en_test --reference testset/en_reference.jsonl --out testset/en_test_reference.jsonl
 """
 from __future__ import annotations
 
@@ -56,22 +58,33 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--report", type=Path)
     p.add_argument("--device", default="cuda")
     p.add_argument("--model-dir", type=Path)
+    p.add_argument("--reference", type=Path, help="人工參考英譯 JSONL（id／text_en／context_en）；給了就不載入 MT")
     args = p.parse_args(argv)
 
-    tw = load_translate_wiring()
+    reference: dict[str, dict[str, Any]] | None = None
+    translator: Any = None
+    model_dir: Path | str = "(reference)"
+    if args.reference:
+        reference = {}
+        for line in args.reference.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                ref = json.loads(line)
+                reference[ref["id"]] = ref
+    else:
+        tw = load_translate_wiring()
 
-    model_dir = tw.mt_model_dir(str(args.model_dir) if args.model_dir else None)
-    # 別名 = 預設別名 + 決策組態的助理名稱（BotIdentityConfig：U.E.P、小U、UEP、uep），與 create_laya_proposer 一致
-    aliases = (*tw.DEFAULT_ALIASES, "U.E.P", "小U", "UEP", "uep")
-    translator = tw.BoundaryTranslator(
-        backend_factory=lambda dev: tw.MarianBackend(model_dir, dev), device=args.device, aliases=aliases,
-        cpu_fallback=False,
-    )
-    translator.start_warmup()
-    translator.wait_ready()
-    if not translator.available:
-        print("MT 載入失敗", file=sys.stderr)
-        return 2
+        model_dir = tw.mt_model_dir(str(args.model_dir) if args.model_dir else None)
+        # 別名 = 預設別名 + 決策組態的助理名稱（BotIdentityConfig：U.E.P、小U、UEP、uep），與 create_laya_proposer 一致
+        aliases = (*tw.DEFAULT_ALIASES, "U.E.P", "小U", "UEP", "uep")
+        translator = tw.BoundaryTranslator(
+            backend_factory=lambda dev: tw.MarianBackend(model_dir, dev), device=args.device, aliases=aliases,
+            cpu_fallback=False,
+        )
+        translator.start_warmup()
+        translator.wait_ready()
+        if not translator.available:
+            print("MT 載入失敗", file=sys.stderr)
+            return 2
 
     rows = [json.loads(line) for line in args.testset.read_text(encoding="utf-8").splitlines() if line.strip()]
     out_rows: list[dict[str, Any]] = []
@@ -87,14 +100,22 @@ def main(argv: list[str] | None = None) -> int:
 
     for r in rows:
         rid = r["id"]
-        msg_en = to_en(r["zh"], "message", rid)
         context_en: list[dict[str, str]] = []
-        for line in r.get("context_zh") or []:
-            role, text = parse_context_line(line)
-            en = to_en(text, "context", rid)
-            if en is None:
+        if reference is not None:
+            ref = reference.get(rid)
+            if ref is None:
+                failures.append({"id": rid, "what": "reference", "reason": "參考英譯缺少此 id"})
                 continue
-            context_en.append({"speaker": "Assistant" if role == "assistant" else "User", "text": en})
+            msg_en = ref["text_en"].strip()
+            context_en = [{"speaker": c["speaker"], "text": c["text"].strip()} for c in ref.get("context_en") or []]
+        else:
+            msg_en = to_en(r["zh"], "message", rid)
+            for line in r.get("context_zh") or []:
+                role, text = parse_context_line(line)
+                en = to_en(text, "context", rid)
+                if en is None:
+                    continue
+                context_en.append({"speaker": "Assistant" if role == "assistant" else "User", "text": en})
         if msg_en is None:
             continue
         same_speaker = r.get("speaker") != "other_user"
@@ -124,7 +145,8 @@ def main(argv: list[str] | None = None) -> int:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     summary = {
         "rows_in": len(rows), "rows_out": len(out_rows), "statuses": statuses, "failures": failures,
-        "device": translator.device, "placeholder": translator.placeholder, "model_dir": str(model_dir),
+        "device": translator.device if translator else None, "placeholder": translator.placeholder if translator else None,
+        "model_dir": str(model_dir),
     }
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

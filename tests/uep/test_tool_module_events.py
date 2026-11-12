@@ -6,15 +6,19 @@ fake coordinator 經真 Bus 發事件 -> ``registry.readiness`` -> 投影（warm
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import pytest
 
+from tests.uep.module_fakes import FakeClock, FakeHandle, FakeObserver
 from tests.uep.test_tool_registry import make_entry
 from uep.assembly import CoreAssembly
 from uep.config import UepSettings
 from uep.events.bus import EventBus
 from uep.events.envelope import EventDraft, TrustedContext, build_event
+from uep.lifecycle.coordinator import ModuleCoordinator
+from uep.lifecycle.descriptor import ModuleDescriptor
 from uep.tools.gateway import GatewayRejected, ToolGateway
 from uep.tools.module_events import subscribe_module_events
 from uep.tools.projection import ProjectionContext
@@ -36,11 +40,11 @@ class FakeCoordinator:
     def __init__(self, bus: EventBus) -> None:
         self.bus, self._n = bus, 0
 
-    def emit(self, state: str, revision: int, module_id: str = MODULE, **extra: Any) -> None:
+    def emit(self, readiness: str, revision: int, module_id: str = MODULE, **extra: Any) -> None:
         self._n += 1
         draft = EventDraft(
             event_type="module.state_changed", idempotency_key=f"mc-{self._n}",
-            payload={"module_id": module_id, "revision": revision, "readiness": state, **extra},
+            payload={"module_id": module_id, "revision": revision, "readiness": readiness, **extra},
         )
         trusted = TrustedContext(source="module.coordinator", actor_id="system", scope_ref="scope_public", external=False)
         self.bus.publish(build_event(draft, trusted), sync=True)
@@ -151,3 +155,176 @@ def test_core_shutdown_unsubscribes_module_events():
     assert core.module_events_unsubscribe is None
     FakeCoordinator(bus).emit("unavailable", 1)
     assert registry.readiness("speak.tool") == "warming"  # 退訂後事件不再生效（維持預設）
+
+
+# --- R4／R5（D109）---
+
+def _degrade_registry() -> ToolRegistry:
+    strict = make_entry("strict.tool", requires=(MODULE,))
+    soft = make_entry("soft.tool", requires=(MODULE,), degradable=True)
+    return ToolRegistry.build([strict, soft], known_modules=[MODULE])
+
+
+def test_degraded_dependency_only_keeps_degradable_tools_ready():
+    registry, bus = _degrade_registry(), EventBus()
+    subscribe_module_events(bus, registry)
+    mc = FakeCoordinator(bus)
+    mc.emit("ready", 1, state="ready")
+    assert (registry.readiness("strict.tool"), registry.readiness("soft.tool")) == ("ready", "ready")
+    mc.emit("ready", 2, state="degraded", reason_code="probe_degraded")
+    assert (registry.readiness("strict.tool"), registry.readiness("soft.tool")) == ("unavailable", "ready")
+    mc.emit("ready", 3, state="ready")  # 恢復
+    assert (registry.readiness("strict.tool"), registry.readiness("soft.tool")) == ("ready", "ready")
+
+
+def test_config_or_authorization_denial_beats_degraded_to_ready():
+    registry, bus = _degrade_registry(), EventBus()
+    subscribe_module_events(bus, registry)
+    mc = FakeCoordinator(bus)
+    mc.emit("ready", 1, state="degraded", reason_code="delete_disabled")  # degradable 也不能被設定禁止覆蓋
+    assert registry.readiness("soft.tool") == "unavailable"
+    mc.emit("ready", 2, state="degraded", reason_code="probe_degraded")
+    assert registry.readiness("soft.tool") == "ready"
+
+
+def test_event_without_state_still_works_on_readiness_alone():
+    registry, bus = _degrade_registry(), EventBus()
+    subscribe_module_events(bus, registry)
+    FakeCoordinator(bus).emit("ready", 1)  # 沒有 state：只靠 readiness，不套用 degraded 規則
+    assert (registry.readiness("strict.tool"), registry.readiness("soft.tool")) == ("ready", "ready")
+
+
+def test_unloaded_module_is_not_in_enabled_tags_but_loading_is():
+    only = make_entry("only.tool", spec={"capability": "memory.read"}, requires=(MODULE,))
+    registry, bus = ToolRegistry.build([only], known_modules=[MODULE]), EventBus()
+    subscribe_module_events(bus, registry)
+    mc = FakeCoordinator(bus)
+    assert "memory.read" in registry.enabled_tags()  # 首事件前 ready（未宣告 warm_required）
+    mc.emit("unavailable", 1, state="unloaded", reason_code="not_loaded")
+    assert "memory.read" not in registry.enabled_tags()  # R4=A：unloaded 不入標籤
+    mc.emit("warming", 2, state="loading")
+    assert "memory.read" in registry.enabled_tags()  # loading／warming 仍納入
+    mc.emit("unavailable", 3, state="unloading", reason_code="unloaded")
+    assert "memory.read" not in registry.enabled_tags()
+
+
+# --- 真 coordinator＋真 Bus＋真 registry＋Gateway ---
+
+def _bus_sink(bus: EventBus, drop: list[int] | None = None):
+    trusted = TrustedContext(source="module.coordinator", actor_id="system", scope_ref="scope_public", external=False)
+    sent: list[dict[str, Any]] = []
+
+    def sink(event_type: str, payload: Any) -> None:
+        sent.append(dict(payload))
+        if drop and drop[0] > 0:
+            drop[0] -= 1  # 模擬 Bus 丟事件
+            return
+        bus.publish(build_event(EventDraft(event_type=event_type, payload=dict(payload)), trusted), sync=True)
+
+    return sink, sent
+
+
+def _real_rig(handle: Any, *, probe_interval_s: float = 0.0, drop: list[int] | None = None):
+    bus = EventBus()
+    sink, sent = _bus_sink(bus, drop)
+    clock = FakeClock()
+    mc = ModuleCoordinator(
+        sink, epoch_source=lambda: 1, clock=clock, run_scheduler=False, resync_interval_s=0,
+        probe_interval_s=probe_interval_s,
+    )
+    mc.register(ModuleDescriptor(MODULE, autoload=True), handle)
+    registry = ToolRegistry.build(
+        [make_entry("deep_recall"), make_entry("speak.tool", requires=(MODULE,), warm_required=True),
+         make_entry("soft.tool", requires=(MODULE,), degradable=True)],
+        known_modules=mc.known_ids(),  # known modules 取自 coordinator
+    )
+    return bus, mc, registry, clock, sent
+
+
+def _wait_state(mc: ModuleCoordinator, state: str) -> None:
+    deadline = time.monotonic() + 5
+    while mc.status(MODULE).state != state:
+        assert time.monotonic() < deadline, "等待背景工作逾時"
+        time.sleep(0.005)
+
+
+def test_real_coordinator_snapshot_then_load_drives_registry_and_gateway():
+    handle = FakeHandle()
+    gate = handle.block("load")
+    bus, mc, registry, _clock, sent = _real_rig(handle)
+    subscribe_module_events(bus, registry)  # 先訂閱再 start
+    try:
+        mc.start()
+        assert sent[0]["cause"] == "startup"  # 啟動快照先發
+        assert handle.entered["load"].wait(5)
+        assert registry.readiness("soft.tool") == "warming"  # 快照與 loading 都已被套用，沒有 fail-open 窗口
+        cap = registry.project({"memory.read"}, ProjectionContext())
+        assert sorted(p["tool"] for p in cap["pending"]) == ["soft.tool", "speak.tool"]
+        gate.set()
+        assert mc.wait_settled(5)
+        ready_cap = registry.project({"memory.read"}, ProjectionContext())
+        assert _names(ready_cap) == ["deep_recall", "soft.tool", "speak.tool"]
+        ToolGateway(registry).check_intent("speak.tool", {"path": "x"}, ready_cap)  # ready：通過
+    finally:
+        handle.release_all()
+        mc.stop(timeout_s=2.0)
+    assert registry.readiness("speak.tool") == "unavailable"  # 停機的最終事件（cause=shutdown）已套用
+    with pytest.raises(GatewayRejected) as exc:
+        ToolGateway(registry).check_intent("speak.tool", {"path": "x"}, ready_cap)
+    assert exc.value.code == "tool_not_ready"
+
+
+def test_real_coordinator_snapshot_applied_before_any_load_completes():
+    handle = FakeHandle()
+    gate = handle.block("load")
+    bus, mc, registry, _clock, _sent = _real_rig(handle)
+    first: list[str] = []
+    bus.subscribe("module.state_changed", lambda e: first.append(e.payload["state"]))
+    subscribe_module_events(bus, registry)
+    try:
+        mc.start()
+        assert first[0] == "unloaded" and registry.readiness("soft.tool") in ("unavailable", "warming")
+    finally:
+        gate.set()
+        mc.stop(timeout_s=2.0)
+
+
+def test_real_coordinator_degraded_differs_by_tool_degradability():
+    obs = FakeObserver("ok")
+    bus, mc, registry, clock, _sent = _real_rig(obs, probe_interval_s=1.0)
+    subscribe_module_events(bus, registry)
+    try:
+        mc.start()
+        assert mc.wait_settled(5)
+        assert registry.readiness("soft.tool") == "ready"
+        obs.result = "degraded"
+        clock.advance(1)
+        mc.tick()
+        _wait_state(mc, "degraded")
+        assert (registry.readiness("speak.tool"), registry.readiness("soft.tool")) == ("unavailable", "ready")
+    finally:
+        mc.stop(timeout_s=2.0)
+
+
+def test_lost_events_are_compensated_by_resync_and_stale_replays_are_ignored():
+    handle = FakeHandle()
+    drop = [0]
+    bus, mc, registry, _clock, sent = _real_rig(handle, drop=drop)
+    subscribe_module_events(bus, registry)
+    try:
+        mc.start()
+        assert mc.wait_settled(5)
+        assert registry.readiness("soft.tool") == "ready"
+        drop[0] = 99  # 之後的事件全被丟掉：registry 停在舊狀態
+        assert mc.request_unload(MODULE).accepted
+        _wait_state(mc, "unloaded")
+        assert registry.readiness("soft.tool") == "ready"  # 過期的視圖
+        drop[0] = 0
+        mc.resync()  # 補償：遞增 revision 的當前狀態
+        assert registry.readiness("soft.tool") == "unavailable"
+        old = next(e for e in sent if e["state"] == "ready")  # 亂序重送：舊 revision 不能把視圖拉回去
+        trusted = TrustedContext(source="module.coordinator", actor_id="system", scope_ref="scope_public", external=False)
+        bus.publish(build_event(EventDraft(event_type="module.state_changed", payload=old), trusted), sync=True)
+        assert registry.readiness("soft.tool") == "unavailable"
+    finally:
+        mc.stop(timeout_s=2.0)

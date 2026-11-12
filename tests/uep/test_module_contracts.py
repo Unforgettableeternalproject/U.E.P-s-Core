@@ -264,7 +264,9 @@ def test_registry_accepts_consistent_state_for_every_state():
         reg = _registry()
         assert reg.apply_module_event(
             MODULE_STATE_CHANGED, {"module_id": "gpu:x", "revision": i, "state": state, "readiness": readiness})
-        assert reg.readiness("speak.tool") == readiness
+        # R5（D109）：degraded 對不可降級的工具是 unavailable；其餘狀態與 readiness 對照一致
+        expected = "unavailable" if state == "degraded" else readiness
+        assert reg.readiness("speak.tool") == expected
 
 
 def test_lore_payloads_pass_contract_validation():

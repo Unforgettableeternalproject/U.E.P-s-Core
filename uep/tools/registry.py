@@ -17,7 +17,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, get_args
+from typing import Any, Literal, NamedTuple, get_args
 
 from uep.adapters.tool import (
     APPROVAL_ORDER,
@@ -97,6 +97,8 @@ _READINESS_OF_STATE: Mapping[str, str] = MappingProxyType({
     "unloaded": "unavailable", "loading": "warming", "warming": "warming", "ready": "ready",
     "degraded": "ready", "unloading": "unavailable", "failed": "unavailable",
 })
+# R5（D109）：設定／授權類的禁止原因，優先於 degraded -> ready（即使工具 degradable 也不可用）
+_GATE_REASON_CODES = frozenset({"not_configured", "delete_disabled", "unauthorized", "forbidden", "disabled", "blocked"})
 
 
 class ToolRegistryError(ValueError):
@@ -171,6 +173,16 @@ def load_lockfile(path: Path = LOCKFILE_PATH) -> dict[str, dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+class _ModuleRecord(NamedTuple):
+    """註冊表端記錄的模組狀態：排序鍵 ``(epoch, revision)``、readiness，以及 R5 需要的七態 ``state`` 與 ``reason_code``。"""
+
+    epoch: int
+    revision: int
+    readiness: Readiness
+    state: str | None = None
+    reason_code: str | None = None
+
+
 class ToolRegistry:
     """建構即驗證並凍結的工具註冊表；實作 ``EnumerableToolSpecResolver``。"""
 
@@ -179,10 +191,10 @@ class ToolRegistry:
         self._specs: Mapping[str, ToolSpec] = MappingProxyType({})
         self._hashes: Mapping[str, str] = MappingProxyType({})
         self._known_modules: frozenset[str] = frozenset()
-        # module coordinator 事件維護的就緒狀態（§5.8）：(投影版本, {module_id: (epoch, revision, state)})。
+        # module coordinator 事件維護的就緒狀態（§5.8）：(投影版本, {module_id: _ModuleRecord})。
         # 整份原子替換（copy-on-write），讀取端取一次快照就能得到一致的狀態與版本，不需要鎖；寫入端以鎖序列化。
         # 投影版本（capability_set.revision）每次有效事件加一。
-        self._module_view: tuple[int, Mapping[str, tuple[int, int, Readiness]]] = (0, MappingProxyType({}))
+        self._module_view: tuple[int, Mapping[str, _ModuleRecord]] = (0, MappingProxyType({}))
         self._event_lock = threading.Lock()
 
     @classmethod
@@ -517,13 +529,19 @@ class ToolRegistry:
             and self._readiness_in(entry, states) != "unavailable"
         )
 
-    def _readiness_in(self, entry: ToolEntry, states: Mapping[str, tuple[int, int, Readiness]]) -> Readiness:
+    def _readiness_in(self, entry: ToolEntry, states: Mapping[str, _ModuleRecord]) -> Readiness:
         result: Readiness = "ready"
         for module in entry.requires:
             if module not in self._known_modules:
                 return "unavailable"
             recorded = states.get(module)
-            state: Readiness = recorded[2] if recorded else ("warming" if entry.warm_required else "ready")
+            state: Readiness = recorded.readiness if recorded else ("warming" if entry.warm_required else "ready")
+            # R5：降級中的依賴只對 degradable 工具算 ready；設定／授權禁止優先，一律 unavailable
+            if (
+                recorded is not None and recorded.state == "degraded"
+                and (not entry.degradable or recorded.reason_code in _GATE_REASON_CODES)
+            ):
+                return "unavailable"
             if state == "unavailable":
                 return "unavailable"
             if state == "warming":
@@ -532,7 +550,7 @@ class ToolRegistry:
 
     def apply_module_event(self, event_type: str, payload: Mapping[str, Any]) -> bool:
         """接 module coordinator 事件（``module.state_changed``，payload 取 ``{module_id, revision, epoch?, readiness}``，
-        ``state`` 若帶了合法值須與 ``readiness`` 對照一致，否則拒收；其餘鍵如 ``reason_code`` 此處不使用；§5.8、D108 R2）。``readiness`` 必須是 ready／warming／unavailable，
+        ``state`` 若帶了合法值須與 ``readiness`` 對照一致，否則拒收；``state``／``reason_code`` 另存供 R5 判斷 degraded；§5.8、D108 R2、D109）。``readiness`` 必須是 ready／warming／unavailable，
         否則忽略。以 ``(epoch, revision)`` 的字典序取**最新**：
         epoch 變大（module coordinator 重啟）時 revision 重新計；沒有 epoch 視為 0。排序鍵不大於已記錄者
         （重送、亂序）一律忽略；未知事件、未知模組、格式不符也忽略（維持原狀態，fail-closed）並記警告。
@@ -557,9 +575,14 @@ class ToolRegistry:
         with self._event_lock:
             version, states = self._module_view
             recorded = states.get(module)
-            if recorded is not None and (epoch, revision) <= (recorded[0], recorded[1]):
+            if recorded is not None and (epoch, revision) <= (recorded.epoch, recorded.revision):
                 return False
-            self._module_view = (version + 1, MappingProxyType({**states, module: (epoch, revision, state)}))
+            reason = body.get("reason_code")
+            record = _ModuleRecord(
+                epoch, revision, state, claimed if isinstance(claimed, str) else None,
+                reason if isinstance(reason, str) else None,
+            )
+            self._module_view = (version + 1, MappingProxyType({**states, module: record}))
         return True
 
     # --- 投影（§6.1） ---

@@ -56,6 +56,13 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _aware(value: datetime, name: str) -> datetime:
+    """naive datetime 一律拒絕（比照 resolver 的 ``_utc``）。"""
+    if value.tzinfo is None:
+        raise ValueError(f"{name} 必須帶時區")
+    return value
+
+
 # ---- 寫入介面型別（PlanWriter；之後可移入 contracts）----
 
 @dataclass(frozen=True)
@@ -225,7 +232,14 @@ def _mark_from_row(m) -> SlotMark:
 
 
 class PlanStore:
-    """PlanReader＋PlanWriter＋OverrideWriter＋SlotMarkWriter（單一 persona）。"""
+    """PlanReader＋PlanWriter＋OverrideWriter＋SlotMarkWriter（單一 persona）。
+
+    鎖順序：所有寫入先鎖 ``presence_plan_meta`` 的列（``_lock_meta``），再更新其他資料列。
+    已知限制（審查 m4／m5／m6，本版維持現狀，待 PP-4／仲裁器階段評估）：
+    - m4：``_load`` 的多條查詢不在同一快照內，回傳的 revision 可能落後於實際內容。
+    - m5：``begin_mark`` 不驗證 item_ref／planned_start_at 是否實際存在於行程（交給 reconcile 以 item_ended 收斂）。
+    - m6：``snapshot`` 對非 owner 拋 PermissionError，而不是回 WriteResult(NOT_OWNER)。
+    """
 
     def __init__(self, session_factory: sessionmaker[Session], *, persona_id: str = "uep",
                  clock: Callable[[], datetime] = _utcnow, override_policy: resolver.OverridePolicy | None = None,
@@ -289,7 +303,8 @@ class PlanStore:
                             {"p": self._persona}).first()
         return row.tz if row else DEFAULT_TZ
 
-    def _load(self) -> tuple[list[PlanItem], OverrideView | None, list[SlotMark], int, str]:
+    def _load(self, now: datetime) -> tuple[list[PlanItem], OverrideView | None, list[SlotMark], int, str]:
+        """讀取解析所需資料；已過期的 override 與已過輪次的 mark 不回傳（等 reconcile 正式結束）。"""
         with self._sf() as s:
             meta = s.execute(text("SELECT revision, tz FROM presence_plan_meta WHERE persona_id = :p"),
                              {"p": self._persona}).first()
@@ -298,25 +313,27 @@ class PlanStore:
                 "ORDER BY item_id"), {"p": self._persona})]
             ov = s.execute(text(
                 f"SELECT {_OVERRIDE_COLUMNS} FROM presence_plan_overrides "
-                "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE')"), {"p": self._persona}).first()
+                "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE') AND expires_at > :now "
+                "AND round_end_at > :now"), {"p": self._persona, "now": now}).first()
             marks = [_mark_from_row(r._mapping) for r in s.execute(text(
-                f"SELECT {_MARK_COLUMNS} FROM presence_plan_slot_marks WHERE persona_id = :p AND ended_at IS NULL"),
-                {"p": self._persona})]
+                f"SELECT {_MARK_COLUMNS} FROM presence_plan_slot_marks WHERE persona_id = :p AND ended_at IS NULL "
+                "AND round_end_at > :now"), {"p": self._persona, "now": now})]
         return (items, _override_from_row(ov._mapping) if ov else None, marks,
                 int(meta.revision) if meta else 0, meta.tz if meta else DEFAULT_TZ)
 
     def resolve(self, at: datetime | None = None) -> PlanSlot:
-        now = (at or self._now())
+        now = _aware(at, "at").astimezone(UTC) if at is not None else self._now()
         try:
-            items, override, marks, revision, tz = self._load()
+            items, override, marks, revision, tz = self._load(now)
         except SQLAlchemyError as exc:  # 儲存讀取失敗 → 行程不可用（不誤刪任何資料）
             logger.warning("行程儲存讀取失敗，行程標示為不可用：%s", exc)
             return resolver.unavailable_slot(now, 0, "store_unavailable")
         return resolver.resolve(items, override, now, tz, plan_revision=revision, delay=self._delay, marks=marks)
 
     def upcoming(self, start: datetime, horizon_s: int) -> tuple[PlanSlot, ...]:
+        start = _aware(start, "start").astimezone(UTC)
         try:
-            items, override, marks, revision, tz = self._load()
+            items, override, marks, revision, tz = self._load(start)
         except SQLAlchemyError as exc:
             logger.warning("行程儲存讀取失敗，行程標示為不可用：%s", exc)
             return (resolver.unavailable_slot(start, 0, "store_unavailable"),)
@@ -324,20 +341,26 @@ class PlanStore:
                                  marks=marks)
 
     # ---- OverrideWriter（僅仲裁器持有）----
+    # 鎖順序（全部寫入一致）：先 ``_lock_meta``（presence_plan_meta 的列鎖），再更新其他資料列，避免交錯死鎖。
 
     def begin_override(self, *, cause_request_id: str, authority: str, priority: int, location: PlanLocation,
                        activity_kind: ActivityKind, expires_at: datetime) -> str:
-        """建立 PENDING override；同 cause 冪等。已有未結束的 override 時，舊的以 superseded 結束。"""
+        """建立 PENDING override；同 cause 冪等（參數不同 → ValueError）。已有未結束的 override 時，舊的以 superseded 結束。"""
+        _aware(expires_at, "expires_at")
         started = self._now()
+        kind_value = ActivityKind(activity_kind).value
         for attempt in range(2):
             try:
                 with self._sf() as s, s.begin():
-                    existing = s.execute(text(
-                        "SELECT override_id FROM presence_plan_overrides WHERE cause_request_id = :c"),
-                        {"c": cause_request_id}).first()
-                    if existing:
-                        return existing.override_id
                     _, tz = self._lock_meta(s)
+                    existing = s.execute(text(
+                        "SELECT override_id, authority, priority, location, activity_kind FROM presence_plan_overrides "
+                        "WHERE cause_request_id = :c"), {"c": cause_request_id}).first()  # 鎖內重查，避免競態
+                    if existing:
+                        if (existing.authority, existing.priority, existing.location, existing.activity_kind) != (
+                                authority, priority, location, kind_value):
+                            raise ValueError(f"cause_request_id 已用於不同參數的 override：{cause_request_id}")
+                        return existing.override_id
                     round_end = resolver.round_end_at(started, tz)
                     expires = min(expires_at.astimezone(UTC), round_end)
                     # 先以契約型別驗證（host 不得為 override 位置；expires > started）
@@ -352,73 +375,96 @@ class PlanStore:
                         "priority, location, activity_kind, started_at, expires_at, round_end_at, status, created_at) "
                         "VALUES (:id, :p, :c, :a, :pr, :loc, :k, :st, :ex, :re, 'PENDING', :st)"),
                         {"id": override_id, "p": self._persona, "c": cause_request_id, "a": authority,
-                         "pr": priority, "loc": view.location, "k": ActivityKind(activity_kind).value,
-                         "st": started, "ex": expires, "re": round_end})
+                         "pr": priority, "loc": view.location, "k": kind_value, "st": started, "ex": expires,
+                         "re": round_end})
                     revision = self._bump(s, started)
                 self._notify(revision, "override_started", override_id)
                 return override_id
-            except IntegrityError:
-                if attempt:  # 競態：另一個交易搶先以同 cause 建立 → 第二輪走冪等分支
+            except IntegrityError as exc:
+                # 只有 cause_request_id 的唯一性競態才重試（meta 鎖下理論上不會發生）；其他約束違反照實拋出
+                if attempt or "cause_request_id" not in str(exc.orig):
                     raise
         raise RuntimeError("unreachable")  # pragma: no cover
 
     def activate_override(self, override_id: str) -> bool:
+        """PENDING → ACTIVE。已過期的 PENDING 不啟用：同交易以 expired 結束並回 False（狀態明確，不留下懸空列）。"""
         now = self._now()
         with self._sf() as s, s.begin():
+            self._lock_meta(s)
             row = s.execute(text(
                 "UPDATE presence_plan_overrides SET status = 'ACTIVE' WHERE override_id = :id AND persona_id = :p "
-                "AND status = 'PENDING' RETURNING override_id"), {"id": override_id, "p": self._persona}).first()
+                "AND status = 'PENDING' AND expires_at > :now AND round_end_at > :now RETURNING override_id"),
+                {"id": override_id, "p": self._persona, "now": now}).first()
             if row is None:
-                return False
-            self._lock_meta(s)
-            revision = self._bump(s, now)
-        self._notify(revision, "override_activated", override_id)
-        return True
+                expired = s.execute(text(
+                    "UPDATE presence_plan_overrides SET status = 'ENDED', ended_at = :now, end_reason = 'expired' "
+                    "WHERE override_id = :id AND persona_id = :p AND status = 'PENDING' RETURNING override_id"),
+                    {"id": override_id, "p": self._persona, "now": now}).first()
+                if expired is None:
+                    return False
+                revision = self._bump(s, now)
+                logger.info("override 在啟用前已過期，已結束：%s", override_id)
+                notify = (revision, "override_ended", override_id)
+                activated = False
+            else:
+                notify = (self._bump(s, now), "override_activated", override_id)
+                activated = True
+        self._notify(*notify)
+        return activated
 
     def end_override(self, override_id: str, reason: str) -> bool:
         if reason not in OVERRIDE_END_REASONS:
             raise ValueError(f"未知的 override 結束原因：{reason}")
         now = self._now()
         with self._sf() as s, s.begin():
+            self._lock_meta(s)
             row = s.execute(text(
                 "UPDATE presence_plan_overrides SET status = 'ENDED', ended_at = :now, end_reason = :r "
                 "WHERE override_id = :id AND persona_id = :p AND status <> 'ENDED' RETURNING override_id"),
                 {"id": override_id, "p": self._persona, "now": now, "r": reason}).first()
             if row is None:
                 return False
-            self._lock_meta(s)
             revision = self._bump(s, now)
         self._notify(revision, "override_ended", override_id)
         return True
 
     def active_override(self) -> OverrideView | None:
+        """未結束且未過期、未過輪次的 override（過期列等 reconcile 結束，不回傳）。"""
+        now = self._now()
         with self._sf() as s:
             row = s.execute(text(
                 f"SELECT {_OVERRIDE_COLUMNS} FROM presence_plan_overrides "
-                "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE')"), {"p": self._persona}).first()
+                "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE') AND expires_at > :now "
+                "AND round_end_at > :now"), {"p": self._persona, "now": now}).first()
         return _override_from_row(row._mapping) if row else None
 
     # ---- SlotMarkWriter ----
 
     def begin_mark(self, *, kind: Literal["pause", "abandon"], item_ref: str, planned_start_at: datetime,
                    cause_request_id: str) -> str:
-        """建立標記；同 cause 冪等，同一出現同 kind 已有未結束標記時回既有 id。abandon 令同一出現的 pause 以 superseded 結束。"""
+        """建立標記；同 cause 冪等（參數不同 → ValueError），同一出現同 kind 已有未結束標記時回既有 id。
+
+        abandon 令同一出現的 pause 以 superseded 結束。
+        """
         if kind not in ("pause", "abandon"):
             raise ValueError(f"未知的 mark kind：{kind}")
+        planned = _aware(planned_start_at, "planned_start_at").astimezone(UTC)
         started = self._now()
         for attempt in range(2):
             try:
                 with self._sf() as s, s.begin():
-                    existing = s.execute(text(
-                        "SELECT mark_id FROM presence_plan_slot_marks WHERE cause_request_id = :c"),
-                        {"c": cause_request_id}).first()
-                    if existing:
-                        return existing.mark_id
                     _, tz = self._lock_meta(s)
+                    existing = s.execute(text(
+                        "SELECT mark_id, kind, item_ref, planned_start_at FROM presence_plan_slot_marks "
+                        "WHERE cause_request_id = :c"), {"c": cause_request_id}).first()  # 鎖內重查，避免競態
+                    if existing:
+                        if (existing.kind, existing.item_ref, existing.planned_start_at) != (kind, item_ref, planned):
+                            raise ValueError(f"cause_request_id 已用於不同參數的 mark：{cause_request_id}")
+                        return existing.mark_id
                     open_same = s.execute(text(
                         "SELECT mark_id FROM presence_plan_slot_marks WHERE persona_id = :p AND item_ref = :i "
                         "AND planned_start_at = :ps AND kind = :k AND ended_at IS NULL"),
-                        {"p": self._persona, "i": item_ref, "ps": planned_start_at, "k": kind}).first()
+                        {"p": self._persona, "i": item_ref, "ps": planned, "k": kind}).first()
                     if open_same:
                         return open_same.mark_id
                     if kind == "abandon":
@@ -426,19 +472,19 @@ class PlanStore:
                             "UPDATE presence_plan_slot_marks SET ended_at = :now, end_reason = 'superseded' "
                             "WHERE persona_id = :p AND item_ref = :i AND planned_start_at = :ps AND kind = 'pause' "
                             "AND ended_at IS NULL"),
-                            {"p": self._persona, "i": item_ref, "ps": planned_start_at, "now": started})
+                            {"p": self._persona, "i": item_ref, "ps": planned, "now": started})
                     mark_id = new_id("pmark")
                     s.execute(text(
                         "INSERT INTO presence_plan_slot_marks (mark_id, persona_id, kind, item_ref, planned_start_at, "
                         "cause_request_id, started_at, round_end_at, created_at) "
                         "VALUES (:id, :p, :k, :i, :ps, :c, :st, :re, :st)"),
-                        {"id": mark_id, "p": self._persona, "k": kind, "i": item_ref, "ps": planned_start_at,
+                        {"id": mark_id, "p": self._persona, "k": kind, "i": item_ref, "ps": planned,
                          "c": cause_request_id, "st": started, "re": resolver.round_end_at(started, tz)})
                     revision = self._bump(s, started)
                 self._notify(revision, "mark_started", mark_id)
                 return mark_id
-            except IntegrityError:
-                if attempt:
+            except IntegrityError as exc:
+                if attempt or "cause_request_id" not in str(exc.orig):
                     raise
         raise RuntimeError("unreachable")  # pragma: no cover
 
@@ -447,6 +493,7 @@ class PlanStore:
             raise ValueError(f"未知的 mark 結束原因：{reason}")
         now = self._now()
         with self._sf() as s, s.begin():
+            self._lock_meta(s)
             kind_row = s.execute(text(
                 "SELECT kind FROM presence_plan_slot_marks WHERE mark_id = :id AND persona_id = :p"),
                 {"id": mark_id, "p": self._persona}).first()
@@ -460,16 +507,17 @@ class PlanStore:
                 {"id": mark_id, "p": self._persona, "now": now, "r": reason}).first()
             if row is None:
                 return False
-            self._lock_meta(s)
             revision = self._bump(s, now)
         self._notify(revision, "mark_ended", mark_id)
         return True
 
     def active_marks(self) -> tuple[SlotMark, ...]:
+        """未結束且未過輪次的 mark。"""
+        now = self._now()
         with self._sf() as s:
             rows = s.execute(text(
                 f"SELECT {_MARK_COLUMNS} FROM presence_plan_slot_marks WHERE persona_id = :p AND ended_at IS NULL "
-                "ORDER BY started_at"), {"p": self._persona})
+                "AND round_end_at > :now ORDER BY started_at"), {"p": self._persona, "now": now})
             return tuple(_mark_from_row(r._mapping) for r in rows)
 
     # ---- PlanWriter（僅已認證 owner）----
@@ -477,8 +525,8 @@ class PlanStore:
     def snapshot(self, actor: PlanActor) -> PlanSnapshot:
         if not _is_owner(actor, self._allowed_sources):
             raise PermissionError("not_owner")
-        items, override, marks, revision, tz = self._load()
         now = self._now()
+        items, override, marks, revision, tz = self._load(now)
         slots = resolver.upcoming(items, override, now, 24 * 3600, tz, plan_revision=revision, delay=self._delay,
                                   marks=marks)
         rest = next((i for i in items if i.role == "rest_window"), None)
@@ -624,6 +672,20 @@ class PlanStore:
         def body(s: Session, now: datetime, _tz: str) -> WriteResult:
             s.execute(text("UPDATE presence_plan_meta SET tz = :tz WHERE persona_id = :p"),
                       {"tz": tz, "p": self._persona})
+            # 輪次日界跟著新時區：未結束 override／mark 的 round_end_at 重算（override 的 expires_at 仍不得晚於它）
+            for row in s.execute(text(
+                    "SELECT override_id, started_at, expires_at FROM presence_plan_overrides "
+                    "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE') FOR UPDATE"),
+                    {"p": self._persona}).all():
+                round_end = resolver.round_end_at(row.started_at, tz)
+                s.execute(text(
+                    "UPDATE presence_plan_overrides SET round_end_at = :re, expires_at = :ex WHERE override_id = :id"),
+                    {"re": round_end, "ex": min(row.expires_at, round_end), "id": row.override_id})
+            for row in s.execute(text(
+                    "SELECT mark_id, started_at FROM presence_plan_slot_marks "
+                    "WHERE persona_id = :p AND ended_at IS NULL FOR UPDATE"), {"p": self._persona}).all():
+                s.execute(text("UPDATE presence_plan_slot_marks SET round_end_at = :re WHERE mark_id = :id"),
+                          {"re": resolver.round_end_at(row.started_at, tz), "id": row.mark_id})
             return WriteResult("OK")
 
         return self._write(expected_revision, "tz_changed", body)
@@ -649,17 +711,18 @@ class PlanStore:
 
     # ---- 重啟調和（§7）----
 
-    def reconcile(self, now: datetime | None = None, *,
+    def reconcile(self, now: datetime | None = None, *, at_startup: bool = False,
                   presence_status: Literal["NONE", "ACTIVE", "RECOVERING"] | None = None) -> ReconcileSummary:
         """啟動／維護時的一次調和；不補錯過的邊界。
 
-        - override：已過期／已過輪次 → ENDED(expired／round_ended)；未過期但 ``presence_status`` 為 NONE／RECOVERING
-          （她已不在 override 的位置）→ ENDED(restart)。``presence_status=None`` 不做此項。
+        - override：已過期／已過輪次 → ENDED(expired／round_ended)。``restart`` 只在顯式啟動呼叫
+          （``at_startup=True``）且 ``presence_status`` 為 NONE／RECOVERING 時，對 **ACTIVE** override 套用
+          （她已不在 override 的位置）；剛建立、尚在移轉的 PENDING 不誤殺。
         - mark：已過輪次 → ended(round_ended)；指向的行程項已刪除／不存在 → ended(item_ended)；其餘保留
           （owner 的明示決定不因重啟消失）。
         - 有任何變更時 revision +1。
         """
-        stamp = (now or self._now()).astimezone(UTC)
+        stamp = _aware(now, "now").astimezone(UTC) if now is not None else self._now()
         ov_ended: dict[str, int] = {}
         mk_ended: dict[str, int] = {}
         with self._sf() as s, s.begin():
@@ -669,7 +732,8 @@ class PlanStore:
                     "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE') FOR UPDATE"), {"p": self._persona}).all():
                 view = _override_from_row(row._mapping)
                 reason = resolver.override_end_reason(view, stamp)
-                if reason is None and presence_status in ("NONE", "RECOVERING"):
+                if (reason is None and at_startup and view.status == "active"
+                        and presence_status in ("NONE", "RECOVERING")):
                     reason = "restart"
                 if reason is None:
                     continue

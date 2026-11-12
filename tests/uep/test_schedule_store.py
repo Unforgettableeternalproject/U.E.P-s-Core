@@ -310,7 +310,13 @@ def test_reconcile_override_cases(store, clock):  # VC-PP-13 / VC-PP-22
     clock.now = tpe(2026, 11, 13, 10)
     store.begin_override(cause_request_id="c", authority="owner", priority=200, location="desktop",
                          activity_kind=ActivityKind.WORK, expires_at=clock.now + timedelta(hours=2))
-    restarted = store.reconcile(clock.now + timedelta(minutes=5), presence_status="RECOVERING")
+    # restart 只在顯式啟動呼叫、且只對 ACTIVE 套用：PENDING（剛建立、移轉中）不誤殺
+    pending = store.reconcile(clock.now + timedelta(minutes=5), at_startup=True, presence_status="RECOVERING")
+    assert pending.overrides_ended == {} and store.active_override() is not None
+    plain = store.reconcile(clock.now + timedelta(minutes=5), presence_status="RECOVERING")  # 非啟動呼叫不套用
+    assert plain.overrides_ended == {}
+    store.activate_override(store.active_override().override_id)
+    restarted = store.reconcile(clock.now + timedelta(minutes=5), at_startup=True, presence_status="RECOVERING")
     assert restarted.overrides_ended == {"restart": 1}
 
 
@@ -362,3 +368,98 @@ def test_resolver_is_used_for_overlap_priority(store):
     high = create(store, priority=70)
     assert store.resolve().item_ref == high and low != high
     assert resolver.round_end_at(tpe(2026, 11, 12, 10), TZ) == tpe(2026, 11, 13)
+
+
+# ---- 審查修正：鎖順序、過期過濾、冪等參數、naive、activate 過期、set_tz 重算 ----
+
+def test_concurrent_begin_and_activate_do_not_deadlock(sf, clock):
+    import threading
+
+    store = PlanStore(sf, clock=clock)
+    errors = []
+
+    def worker(tag):
+        try:
+            for i in range(15):
+                oid = store.begin_override(cause_request_id=f"{tag}{i}", authority="owner", priority=200,
+                                           location="desktop", activity_kind=ActivityKind.WORK,
+                                           expires_at=clock.now + timedelta(hours=1))
+                store.activate_override(oid)  # 可能因被對方 supersede 而回 False；重點是不死鎖
+                store.end_override(oid, "completed")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(tag,)) for tag in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert not any(t.is_alive() for t in threads), "疑似死鎖"
+    assert errors == []
+
+
+def test_expired_rows_are_not_returned_before_reconcile(store, clock):  # M2
+    store.begin_override(cause_request_id="e", authority="owner", priority=200, location="desktop",
+                         activity_kind=ActivityKind.WORK, expires_at=clock.now + timedelta(hours=1))
+    item_id = create(store)
+    store.begin_mark(kind="pause", item_ref=item_id, planned_start_at=tpe(2026, 11, 12, 9), cause_request_id="m")
+    assert store.active_override() is not None and len(store.active_marks()) == 1
+    clock.now = tpe(2026, 11, 12, 12)  # override 已過期
+    assert store.active_override() is None
+    clock.now = tpe(2026, 11, 13, 0, 1)  # mark 已過輪次
+    assert store.active_marks() == ()
+    assert store.resolve().source == PlanSource.DEFAULT
+
+
+def test_same_cause_with_different_params_is_rejected(store, clock):  # m3
+    kw = {"cause_request_id": "dup", "authority": "owner", "priority": 200, "location": "desktop",
+          "activity_kind": ActivityKind.WORK, "expires_at": clock.now + timedelta(hours=1)}
+    oid = store.begin_override(**kw)
+    assert store.begin_override(**kw) == oid
+    with pytest.raises(ValueError):
+        store.begin_override(**{**kw, "location": "discord"})
+    item_id = create(store)
+    planned = tpe(2026, 11, 12, 9)
+    store.begin_mark(kind="pause", item_ref=item_id, planned_start_at=planned, cause_request_id="mdup")
+    with pytest.raises(ValueError):
+        store.begin_mark(kind="abandon", item_ref=item_id, planned_start_at=planned, cause_request_id="mdup")
+
+
+def test_naive_datetimes_are_rejected(store, clock):  # m2
+    naive = datetime(2026, 11, 12, 11)
+    with pytest.raises(ValueError):
+        store.begin_override(cause_request_id="n", authority="owner", priority=200, location="desktop",
+                             activity_kind=ActivityKind.WORK, expires_at=naive)
+    with pytest.raises(ValueError):
+        store.begin_mark(kind="pause", item_ref="plan_x", planned_start_at=naive, cause_request_id="n2")
+    with pytest.raises(ValueError):
+        store.resolve(naive)
+    with pytest.raises(ValueError):
+        store.reconcile(naive)
+
+
+def test_activate_expired_override_ends_it_explicitly(store, clock):  # m7
+    oid = store.begin_override(cause_request_id="x", authority="owner", priority=200, location="desktop",
+                               activity_kind=ActivityKind.WORK, expires_at=clock.now + timedelta(minutes=5))
+    clock.now = clock.now + timedelta(minutes=10)
+    assert store.activate_override(oid) is False
+    assert store.end_override(oid, "completed") is False  # 已被以 expired 結束
+    with store._sf() as s:
+        row = s.execute(text("SELECT status, end_reason FROM presence_plan_overrides WHERE override_id = :i"),
+                        {"i": oid}).one()
+    assert (row.status, row.end_reason) == ("ENDED", "expired")
+
+
+def test_set_tz_recomputes_open_round_ends(store, clock):  # m8
+    clock.now = datetime(2026, 11, 12, 15, tzinfo=UTC)  # 台北 23:00、紐約 10:00
+    store.begin_override(cause_request_id="o", authority="owner", priority=200, location="desktop",
+                         activity_kind=ActivityKind.WORK, expires_at=clock.now + timedelta(hours=8))
+    item_id = create(store)
+    store.begin_mark(kind="pause", item_ref=item_id, planned_start_at=tpe(2026, 11, 12, 9), cause_request_id="k")
+    assert store.set_tz(OWNER, "America/New_York", expected_revision=store.revision()).status == "OK"
+    new_end = datetime(2026, 11, 13, 5, tzinfo=UTC)  # 紐約 11/13 00:00
+    ov = store.active_override()
+    assert ov.round_end_at == new_end and ov.expires_at <= new_end
+    with store._sf() as s:
+        mark_end = s.execute(text("SELECT round_end_at FROM presence_plan_slot_marks")).scalar_one()
+    assert mark_end == new_end

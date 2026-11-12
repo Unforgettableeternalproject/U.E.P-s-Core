@@ -147,3 +147,50 @@ def test_arbitration_on_writes_decision_events_and_only_executes_mark_abandon(se
     assert second[0].payload["executed"] is False and second[0].payload["exec_reason"] == "transfer_not_implemented"
     assert second[0].payload["mark_written"] is False
     assert store.active_override() is None
+
+
+# ---- 重送偵測唯讀（find_mark_by_cause）----
+
+def test_find_mark_by_cause_is_read_only_and_includes_ended_marks(store, clock):
+    item_id = add_item(store, "work", time(9), time(10))
+    planned = store.resolve().blueprint_start_at
+    mark_id = store.begin_mark(kind="abandon", item_ref=item_id, planned_start_at=planned, cause_request_id="c-1")
+    revision = store.revision()
+    found = store.find_mark_by_cause("c-1")
+    assert (found.mark_id, found.kind, found.item_ref, found.planned_start_at, found.ended_at) == (
+        mark_id, "abandon", item_id, planned, None)
+    assert store.find_mark_by_cause("nope") is None
+    assert store.revision() == revision  # 唯讀：沒有 bump
+    store.end_mark(mark_id, "item_ended")
+    ended = store.find_mark_by_cause("c-1")
+    assert ended.mark_id == mark_id and ended.ended_at is not None  # 已結束的也查得到
+
+
+def test_replay_of_an_ended_mark_is_a_duplicate_with_zero_writes(session_factory, store, events, clock):
+    add_item(store, "work", time(9), time(10))
+    executor = AbandonExecutor(store, store, events, tz_fn=store.tz, clock=clock)
+    first = executor.handle(signal(), is_owner=True)
+    assert first.reason_code == "accepted"
+    store.end_mark(first.mark.mark_id, "item_ended")
+    revision, events_before = store.revision(), len(rows(session_factory, "schedule.abandon_work"))
+    again = executor.handle(signal(), is_owner=True)
+    assert (again.status, again.reason_code, again.mark.mark_id) == ("ACCEPTED", "duplicate", first.mark.mark_id)
+    assert store.revision() == revision and store.active_marks() == ()  # 沒有寫入、沒有新 mark
+    assert len(rows(session_factory, "schedule.abandon_work")) == events_before
+
+
+def test_other_causes_abandoned_slot_replayed_by_another_signal_writes_nothing(session_factory, store, events, clock):
+    item_id = add_item(store, "work", time(9), time(10))
+    planned = store.resolve().blueprint_start_at
+    store.begin_mark(kind="abandon", item_ref=item_id, planned_start_at=planned, cause_request_id="req-x")
+    clock.now = tpe(9, 40)
+    assert store.resolve().slot_state == "abandoned"
+    revision = store.revision()
+    executor = AbandonExecutor(store, store, events, tz_fn=store.tz, clock=clock)
+    result = executor.handle(signal("abandon:other", decided_at=tpe(9, 35)), is_owner=True)
+    assert (result.status, result.reason_code) == ("IGNORED", "not_in_work")
+    assert store.revision() == revision  # revision 不變
+    assert [m.cause_request_id for m in store.active_marks()] == ["req-x"]  # mark 數量不變
+    assert store.find_mark_by_cause("abandon:other") is None
+    [ignored] = rows(session_factory, "schedule.abandon_work")
+    assert ignored.payload["result"] == "ignored" and ignored.payload["reason_code"] == "not_in_work"

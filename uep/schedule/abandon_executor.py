@@ -12,10 +12,10 @@ owner 判定：``is_owner`` 由呼叫端（決策層，已知 Core 的 platform_
 ``is_owner_fn``；兩者都沒有就回 ``IGNORED(owner_unverifiable)``——這是「無法判定」，不能和「確定不是 owner」
 （``not_owner``）混用。
 
-冪等不靠預查（check-then-act 有競態）：重送時 ``consume_abandon`` 會因為該格已是 abandoned 而判 not_in_work，這時改把
-同樣的參數交給 ``begin_mark``（store 在鎖內冪等）：回傳的 mark 若屬於同一個 ``signal_id`` 就是重送（``duplicate``，
-不重複發事件）；屬於別的請求則維持 ``not_in_work``。參數衝突（同 signal_id、不同出現）由 ``begin_mark`` 的 ValueError
-擋下，回 ``signal_id_conflict``。事件不放原文與顯示名稱。
+重送偵測全程**唯讀**：先用 ``find_mark_by_cause`` 查（不取寫鎖，含已結束的 mark）。查到已結束的 → ``duplicate``（不寫入）；
+查到未結束的 → 比對它綁的出現與目前判斷出的出現：相符是 ``duplicate``、不符回 ``signal_id_conflict``；查無 → 走一般流程。
+忽略路徑絕不呼叫 ``begin_mark``（別的請求放棄的格被別的 signal 重送時零寫入）。真正寫入時的併發冪等仍交給
+``begin_mark`` 在鎖內處理（同 cause 同參數回既有 mark，參數不同 ValueError）。事件不放原文與顯示名稱。
 """
 from __future__ import annotations
 
@@ -72,25 +72,51 @@ class AbandonExecutor:
             logger.exception("owner 判定失敗，視為非 owner")
             return False
 
+    def _find(self, signal: AbandonWorkSignal) -> Any | None:
+        """唯讀查這個 signal 是否已建過 mark（含已結束的）；writer 沒有該方法或查詢失敗時回 None。"""
+        finder = getattr(self._marks, "find_mark_by_cause", None)
+        if finder is None:
+            return None
+        try:
+            return finder(signal.signal_id)
+        except Exception:
+            logger.debug("依 cause 查 mark 失敗，視為沒有", exc_info=True)
+            return None
+
+    def _duplicate(self, signal: AbandonWorkSignal, record: Any, now: datetime) -> AbandonResult:
+        self._count("schedule.abandon.duplicate")
+        mark = SlotMark(kind="abandon", item_ref=record.item_ref, planned_start_at=record.planned_start_at,
+                        started_at=now, mark_id=record.mark_id, cause_request_id=signal.signal_id)
+        return AbandonResult("ACCEPTED", "duplicate", mark)
+
     def handle(self, signal: AbandonWorkSignal, *, is_owner: bool | None = None) -> AbandonResult:
         owner = self._resolve_owner(signal, is_owner)
         if owner is None:
             return self._ignored(signal, R_OWNER_UNVERIFIABLE)
         now = self._clock()
+        # 重送偵測全程唯讀（find_mark_by_cause 不取寫鎖）；忽略路徑絕不呼叫 begin_mark
+        record = self._find(signal)
+        if record is not None and record.ended_at is not None:
+            return self._duplicate(signal, record, now)  # 已結束的 mark 被重送：認出來，不寫入
         slot = self._reader.resolve(now)
         result = consume_abandon(signal, is_owner=owner, now=now, slot=slot, tz=self._tz_fn())
+        if record is not None:  # 這個 signal 建過未結束的 mark：比對它綁的出現
+            if result.status == "ACCEPTED" and result.mark is not None:
+                bound = (result.mark.item_ref, result.mark.planned_start_at)
+            elif slot.slot_state == "abandoned" and slot.item_ref is not None and slot.blueprint_start_at is not None:
+                bound = (slot.item_ref, slot.blueprint_start_at)
+            else:
+                return self._ignored(signal, result.reason_code)
+            if record.kind == "abandon" and (record.item_ref, record.planned_start_at) == bound:
+                return self._duplicate(signal, record, now)
+            return self._ignored(signal, R_SIGNAL_ID_CONFLICT, bound[0])
         if result.status != "ACCEPTED" or result.mark is None:
-            if (result.reason_code == "not_in_work" and slot.slot_state == "abandoned" and slot.item_ref is not None
-                    and slot.blueprint_start_at is not None):
-                duplicate = self._detect_duplicate(signal, slot.item_ref, slot.blueprint_start_at)
-                if duplicate is not None:
-                    return duplicate
             return self._ignored(signal, result.reason_code)
         mark = result.mark
         try:
             mark_id = self._marks.begin_mark(kind="abandon", item_ref=mark.item_ref,
                                              planned_start_at=mark.planned_start_at, cause_request_id=signal.signal_id)
-        except ValueError:  # 同一個 signal_id 先前以不同參數建立過 mark：不可信，忽略
+        except ValueError:  # 查詢之後才出現的同 signal_id 衝突（競態）：不可信，忽略
             return self._ignored(signal, R_SIGNAL_ID_CONFLICT, mark.item_ref)
         except Exception:
             logger.exception("放棄 mark 寫入失敗：%s", signal.signal_id)
@@ -108,18 +134,3 @@ class AbandonExecutor:
             except Exception:
                 logger.debug("poke Planner 失敗", exc_info=True)
         return AbandonResult("ACCEPTED", "accepted", written)
-
-    def _detect_duplicate(self, signal: AbandonWorkSignal, item_ref: str, planned_start_at: datetime
-                          ) -> AbandonResult | None:
-        """該格已是 abandoned：把同樣的參數交給 begin_mark（鎖內冪等，不會新增），看回傳的 mark 是不是這個 signal 建的。"""
-        try:
-            mark_id = self._marks.begin_mark(kind="abandon", item_ref=item_ref, planned_start_at=planned_start_at,
-                                             cause_request_id=signal.signal_id)
-            existing = next((m for m in self._marks.active_marks() if m.mark_id == mark_id), None)
-        except Exception:
-            logger.debug("重送偵測失敗，維持 not_in_work", exc_info=True)
-            return None  # 查不到就維持原判斷（not_in_work）
-        if existing is None or existing.cause_request_id != signal.signal_id:
-            return None  # 這格是別的請求放棄的
-        self._count("schedule.abandon.duplicate")
-        return AbandonResult("ACCEPTED", "duplicate", existing)

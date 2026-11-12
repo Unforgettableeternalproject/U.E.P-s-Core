@@ -15,7 +15,7 @@ import time as _clock_time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import text
@@ -65,6 +65,16 @@ def _aware(value: datetime, name: str) -> datetime:
 
 
 # ---- 寫入介面型別（PlanWriter；之後可移入 contracts）----
+
+class MarkRecord(NamedTuple):
+    """``find_mark_by_cause`` 的結果（含已結束的 mark）。"""
+
+    mark_id: str
+    kind: str
+    item_ref: str
+    planned_start_at: datetime
+    ended_at: datetime | None
+
 
 @dataclass(frozen=True)
 class PlanActor:
@@ -455,7 +465,11 @@ class PlanStore:
 
     def begin_mark(self, *, kind: Literal["pause", "abandon"], item_ref: str, planned_start_at: datetime,
                    cause_request_id: str) -> str:
-        """建立標記；同 cause 冪等（參數不同 → ValueError），同一出現同 kind 已有未結束標記時回既有 id。
+        """建立標記，兩層冪等（都在 meta 鎖內判斷）：
+
+        1. 同 ``cause_request_id``：同參數回既有 mark_id，參數不同 → ValueError。
+        2. 同一出現（item_ref＋planned_start_at）、同 kind、**未結束**的 mark 已存在：回既有 mark_id（即使它是別的
+           cause 建的）——呼叫端若要分辨是不是自己建的，用 ``find_mark_by_cause`` 唯讀查詢。
 
         abandon 令同一出現的 pause 以 superseded 結束。
         """
@@ -523,6 +537,17 @@ class PlanStore:
             revision = self._bump(s, now)
         self._notify(revision, "mark_ended", mark_id)
         return True
+
+    def find_mark_by_cause(self, cause_request_id: str) -> MarkRecord | None:
+        """唯讀查詢（不取寫鎖、不寫入）：依 cause 找 mark，含已結束的；查無回 None。"""
+        with self._sf() as s:
+            row = s.execute(text(
+                "SELECT mark_id, kind, item_ref, planned_start_at, ended_at FROM presence_plan_slot_marks "
+                "WHERE persona_id = :p AND cause_request_id = :c"),
+                {"p": self._persona, "c": cause_request_id}).first()
+        if row is None:
+            return None
+        return MarkRecord(row.mark_id, row.kind, row.item_ref, row.planned_start_at, row.ended_at)
 
     def active_marks(self) -> tuple[SlotMark, ...]:
         """未結束且未過輪次的 mark。"""

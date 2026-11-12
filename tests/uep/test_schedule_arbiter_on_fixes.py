@@ -48,6 +48,14 @@ class Marks:
     def active_marks(self):
         return tuple(self.marks)
 
+    def find_mark_by_cause(self, cause_request_id):
+        for m in self.marks:
+            if m.cause_request_id == cause_request_id:
+                return SimpleNamespace(mark_id=m.mark_id, kind="abandon", item_ref=m.item_ref,
+                                       planned_start_at=getattr(m, "planned_start_at", None),
+                                       ended_at=getattr(m, "ended_at", None))
+        return None
+
 
 class Reader:
     def __init__(self, marks):
@@ -199,3 +207,71 @@ def test_worker_crash_is_logged(caplog):
         thread.start()
         thread.join(2.0)
     assert any("異常結束" in r.message for r in caplog.records)
+
+
+# ---- 重送偵測唯讀：忽略路徑不呼叫 begin_mark ----
+
+class ReadOnlyMarks:
+    """begin_mark 一被呼叫就失敗的 writer：用來證明忽略／重送路徑零寫入。"""
+
+    def __init__(self, records=(), active=()):
+        self.records, self.active = {r.cause: r for r in records}, list(active)
+        self.begin_calls = 0
+
+    def begin_mark(self, **kw):
+        self.begin_calls += 1
+        raise AssertionError("忽略／重送路徑不得呼叫 begin_mark")
+
+    def active_marks(self):
+        return tuple(self.active)
+
+    def find_mark_by_cause(self, cause):
+        return self.records.get(cause)
+
+
+def record(cause, *, ended=None, item_ref="work", planned=None, kind="abandon"):
+    return SimpleNamespace(cause=cause, mark_id="pmark_9", kind=kind, item_ref=item_ref,
+                           planned_start_at=planned or tpe(9), ended_at=ended)
+
+
+def test_replay_of_an_ended_mark_is_recognized_without_writing():
+    marks = ReadOnlyMarks([record("abandon:u1", ended=tpe(9, 25))])
+    events = Events()
+    ex = AbandonExecutor(Reader(marks), marks, events, clock=lambda: tpe(9, 30))
+    result = ex.handle(signal(), is_owner=True)
+    assert (result.status, result.reason_code, result.mark.mark_id) == ("ACCEPTED", "duplicate", "pmark_9")
+    assert marks.begin_calls == 0 and events.log == []
+
+
+def test_open_mark_of_the_same_signal_is_a_duplicate_and_a_different_occurrence_is_a_conflict():
+    same = ReadOnlyMarks([record("abandon:u1")])  # 綁 work@09:00；目前的 WORK 格也是它
+    ex = AbandonExecutor(Reader(same), same, Events(), clock=lambda: tpe(9, 30))
+    assert ex.handle(signal(), is_owner=True).reason_code == "duplicate"
+    other = ReadOnlyMarks([record("abandon:u1", item_ref="elsewhere")])
+    events = Events()
+    ex2 = AbandonExecutor(Reader(other), other, events, clock=lambda: tpe(9, 30))
+    res = ex2.handle(signal(), is_owner=True)
+    assert (res.status, res.reason_code) == ("IGNORED", "signal_id_conflict")
+    assert other.begin_calls == 0 and events.log == [("abandon_work", "ignored", "signal_id_conflict")]
+
+
+def test_ignore_paths_never_call_begin_mark():
+    marks = ReadOnlyMarks()
+    events = Events()
+    ex = AbandonExecutor(Reader(marks), marks, events, clock=lambda: tpe(14))  # 14:00 沒有 WORK 格
+    assert ex.handle(signal(), is_owner=True).reason_code in ("not_in_work", "stale")
+    assert marks.begin_calls == 0
+    # 別的 cause 放棄了這格，別的 signal 重送：維持 not_in_work，零寫入
+    class Abandoned(Reader):
+        def resolve(self, at=None):
+            from uep.schedule import resolver
+
+            base = resolver.resolve([WORK], None, tpe(9, 30), TZ, plan_revision=1, marks=[])
+            mark = SimpleNamespace(kind="abandon", item_ref="work", planned_start_at=base.blueprint_start_at,
+                                   started_at=tpe(9, 25), mark_id="pmark_x", cause_request_id="someone-else")
+            return resolver.resolve([WORK], None, at, TZ, plan_revision=1, marks=[mark])
+
+    other_cause = ReadOnlyMarks([record("someone-else")])
+    ex2 = AbandonExecutor(Abandoned(other_cause), other_cause, Events(), clock=lambda: tpe(9, 40))
+    res = ex2.handle(signal("abandon:new"), is_owner=True)
+    assert (res.status, res.reason_code) == ("IGNORED", "not_in_work") and other_cause.begin_calls == 0

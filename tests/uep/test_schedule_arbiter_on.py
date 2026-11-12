@@ -65,6 +65,14 @@ class FakeMarks:
     def active_marks(self):
         return tuple(self.marks)
 
+    def find_mark_by_cause(self, cause_request_id):
+        for m in self.marks:
+            if m.cause_request_id == cause_request_id:
+                ended = getattr(self, "ended", {}).get(m.mark_id)
+                return SimpleNamespace(mark_id=m.mark_id, kind=m.kind, item_ref=m.item_ref,
+                                       planned_start_at=m.planned_start_at, ended_at=ended)
+        return None
+
 
 class Events:
     def __init__(self):

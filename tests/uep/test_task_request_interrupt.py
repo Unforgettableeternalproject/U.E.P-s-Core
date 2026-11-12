@@ -113,3 +113,148 @@ def test_agent_loop_result_after_the_turn_ended_is_not_rerouted():
 def test_without_a_host_entry_the_deferred_result_has_nowhere_to_go():
     launcher, _ = _launcher(ended=True, on_resumed=None)
     assert launcher._deliver(_ctx("task_request"), "x") is False
+
+
+# ---- 審查修正：硬取消在 turn 結束後仍生效、turn 結束後的通知經 Host 入口、TOCTOU、Task 狀態、budget_deferred ----
+
+def _real_orchestrator():
+    from uep.turn.decision_config import DecisionConfig
+    from uep.turn.generations import TurnGenerations
+    from uep.turn.orchestrator import TurnOrchestrator, _Live
+
+    orch = TurnOrchestrator(None, TurnGenerations(), auth_provider=lambda: None, decision=DecisionConfig())  # type: ignore[arg-type]
+    orch.generations.begin("turn_u")
+    orch._emit = lambda *a, **k: None
+    orch._phase = lambda *a, **k: None
+    orch._live["turn_u"] = _Live(ticket=SimpleNamespace(turn_id="turn_u", speaker_ref="s", reply_mode="respond"), trace_id=None, utterance_event_id=None)
+    return orch
+
+
+def test_hard_cancel_survives_the_real_orchestrator_forgetting_the_reason_after_turn_end():
+    from uep.turn.models import TurnEndFacts
+
+    orch = _real_orchestrator()
+    host = {"stopped": False, "lease": True}
+    launcher = _stub_launcher(resume_cancel_check=lambda: host["stopped"] or not host["lease"])
+    launcher._orchestrator = orch
+    assert launcher._cancelled("turn_u", "task_request") is False
+    orch.cancel_turn("turn_u", "global_stop")  # turn 還在：orchestrator 記得原因
+    assert launcher._cancelled("turn_u", "task_request") is True
+    orch.on_turn_ended("turn_u", TurnEndFacts(status="cancelled", reason_code="global_stop"))
+    assert orch.cancel_reason_of("turn_u") is None  # turn 結束後原因查不到
+    assert launcher._cancelled("turn_u", "task_request") is False  # 沒有 Host 回報時 Run 繼續（插話讓位不取消）
+    host["stopped"] = True  # Host 在 global_stop 時已設 _stopped_reason
+    assert launcher._cancelled("turn_u", "task_request") is True
+    host["stopped"], host["lease"] = False, False
+    assert launcher._cancelled("turn_u", "task_request") is True  # Lease 遺失
+    assert launcher._cancelled("turn_u", "agent_loop") is True  # agent_loop：turn 結束即取消（現狀）
+
+
+def _late_launcher(*, ended=True):
+    seen: list[ResumedRunResult] = []
+    launcher, state = _launcher(ended=ended, on_resumed=lambda r: seen.append(r) or ResumeDisposition.DELIVERED)
+    launcher._delivery = SimpleNamespace(
+        prepare=lambda i: None, dispatch=lambda i: pytest.fail("turn 結束後不應再走 turn 綁定的 Gate 路徑"),
+    )
+    return launcher, state, seen
+
+
+def test_budget_notices_after_turn_end_go_through_the_host_entry_with_distinct_keys():
+    from uep.echo.agent_wiring import BUDGET_ABORT_TEXT, BUDGET_NOTICE_TEXT
+
+    launcher, _, seen = _late_launcher()
+    ctx = _ctx("task_request")
+    launcher._on_budget(ctx, "notice")
+    launcher._on_budget(ctx, "abort")
+    assert [(r.outcome, r.text) for r in seen] == [(ResumeOutcome.FAILED, BUDGET_NOTICE_TEXT), (ResumeOutcome.FAILED, BUDGET_ABORT_TEXT)]
+    assert len({r.key for r in seen}) == 2 and ctx.abort_notice_ok  # 各自獨立的冪等鍵，Host 不會把第二則當重複
+
+
+def test_failure_notice_after_turn_end_goes_through_the_host_entry_once():
+    from uep.echo.agent_wiring import LOOP_FAILURE_TEXT
+
+    launcher, _, seen = _late_launcher()
+    ctx = _ctx("task_request")
+    launcher._notify_failure(ctx)
+    launcher._notify_failure(ctx)
+    assert [(r.outcome, r.text) for r in seen] == [(ResumeOutcome.FAILED, LOOP_FAILURE_TEXT)]
+
+
+def test_partial_after_turn_end_is_sent_as_the_failure_notice_not_as_a_completed_reply():
+    from uep.echo.agent_wiring import BUDGET_ABORT_TEXT, LOOP_FAILURE_TEXT
+
+    launcher, _, seen = _late_launcher()
+    ctx = _ctx("task_request")
+    launcher._on_budget(ctx, "abort")
+    assert launcher._deliver(ctx, "已取得的部分結果") is False and not ctx.delivered
+    launcher._notify_failure(ctx)  # _conclude 的補送：已送過就不重複
+    assert [(r.outcome, r.text) for r in seen] == [(ResumeOutcome.FAILED, BUDGET_ABORT_TEXT), (ResumeOutcome.FAILED, LOOP_FAILURE_TEXT)]
+    assert all(r.outcome is not ResumeOutcome.COMPLETED for r in seen)  # FAILED 不寫記憶（Host 只對 COMPLETED＋APPROVED 寫）
+
+
+def test_gate_refusal_after_the_turn_check_falls_back_to_the_host_entry():
+    from uep.output.delivery import DeliveryStatus
+
+    seen: list[ResumedRunResult] = []
+    launcher, state = _launcher(ended=False, on_resumed=lambda r: seen.append(r) or ResumeDisposition.DELIVERED)
+
+    def dispatch(intent):
+        state["ended"] = True  # 檢查之後 turn 才被插話結束：Gate 以 turn 世代拒絕
+        return SimpleNamespace(status=DeliveryStatus.REJECTED)
+
+    launcher._delivery = SimpleNamespace(prepare=lambda i: None, dispatch=dispatch)
+    ctx = _ctx("task_request")
+    assert launcher._deliver(ctx, "做好了") is True and ctx.delivered
+    assert [(r.outcome, r.text, r.seq) for r in seen] == [(ResumeOutcome.COMPLETED, "做好了", 0)]
+    state["ended"] = False
+    seen.clear()
+    launcher._notify_failure(_ctx("task_request"))  # 通知也一樣：Gate 拒絕且 turn 已結束 -> Host 入口
+    assert [r.outcome for r in seen] == [ResumeOutcome.FAILED]
+
+
+def test_agent_loop_never_falls_back_to_the_host_entry():
+    from uep.output.delivery import DeliveryStatus
+
+    seen: list = []
+    launcher, state = _launcher(ended=False, on_resumed=lambda r: seen.append(r))
+    launcher._delivery = SimpleNamespace(prepare=lambda i: None, dispatch=lambda i: SimpleNamespace(status=DeliveryStatus.REJECTED))
+    state["ended"] = True
+    assert launcher._deliver(_ctx("agent_loop"), "x") is False and seen == []
+
+
+@pytest.mark.parametrize(("route", "state", "raised", "delivered", "expected_ok"), [
+    ("task_request", "completed", False, False, True),  # 結果延後（PENDING／UNCERTAIN）不讓 Task 變 FAILED
+    ("task_request", "failed", False, True, False),
+    ("task_request", "completed", True, False, False),
+    ("agent_loop", "completed", False, False, False),  # 首跑 agent_loop 不變：看是否送達
+    ("agent_loop", "completed", False, True, True),
+])
+def test_first_run_settle_follows_the_route_policy(route, state, raised, delivered, expected_ok):
+    launcher, _ = _launcher()
+    calls: list[bool] = []
+    launcher._settle = lambda ctx, ok, reason: calls.append(ok)
+    ctx = _ctx(route)
+    ctx.delivered = delivered
+    launcher._conclude(ctx, SimpleNamespace(state=state, reason_code=None, partial=False), raised)
+    assert calls == [expected_ok]
+
+
+def test_budget_deferred_is_an_optional_checkpoint_counter():
+    from uep.agent.budget import BudgetCounters
+    from uep.agent.loop import RESUME_REQUIRED_KEYS
+
+    c = BudgetCounters(steps=1, budget_deferred=True)
+    assert BudgetCounters.from_checkpoint(c.to_checkpoint()).budget_deferred is True
+    legacy = {k: v for k, v in c.to_checkpoint().items() if k != "deferred"}
+    assert BudgetCounters.from_checkpoint(legacy).budget_deferred is False  # 舊 checkpoint 缺鍵視為 False
+    assert "deferred" not in RESUME_REQUIRED_KEYS and "budget_deferred" not in RESUME_REQUIRED_KEYS
+
+
+def test_loop_persists_budget_deferred_in_the_checkpoint():
+    from tests.uep.loop_support import TAGS, Round
+    from tests.uep.test_agent_loop import Rig, call, trigger
+    from uep.echo.agent_wiring import TASK_REQUEST_BUDGET
+
+    rig = Rig([Round("", (call("read.lone", "1"), call("read.lone", "2"))), Round("收束")], budget=TASK_REQUEST_BUDGET)
+    rig.run(trigger=trigger(tags=TAGS, kind="task_request", route="task_request"))
+    assert rig.tasks.checkpoints[-1]["budget_counters"]["deferred"] == 1

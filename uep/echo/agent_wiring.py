@@ -200,6 +200,7 @@ DEFAULT_LOOP_SYSTEM_TEXT = "你是使用者的長期 AI 助理。需要時使用
 _DELIVERED = frozenset({DeliveryStatus.SENT, DeliveryStatus.ACCEPTED, DeliveryStatus.RENDERED_PLAYED})
 # 不確定是否已送達：不補發失敗訊息（避免使用者看到兩則）。UNKNOWN＝送出結果未明；ENQUEUED＝沒搶到送出權
 # （``DeliveryManager.dispatch`` 的 ``claim.won`` 為 False，代表另一個送出者持有送出權，它可能正在送），所以同樣不補發。
+_GATE_REFUSED = frozenset({DeliveryStatus.REJECTED, DeliveryStatus.CANCELLED})  # Gate 拒絕（turn 世代作廢等）後的終態
 _DELIVERY_UNCERTAIN = {
     DeliveryStatus.UNKNOWN: "loop_delivery_unknown", DeliveryStatus.ENQUEUED: "loop_delivery_pending",
 }
@@ -274,6 +275,9 @@ class _RunCtx:
     activity_id: str | None = None  # Task 的 activity：續跑回覆以它綁定送出（D107）
     cause: ResumeCause = ResumeCause.APPROVED
     route: str = "agent_loop"  # 這個 Run 的 route（abort 的 metric 依 route 分開）
+    late_seq: int = 0  # turn 結束後經 Host 入口送的訊息序號（0 留給最終結果）
+    failure_notice_sent: bool = False  # 固定失敗訊息只送一次（不論走 Gate 或 Host 入口）
+    aborting: bool = False  # 預算 abort 已開始：之後交付的文字是 partial，不可當完整回覆送
     abort_notice_ok: bool = False  # 預算中斷的固定訊息已送出（或結果不確定而不補發）；沒送出時 _conclude 補送失敗訊息
     text: str = ""
     resumed: bool = False  # 核准後續跑的 Run：原 turn 已結束，取消判定不看 turn 終結狀態，結果不再經 Output Gate
@@ -509,7 +513,9 @@ class LoopLauncher:
             return True
         orch = self._orchestrator
         if ROUTE_INTERRUPT_POLICY.get(route, "cancel") == "continue":
-            return orch.cancel_reason_of(turn_id) in HARD_CANCEL_REASONS
+            # turn 結束後 orchestrator 會移除它，cancel_reason_of 回 None，所以硬取消另外看 Host 的 Lease 遺失／global_stop
+            # （與續跑中的 Run 同一套判斷）；turn 還在時的撤回歷史類原因照樣取消
+            return self._resume_should_cancel() or orch.cancel_reason_of(turn_id) in HARD_CANCEL_REASONS
         return orch.is_ended(turn_id) or orch.cancel_reason_of(turn_id) is not None
 
     def _cleanup(self, turn_id: str, run_id: str) -> None:
@@ -590,7 +596,13 @@ class LoopLauncher:
             code = getattr(outcome, "reason_code", None)
             code = getattr(code, "value", code)
             reason = "loop_exception" if raised else f"loop_{code or getattr(outcome, 'state', 'failed')}"
-            self._settle(ctx, ok=ctx.delivered, reason=reason)
+            # 首跑：回覆就是該回合的結果，ok 看是否送達；continue 政策（task_request）的 turn 可能已被插話結束、結果延後經 Host
+            # 入口送出（PENDING／UNCERTAIN），這時 Task 狀態與送達解耦，只看 Run 是否 completed（與 _work_resume 一致）
+            if self._continues(ctx):
+                ok = not raised and getattr(outcome, "state", None) == "completed"
+            else:
+                ok = ctx.delivered
+            self._settle(ctx, ok=ok, reason=reason)
         if getattr(outcome, "partial", False):
             # 預算中斷（FAILED＋partial）：不是完整回覆，Turn 不記成 completed，保留原因碼；部分結果沒送出（或中斷通知沒送出）時補固定失敗訊息
             # 交付狀態不確定（UNKNOWN／ENQUEUED）時可能已送達，不補送失敗訊息（避免使用者看到兩則）
@@ -698,14 +710,59 @@ class LoopLauncher:
         if status in _DELIVERED:
             ctx.delivered, ctx.text = True, text
             return True
+        if self._continues(ctx) and status in _GATE_REFUSED and self._orchestrator.is_ended(turn_id):
+            return self._deliver_after_turn_end(ctx, text)  # 檢查之後 turn 才被結束（TOCTOU）：Gate 以 turn 世代拒絕，改走 Host 入口
         ctx.delivery_uncertain = _DELIVERY_UNCERTAIN.get(status) if status is not None else None
         return False
+
+    def _continues(self, ctx: _RunCtx) -> bool:
+        return ROUTE_INTERRUPT_POLICY.get(ctx.route, "cancel") == "continue"
+
+    def _turn_over(self, ctx: _RunCtx) -> bool:
+        """continue 政策的 Run，其 turn 已結束：turn 世代作廢，經 Gate 的 turn 綁定輸出必被拒，要改走 Host 入口。"""
+        return self._continues(ctx) and self._orchestrator.is_ended(ctx.ticket.turn_id)
+
+    def _notice_via_host(self, ctx: _RunCtx, text: str) -> DeliveryStatus | None:
+        """turn 結束後的固定系統訊息（預算通知、失敗訊息）經 Host 入口送出（outcome=FAILED -> SYSTEM_NOTICE，不寫記憶）。
+        回傳對應的 DeliveryStatus 供呼叫端沿用既有的判斷；無法送（沒有入口或被丟棄）回 None。"""
+        if self._on_resumed is None:
+            return None
+        run = ctx.run
+        ctx.late_seq += 1
+        result = ResumedRunResult(
+            run_id=run.run_id, worker_epoch=run.worker_epoch, task_id=ctx.task_id, activity_id=ctx.activity_id,
+            ticket=ctx.ticket, outcome=ResumeOutcome.FAILED, cause=ResumeCause.APPROVED, text=text, seq=ctx.late_seq,
+        )
+        try:
+            disposition = self._on_resumed(result)
+        except Exception:
+            logger.exception("turn 結束後的系統訊息送出失敗：run=%s", run.run_id)
+            return None
+        return {
+            ResumeDisposition.DELIVERED: DeliveryStatus.SENT, ResumeDisposition.PENDING: DeliveryStatus.ENQUEUED,
+            ResumeDisposition.UNCERTAIN: DeliveryStatus.UNKNOWN,
+        }.get(disposition)
+
+    def _send_system_notice(self, ctx: _RunCtx, text: str) -> DeliveryStatus | None:
+        """固定系統訊息（預算通知、失敗訊息）：一般走 Gate；continue 政策且 turn 已結束（或檢查後才結束，Gate 拒絕）改走 Host 入口。"""
+        if self._turn_over(ctx):
+            return self._notice_via_host(ctx, text)
+        status = self._dispatch(ctx, text, kind=OutputKind.SYSTEM_NOTICE, origin=OutputOrigin.SYSTEM)
+        if self._continues(ctx) and status in _GATE_REFUSED and self._orchestrator.is_ended(ctx.ticket.turn_id):
+            return self._notice_via_host(ctx, text)
+        return status
 
     def _deliver_after_turn_end(self, ctx: _RunCtx, text: str) -> bool:
         """原 turn 已結束，turn 世代作廢、Gate 必拒；改走續跑回覆的 Host 入口（activity 綁定、送出當下重取 Lease，可進 pending）。
         沒有注入入口（``on_resumed`` 為 None）時無處可送，回 False。DELIVERED 才算已交付；UNCERTAIN／PENDING 標記為
         不確定，避免 ``_conclude`` 再補一則失敗訊息。"""
         if self._on_resumed is None:
+            return False
+        if ctx.aborting:
+            # 預算中斷的 partial 不可當完整回覆送（也不寫記憶）：改送固定失敗訊息（outcome=FAILED），只送一次
+            if not ctx.failure_notice_sent:
+                ctx.failure_notice_sent = True
+                self._notice_via_host(ctx, LOOP_FAILURE_TEXT)
             return False
         run = ctx.run
         result = ResumedRunResult(
@@ -883,8 +940,10 @@ class LoopLauncher:
             logger.info("預算 %s：run=%s", kind, ctx.run.run_id)
             return
         text = BUDGET_NOTICE_TEXT if kind == "notice" else BUDGET_ABORT_TEXT
+        if kind.startswith("abort"):
+            ctx.aborting = True  # 之後經 deliver_result 交的是 partial
         try:
-            status = self._dispatch(ctx, text, kind=OutputKind.SYSTEM_NOTICE, origin=OutputOrigin.SYSTEM)
+            status = self._send_system_notice(ctx, text)
         except Exception:
             logger.exception("預算%s訊息交付失敗：turn=%s", kind, ctx.ticket.turn_id)
             return
@@ -893,8 +952,11 @@ class LoopLauncher:
 
     def _notify_failure(self, ctx: _RunCtx) -> None:
         """失敗時給使用者的固定系統訊息：經同一條 Output Gate；origin=system，不是角色發言，也不編造看似成功的回答。"""
+        if ctx.failure_notice_sent:
+            return  # 只送一次（延後路徑的 partial 已送過）
+        ctx.failure_notice_sent = True
         try:
-            self._dispatch(ctx, LOOP_FAILURE_TEXT, kind=OutputKind.SYSTEM_NOTICE, origin=OutputOrigin.SYSTEM)
+            self._send_system_notice(ctx, LOOP_FAILURE_TEXT)
         except Exception:
             logger.exception("AgentLoop 失敗訊息交付失敗：turn=%s", ctx.ticket.turn_id)
 

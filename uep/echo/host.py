@@ -1354,7 +1354,7 @@ class EchoPipelineHost:
         busy（有進行中的回合、SPEAKING／WAITING_USER）、Gate 回 NO_PRESENCE／REVOKED／EXPIRED／AUDIENCE／NOT_INTERACTION、
         STALE 重試一次後仍 STALE。UNKNOWN／ENQUEUED 不重送（UNCERTAIN）；SEND_FAILED 等確定失敗為 DROPPED。
         TTL 到期、溢出被丟掉的項目是 DROPPED、不寫記憶。"""
-        key = (result.run_id, result.worker_epoch)
+        key = result.key
         with self._resume_lock:
             settled = self._resume_settled.get(key)
             if settled is not None:
@@ -1367,7 +1367,7 @@ class EchoPipelineHost:
                 self.metrics.inc(f"echo.resume_pending.{reason}")
                 evicted = self._resume_pending.add(result)
                 if evicted is not None:
-                    self._settle_resumed((evicted.run_id, evicted.worker_epoch), ResumeDisposition.DROPPED, "overflow")
+                    self._settle_resumed(evicted.key, ResumeDisposition.DROPPED, "overflow")
                 return ResumeDisposition.PENDING
             if disposition is ResumeDisposition.DROPPED:
                 self.metrics.inc(f"echo.resume_dropped.{reason}")
@@ -1388,7 +1388,7 @@ class EchoPipelineHost:
         with self._resume_lock:
             self._expire_resume_pending()
             for result in self._resume_pending.snapshot():
-                key = (result.run_id, result.worker_epoch)
+                key = result.key
                 try:
                     disposition, reason = self._attempt_resumed(result)
                 except Exception:
@@ -1430,7 +1430,7 @@ class EchoPipelineHost:
 
     def _expire_resume_pending(self) -> None:
         for gone in self._resume_pending.expire():
-            self._settle_resumed((gone.run_id, gone.worker_epoch), ResumeDisposition.DROPPED, "ttl")
+            self._settle_resumed(gone.key, ResumeDisposition.DROPPED, "ttl")
 
     def _settle_resumed(self, key: tuple[str, int], disposition: ResumeDisposition, drop_reason: str | None = None) -> None:
         if drop_reason is not None:

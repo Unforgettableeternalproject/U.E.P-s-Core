@@ -101,13 +101,14 @@ class BudgetCounters:
     last_fingerprint: str = ""
     repeat_count: int = 0
     rejected_streak: int = 0
+    budget_deferred: bool = False  # 出現過 deferred_budget（模型還想呼叫工具但被預算擋下）；task_request 用來判斷是否超預算
 
     def to_checkpoint(self) -> dict[str, Any]:
         """只含數字與 16 字元指紋（符合 checkpoint 的值層級白名單）。"""
         return {
             "steps": self.steps, "tool_calls": self.tool_calls, "consults": self.consults, "tokens": self.tokens,
             "elapsed_s": round(self.elapsed_s, 3), "last_fp": self.last_fingerprint or "none",
-            "repeat": self.repeat_count, "rejected": self.rejected_streak,
+            "repeat": self.repeat_count, "rejected": self.rejected_streak, "deferred": int(self.budget_deferred),
         }
 
     @classmethod
@@ -120,6 +121,7 @@ class BudgetCounters:
             consults=int(data.get("consults", 0)), tokens=int(data.get("tokens", 0)),
             elapsed_s=float(data.get("elapsed_s", 0.0)), last_fingerprint="" if fp == "none" else fp,
             repeat_count=int(data.get("repeat", 0)), rejected_streak=int(data.get("rejected", 0)),
+            budget_deferred=bool(int(data.get("deferred", 0))),  # 選用鍵：舊 checkpoint 缺鍵視為 False（不是 RESUME_REQUIRED_KEYS）
         )
 
 

@@ -223,7 +223,6 @@ class _State:
     budget_stage: int = 0  # 已觸發的門檻階段（0..2）；不進 checkpoint，resume 由計數器推回，不重送
     budget_hint: str | None = None
     trail: list[dict[str, Any]] = field(default_factory=list)  # 已處理的工具呼叫（結構化：tool／status／reason_code），digest 與部分結果彙整用
-    budget_deferred: bool = False  # 本 Run 出現過 deferred_budget（模型還想呼叫工具但被預算擋下）；task_request 用它判斷是否超預算
     rebuilt: bool = False  # resume 後：loop_digest 的 trace 由已提交 history 重建（trace_source="rebuilt"）
 
 
@@ -881,7 +880,7 @@ class AgentLoop:
             return self._escalate(st, end)
         if end.kind == "exhausted":
             task_request = st.trigger.route == "task_request"
-            over_budget = end.dim in ("steps", "tokens") or (end.dim == "tool_calls" and st.budget_deferred)
+            over_budget = end.dim in ("steps", "tokens") or (end.dim == "tool_calls" and st.counters.budget_deferred)
             if (self._budget.thresholds.enabled and end.dim in ("steps", "tokens")) or (task_request and over_budget):
                 # 三段門檻的中斷點；task_request 的緊預算沒有分段：步數／token 超出，或工具次數用完且模型還想呼叫（出現過
                 # deferred_budget）都視為 task_budget_exceeded——FAILED(budget_exhausted)＋partial，
@@ -1278,7 +1277,7 @@ class AgentLoop:
         runnable, over = defer_tail(screened, remaining, DEFERRED_BUDGET)
         for item, reason in over:
             views[item.ordinal] = self._blocked(reason)
-            st.budget_deferred = st.budget_deferred or reason == DEFERRED_BUDGET
+            st.counters.budget_deferred = st.counters.budget_deferred or reason == DEFERRED_BUDGET
 
         by_ordinal = {s.ordinal: s for s in runnable}
         waves = plan_waves(

@@ -42,8 +42,14 @@ class ResumedRunResult:
     ticket: Any  # 原 turn 的 CoreTicket：只當歸屬事實（actor／user_text／segment／audience），授權欄位不使用
     outcome: ResumeOutcome
     cause: ResumeCause
-    text: str = ""  # outcome=COMPLETED 才有
+    text: str = ""  # outcome=COMPLETED 才有（FAILED 時是固定的系統訊息文字）
     reason_code: str | None = None
+    seq: int = 0  # 同一個 (run_id, worker_epoch) 要送多則訊息時的序號（延後的預算通知／失敗訊息）；0＝最終結果
+
+    @property
+    def key(self) -> tuple[str, int]:
+        """冪等鍵：seq=0 時就是 ``(run_id, worker_epoch)``，其餘訊息各自獨立。"""
+        return (self.run_id, self.worker_epoch) if self.seq == 0 else (f"{self.run_id}#{self.seq}", self.worker_epoch)
 
 
 PendingKey = tuple[str, int]  # (run_id, worker_epoch)
@@ -71,7 +77,7 @@ class ResumePending:
 
     def add(self, result: ResumedRunResult) -> ResumedRunResult | None:
         """加入（同鍵已在佇列則不動）；超出上限時回傳被丟掉的最舊一筆。"""
-        key = (result.run_id, result.worker_epoch)
+        key = result.key
         if key in self._items:
             return None
         self._items[key] = (self._clock() + self._ttl_s, result)

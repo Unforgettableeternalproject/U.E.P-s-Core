@@ -367,7 +367,7 @@ def cmd_report(args: argparse.Namespace) -> int:
                 lp = [lp[pick]]
                 rp = {q: rules_run["preds"][rid][q]["pred"] for q in qs}
                 ctx = " / ".join(r.get("context_zh") or [])
-                lines.append(f"- {rid} [{n}/{len(laya_runs)} seeds] zh: {r['zh']}" + (f" (context: {ctx})" if ctx else ""))
+                lines.append(f"- {rid} [{n}/{len(laya_runs)} seeds] zh: {r.get('zh', '(n/a)')}" + (f" (context: {ctx})" if ctx else ""))
                 lines.append(f"    en: {r['text']}")
                 lines.append(f"    gold {json.dumps(gold, ensure_ascii=False)} | laya {json.dumps(lp[0], ensure_ascii=False)}" + f" (seed{pick})" + f" | rules {json.dumps(rp, ensure_ascii=False)}")
 
@@ -380,6 +380,117 @@ def cmd_report(args: argparse.Namespace) -> int:
         args.out.write_text(text, encoding="utf-8")
     if args.json_out:
         args.json_out.write_text(json.dumps({"laya": laya_m, "rules": rules_m}, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    return 0
+
+
+# ---------------------------------------------------------------- compare (ft-r1 vs ft-r2)
+
+FIELDS = [
+    ("reply_mode_acc", "reply_mode acc"), ("reply_mode_f1", "reply_mode macro-F1"), ("addressed_acc", "addressed acc"),
+    ("route_acc", "route acc"), ("compound_acc", "compound acc (turn.reply)"), ("intent_acc", "absent.intent acc"),
+    ("target_acc", "absent.target_location acc"), ("absent_compound_acc", "absent.compound acc"),
+]
+FOCUS_MODES = ("passive", "pass", "defer", "respond")
+
+
+def prf_by_mode(rows: list[dict[str, Any]], preds: dict[str, Any]) -> dict[str, dict[str, float | None]]:
+    tr = [r for r in rows if r["kind"] == "turn.reply"]
+    gold = [r["expected"]["reply_mode"] for r in tr]
+    pred = [preds[r["id"]]["reply_mode"]["pred"] for r in tr]
+    out: dict[str, dict[str, float | None]] = {}
+    for m in FOCUS_MODES:
+        tp = sum(1 for g, p in zip(gold, pred) if g == m and p == m)
+        npred = sum(1 for p in pred if p == m)
+        ngold = sum(1 for g in gold if g == m)
+        out[m] = {"precision": tp / npred if npred else None, "recall": tp / ngold if ngold else None, "n_gold": ngold, "n_pred": npred}
+    return out
+
+
+def confusion(rows: list[dict[str, Any]], runs: list[dict[str, Any]]) -> dict[str, Counter]:
+    tr = [r for r in rows if r["kind"] == "turn.reply"]
+    conf: dict[str, Counter] = {m: Counter() for m in REPLY_MODES}
+    for run in runs:
+        for r in tr:
+            conf[r["expected"]["reply_mode"]][run["preds"][r["id"]]["reply_mode"]["pred"]] += 1
+    return conf
+
+
+def _agg_none(vals: list[float | None]) -> str:
+    vs = [v for v in vals if v is not None]
+    if not vs:
+        return "n/a"
+    if len(vs) < len(vals):
+        suffix = f" (僅 {len(vs)}/{len(vals)} seeds 有預測)"
+    else:
+        suffix = ""
+    return (f"{statistics.fmean(vs):.3f}" if len(vs) == 1 else f"{statistics.fmean(vs):.3f} ± {statistics.stdev(vs):.3f}") + suffix
+
+
+def _load_runs(paths: list[Path]) -> list[dict[str, Any]]:
+    return [json.loads(p.read_text(encoding="utf-8")) for p in paths]
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    lines: list[str] = []
+    for spec in args.set:
+        name, data, r1_glob, r2_glob = spec[:4]
+        rules_path = Path(spec[4]) if len(spec) > 4 else None
+        rows = read_jsonl(Path(data))
+        r1 = _load_runs(sorted(Path().glob(r1_glob)))
+        r2 = _load_runs(sorted(Path().glob(r2_glob)))
+        rules = json.loads(rules_path.read_text(encoding="utf-8")) if rules_path else None
+        views = [("全部列", rows)]
+        npend = sum(1 for r in rows if (r.get("meta") or {}).get("pending_review"))
+        if npend:
+            views.append((f"排除 meta.pending_review（{npend} 列）", [r for r in rows if not (r.get("meta") or {}).get("pending_review")]))
+        for vname, vrows in views:
+            n_t = sum(1 for r in vrows if r["kind"] == "turn.reply")
+            lines += ["", f"## {name} — {vname}（{len(vrows)} 列：turn.reply {n_t}、absent {len(vrows) - n_t}；seeds r1={len(r1)} r2={len(r2)}）", ""]
+            m1 = [metrics_for(vrows, x["preds"]) for x in r1]
+            m2 = [metrics_for(vrows, x["preds"]) for x in r2]
+            mr = metrics_for(vrows, rules["preds"], rules=True) if rules else None
+            lines += ["| 欄位 | ft-r1 | ft-r2 | Δ(r2-r1) | rules.default |", "|---|---|---|---|---|"]
+            for key, label in FIELDS:
+                v1, v2 = [m.get(key) for m in m1], [m.get(key) for m in m2]
+                if all(v is None for v in v1 + v2):
+                    continue
+                d = statistics.fmean([v for v in v2 if v is not None]) - statistics.fmean([v for v in v1 if v is not None])
+                lines.append(f"| {label} | {_agg_none(v1)} | {_agg_none(v2)} | {d:+.3f} | {fmt(mr.get(key)) if mr else 'n/a'} |")
+            if n_t:
+                lines += ["", "reply_mode 各類 precision／recall（mean ± std over seeds）", "",
+                          "| 類別 | n_gold | P r1 | P r2 | R r1 | R r2 |", "|---|---|---|---|---|---|"]
+                p1 = [prf_by_mode(vrows, x["preds"]) for x in r1]
+                p2 = [prf_by_mode(vrows, x["preds"]) for x in r2]
+                for m in FOCUS_MODES:
+                    cells = [_agg_none([x[m]["precision"] for x in p1]), _agg_none([x[m]["precision"] for x in p2]),
+                             _agg_none([x[m]["recall"] for x in p1]), _agg_none([x[m]["recall"] for x in p2])]
+                    lines.append(f"| {m} | {p1[0][m]['n_gold']} | " + " | ".join(cells) + " |")
+                lines += ["", "reply_mode 混淆矩陣（列＝標準答案，欄＝預測；各 seed 加總）", ""]
+                for tag, runs in (("ft-r1", r1), ("ft-r2", r2)):
+                    cf = confusion(vrows, runs)
+                    lines += [f"{tag}", "", "| gold \\ pred | " + " | ".join(REPLY_MODES) + " |", "|---|" + "---|" * len(REPLY_MODES)]
+                    lines += [f"| {g} | " + " | ".join(str(cf[g][p]) for p in REPLY_MODES) + " |" for g in REPLY_MODES]
+                    lines.append("")
+        if args.focus_ids and name in ("en_test", "en_reference"):
+            by_id = {r["id"]: r for r in rows}
+            lines += ["", f"### {name}：指定題逐題結果（格式 reply_mode, addressed, route）", ""]
+            for rid in args.focus_ids.split(","):
+                r = by_id.get(rid)
+                if r is None:
+                    continue
+                g = r["expected"]
+                ctx = r["state"].get("recent_context")
+                lines.append(f"- {rid} text: {r['text']}" + (f" (context: {ctx})" if ctx else "") + f" [others={r['state'].get('other_people_present')}]")
+                lines.append(f"    gold: {g['reply_mode']}, {g['addressed']}, {g['route']}")
+                for tag, runs in (("r1", r1), ("r2", r2)):
+                    for i, x in enumerate(runs):
+                        pr = x["preds"][rid]
+                        ok = pr["reply_mode"]["pred"] == g["reply_mode"] and pr["addressed"]["pred"] == g["addressed"] and pr["route"]["pred"] == g["route"]
+                        lines.append(f"    {tag} seed{i}: {pr['reply_mode']['pred']}, {pr['addressed']['pred']}, {pr['route']['pred']}" + ("  OK" if ok else ""))
+    text = "\n".join(lines)
+    if args.out:
+        args.out.write_text(text, encoding="utf-8")
+    print(text)
     return 0
 
 
@@ -404,8 +515,12 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--exclude", help="逗號分隔的測試列 id（例如與訓練集本句相同的裸附和）")
     c.add_argument("--out", type=Path)
     c.add_argument("--json-out", type=Path)
+    d = sub.add_parser("compare", help="ft-r1 vs ft-r2 的分欄比較（--set NAME DATA R1_GLOB R2_GLOB [RULES]）")
+    d.add_argument("--set", action="append", nargs="+", required=True, metavar="ARG")
+    d.add_argument("--focus-ids", help="逗號分隔的測試列 id，逐題列出各 seed 預測")
+    d.add_argument("--out", type=Path)
     args = p.parse_args(argv)
-    return {"predict": cmd_predict, "rules": cmd_rules, "report": cmd_report}[args.cmd](args)
+    return {"predict": cmd_predict, "rules": cmd_rules, "report": cmd_report, "compare": cmd_compare}[args.cmd](args)
 
 
 if __name__ == "__main__":

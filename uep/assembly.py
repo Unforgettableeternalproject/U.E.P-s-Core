@@ -97,6 +97,7 @@ from uep.endpoint.service import EndpointService
 from uep.events.bus import EventBus
 from uep.events.payload_hash import MIN_KEY_BYTES
 from uep.events.publisher import EventPublisher
+from uep.lifecycle.budget import BudgetConfig, NvmlVramProbe, ResourceBudget, VramProbe
 from uep.lifecycle.coordinator import ModuleCoordinator
 from uep.lifecycle.publisher import bus_sink
 from uep.memory.foreground import StateBusForegroundProbe
@@ -398,6 +399,35 @@ def check_module_events_policy(subscriber: bool, producer: bool) -> None:
         )
 
 
+# R11／設計稿 §4：v1 的 M 群（本地模型、stage）只觀測，描述子必須 pinned，不可被驅逐
+_M_GROUP_KINDS = frozenset({"model", "stage"})
+
+
+def check_m_group_pinned(registrations: Sequence[tuple[Any, Any]]) -> None:
+    """v1 所有 M 群描述子（kind=model／stage）必須 ``pinned=True``；違反即組裝失敗。純函式，可離線測試。"""
+    for descriptor, _ in registrations:
+        if getattr(descriptor, "kind", None) in _M_GROUP_KINDS and not getattr(descriptor, "pinned", False):
+            raise AssemblyError(f"module_registrations：{getattr(descriptor, 'module_id', '?')} 是 M 群（kind={descriptor.kind}），v1 必須 pinned=True")
+
+
+def build_module_budget(settings: Any, probe: VramProbe | None = None) -> ResourceBudget | None:
+    """依設定建立資源預算；``UEP_MODULE_VRAM_HEADROOM_MB`` 未設 => None（不啟用預算管理）。
+    只設 budget 沒設 headroom => ``AssemblyError``。沒給 probe 時才建 NVML probe（延遲載入 pynvml，建立本身不碰 GPU）。"""
+    headroom = settings.module_vram_headroom_mb
+    if headroom is None:
+        if settings.module_vram_budget_mb is not None:
+            raise AssemblyError("UEP_MODULE_VRAM_BUDGET_MB 必須同時設定 UEP_MODULE_VRAM_HEADROOM_MB（保留水位需依機器量測，不猜預設）")
+        return None
+    try:
+        config = BudgetConfig(
+            headroom_mb=headroom, budget_mb=settings.module_vram_budget_mb, reading_max_age_s=settings.module_vram_reading_max_age_s,
+            recover_margin_mb=settings.module_vram_recover_margin_mb, evict_cooldown_s=settings.module_evict_cooldown_s,
+        )
+    except ValueError as exc:
+        raise AssemblyError(f"模組預算設定不合法：{exc}") from exc
+    return ResourceBudget(config, probe if probe is not None else NvmlVramProbe(settings.module_gpu_index))
+
+
 def _declare_interaction(
     table: dict[str, PlatformCapabilities], endpoint_id: str, platform: str, facets: frozenset[str],
 ) -> None:
@@ -660,6 +690,7 @@ def assemble_core(
     tool_module_events: bool | None = None,
     module_registrations: Sequence[tuple[Any, Any]] = (),
     module_sink: Callable[[str, Mapping[str, Any]], None] | None = None,
+    module_vram_probe: VramProbe | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -747,11 +778,15 @@ def assemble_core(
     # 管理模式 = producer 與 subscriber 都開（且為 agent 路徑，註冊表才存在）；只開 producer = 觀測模式
     coordinator_drives_registry = coordinator_on and events_on and tool_path == "agent"
     coordinator_obj: ModuleCoordinator | None = None
+    if module_vram_probe is not None and not coordinator_on:
+        raise AssemblyError("給了 module_vram_probe 但 UEP_MODULE_COORDINATOR 未開")
     if coordinator_on:
+        check_m_group_pinned(module_registrations)
         coordinator_obj = ModuleCoordinator(
             module_sink if module_sink is not None else bus_sink(publisher, persona_id=persona_id),
             epoch_source=lambda: presence.core_epoch,  # presence.start() 之後才讀得到（coordinator.start() 內才呼叫）
             mode="manage" if coordinator_drives_registry else "observe",
+            budget=build_module_budget(get_settings(), module_vram_probe),  # PR-3：未設 headroom => None（不啟用預算管理）
         )
         for descriptor, handle in module_registrations:
             try:

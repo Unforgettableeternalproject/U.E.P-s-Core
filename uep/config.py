@@ -70,6 +70,16 @@ class UepSettings(BaseSettings):
     # subscriber 開而 producer 關 => 組裝失敗；producer 開、subscriber 關 => 觀測模式（只發事件，不 provisioning／驅逐）。
     # 不翻預設：正式 requires 沒有真 handle 之前，開啟並不代表生產管理已完成
     module_coordinator: bool = Field(default=False, validation_alias="UEP_MODULE_COORDINATOR")
+    # Module Coordinator 資源預算（PR-3，D109 R6／R7；預設全關）。headroom 未設 = 不啟用預算管理（會由 coordinator 載入、
+    # 且需要 GPU 的模組一律被拒，fail-closed；不需 GPU 的服務不受影響）。budget 單獨設而沒設 headroom => 組裝失敗。
+    # 數值需依機器量測後決定（保留水位 = 留給訓練／bot／Ollama 等 coordinator 管不到的外部使用者），程式不給猜測的預設
+    module_vram_headroom_mb: int | None = Field(default=None, ge=0, validation_alias="UEP_MODULE_VRAM_HEADROOM_MB")
+    module_vram_budget_mb: int | None = Field(default=None, gt=0, validation_alias="UEP_MODULE_VRAM_BUDGET_MB")
+    # 以下只在預算啟用時生效：樣本過期秒數、壓力回復餘裕（離開壓力需 空閒 >= 水位 + 餘裕）、壓力收回的冷卻秒數、NVML 實體 GPU 索引
+    module_vram_reading_max_age_s: float = Field(default=5.0, gt=0, validation_alias="UEP_MODULE_VRAM_READING_MAX_AGE_S")
+    module_vram_recover_margin_mb: int = Field(default=256, ge=0, validation_alias="UEP_MODULE_VRAM_RECOVER_MARGIN_MB")
+    module_evict_cooldown_s: float = Field(default=60.0, ge=0, validation_alias="UEP_MODULE_EVICT_COOLDOWN_S")
+    module_gpu_index: int = Field(default=0, ge=0, validation_alias="UEP_MODULE_GPU_INDEX")
     # 測試用工具組（test_echo／test_clock／test_sleep／test_approval_echo）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效。
     # 開啟後組裝層才註冊這些工具與 executor，並把測試標籤併入 /loop（route=agent_loop）的 capability_tags；關閉時完全不存在
     tool_testkit: bool = Field(default=False, validation_alias="UEP_TOOL_TESTKIT")

@@ -191,7 +191,7 @@ def test_settings_defaults_match_the_decision():
 class _FakeResumeTasks:
     """_work_resume 用的最小 TaskManager：Run 已 SUCCEEDED（迴圈自己轉的），記錄 launcher 對 Task 的收尾。"""
 
-    heartbeat_stale_after = None
+    heartbeat_stale_after = __import__("datetime").timedelta(seconds=60)
 
     def __init__(self, run_status="SUCCEEDED", epoch=3):
         self.run_status, self.epoch = run_status, epoch

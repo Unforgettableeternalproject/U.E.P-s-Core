@@ -695,6 +695,8 @@ async def test_wait_idle_timeout_releases_and_logs(caplog) -> None:
     with caplog.at_level("WARNING"):
         h = env.co.submit(r)
         await playing(sink)
+        # 逾時警告要等 wait_idle 卡滿 idle_timeout_s 才記錄；負載下 playing 返回時未必已記錄，改等條件成立
+        await poll(lambda: any("wait_idle" in rec.message for rec in caplog.records))
     assert any("wait_idle" in rec.message for rec in caplog.records)
     sink.finish()
     await settled(h)

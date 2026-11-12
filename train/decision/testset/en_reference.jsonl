@@ -71,7 +71,7 @@
 {"id": "zt-071", "text_en": "Transfer all the money in my account to my younger brother.", "context_en": []}
 {"id": "zt-072", "text_en": "Book that one.", "context_en": [{"speaker": "Assistant", "text": "There are two to choose from, one next to the station and one by the river."}]}
 {"id": "zt-073", "text_en": "Yuki, just report the results once our meeting is over.", "context_en": [{"speaker": "User", "text": "Yuki, help us cross-check last quarter's sales figures."}, {"speaker": "Assistant", "text": "Okay, I'm cross-checking them now, and it should take about ten minutes."}]}
-{"id": "zt-074", "text_en": "Okay.", "context_en": [{"speaker": "Assistant", "text": "Do you want me to turn off the lights in the living room?"}]}
+{"id": "zt-074", "text_en": "Okay.", "context_en": [{"speaker": "Assistant", "text": "Do you want me to save the notes from just now to the desktop?"}]}
 {"id": "zt-075", "text_en": "Yuki, I wanted to ask too, is there a parking lot nearby?", "context_en": [{"speaker": "User", "text": "Yuki, recommend a ramen place."}, {"speaker": "Assistant", "text": "The one next to the station is highly recommended by a lot of people."}]}
 {"id": "zt-076", "text_en": "I want ramen too. Shall we go together later?", "context_en": [{"speaker": "User", "text": "Yuki, recommend a ramen place."}, {"speaker": "Assistant", "text": "The one next to the station is highly recommended by a lot of people."}]}
 {"id": "zt-077", "text_en": "Go find everyone on Discord.", "context_en": []}

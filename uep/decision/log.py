@@ -53,6 +53,12 @@ def _safe_version(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _plan_target(plan: Any) -> str | None:
+    """plan.placement.target_platform；plan 或 placement 缺席（fallback 決策）時回 None。"""
+    placement = getattr(plan, "placement", None)
+    return _safe_token(getattr(placement, "target_platform", None)) if placement is not None else None
+
+
 class DecisionLogSink(Protocol):
     def write(self, rows: Sequence[dict[str, Any]]) -> None: ...
 
@@ -98,8 +104,9 @@ def primary_row(
         snapshot_version=_safe_version(request.snapshot_versions.get("policy")),
         # 選用：目前只有 loop.consult 的 placement 由注入點帶入（platform 第 5 步），其餘為 None
         platform_context_version=_safe_version(request.facts.get("platform_context_version")),
-        # 目標位置取自 plan.placement.target_platform（過安全字元檢查）；不再拼進 reason_code
-        target=_safe_token(result.plan.placement.target_platform) if result.plan.placement is not None else None,
+        # 目標位置取自 plan.placement.target_platform（過安全字元檢查）；不再拼進 reason_code。
+        # 逾時／無效等 fallback 決策沒有 plan，此時記 None，不能讓整列寫入失敗
+        target=_plan_target(result.plan),
     )
     return row
 

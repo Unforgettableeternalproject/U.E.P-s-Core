@@ -131,7 +131,7 @@ def test_agent_loop_route_delivers_once_and_skips_direct_chat(session_factory, t
         tasks, runs = _rows(session_factory)
         assert [t.status for t in tasks] == ["SUCCEEDED"] and [r.status for r in runs] == ["SUCCEEDED"]
         store = rig.core.loop_launcher._store
-        assert not store.children and not store.parent_entries  # Run 終態：child／parent 暫存已清
+        assert not store._store.list_sessions()  # Run 終態：持久 store 的 child／parent 條目已清
         assert rig.core.loop_launcher.active == 0
     finally:
         rig.core.shutdown()

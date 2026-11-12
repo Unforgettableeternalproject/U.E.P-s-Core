@@ -242,7 +242,7 @@ def test_console_park_then_approve_resumes_and_executes_the_side_effect_once(ses
             (approval,) = list(s.scalars(select(ApprovalRow)))
         assert approval.consumed_by_action_id == action.action_id and approval.target == TOOL_APPROVAL_ECHO
         assert rt.core.loop_launcher.parked_runs() == ()  # 終態：暫存已清
-        assert not rt.core.loop_launcher._store.children
+        assert not rt.core.loop_launcher._store._store.list_sessions()  # 持久 store 的 child 條目已清
         out.lines.clear()
         console.execute(f"/approve {action.action_id}")  # 已執行：不再需要核准
         assert "不需要核准" in out.lines[0]

@@ -103,4 +103,5 @@ def test_migration_chain_head_is_decision_log():
     assert script.get_revision("0013_run_supervisor_flags").down_revision == "0012_action_concurrency"
     assert script.get_revision("0014_decision_log_columns").down_revision == "0013_run_supervisor_flags"
     assert script.get_revision("0015_action_retry_of").down_revision == "0014_decision_log_columns"
-    assert script.get_current_head() == "0018_decision_log_platform_ctx"
+    assert script.get_revision("0019_decision_log_target").down_revision == "0018_decision_log_platform_ctx"
+    assert script.get_current_head() == "0019_decision_log_target"

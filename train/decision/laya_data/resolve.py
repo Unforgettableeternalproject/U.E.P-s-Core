@@ -128,7 +128,7 @@ def sid_is_r4(row: Mapping[str, Any]) -> bool:
 
 # defer 比例調降（艾斯維爾 11/12 裁決 8）：r4 新增的 defer 與 respond 請求比例失衡（ft-r2 把沒有 Yuki 稱呼的完整請求判成 defer），
 # 補了成對的 respond 樣本之外，再各砍掉一部分資訊不足／高風險卡（依 sha1 決定，可重現）。
-DEFER_TRIM: dict[str, int] = {"defer_missing_info": 10, "defer_risky": 10}
+DEFER_TRIM: dict[str, int] = {}  # r4b：補回 r3 砍掉的 20 筆（原為 defer_missing_info／defer_risky 各 10 筆），defer 比例改由成對樣本調整
 
 
 def trim_defer(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
@@ -140,6 +140,45 @@ def trim_defer(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[s
                       key=lambda x: hashlib.sha1(f"trim:{x}".encode()).hexdigest())
         drop.update(cand[:n])
     return [r for r in rows if r["sample_id"] not in drop], sorted(drop)
+
+
+def drop_broken_pairs(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """r4b 的最小差異成對樣本（``meta.pair_family``）：一邊被盲標淘汰就把另一邊也拿掉，維持成對。"""
+    groups: dict[str, list[str]] = {}
+    for r in rows:
+        meta = r.get("meta") or {}
+        if meta.get("pair_family"):
+            groups.setdefault(str(meta["pair_id"]), []).append(r["sample_id"])
+    broken = sorted(sid for ids in groups.values() if len(ids) < 2 for sid in ids)
+    return [r for r in rows if r["sample_id"] not in set(broken)], broken
+
+
+DEFER_SHARE_MAX = 0.35  # r4b 目標 33–35%：請求型樣本（task_request／agent_loop／defer）中 defer 的占比上限
+
+
+def balance_defer_share(rows: list[dict[str, Any]], max_share: float = DEFER_SHARE_MAX) -> tuple[list[dict[str, Any]], list[str]]:
+    """請求型樣本的 defer 占比超過上限時，依 sha1 順序拿掉「稱呼成對的資訊不足組」（兩句都是 defer）直到達標。"""
+    import hashlib
+
+    def counts(rs: list[dict[str, Any]]) -> tuple[int, int]:
+        req = [r for r in rs if r["kind"] == "turn.reply" and (r["expected"].get("route") in ("task_request", "agent_loop") or r["expected"].get("reply_mode") == "defer")]
+        return sum(1 for r in req if r["expected"].get("reply_mode") == "defer"), len(req)
+
+    pairs: dict[str, list[str]] = {}
+    for r in rows:
+        meta = r.get("meta") or {}
+        if meta.get("pair_family") == "name_incomplete":
+            pairs.setdefault(str(meta["pair_id"]), []).append(r["sample_id"])
+    order = sorted(pairs, key=lambda x: hashlib.sha1(f"balance:{x}".encode()).hexdigest())
+    drop: set[str] = set()
+    cur = rows
+    for pid in order:
+        d, n = counts(cur)
+        if n == 0 or d / n <= max_share:
+            break
+        drop.update(pairs[pid])
+        cur = [r for r in rows if r["sample_id"] not in drop]
+    return cur, sorted(drop)
 
 
 def drop_overlaps(rows: list[dict[str, Any]], testset_dir: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -176,6 +215,9 @@ def drop_overlaps(rows: list[dict[str, Any]], testset_dir: Path) -> tuple[list[d
         for i, j, _ in fuzzy_pairs(sub, None, 0.8):
             if sub[j]["sample_id"] in drop or sub[i]["sample_id"] in drop:
                 continue
+            pi, pj = (sub[i].get("meta") or {}).get("pair_id"), (sub[j].get("meta") or {}).get("pair_id")
+            if pi and pi == pj:
+                continue  # 最小差異成對樣本刻意只差一個訊號，不算重複
             same = sub[i]["expected"] == sub[j]["expected"] and sub[i]["state"].get("available_capabilities") == sub[j]["state"].get("available_capabilities")
             if same:
                 drop.add(sub[j]["sample_id"])
@@ -427,7 +469,11 @@ def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]
     final += resolved
     final, narrowed = apply_passive_narrow(final)
     counts["passive_narrow"] = len(narrowed)
+    final, broken = drop_broken_pairs(final)
+    counts["pair_broken_dropped"] = len(broken)
     final, trimmed = trim_defer(final)
+    final, balanced = balance_defer_share(final)
+    counts["defer_balance_pairs_dropped"] = len(balanced)
     final, overlap_stats = drop_overlaps(final, Path("testset"))
     final, cap_stats = apply_capabilities(final)
     final.sort(key=lambda r: r["sample_id"])

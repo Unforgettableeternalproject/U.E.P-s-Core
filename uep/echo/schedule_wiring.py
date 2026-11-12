@@ -78,7 +78,7 @@ class PlanBackedRestWindowPolicy:
             return True
 
     def verify(self) -> bool:
-        """檢查 rest_window 項是否存在（啟動時，以及之後每 ``recheck_s`` 秒在窗口外重查）。
+        """檢查 rest_window 項是否存在（啟動時、之後每 ``recheck_s`` 秒在窗口外重查，以及窗口提早消失時立即重查）。
 
         不存在記一次 warning（之後 window_at 降級成 fallback）；缺項後又出現記一次 info。
         """
@@ -118,6 +118,8 @@ class PlanBackedRestWindowPolicy:
             return None  # 不在窗口內（含 override／明確行程項截斷窗口期間）
         if slot.ends_at is None:  # 窗口一定有終點；沒有代表資料不一致
             return self._degrade("rest_window 缺少終點", now)
+        if self._item_known is False:  # 缺項期間恢復且剛好落在窗口內：不經 verify()，在此補記轉換
+            logger.info("行程的 rest_window 項已恢復，休息時段改回由行程提供")
         self._item_known = True
         self._last_missing_check = self._monotonic()  # 窗口本身就證明項存在
         window = RestWindow(slot.starts_at, slot.ends_at, slot.tz or self._tz)

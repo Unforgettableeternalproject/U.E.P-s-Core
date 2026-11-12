@@ -16,7 +16,8 @@ train/decision/
 │   ├── compound.py     # 既有資料的 compound 例外清單（預設 no）與定義
 │   ├── build_en_test.py  # 評估端：測試集 zh-TW 照線上流程翻成英文（testset/en_test.jsonl，不入版控）
 │   ├── overlap.py        # 評估端：測試集與 train／val 的逐列重疊報告（含 state 層級）
-│   └── eval_testset.py   # 評估端：Laya checkpoint（predict）、rules.default（rules）、指標與錯誤分析（report）
+│   ├── eval_testset.py   # 評估端：Laya checkpoint（predict）、rules.default（rules）、指標與錯誤分析（report）
+│   └── mt_bench.py       # 評估端：中翻英候選選型（opus-mt／NLLB／Qwen／雲端、詞彙保護）；延遲、資源、chrF、Laya ft-r1 端到端
 ├── testset/zh_candidates_draft.jsonl   # 測試集 zh-TW 原句草稿（status=pending_review，待艾斯維爾核）
 ├── pool/           # synthetic 內容池（入庫；量產後才有）
 ├── pool_private/   # real_owner 日誌（.gitignore，不入 git）

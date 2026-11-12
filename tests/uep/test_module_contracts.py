@@ -81,6 +81,7 @@ def test_transition_table_exhaustive():
         ("unloaded", "loading"), ("loading", "warming"), ("loading", "ready"), ("warming", "ready"),
         ("ready", "degraded"), ("degraded", "ready"), ("ready", "unloading"), ("degraded", "unloading"),
         ("unloading", "unloaded"), ("failed", "loading"),
+        ("loading", "unloading"), ("warming", "unloading"), ("failed", "unloading"),  # D109
         ("ready", "loading"),  # R1：reload 掛點（v1 不啟用）
         # 任一態（failed 自身除外）-> failed
         *((s, "failed") for s in MODULE_STATES if s != "failed"),
@@ -89,6 +90,18 @@ def test_transition_table_exhaustive():
         assert is_legal_transition(src, dst) == ((src, dst) in legal), (src, dst)
     assert set(TRANSITIONS) == MODULE_STATES
     assert not is_legal_transition("ready", "bogus") and not is_legal_transition("bogus", "ready")
+
+
+def test_publish_path_allows_snapshots_but_not_ordinary_same_state():
+    from uep.lifecycle.states import SNAPSHOT_CAUSES, is_legal_publish
+    assert SNAPSHOT_CAUSES == {"startup", "resync"}
+    for state in MODULE_STATES:
+        assert is_legal_publish(state, state, "startup") and is_legal_publish(state, state, "resync")
+        assert not is_legal_publish(state, state, "health") and not is_legal_publish(state, state, None)
+        assert is_legal_publish(None, state, "startup") and not is_legal_publish(None, state, "demand")
+    assert is_legal_publish("loading", "unloading", "operator") and not is_legal_publish("unloaded", "ready", "demand")
+    assert not is_legal_publish("ready", "loading", "operator")  # reload 掛點 runtime 拒絕
+    assert not is_legal_publish("ready", "bogus", "health")
 
 
 # --- payload ---

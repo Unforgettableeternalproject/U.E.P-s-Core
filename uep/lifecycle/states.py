@@ -39,15 +39,17 @@ READINESS_OF_STATE: Mapping[str, Readiness] = MappingProxyType({
     "failed": "unavailable",
 })
 
-# 合法轉移（§6.1）。``ready -> loading`` 是 patch／reload 掛點（R1，v1 不啟用）；任一態 -> failed（未預期例外）。
+# 合法轉移（§6.1、D109）。``ready -> loading`` 是 patch／reload 掛點（R1，v1 不啟用）；任一態 -> failed（未預期例外）。
+# D109：新增 ``loading／warming／failed -> unloading``（取消載入中的操作、清理 failed 殘留）。原操作未結束時只登記取消意圖，
+# 不並行 unload；逾時轉 failed 並保留占用；舊操作的晚完成不得推進到 ready；確認清理完才進 unloaded。
 _BASE_TRANSITIONS: dict[str, frozenset[str]] = {
     "unloaded": frozenset({"loading"}),
-    "loading": frozenset({"warming", "ready"}),  # 無需暖機者直接 ready
-    "warming": frozenset({"ready"}),
+    "loading": frozenset({"warming", "ready", "unloading"}),  # 無需暖機者直接 ready
+    "warming": frozenset({"ready", "unloading"}),
     "ready": frozenset({"degraded", "unloading", "loading"}),
     "degraded": frozenset({"ready", "unloading"}),
     "unloading": frozenset({"unloaded"}),
-    "failed": frozenset({"loading"}),
+    "failed": frozenset({"loading", "unloading"}),
 }
 TRANSITIONS: Mapping[str, frozenset[str]] = MappingProxyType({
     src: dsts | ({"failed"} if src != "failed" else frozenset()) for src, dsts in _BASE_TRANSITIONS.items()
@@ -75,6 +77,27 @@ def readiness_of(state: str) -> Readiness:
 def is_legal_transition(src: str, dst: str) -> bool:
     """``src -> dst`` 是否為合法轉移（自我轉移與未知狀態一律非法）。"""
     return dst in TRANSITIONS.get(src, frozenset())
+
+
+# 同態快照（prev_state == state）不經轉移表，走獨立發布路徑；一般同態轉移仍非法（D109）
+SNAPSHOT_CAUSES: frozenset[str] = frozenset({"startup", "resync"})
+
+# reload（``ready -> loading``）掛點保留，runtime 一律拒絕啟用（R1）
+RELOAD_ENABLED = False
+
+
+def is_legal_publish(prev: str | None, state: str, cause: str | None) -> bool:
+    """coordinator 發布前的轉移檢查：同態只有 startup／resync 快照合法；``prev`` 為 None（首次快照）只允許快照原因；
+    其餘依轉移表。reload 掛點（ready -> loading）在 ``RELOAD_ENABLED`` 為 False 時拒絕。"""
+    if state not in MODULE_STATES:
+        return False
+    if prev is None:
+        return cause in SNAPSHOT_CAUSES
+    if prev == state:
+        return cause in SNAPSHOT_CAUSES
+    if prev == "ready" and state == "loading" and not RELOAD_ENABLED:
+        return False
+    return is_legal_transition(prev, state)
 
 
 def unavailable_payload(

@@ -69,7 +69,7 @@ _TAIL = r"(?:了|吧|啦|囉|喔|哦)?"
 # 「放棄」＋指向工作的名詞片語
 _ABANDON_OBJ = r"(?:這次|本次|今天的?)(?:的)?工作(?:階段)?"  # 不收「這個／這回／這輪」：易被理解成專案或 agent 任務
 # 「不用做了」只在主語明確是工作時才算
-_NO_NEED_SUBJ = r"(?:今天|這次|這個|本次)的?工作"
+_NO_NEED_SUBJ = r"(?:今天|這次|本次)的?工作"  # 同 _ABANDON_OBJ，不收「這個」
 
 _ZH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(rf"{_LEAD}放棄{_ABANDON_OBJ}{_TAIL}"),  # 放棄這次工作／放棄本次工作／放棄今天的工作

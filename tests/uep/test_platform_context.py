@@ -502,12 +502,20 @@ def test_platform_context_is_read_only_by_shadow_wiring():
     assert _importers("uep.contracts.platform") == {
         "echo/platform_context.py", "echo/policy.py", "presence/gate.py", "turn/models.py", "echo/host.py", "assembly.py",
     }
-    for rel in ("echo/host.py", "assembly.py"):
+    # 組裝層另為 E3 Gate 的 capability resolver（端點位置→平台能力）import 能力型別
+    allowed_names = {
+        "echo/host.py": {"platform_from_presence_location"},
+        "assembly.py": {
+            "platform_from_presence_location", "platform_from_endpoint_location",
+            "InteractionCapability", "PlatformCapabilities",
+        },
+    }
+    for rel, allowed in allowed_names.items():
         names = {
             a.name for n in ast.walk(_parse(rel))
             if isinstance(n, ast.ImportFrom) and n.module == "uep.contracts.platform" for a in n.names
         }
-        assert names == {"platform_from_presence_location"}, (rel, names)
+        assert names == allowed, (rel, names)
     # shadow 只觀察：observe() 的回傳值不得被使用（不寫回）
     tree = _parse("echo/host.py")
     observes = 0

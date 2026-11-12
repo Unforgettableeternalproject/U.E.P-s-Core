@@ -157,7 +157,11 @@ def test_migration_0014_revision_chain():
     assert rev is not None and rev.down_revision == "0013_run_supervisor_flags"
     assert callable(rev.module.upgrade) and callable(rev.module.downgrade)
     assert script.get_revision("0015_action_retry_of").down_revision == "0014_decision_log_columns"
-    assert script.get_heads() == ["0020_decision_log_chain"]
+    # 不寫死 head：只要求單一 head，且 0015 在 head 的祖先鏈上（之後的 migration 會往後疊）
+    heads = script.get_heads()
+    assert len(heads) == 1
+    ancestry = {r.revision for r in script.walk_revisions(base="base", head=heads[0])}
+    assert "0015_action_retry_of" in ancestry
 
 
 def test_orm_model_has_new_columns_and_index():

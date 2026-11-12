@@ -181,15 +181,16 @@ def test_failure_notice_after_turn_end_goes_through_the_host_entry_once():
 
 
 def test_partial_after_turn_end_is_sent_as_the_failure_notice_not_as_a_completed_reply():
-    from uep.echo.agent_wiring import BUDGET_ABORT_TEXT, LOOP_FAILURE_TEXT
+    from uep.echo.agent_wiring import BUDGET_ABORT_TEXT
 
     launcher, _, seen = _late_launcher()
     ctx = _ctx("task_request")
     launcher._on_budget(ctx, "abort")
     assert launcher._deliver(ctx, "已取得的部分結果") is False and not ctx.delivered
-    launcher._notify_failure(ctx)  # _conclude 的補送：已送過就不重複
-    assert [(r.outcome, r.text) for r in seen] == [(ResumeOutcome.FAILED, BUDGET_ABORT_TEXT), (ResumeOutcome.FAILED, LOOP_FAILURE_TEXT)]
-    assert all(r.outcome is not ResumeOutcome.COMPLETED for r in seen)  # FAILED 不寫記憶（Host 只對 COMPLETED＋APPROVED 寫）
+    launcher._notify_failure(ctx)  # _conclude 的補送：已標記送過就不重複
+    # 中斷通知已送出：使用者最後只收到這一則，不再追加失敗訊息
+    assert [(r.outcome, r.text) for r in seen] == [(ResumeOutcome.FAILED, BUDGET_ABORT_TEXT)]
+    assert ctx.failure_notice_sent and all(r.outcome is not ResumeOutcome.COMPLETED for r in seen)  # FAILED 不寫記憶
 
 
 def test_gate_refusal_after_the_turn_check_falls_back_to_the_host_entry():
@@ -258,3 +259,42 @@ def test_loop_persists_budget_deferred_in_the_checkpoint():
     rig = Rig([Round("", (call("read.lone", "1"), call("read.lone", "2"))), Round("收束")], budget=TASK_REQUEST_BUDGET)
     rig.run(trigger=trigger(tags=TAGS, kind="task_request", route="task_request"))
     assert rig.tasks.checkpoints[-1]["budget_counters"]["deferred"] == 1
+
+
+def test_partial_after_turn_end_sends_the_failure_text_when_the_abort_notice_could_not_be_sent():
+    from uep.echo.agent_wiring import BUDGET_ABORT_TEXT, LOOP_FAILURE_TEXT
+
+    results: list[ResumedRunResult] = []
+
+    def host(r):
+        results.append(r)
+        return ResumeDisposition.DROPPED if r.text == BUDGET_ABORT_TEXT else ResumeDisposition.DELIVERED  # 中斷通知被丟棄
+
+    launcher, _ = _launcher(ended=True, on_resumed=host)
+    ctx = _ctx("task_request")
+    launcher._on_budget(ctx, "abort")
+    assert ctx.abort_notice_ok is False
+    launcher._deliver(ctx, "部分結果")
+    assert [r.text for r in results] == [BUDGET_ABORT_TEXT, LOOP_FAILURE_TEXT]  # 通知沒送出：補一則失敗訊息
+
+
+def test_gate_refusal_falls_back_when_the_turn_is_cancelled_but_not_ended_yet():
+    """空窗：turn 已被取消（generation 已前進）但還沒 ended——Gate 同樣會拒絕，也要退回 Host 入口。"""
+    from uep.output.delivery import DeliveryStatus
+
+    seen: list[ResumedRunResult] = []
+    launcher, state = _launcher(ended=False, reason=None, on_resumed=lambda r: seen.append(r) or ResumeDisposition.DELIVERED)
+
+    def dispatch(intent):
+        state["reason"] = "barge_in"  # 檢查之後被取消，尚未 ended
+        return SimpleNamespace(status=DeliveryStatus.REJECTED)
+
+    launcher._delivery = SimpleNamespace(prepare=lambda i: None, dispatch=dispatch)
+    ctx = _ctx("task_request")
+    assert launcher._deliver(ctx, "做好了") is True
+    assert [(r.outcome, r.text) for r in seen] == [(ResumeOutcome.COMPLETED, "做好了")]
+    # 已取消但未 ended 時，之後的通知也直接走 Host 入口（不先試必被拒的 Gate 路徑）
+    seen.clear()
+    launcher._delivery = SimpleNamespace(prepare=lambda i: None, dispatch=lambda i: pytest.fail("不應走 Gate"))
+    launcher._notify_failure(_ctx("task_request"))
+    assert [r.outcome for r in seen] == [ResumeOutcome.FAILED]

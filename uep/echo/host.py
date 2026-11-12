@@ -1343,7 +1343,7 @@ class EchoPipelineHost:
     def accept_resumed_result(self, result: ResumedRunResult) -> ResumeDisposition:
         """park → 核准 → resume 的 Run 到達終態後，唯一回 Host 的入口（由 ``LoopLauncher`` 注入呼叫，不對外開放）。
 
-        以 ``(run_id, worker_epoch)`` 為冪等鍵：同鍵再呼叫回原處置，不重送、不重寫（pending 中的同鍵回 PENDING，不重複入列）。
+        以 ``result.key`` 為冪等鍵（seq=0 時即 ``(run_id, worker_epoch)``；同一個 Run 的延後通知以 seq 區分）：同鍵再呼叫回原處置，不重送、不重寫（pending 中的同鍵回 PENDING，不重複入列）。
         COMPLETED 且有文字才送：activity 綁定的 ``OutputIntent``（turn_* 為 None），授權於送出當下重取 ``lease_auth()``，
         經 DeliveryManager／Output Gate。送達後才寫記憶（key 掛回原 turn 的 ``turn:<orig>``），``cause=REJECTED`` 不寫。
 
@@ -1491,7 +1491,7 @@ class EchoPipelineHost:
             if auth is None:
                 return ResumeDisposition.PENDING, "no_lease"
             output_id = new_id("out")
-            ref = f"resume:{result.run_id}:{result.worker_epoch}:{attempt}"
+            ref = f"resume:{result.run_id}:{result.worker_epoch}:{result.seq}:{attempt}"
             self.loop_text.put(ref, ticket.turn_id, result.text)
             intent = OutputIntent(
                 output_id=output_id, sequence=0, kind=OutputKind.SYSTEM_NOTICE if failed else OutputKind.TEXT,

@@ -499,15 +499,29 @@ def test_resumed_result_with_rejected_cause_is_sent_but_not_remembered(session_f
         rig.core.shutdown()
 
 
-@pytest.mark.parametrize("outcome", ["failed", "cancelled"])
-def test_failed_or_cancelled_resumed_result_sends_nothing_and_writes_nothing(session_factory, tmp_path, outcome):
+def test_cancelled_resumed_result_sends_nothing_and_writes_nothing(session_factory, tmp_path):
     from uep.echo.resume_return import ResumeDisposition, ResumeOutcome
 
     rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
     try:
         before = len(rig.deliveries())
-        out = rig.host.accept_resumed_result(_resumed(ticket, activity, outcome=ResumeOutcome(outcome), text=""))
+        out = rig.host.accept_resumed_result(_resumed(ticket, activity, outcome=ResumeOutcome.CANCELLED, text=""))
         assert out is ResumeDisposition.NOT_APPLICABLE and len(rig.deliveries()) == before and stores == []
+    finally:
+        rig.core.shutdown()
+
+
+def test_failed_resumed_result_without_text_is_dropped_because_the_launcher_always_supplies_it(session_factory, tmp_path):
+    """FAILED 的固定失敗訊息一律由 launcher 帶進來（``_return_to_host`` 填 LOOP_FAILURE_TEXT）；Host 不自己補字。
+    text 為空代表呼叫端沒給可送的內容 -> DROPPED（metric unavailable），不送也不寫記憶。"""
+    from uep.echo.resume_return import ResumeDisposition, ResumeOutcome
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        before = len(rig.deliveries())
+        out = rig.host.accept_resumed_result(_resumed(ticket, activity, outcome=ResumeOutcome.FAILED, text=""))
+        assert out is ResumeDisposition.DROPPED and len(rig.deliveries()) == before and stores == []
+        assert rig.host.metrics["echo.resume_dropped.unavailable"] == 1
     finally:
         rig.core.shutdown()
 
@@ -1030,5 +1044,30 @@ def test_rejected_cause_failure_notice_is_still_sent(session_factory, tmp_path):
     try:
         result = _resumed(ticket, activity, outcome=ResumeOutcome.FAILED, cause=ResumeCause.REJECTED, text=LOOP_FAILURE_TEXT)
         assert rig.host.accept_resumed_result(result) is ResumeDisposition.DELIVERED and stores == []
+    finally:
+        rig.core.shutdown()
+
+
+def test_two_sequences_of_the_same_run_pend_and_settle_independently(session_factory, tmp_path):
+    from uep.echo.agent_wiring import LOOP_FAILURE_TEXT
+    from uep.echo.resume_return import ResumeDisposition, ResumeOutcome
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        real = rig.host.endpoint.lease_auth
+        rig.host.endpoint.lease_auth = lambda: None
+        notice = _resumed(ticket, activity, outcome=ResumeOutcome.FAILED, text=LOOP_FAILURE_TEXT, seq=1)
+        result = _resumed(ticket, activity)
+        assert rig.host.accept_resumed_result(result) is ResumeDisposition.PENDING
+        assert rig.host.accept_resumed_result(notice) is ResumeDisposition.PENDING  # 同 Run 不同 seq：不被當成重複
+        assert len(rig.host._resume_pending) == 2 and result.key != notice.key
+        rig.host.endpoint.lease_auth = real
+        before = len(rig.deliveries())
+        assert rig.host.flush_resume_pending(trigger="lease") == 2
+        assert len(rig.deliveries()) == before + 2 and len(stores) == 1  # 只有 COMPLETED 的那則寫記憶
+        assert rig.host._resume_settled[result.key] is ResumeDisposition.DELIVERED
+        assert rig.host._resume_settled[notice.key] is ResumeDisposition.DELIVERED
+        assert rig.host.accept_resumed_result(notice) is ResumeDisposition.DELIVERED  # 各自冪等
+        assert len(rig.deliveries()) == before + 2
     finally:
         rig.core.shutdown()

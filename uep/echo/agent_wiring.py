@@ -704,13 +704,13 @@ class LoopLauncher:
         turn_id = ctx.ticket.turn_id
         if self._cancelled(turn_id, ctx.route):
             return False
-        if ROUTE_INTERRUPT_POLICY.get(ctx.route) == "continue" and self._orchestrator.is_ended(turn_id):
+        if self._turn_over(ctx):
             return self._deliver_after_turn_end(ctx, text)  # 回合已被插話結束、Run 繼續到完成：結果延後經 Host 入口通知
         status = self._dispatch(ctx, text, kind=OutputKind.TEXT, origin=OutputOrigin.PERSONA)
         if status in _DELIVERED:
             ctx.delivered, ctx.text = True, text
             return True
-        if self._continues(ctx) and status in _GATE_REFUSED and self._orchestrator.is_ended(turn_id):
+        if self._continues(ctx) and status in _GATE_REFUSED and self._turn_inactive(turn_id):
             return self._deliver_after_turn_end(ctx, text)  # 檢查之後 turn 才被結束（TOCTOU）：Gate 以 turn 世代拒絕，改走 Host 入口
         ctx.delivery_uncertain = _DELIVERY_UNCERTAIN.get(status) if status is not None else None
         return False
@@ -718,9 +718,14 @@ class LoopLauncher:
     def _continues(self, ctx: _RunCtx) -> bool:
         return ROUTE_INTERRUPT_POLICY.get(ctx.route, "cancel") == "continue"
 
+    def _turn_inactive(self, turn_id: str) -> bool:
+        """turn 已結束，或已被取消但還沒 ended（取消已讓 generation 前進，經 Gate 的 turn 綁定輸出同樣必被拒）。"""
+        orch = self._orchestrator
+        return orch.is_ended(turn_id) or orch.cancel_reason_of(turn_id) is not None
+
     def _turn_over(self, ctx: _RunCtx) -> bool:
-        """continue 政策的 Run，其 turn 已結束：turn 世代作廢，經 Gate 的 turn 綁定輸出必被拒，要改走 Host 入口。"""
-        return self._continues(ctx) and self._orchestrator.is_ended(ctx.ticket.turn_id)
+        """continue 政策的 Run，其 turn 已失效（結束或已被取消）：經 Gate 的 turn 綁定輸出必被拒，要改走 Host 入口。"""
+        return self._continues(ctx) and self._turn_inactive(ctx.ticket.turn_id)
 
     def _notice_via_host(self, ctx: _RunCtx, text: str) -> DeliveryStatus | None:
         """turn 結束後的固定系統訊息（預算通知、失敗訊息）經 Host 入口送出（outcome=FAILED -> SYSTEM_NOTICE，不寫記憶）。
@@ -748,7 +753,7 @@ class LoopLauncher:
         if self._turn_over(ctx):
             return self._notice_via_host(ctx, text)
         status = self._dispatch(ctx, text, kind=OutputKind.SYSTEM_NOTICE, origin=OutputOrigin.SYSTEM)
-        if self._continues(ctx) and status in _GATE_REFUSED and self._orchestrator.is_ended(ctx.ticket.turn_id):
+        if self._continues(ctx) and status in _GATE_REFUSED and self._turn_inactive(ctx.ticket.turn_id):
             return self._notice_via_host(ctx, text)
         return status
 
@@ -762,7 +767,8 @@ class LoopLauncher:
             # 預算中斷的 partial 不可當完整回覆送（也不寫記憶）：改送固定失敗訊息（outcome=FAILED），只送一次
             if not ctx.failure_notice_sent:
                 ctx.failure_notice_sent = True
-                self._notice_via_host(ctx, LOOP_FAILURE_TEXT)
+                if not ctx.abort_notice_ok:  # 中斷通知已送出（或結果不確定）就不再送第二則，使用者最後只收到一則
+                    self._notice_via_host(ctx, LOOP_FAILURE_TEXT)
             return False
         run = ctx.run
         result = ResumedRunResult(

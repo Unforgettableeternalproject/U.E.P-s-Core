@@ -77,6 +77,21 @@ def is_legal_transition(src: str, dst: str) -> bool:
     return dst in TRANSITIONS.get(src, frozenset())
 
 
+def unavailable_payload(
+    module_id: str, *, reason_code: str, revision: int = 1, epoch: int = 0, state: str = "unloaded", cause: str = "startup",
+) -> dict[str, Any]:
+    """組出 readiness=unavailable 的 ``module.state_changed`` payload（已通過 ``validate_state_changed_payload``）。
+    供尚無 coordinator 時的靜態不可用標記（例如 lore 未設定）使用。"""
+    payload: dict[str, Any] = {
+        "module_id": module_id, "revision": revision, "epoch": epoch, "state": state,
+        "readiness": readiness_of(state), "reason_code": reason_code, "cause": cause,
+    }
+    if payload["readiness"] != "unavailable":
+        raise ValueError("unavailable_payload 的 state 必須對應 unavailable")
+    validate_state_changed_payload(payload)
+    return payload
+
+
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 

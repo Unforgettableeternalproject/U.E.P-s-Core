@@ -91,6 +91,12 @@ Readiness = Literal["ready", "warming", "unavailable"]
 # D108 R2：單一事件類型，readiness 由 coordinator 計算並放在 payload（註冊表不重新推導）
 MODULE_EVENT_TYPE = "module.state_changed"
 _READINESS_VALUES: frozenset[str] = frozenset({"ready", "warming", "unavailable"})
+# 七態 -> readiness 對照（與 ``uep.lifecycle.states.READINESS_OF_STATE`` 相同，由測試鎖住；註冊表不 import lifecycle）。
+# payload 帶了合法 state 卻與 readiness 不一致時拒收（防線，coordinator 本應已算對）
+_READINESS_OF_STATE: Mapping[str, str] = MappingProxyType({
+    "unloaded": "unavailable", "loading": "warming", "warming": "warming", "ready": "ready",
+    "degraded": "ready", "unloading": "unavailable", "failed": "unavailable",
+})
 
 
 class ToolRegistryError(ValueError):
@@ -526,7 +532,7 @@ class ToolRegistry:
 
     def apply_module_event(self, event_type: str, payload: Mapping[str, Any]) -> bool:
         """接 module coordinator 事件（``module.state_changed``，payload 取 ``{module_id, revision, epoch?, readiness}``，
-        其餘鍵如 ``state``／``reason_code`` 此處不使用；§5.8、D108 R2）。``readiness`` 必須是 ready／warming／unavailable，
+        ``state`` 若帶了合法值須與 ``readiness`` 對照一致，否則拒收；其餘鍵如 ``reason_code`` 此處不使用；§5.8、D108 R2）。``readiness`` 必須是 ready／warming／unavailable，
         否則忽略。以 ``(epoch, revision)`` 的字典序取**最新**：
         epoch 變大（module coordinator 重啟）時 revision 重新計；沒有 epoch 視為 0。排序鍵不大於已記錄者
         （重送、亂序）一律忽略；未知事件、未知模組、格式不符也忽略（維持原狀態，fail-closed）並記警告。
@@ -537,9 +543,13 @@ class ToolRegistry:
         if (
             not isinstance(state, str) or state not in _READINESS_VALUES or not isinstance(module, str)
             or isinstance(revision, bool) or not isinstance(revision, int)
-            or isinstance(epoch, bool) or not isinstance(epoch, int)
+            or isinstance(epoch, bool) or not isinstance(epoch, int) or revision < 0 or epoch < 0
         ):
             logger.warning("忽略格式不符的模組事件：%s", event_type if event_type != MODULE_EVENT_TYPE else "payload")
+            return False
+        claimed = body.get("state")
+        if isinstance(claimed, str) and claimed in _READINESS_OF_STATE and _READINESS_OF_STATE[claimed] != state:
+            logger.warning("忽略 state 與 readiness 不一致的模組事件")
             return False
         if module not in self._known_modules:
             logger.debug("忽略未知模組的事件：%s", module)

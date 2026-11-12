@@ -290,16 +290,15 @@ def test_whitelist_rules_catch_violations(tmp_path):
     assert len(found) == 3
 
 
-# Module Coordinator（D108）：lifecycle 只認 contracts 與 events，不得反向依賴工具／決策／Echo／Agent／串流或子系統
-_LIFECYCLE_FORBIDDEN = ("uep.tools", "uep.decision", "uep.echo", "uep.stream", "uep.agent")
+# Module Coordinator（D108）：lifecycle 對 uep 只准 import uep.contracts、uep.events 與自己（白名單）；不得依賴子系統
+_LIFECYCLE_MAY_IMPORT = ("uep.contracts", "uep.events", "uep.lifecycle")
 
 
-def test_lifecycle_stays_independent_of_tools_decision_echo_stream_and_subsystems():
+def test_lifecycle_imports_only_contracts_events_and_itself():
     root = UEP_ROOT / "lifecycle"
     assert root.is_dir()
-    for target in _LIFECYCLE_FORBIDDEN:
-        violations = _whitelist_violations(root, target, ())
-        assert not violations, f"uep/lifecycle 不得 import {target}：\n" + "\n".join(violations)
+    violations = _whitelist_violations(root, "uep", _LIFECYCLE_MAY_IMPORT)
+    assert not violations, "uep/lifecycle 對 uep 只准 import contracts／events／lifecycle：\n" + "\n".join(violations)
     for path in sorted(root.rglob("*.py")):
         hit = _imported_top_levels(path) & (SUBSYSTEM_NAMES | LEGACY_NAMES | RETIRED_NAMES)
         assert not hit, f"uep/lifecycle/{path.name} 不得 import 子系統／legacy：{sorted(hit)}"
@@ -313,5 +312,5 @@ def test_provision_contract_depends_on_nothing_in_uep():
 def test_lifecycle_boundary_rule_catches_violations(tmp_path):
     (tmp_path / "bad.py").write_text("from uep.tools.registry import ToolRegistry\nimport uep.decision\n", encoding="utf-8")
     (tmp_path / "ok.py").write_text("from uep.contracts.provision import ProvisionItem\nfrom uep.events import bus\n", encoding="utf-8")
-    found = _whitelist_violations(tmp_path, "uep.tools", ()) + _whitelist_violations(tmp_path, "uep.decision", ())
+    found = _whitelist_violations(tmp_path, "uep", _LIFECYCLE_MAY_IMPORT)
     assert sorted({v.split(":")[0] for v in found}) == ["bad.py"] and len(found) == 2

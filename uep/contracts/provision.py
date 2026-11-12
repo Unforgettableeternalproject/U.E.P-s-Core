@@ -24,7 +24,7 @@ PROVISION_OUTCOMES: frozenset[str] = frozenset(get_args(ProvisionOutcome))
 class ProvisionItem:
     """決策中樞對單一模組的提議（無副作用，coordinator 可拒絕）。
 
-    ``urgency`` 只是提示，不是優先序（R8）；``on_not_ready`` 給 Orchestrator 處理，coordinator 忽略。
+    ``urgency`` 只是提示，不是優先序（R8 待裁，暫以提示處理）；``on_not_ready`` 給 Orchestrator 處理，coordinator 忽略。
     工具與模組的對映以 ``ToolEntry.requires`` 為準，不在此重複存放。"""
 
     module_id: str

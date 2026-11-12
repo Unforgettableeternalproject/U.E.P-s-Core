@@ -220,3 +220,60 @@ def test_lore_unconfigured_and_delete_disabled_stay_unavailable():
     full = with_lore(base, configured=True, delete_enabled=True)
     assert full.readiness("lore.delete") == "ready"
     assert {LORE_MODULE, LORE_DELETE_MODULE} <= set(getattr(off, "_known_modules"))
+
+
+# --- 審查補強 ---
+
+def test_registry_rejects_negative_revision_or_epoch():
+    reg = _registry()
+    base = {"module_id": "gpu:x", "readiness": "ready"}
+    assert not reg.apply_module_event(MODULE_STATE_CHANGED, {**base, "revision": -1})
+    assert not reg.apply_module_event(MODULE_STATE_CHANGED, {**base, "revision": 1, "epoch": -1})
+    assert reg.readiness("speak.tool") == "warming"
+    assert reg.apply_module_event(MODULE_STATE_CHANGED, {**base, "revision": 0, "epoch": 0})
+
+
+@pytest.mark.parametrize("state,readiness", [("failed", "ready"), ("ready", "unavailable"), ("loading", "ready"), ("degraded", "warming")])
+def test_registry_rejects_state_readiness_mismatch(state, readiness):
+    reg = _registry()
+    assert not reg.apply_module_event(
+        MODULE_STATE_CHANGED, {"module_id": "gpu:x", "revision": 1, "state": state, "readiness": readiness})
+    assert reg.readiness("speak.tool") == "warming"
+
+
+def test_registry_state_map_matches_lifecycle_contract():
+    from uep.tools import registry as tool_registry
+    assert dict(tool_registry._READINESS_OF_STATE) == dict(READINESS_OF_STATE)
+
+
+def test_registry_accepts_consistent_state_for_every_state():
+    for i, (state, readiness) in enumerate(sorted(READINESS_OF_STATE.items()), start=1):
+        reg = _registry()
+        assert reg.apply_module_event(
+            MODULE_STATE_CHANGED, {"module_id": "gpu:x", "revision": i, "state": state, "readiness": readiness})
+        assert reg.readiness("speak.tool") == readiness
+
+
+def test_lore_payloads_pass_contract_validation():
+    from uep.lifecycle.states import unavailable_payload
+    for module, reason in ((LORE_MODULE, "not_configured"), (LORE_DELETE_MODULE, "delete_disabled")):
+        payload = unavailable_payload(module, reason_code=reason)
+        validate_state_changed_payload(payload)
+        assert payload["readiness"] == "unavailable" and payload["module_id"] == module
+    with pytest.raises(ValueError):
+        unavailable_payload("lore", reason_code="x", state="ready")
+
+
+def test_epoch_increase_restarts_revision_with_new_payload_shape():
+    reg = _registry()
+
+    def send(revision, epoch, state):
+        return reg.apply_module_event(MODULE_STATE_CHANGED, {
+            "module_id": "gpu:x", "revision": revision, "epoch": epoch, "state": state,
+            "readiness": READINESS_OF_STATE[state],
+        })
+
+    assert send(50, 0, "ready") and reg.readiness("speak.tool") == "ready"
+    assert not send(10, 0, "loading")  # 同 epoch 舊 revision
+    assert send(1, 1, "loading") and reg.readiness("speak.tool") == "warming"  # epoch 變大，revision 重算
+    assert not send(999, 0, "ready")  # 舊 epoch 遲到

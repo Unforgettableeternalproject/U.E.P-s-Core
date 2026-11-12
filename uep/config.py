@@ -58,7 +58,7 @@ class UepSettings(BaseSettings):
     agent_model_retry_backoff_s: float = Field(default=1.0, ge=0, validation_alias="UEP_AGENT_MODEL_RETRY_BACKOFF_S")
     agent_tool_retry_max: int = Field(default=1, ge=0, validation_alias="UEP_AGENT_TOOL_RETRY_MAX")
     agent_tool_retry_backoff_s: float = Field(default=0.5, ge=0, validation_alias="UEP_AGENT_TOOL_RETRY_BACKOFF_S")
-    # module.* 就緒事件訂閱（切片 F，註冊表端；事件名暫定，module coordinator 待設計）：預設關閉，
+    # module.* 就緒事件訂閱（切片 F，註冊表端；事件名已定，D108 R2，producer 見 PR-2）：預設關閉，
     # 只在 UEP_TOOL_PATH=agent 下有效。目前沒有任何 producer，關閉時不訂閱＝與舊行為完全一致
     tool_module_events: bool = Field(default=False, validation_alias="UEP_TOOL_MODULE_EVENTS")
     # 測試用工具組（test_echo／test_clock／test_sleep／test_approval_echo）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效。

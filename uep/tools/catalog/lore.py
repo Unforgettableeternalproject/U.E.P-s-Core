@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from uep.adapters.tool import ToolDescriptor, ToolEntry, ToolScope, ToolSpec
+from uep.lifecycle.states import MODULE_STATE_CHANGED, unavailable_payload
 from uep.tools.registry import ToolRegistry
 
 LORE_EXECUTOR = "core_lore"
@@ -278,16 +279,9 @@ def with_lore(registry: ToolRegistry, *, configured: bool, delete_enabled: bool 
     known = getattr(registry, "_known_modules", frozenset())  # 同套件內取（沒有公開存取子；與 with_testkit 一致）
     built = ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, LORE_MODULE, LORE_DELETE_MODULE})
     if not configured:
-        built.apply_module_event(
-            "module.state_changed",
-            {"module_id": LORE_MODULE, "revision": 1, "state": "unloaded", "readiness": "unavailable", "reason_code": "not_configured"},
-        )
+        built.apply_module_event(MODULE_STATE_CHANGED, unavailable_payload(LORE_MODULE, reason_code="not_configured"))
     if not delete_enabled:
         built.apply_module_event(
-            "module.state_changed",
-            {
-                "module_id": LORE_DELETE_MODULE, "revision": 1, "state": "unloaded", "readiness": "unavailable",
-                "reason_code": "delete_disabled",
-            },
+            MODULE_STATE_CHANGED, unavailable_payload(LORE_DELETE_MODULE, reason_code="delete_disabled"),
         )
     return built

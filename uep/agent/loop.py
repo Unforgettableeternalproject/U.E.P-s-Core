@@ -830,16 +830,22 @@ class AgentLoop:
             state, st.run_id, reason, text, st.counters.steps, st.counters.tool_calls, delivered=delivered,
         )
 
+    def _drop_blobs(self, st: _State) -> None:
+        """刪除本 Run 的 composite text blob（只在寫過或 cursor 帶有引用時）；失敗不影響流程，旗標保留讓終態再試一次。"""
+        if self._composite_blobs is None or not st.blobs_written:
+            return
+        try:
+            self._composite_blobs.delete_run(st.run_id)
+            st.blobs_written = False
+        except Exception as exc:  # noqa: BLE001 - 清理失敗不影響 Run
+            logger.warning("composite blob 清理失敗：%s", type(exc).__name__)
+
     def _discard_consults(self, st: _State) -> None:
         """Run 終態：清掉該 Run 的 consult 結果暫存（park 不是終態，不清）。"""
         discard = getattr(self._consults, "discard_run", None)
         if callable(discard):
             discard(st.run_id)
-        if self._composite_blobs is not None and st.blobs_written:  # D110：Run 終態即刪 composite 的 text blob（TTL 只是兜底）
-            try:
-                self._composite_blobs.delete_run(st.run_id)
-            except Exception as exc:  # noqa: BLE001 - 清理失敗不影響 Run 終態
-                logger.warning("composite blob 清理失敗：%s", type(exc).__name__)
+        self._drop_blobs(st)  # D110：Run 終態即刪 composite 的 text blob（TTL 只是兜底）
         if self._run_cleanup is not None:
             try:
                 self._run_cleanup(st.run_id)
@@ -1642,6 +1648,7 @@ class AgentLoop:
             self._composite_progress(st, m, entry, rows)
 
         st.composite_cursor = None
+        self._drop_blobs(st)  # composite 完成或失敗：cursor 已清，blob 不再需要（composite 恆為單獨一波、不巢狀，同時只有一個）
         if any(r["status"] == "unknown" for r in rows):
             st.unresolved = True
         return self._composite_result(m, steps, rows)

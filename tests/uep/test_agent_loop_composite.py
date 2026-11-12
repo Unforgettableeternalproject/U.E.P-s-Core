@@ -678,3 +678,29 @@ def test_settle_deletes_blobs_after_failing_the_run():
     me2 = SimpleNamespace(_tasks=tasks, _composite_blobs=store2)
     LoopLauncher._settle(me2, ctx, ok=False, reason="boom")
     assert len(calls) == 2
+
+
+def test_completed_composite_drops_blobs_even_if_run_later_parks_elsewhere():
+    store = InMemoryCompositeBlobStore()
+    rig = _rig(
+        [Round("整理", (("notes.prepare", {"source": "/a.md"}),)), Round("發佈", (("fs.ask", {"path": "/a.md", "content": "x"}),)),
+         Round("全部完成")],
+        composite_blobs=store,
+    )
+    out = _run(rig)
+    assert out.state == "awaiting_approval"
+    assert store.delete_calls == 1 and store.blobs == {}  # composite 完成當下就刪，不等 Run 終態
+    ask_id = stable_action_id(RUN, "step_2", 0)
+    rig.tasks.grant("appr_1", ask_id)
+    done = _resume(rig, {ask_id: "appr_1"})  # 換 worker：新 loop 沒有寫過 blob，終態不需再刪
+    assert done.state == "completed" and store.blobs == {}
+
+
+def test_failed_composite_also_drops_blobs():
+    store = InMemoryCompositeBlobStore()
+    rig = _rig(
+        [Round("整理", (("notes.prepare", {"source": "/a.md"}),)), Round("完成")], composite_blobs=store,
+        behaviors={"fs.write": lambda a: (_ for _ in ()).throw(RuntimeError("寫入失敗"))},
+    )
+    _run(rig)
+    assert store.delete_calls == 1 and store.blobs == {}

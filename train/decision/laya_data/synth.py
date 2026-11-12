@@ -257,6 +257,94 @@ CARD_SETS: dict[str, dict[str, tuple[Card, ...]]] = {
     "single": {"turn.reply": TURN_SINGLE_CARDS, "presence.absent_intent": ABSENT_SINGLE_CARDS},
 }
 
+# ---- r4 補強卡組（passive 收窄後的弱點補強；標籤依艾斯維爾裁決）----
+# passive 只在她有具體理由開口：(1) 與她答應過或記下的事有關且有衝突／變更／待確認；(2) 沒點名、她答得出來的提問；
+# (3) 沒點名、她確實做得到的請求（寄信、查資料等；裝置的實體動作不算）。其餘一律 pass。
+_NO_NAME = f"Never name or address {A}; the talk is aimed at the other people in the room."
+_GROUP_ONLY = f"The words must clearly be spoken to another person in the room, never to {A}."
+R4_PASSIVE_CARDS: tuple[Card, ...] = (
+    _tr("passive_promise_hitch", f"People talk to each other, not to {A}, and what they say creates a concrete conflict, change or open detail for something {A} earlier promised to do (a clash of times, a missing detail the booking or reminder needs, a plan that makes the promised task pointless); {A} could usefully speak up.", "passive", False, "ignore", context="assistant_promised", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " The speaker must not be cancelling a task they themselves asked for. The conflict must be concrete, not a mere repeat of the promised plan."),
+    _tr("passive_noted_conflict", f"People talk to each other, not to {A}, and what they plan or say would clash with a specific fact {A} noted earlier (an allergy, a deadline, a preference), so {A} could usefully flag it.", "passive", False, "ignore", context="assistant_noted", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " The plan must actually contradict or endanger the noted fact; people already acting in line with the fact does not count."),
+    _tr("passive_unnamed_q_known", f"People talk; the speaker asks the room (nobody in particular, no name) a question whose answer is something {A} noted earlier, and nobody else seems to know it (does anyone remember when ... ?).", "passive", False, "ignore", context="assistant_noted", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " The question must be answerable from the noted fact in the context."),
+    _tr("passive_unnamed_q_general", f"People talk; the speaker asks the room (nobody in particular, no name) a factual question that {A} could answer from general knowledge or a quick lookup (weather, a conversion, a date, how long something takes, who starred in a film).", "passive", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " It must be a real factual question with a checkable answer; not a rhetorical question, not about private matters only the speaker knows."),
+    _tr("passive_unnamed_request_do", f"People talk; the speaker makes a request to the room (nobody in particular, no name) for something a digital assistant can really do: send a document or meeting notes by email, look something up, find an address or phone number, translate a phrase, do a calculation, check the calendar.", "passive", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " Never ask for a physical or device action (lights, windows, oven, thermostat, doors)."),
+)
+R4_PASS_CARDS: tuple[Card, ...] = (
+    _tr("pass_praise", f"People talk; the speaker mentions {A} by name in the third person, praising or commenting on something {A} did earlier (found a good place, picked a good recipe), talking to another person.", "pass", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=f"Speak about {A} to another person in the room (it is fine to end with 'right?' to that person); no question or request is addressed to {A}."),
+    _tr("pass_recall_past", f"People reminisce to each other about something {A} did or said in the past (the time {A} reminded them of something, helped plan a trip); {A} is not asked anything.", "pass", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=f"Mention {A} in the third person only; no question, request or instruction aimed at {A}."),
+    _tr("pass_relayed_news", "People talk; the speaker relays news or a fact heard from someone else (a flight moved, a shop closed, a friend is moving) to the others; nothing here was ever promised or noted by the assistant, and no question is asked.", "pass", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " A plain statement of news; no question, no request."),
+    _tr("pass_people_statement", "People talk; the speaker makes an ordinary statement, opinion or plan to the others in the room, with no question and no request, and nothing the assistant was involved in.", "pass", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME),
+    _tr("pass_self_talk", "The speaker mutters to themselves or asks a rhetorical or private question nobody could answer (where did I put my keys, why is this so hard, what was I about to do); no one is addressed.", "pass", False, "ignore", hard=True, others_choices=MIXED,
+        guidance=_NO_NAME + " The question must be rhetorical or about private matters, never a factual question with a checkable answer."),
+    _tr("pass_physical_request", "People talk; the speaker asks the room (nobody in particular, no name) for a physical action nobody can do remotely (open the window, turn on the oven, pass the remote, switch the light on).", "pass", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=_NO_NAME + " A request for a physical or device action, not a lookup or message."),
+)
+R4_SIDE_CARDS: tuple[Card, ...] = (
+    _tr("side_imperative_plain", "People are in a room; the speaker gives a short everyday imperative to another person there (pass me the salt, hold this for a second, shut the door).", "pass", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=_GROUP_ONLY + " A short physical or everyday request; never mention the assistant."),
+    _tr("side_imperative_polite", "People are in a room; the speaker politely asks another person there for a small favour ('can you grab the door', 'could you move over').", "pass", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=_GROUP_ONLY + " Make the other person unmistakable (a vocative name at the end, or a physical cue such as 'could you move over, you're blocking me'); never mention the assistant."),
+    _tr("side_imperative_after_reply", f"{A} just answered this speaker in a group; the speaker now turns to another person in the room with a short imperative or favour request.", "pass", False, "ignore", context="assistant_just_replied", hard=True, others_choices=GROUP,
+        guidance=_GROUP_ONLY + " Name the other person or use a physical cue; never mention the assistant."),
+    _tr("side_imperative_task_like", "People are in a room; the speaker tells another person there to do a chore or errand that sounds like an assistant command (send me that file, call mom back, lock up when you leave).", "pass", False, "ignore", hard=True, others_choices=GROUP,
+        guidance=_GROUP_ONLY + " Name the person (a vocative name) so it is clear who is asked; never mention the assistant."),
+)
+R4_DEFER_CARDS: tuple[Card, ...] = (
+    _tr("defer_talk_later", f"One user says to {A} that they cannot deal with a topic or request right now and wants to pick it up later at a specific point (after dinner, when they get home, after the call), so {A} should come back to it then.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="The deferral must be explicit ('later', 'after dinner', 'when I'm back'); the topic is concrete.", label_rule="route_follows_action"),
+    _tr("defer_missing_info", f"One user asks {A} to do something concrete, but a key detail is missing (no recipient, no time, no item, which one), so {A} must first confirm with the user.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="The request is a clear action word (send, book, order, delete one of them) but lacks something it cannot proceed without; do not hint at the missing detail.", label_rule="route_follows_action"),
+    _tr("defer_risky", f"One user asks {A} to do something risky or hard to undo (delete all backups, transfer money, send a harsh message to the boss, cancel the insurance, factory reset a device), so {A} should confirm first.", "defer", True, "direct_chat", hard=True, others_choices=MIXED,
+        guidance="The risk must be obvious from the request itself.", label_rule="route_follows_action"),
+)
+_BY_ID = {c.card_id: c for c in TURN_REPLY_CARDS}
+R4_ACK_CARDS: tuple[Card, ...] = tuple(_BY_ID[i] for i in (
+    "ack_after_statement", "ack_cold_start", "ack_after_solicit_chat", "ack_after_solicit_task", "ack_after_solicit_agent"))
+R4_MT_TURN_CARDS: tuple[Card, ...] = tuple(_BY_ID[i] for i in (
+    "private_task", "private_lookup", "private_chat", "group_named_task", "group_named_chat", "defer_busy", "group_side_talk"))
+
+_MT_NAMES = (
+    "Use machine-translation flavoured wording for the destination: desktop may appear as 'desktop', 'the desktop version', 'desktop side' or 'the computer desktop'; "
+    "host as 'the host', 'host machine', 'host computer' or 'the host side'; website as 'the website', 'the site', 'web page' or 'the web version'."
+)
+
+
+def _am(cid: str, desc: str, exp: dict[str, str], plat: str, g: str) -> Card:
+    return Card(f"absent_{cid}", _ABS, desc, exp, hard=True, source_platform=plat, guidance=g)
+
+
+R4_MT_ABSENT_CARDS: tuple[Card, ...] = (
+    _am("mt_request_desktop", "Asks the assistant to go to or switch to the desktop app.", _req("desktop"), "discord", _GO + " " + _MT_NAMES),
+    _am("mt_request_host", "Asks the assistant to go back to the host machine.", _req("host"), "website", _GO + " " + _MT_NAMES),
+    _am("mt_request_website", "Asks the assistant to move to the website.", _req("website"), "desktop", _GO + " " + _MT_NAMES),
+    _am("mt_request_discord", "Asks the assistant to go to Discord.", _req("discord"), "host", _GO + " Write slightly unnatural, literal-sounding English."),
+    _am("mt_request_generic", "Asks the assistant to come over or appear where the speaker is; no place is named.", _REQ_NONE, "desktop", _NOPLACE + " Write slightly unnatural, literal-sounding English ('come to my side', 'please appear here')."),
+    _am("mt_pass_message", "Asks the assistant to tell a named person something right away or to remember a fact.", _MSG, "website",
+        "No timing or event condition, no reminder request. Write slightly unnatural, literal-sounding English."),
+    _am("mt_self_reminder", "Asks the assistant to remind the speaker about something later.", _TASK, "host",
+        "Addressed to the assistant. Write slightly unnatural, literal-sounding English."),
+)
+CARD_SETS["r4_passive"] = {"turn.reply": R4_PASSIVE_CARDS}
+CARD_SETS["r4_pass"] = {"turn.reply": R4_PASS_CARDS}
+CARD_SETS["r4_side"] = {"turn.reply": R4_SIDE_CARDS}
+CARD_SETS["r4_defer"] = {"turn.reply": R4_DEFER_CARDS}
+CARD_SETS["r4_ack"] = {"turn.reply": R4_ACK_CARDS}
+CARD_SETS["r4_mt"] = {"turn.reply": R4_MT_TURN_CARDS, "presence.absent_intent": R4_MT_ABSENT_CARDS}
+# 各卡組使用的風格輪替（未列者用全部 STYLES，維持舊產物可重現）
+CARD_SET_STYLES: dict[str, tuple[str, ...]] = {
+    "r4_mt": ("mt_style", "stt_noise", "mt_style", "casual"),
+    "r4_passive": ("clean", "casual", "stt_noise", "mt_style"),
+}
+
 OTHER_USER_CONTEXTS = frozenset({"assistant_answered_other"})  # 前文的提問者不是目前說話者
 CONTEXT_DESC: dict[str, str] = {
     "assistant_solicits_chat": "the assistant's last line is a casual question or request for the user's opinion",
@@ -479,10 +567,10 @@ class Deduper:
         return True
 
 
-def plan_calls(cards: Sequence[Card], max_samples: int, per_call: int, rng: random.Random) -> list[tuple[Card, str, str, int]]:
+def plan_calls(cards: Sequence[Card], max_samples: int, per_call: int, rng: random.Random, styles_override: Sequence[str] | None = None) -> list[tuple[Card, str, str, int]]:
     """場景矩陣：各卡平均分配 max_samples（餘數給前面的卡），每卡切成每次 per_call 筆，
     卡片輪流呼叫；各卡內獨立輪替風格（以卡片序號錯開起點，整體分佈才均勻），話題隨機。"""
-    styles = list(STYLES)
+    styles = list(styles_override or STYLES)
     total, n_cards = max_samples, len(cards)
     quotas = [total // n_cards + (1 if c < total % n_cards else 0) for c in range(n_cards)]
     chunks = [[min(per_call, q - k * per_call) for k in range(-(-q // per_call))] for q in quotas]
@@ -505,6 +593,7 @@ def generate(
     cards: Sequence[Card] | None = None,
     call_ids: list[str] | None = None,
     call_label_name: str | None = None,
+    styles_override: Sequence[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """產生合成列與統計。每次呼叫產出的樣本屬同一 group（供切分用）。"""
     cards = tuple(cards or CARDS[kind])
@@ -516,7 +605,7 @@ def generate(
     by_card: Counter[str] = Counter()
     by_style: Counter[str] = Counter()
     api_calls = 0
-    for idx, (card, style, topic, n) in enumerate(plan_calls(cards, max_samples, per_call, rng)):
+    for idx, (card, style, topic, n) in enumerate(plan_calls(cards, max_samples, per_call, rng, styles_override)):
         api_calls += 1
         others = others_for(card, idx, len(cards))
         if call_ids is not None:
@@ -565,7 +654,7 @@ def call_label(kind: str, card_set: str = "main") -> str:
 def export_prompts(kind: str, *, max_samples: int, per_call: int, seed: int, card_set: str = "main") -> list[dict[str, Any]]:
     """依 plan_calls／build_prompt 產生每次呼叫的 prompt 與中繼資料（不呼叫任何後端）。"""
     cards = CARD_SETS[card_set][kind]
-    plan = plan_calls(cards, max_samples, per_call, random.Random(seed))
+    plan = plan_calls(cards, max_samples, per_call, random.Random(seed), CARD_SET_STYLES.get(card_set))
     return [
         {
             "call_id": call_id_of(call_label(kind, card_set), idx), "kind": kind, "card": card.card_id, "style": style,
@@ -665,10 +754,10 @@ def main(argv: list[str] | None = None) -> int:
         card_set = CARD_SETS[args.card_set][args.kind]
         responses = {k: v for k, v in load_responses(Path(args.import_responses)).items() if k.startswith(f"{label}-")}
         ids: list[str] = []
-        planned = [call_id_of(label, i) for i in range(len(plan_calls(card_set, args.max_samples, args.per_call, random.Random(args.seed))))]
+        planned = [call_id_of(label, i) for i in range(len(plan_calls(card_set, args.max_samples, args.per_call, random.Random(args.seed), CARD_SET_STYLES.get(args.card_set))))]
         backend_r = ReplayBackend(responses, planned)
         rows, stats = generate(args.kind, backend_r, max_samples=args.max_samples, per_call=args.per_call, seed=args.seed, call_ids=ids,
-                               cards=card_set, id_prefix=args.id_prefix, call_label_name=label)
+                               cards=card_set, id_prefix=args.id_prefix, call_label_name=label, styles_override=CARD_SET_STYLES.get(args.card_set))
         stats["unmatched_response_ids"] = sorted(set(responses) - set(planned))
         write_jsonl(Path(args.out), rows)
         print(json.dumps(stats, ensure_ascii=False, indent=2))

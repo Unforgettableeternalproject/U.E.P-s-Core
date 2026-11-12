@@ -726,3 +726,36 @@ def test_rulings_are_valid_expected_and_drops_have_reasons() -> None:
         kinds.get_spec(kind).validate_expected(patch if kind == "turn.reply" else {**patch, "absent.target_location": patch.get("absent.target_location", "none")})
     assert resolve.DROPPED and all(reason.strip() for reason in resolve.DROPPED.values())
     assert not set(resolve.DROPPED) & set(resolve.RULINGS)
+
+
+def test_capability_pairs_are_wellformed() -> None:
+    """能力清單成對評測題：每組 2 題、同句只換清單；A 類答案相同，B 類 with=passive／without=pass。"""
+    path = _TOOLS / "testset" / "capability_pairs.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len({r["id"] for r in rows}) == len(rows)
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        kinds.get_spec(r["kind"]).validate_expected(r["expected"])
+        assert "available_capabilities" in r["state"]
+        groups.setdefault(r["pair_id"], []).append(r)
+    assert len(groups) >= 18
+    for pid, pair in groups.items():
+        assert len(pair) == 2, pid
+        by = {r["meta"]["capabilities_variant"]: r for r in pair}
+        assert set(by) == {"with", "without"}, pid
+        w, wo = by["with"], by["without"]
+        assert w["text"] == wo["text"] and w["state"]["message"] == wo["state"]["message"], pid
+        assert w["others"] == wo["others"] and w["state"]["recent_context"] == wo["state"]["recent_context"], pid
+        assert w["state"]["available_capabilities"] != wo["state"]["available_capabilities"], pid
+        cap = w["meta"]["capability"]
+        assert cap in w["state"]["available_capabilities"].split(", ") and cap not in wo["state"]["available_capabilities"].split(", "), pid
+        if w["meta"]["pair_class"] == "A":
+            # 私聊直接對她說：route 照意圖分，清單不影響答案
+            assert w["others"] == 0 and w["expected"] == wo["expected"] and w["expected"]["addressed"] is True, pid
+        else:
+            # 群組未點名：清單有該能力 passive，沒有 pass
+            assert w["others"] >= 1 and pid.startswith("cp-b"), pid
+            assert (w["expected"]["reply_mode"], wo["expected"]["reply_mode"]) == ("passive", "pass"), pid
+            for r in pair:
+                assert r["expected"]["addressed"] is False and r["expected"]["route"] == "ignore", pid
+    assert {g[0]["meta"]["pair_class"] for g in groups.values()} == {"A", "B"}

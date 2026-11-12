@@ -372,3 +372,26 @@ def test_web_image_with_coordinator_registers_all_but_gates_by_config(monkeypatc
             "web_search": "not_configured", "web_fetch": "disabled", "image_read": "not_configured"}
     finally:
         mc.stop(timeout_s=2.0)
+
+
+def test_observation_mode_still_applies_config_gates_without_touching_registry():
+    _bus, mc, handles = _coordinator(LORE_MODULE, LORE_DELETE_MODULE)
+    registry = with_lore(_base(), configured=False, delete_enabled=False, coordinator=mc, drive_registry=False)
+    assert mc.blocked_ids() == {LORE_MODULE: "not_configured", LORE_DELETE_MODULE: "delete_disabled"}
+    assert registry.readiness(TOOL_RECALL) == "unavailable"  # 原本的靜態路徑
+    try:
+        mc.start()
+        assert mc.wait_settled(5)
+        assert all(h.calls == [] for h in handles.values())  # 未設定的服務 probe／load 都不會發 ready
+        assert all(mc.status(m).state == "unloaded" for m in handles)
+    finally:
+        mc.stop(timeout_s=2.0)
+
+
+def test_assemble_core_wraps_registration_errors_in_assembly_error():
+    desc = ModuleDescriptor("lore")
+    with pytest.raises(AssemblyError, match="module_registrations"):
+        assemble_core(
+            MagicMock(), module_coordinator=True, tool_module_events=False,
+            module_registrations=[(desc, FakeHandle()), (desc, FakeHandle())], **_bare_kwargs(),
+        )

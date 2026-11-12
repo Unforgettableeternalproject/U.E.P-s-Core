@@ -740,10 +740,13 @@ def assemble_core(
             mode="manage" if coordinator_drives_registry else "observe",
         )
         for descriptor, handle in module_registrations:
-            coordinator_obj.register(descriptor, handle)
+            try:
+                coordinator_obj.register(descriptor, handle)
+            except ValueError as exc:  # ModuleRegistryError 是 ValueError；登記錯誤統一成組裝失敗
+                raise AssemblyError(f"module_registrations 登記失敗：{exc}") from exc
     elif module_registrations:
         raise AssemblyError("給了 module_registrations 但 UEP_MODULE_COORDINATOR 未開")
-    gate_coordinator = coordinator_obj if coordinator_drives_registry else None
+    gate_coordinator = coordinator_obj  # 觀測模式也套設定閘（D108 R3：未設定的服務 probe 成功也不發 ready）
     testkit_on = get_settings().tool_testkit if tool_testkit is None else tool_testkit
     if testkit_on and tool_path != "agent":
         raise AssemblyError("UEP_TOOL_TESTKIT 只能在 UEP_TOOL_PATH=agent 下啟用（測試工具只經 agent 路徑曝光）")
@@ -768,7 +771,9 @@ def assemble_core(
         if isinstance(tool_resolver, _ToolRegistry):
             # Chatroom 原生工具：一律註冊；UEP_CHATROOM_* 不齊時 readiness 恆為 unavailable（不投出），組裝不失敗
             chatroom_config = chatroom_config_from_settings(get_settings())
-            tool_resolver = with_chatroom(tool_resolver, configured=chatroom_config is not None, coordinator=gate_coordinator)
+            tool_resolver = with_chatroom(tool_resolver, configured=chatroom_config is not None, coordinator=gate_coordinator,
+                drive_registry=coordinator_drives_registry,
+            )
             executors = {**executors, CHATROOM_EXECUTOR: ChatroomToolExecutor(chatroom_config, cache=agent_cache)}
         from uep.tools.registry import ToolRegistry as _Registry
 
@@ -776,7 +781,9 @@ def assemble_core(
             # web.search／web.fetch／image.read：條目一律註冊；未設定的工具 readiness 為 unavailable（不投出），組裝不失敗
             from uep.tools.web_image import with_web_image
 
-            tool_resolver, web_executors = with_web_image(tool_resolver, cache=agent_cache, coordinator=gate_coordinator)
+            tool_resolver, web_executors = with_web_image(
+                tool_resolver, cache=agent_cache, coordinator=gate_coordinator, drive_registry=coordinator_drives_registry,
+            )
             executors = {**executors, **web_executors}
         from uep.tools.registry import ToolRegistry as _LoreRegistryType
 
@@ -788,7 +795,7 @@ def assemble_core(
             lore_config = LoreConfig.from_settings(get_settings())
             tool_resolver = with_lore(
                 tool_resolver, configured=lore_config.configured, delete_enabled=lore_config.delete_enabled,
-                coordinator=gate_coordinator,
+                coordinator=gate_coordinator, drive_registry=coordinator_drives_registry,
             )
             executors = {**executors, LORE_EXECUTOR: LoreToolExecutor(lore_config, cache=agent_cache, allow_write=True)}
         if callable(getattr(tool_resolver, "entries", None)):
@@ -842,7 +849,7 @@ def assemble_core(
     )
     _assert_wired(tasks, delivery)
     agent_registry = tool_resolver if isinstance(tool_resolver, ToolRegistry) else memory_registry()
-    if gate_coordinator is not None:
+    if gate_coordinator is not None and coordinator_drives_registry:
         seed_fail_closed(agent_registry, gate_coordinator)  # 全部 with_* 併入之後、在最終註冊表上只播一次 fail-closed 底
     if agent_cache is not None:
         assert echo is not None

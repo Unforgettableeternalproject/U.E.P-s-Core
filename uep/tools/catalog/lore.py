@@ -271,6 +271,7 @@ def lore_write_entries() -> list[ToolEntry]:
 
 def with_lore(
     registry: ToolRegistry, *, configured: bool, delete_enabled: bool = False, coordinator: Any = None,
+    drive_registry: bool = True,
 ) -> ToolRegistry:
     """在既有註冊表之上併入 lore 條目，回傳新的（已驗證、已凍結）註冊表；不改動傳入的實例，已含 lore 者原樣回傳（冪等）。
 
@@ -289,6 +290,7 @@ def with_lore(
             LORE_MODULE: None if configured else "not_configured",
             LORE_DELETE_MODULE: None if delete_enabled else "delete_disabled",
         })
+    if coordinator is not None and drive_registry:  # drive_registry=False（觀測模式）：只套閘，註冊表走原本路徑
         return ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, *coordinator.known_ids()})
     known = getattr(registry, "_known_modules", frozenset())  # 同套件內取（沒有公開存取子；與 with_testkit 一致）
     built = ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, LORE_MODULE, LORE_DELETE_MODULE})

@@ -187,7 +187,9 @@ def chatroom_entries() -> list[ToolEntry]:
     ]
 
 
-def with_chatroom(registry: ToolRegistry, *, configured: bool, coordinator: Any = None) -> ToolRegistry:
+def with_chatroom(
+    registry: ToolRegistry, *, configured: bool, coordinator: Any = None, drive_registry: bool = True,
+) -> ToolRegistry:
     """在既有註冊表之上併入 Chatroom 工具，回傳新的（已驗證、已凍結）註冊表；不改動傳入的實例，已含者原樣回傳（冪等）。
 
     ``configured=False``（未設定 ``UEP_CHATROOM_*``）時不把 ``chatroom`` 列入 known_modules：readiness 恆為 ``unavailable``
@@ -200,6 +202,7 @@ def with_chatroom(registry: ToolRegistry, *, configured: bool, coordinator: Any 
     known = getattr(registry, "_known_modules", frozenset())
     if coordinator is not None:
         apply_config_gates(coordinator, {CHATROOM_MODULE: None if configured else "not_configured"})
+    if coordinator is not None and drive_registry:
         return ToolRegistry.build([*existing.values(), *chatroom_entries()], known_modules={*known, *coordinator.known_ids()})
     if configured:
         known = frozenset(known) | {CHATROOM_MODULE}

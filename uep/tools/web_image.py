@@ -152,7 +152,7 @@ def with_web_image(
     registry: ToolRegistry, settings: UepSettings | None = None, *, cache: TurnOutcomeCache | None = None,
     transport: Transport | None = None, resolver: Resolver | None = None,
     search_chain: SearchChain | None = None, vision: VisionPort | None = None,
-    client_factory: Callable[[float], Any] | None = None, coordinator: Any = None,
+    client_factory: Callable[[float], Any] | None = None, coordinator: Any = None, drive_registry: bool = True,
 ) -> tuple[ToolRegistry, Mapping[str, Any]]:
     """併入 web／image 條目，回傳 ``(新註冊表, {executor 名: executor})``。已含這些工具者原樣回傳註冊表（冪等）但仍給 executor。
 
@@ -197,6 +197,7 @@ def with_web_image(
             MODULE_WEB_FETCH: None if settings.web_fetch_enabled else "disabled",
             MODULE_IMAGE_READ: None if vision_port is not None else "not_configured",
         })
+    if coordinator is not None and drive_registry:
         known = set(getattr(registry, "_known_modules", frozenset())) | set(coordinator.known_ids())
         return ToolRegistry.build([*existing.values(), *web_entries(), *image_entries()], known_modules=known), executors
     built = ToolRegistry.build([*existing.values(), *web_entries(), *image_entries()], known_modules=modules)

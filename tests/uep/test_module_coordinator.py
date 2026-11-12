@@ -318,6 +318,72 @@ def test_failed_with_residue_can_be_cleaned_via_unloading(rig):
     assert r.mc.status("lore").occupied is False
 
 
+# --- R12：顯式請求不得繞過冷卻（M1）---
+
+def test_unload_then_load_does_not_skip_cooldown(rig):
+    r = rig(backoff_s=(5.0,), max_attempts=3)
+    h = r.add("chatroom", autoload=True)
+    h.fail["load"] = RuntimeError("boom")
+    r.mc.start()
+    r.until("chatroom", "failed")
+    assert r.mc.request_unload("chatroom").accepted  # failed -> unloading -> unloaded
+    r.until("chatroom", "unloaded")
+    h.fail.clear()
+    res = r.mc.request_load("chatroom")
+    assert (res.accepted, res.reason) == (True, "queued_until_cooldown")
+    r.mc.tick()
+    assert r.state("chatroom") == "unloaded" and h.calls == ["load"]  # 冷卻中不另起 load
+    r.clock.advance(5.0)
+    r.mc.tick()
+    r.until("chatroom", "ready")
+    assert h.calls == ["load", "load"]
+
+
+def test_request_load_during_unloading_does_not_skip_cooldown(rig):
+    r = rig(backoff_s=(5.0,), max_attempts=3)
+    h = r.add("gpu:indextts", autoload=True, load_timeout_s=10.0)
+    gate = h.block("load")
+    r.mc.start()
+    wait_until(h.entered["load"].is_set)
+    r.clock.advance(11.0)
+    r.mc.tick()  # 逾時：failed＋占用，冷卻 5 秒
+    gate.set()
+    wait_until(lambda: not r.mc.status("gpu:indextts").in_flight)
+    unload_gate = h.block("unload")
+    assert r.mc.request_unload("gpu:indextts").accepted
+    wait_until(h.entered["unload"].is_set)
+    assert r.state("gpu:indextts") == "unloading"
+    res = r.mc.request_load("gpu:indextts")
+    assert (res.accepted, res.reason) == (True, "queued_until_cooldown")
+    unload_gate.set()
+    r.until("gpu:indextts", "unloaded")
+    r.mc.tick()
+    assert h.calls == ["load", "unload"] and r.state("gpu:indextts") == "unloaded"  # 冷卻未到：不載入
+    r.clock.advance(5.0)
+    r.mc.tick()
+    r.until("gpu:indextts", "ready")
+    assert h.calls == ["load", "unload", "load"]
+
+
+def test_restart_reschedules_failed_modules_respecting_cooldown(rig):
+    r = rig(backoff_s=(5.0,), max_attempts=3)
+    h = r.add("lore", autoload=True)
+    gate = h.block("load")
+    r.mc.start()
+    wait_until(h.entered["load"].is_set)
+    r.mc.stop(timeout_s=0.2)  # 收不回來：failed(shutdown_timeout)
+    assert r.state("lore") == "failed"
+    gate.set()
+    wait_until(lambda: not r.mc.status("lore").in_flight)
+    r.mc.start()
+    r.mc.tick()
+    assert r.state("lore") == "failed"  # 冷卻中：不卡死，但也不提早重試
+    r.clock.advance(5.0)
+    r.mc.tick()
+    r.until("lore", "ready")
+    assert h.calls == ["load", "unload", "load"]  # 先清理占用再重載
+
+
 # --- 停機 ---
 
 def test_stop_cancels_in_flight_load_then_final_events_use_shutdown(rig):
@@ -534,3 +600,51 @@ def test_unknown_module_requests_are_rejected(rig):
     r.mc.start()
     assert r.mc.request_load("ghost").reason == "unknown_module"
     assert r.mc.request_unload("ghost").reason == "unknown_module"
+
+
+# --- M2：start／wait_settled 返回前事件真的送完 ---
+
+def test_publisher_flush_waits_for_another_threads_drain():
+    from uep.lifecycle.publisher import ModuleEventPublisher
+
+    gate, entered, got = threading.Event(), threading.Event(), []
+
+    def sink(event_type, payload):
+        entered.set()
+        gate.wait(10)
+        got.append(payload["revision"])
+
+    pub = ModuleEventPublisher(sink)
+    base = {"module_id": "lore", "epoch": 1, "state": "unloaded", "readiness": "unavailable", "reason_code": "x"}
+    pub.enqueue(MODULE_STATE_CHANGED, {**base, "revision": 1})
+    pub.enqueue(MODULE_STATE_CHANGED, {**base, "revision": 2})
+    t = threading.Thread(target=pub.drain)
+    t.start()
+    assert entered.wait(5)
+    assert pub.flush(0.1) is False  # 別的 drainer 還沒送完：flush 不能假裝完成
+    gate.set()
+    assert pub.flush(5.0) is True and got == [1, 2]
+    t.join(5)
+
+
+def test_start_returns_only_after_snapshots_are_delivered(rig):
+    r = rig()
+    gate, entered = threading.Event(), threading.Event()
+    inner = r.rec
+
+    def slow_sink(event_type, payload):
+        entered.set()
+        gate.wait(10)
+        inner(event_type, payload)
+
+    r.mc._pub._sink = slow_sink
+    r.add("lore", autoload=True)
+    t = threading.Thread(target=r.mc.start)
+    t.start()
+    assert entered.wait(5)
+    t.join(0.3)
+    assert t.is_alive() and r.rec.events == []  # 快照還沒送出，start 不得返回
+    gate.set()
+    t.join(10)
+    assert not t.is_alive() and r.mc.wait_settled(5)
+    assert r.rec.of("lore")[0]["cause"] == "startup"

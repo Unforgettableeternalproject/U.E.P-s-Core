@@ -75,6 +75,7 @@ class _Rec:
 
     __slots__ = (
         "attempt_no",
+        "cooldown_until",
         "dead_count",
         "deadline",
         "desc",
@@ -108,6 +109,7 @@ class _Rec:
         self.failures = 0
         self.attempt_no = 0
         self.retry_at: float | None = None
+        self.cooldown_until = 0.0  # R12：failed 後的冷卻終點；只在 ready 時清除，任何顯式請求都不能繞過
         self.deadline: float | None = None
         self.unload_submitted = False
         self.exhausted = False
@@ -234,8 +236,9 @@ class ModuleCoordinator:
 
     # --- 生命週期 ---
 
-    def start(self) -> None:
-        """驗證依賴、決定 epoch、發啟動快照（``cause=startup``，先於任何載入轉移），再排入自動載入。"""
+    def start(self, flush_timeout_s: float = 5.0) -> None:
+        """驗證依賴、決定 epoch、發啟動快照（``cause=startup``，先於任何載入轉移），再排入自動載入。
+        返回前等佇列內的事件真的送出（``flush``）：別的執行緒正在當 drainer 時也一樣等，快照才保證先於 Core READY 被套用。"""
         with self._lock:
             if self._started:
                 return
@@ -260,8 +263,12 @@ class ModuleCoordinator:
                 rec.wanted = not blocked and (rec.desc.autoload or self._observing(rec))
                 rec.want_cause = "startup"
             self._resync_due = now + self._resync_interval if self._resync_interval > 0 else None
+            for rec in self._recs.values():  # 重啟後 failed 的模組要重排重試（遵守冷卻）；stop 期間的 failed 沒有排程
+                if rec.state == "failed" and not rec.exhausted and not rec.desc.blocked:
+                    rec.retry_at = max(now, rec.cooldown_until)
             self._reconcile_locked(now)
-        self._pub.drain()
+        if not self._pub.flush(flush_timeout_s):
+            logger.warning("module coordinator 啟動快照在 %.1f 秒內未全部送出", flush_timeout_s)
         if self._run_scheduler:
             self._scheduler_stop.clear()
             self._scheduler = threading.Thread(target=self._scheduler_loop, name="UepModuleScheduler", daemon=True)
@@ -322,8 +329,7 @@ class ModuleCoordinator:
                 if remaining <= 0:
                     return False
                 self._cond.wait(min(remaining, 0.05))
-        self._pub.drain()
-        return True
+        return self._pub.flush(max(end - time.monotonic(), 0.05))  # 狀態穩定還不夠：事件也要真的送完
 
     # --- 請求入口（非阻塞，不碰 handle）---
 
@@ -344,8 +350,8 @@ class ModuleCoordinator:
             rec.wanted, rec.want_cause = True, cause
             now = self._clock()
             self._reconcile_locked(now)
-            if rec.state == "failed" and rec.retry_at is not None and rec.retry_at > now:
-                result = RequestResult(True, "queued_until_cooldown")  # R12：不繞過冷卻
+            if rec.state not in _ACTIVE_STATES and rec.cooldown_until > now:
+                result = RequestResult(True, "queued_until_cooldown")  # R12：不繞過冷卻（failed、unloading、unloaded 都一樣）
             else:
                 result = RequestResult(True, "accepted")
         self._pub.drain()
@@ -384,7 +390,7 @@ class ModuleCoordinator:
             rec = self._recs.get(module_id)
             if rec is None:
                 return RequestResult(False, "unknown_module")
-            rec.failures, rec.exhausted = 0, False
+            rec.failures, rec.exhausted, rec.cooldown_until = 0, False, 0.0
             if rec.state == "failed":
                 rec.retry_at = self._clock()
             self._reconcile_locked(self._clock())
@@ -486,20 +492,21 @@ class ModuleCoordinator:
             self._snapshot_locked(rec, "resync")
 
     def _settled_locked(self) -> bool:
+        now = self._clock()
         for rec in self._recs.values():
             if rec.state in _TRANSIENT_STATES:
                 return False
-            if self._can_begin_load_locked(rec):
+            if self._can_begin_load_locked(rec, now):
                 return False
         return True
 
     def _deps_ready_locked(self, rec: _Rec) -> bool:
         return all(self._recs[d].state in _ACTIVE_STATES for d in rec.desc.depends_on)
 
-    def _can_begin_load_locked(self, rec: _Rec) -> bool:
+    def _can_begin_load_locked(self, rec: _Rec, now: float) -> bool:
         return (
             self._started and not self._stopping and rec.state == "unloaded" and rec.wanted and not rec.desc.blocked
-            and not rec.in_flight and self._deps_ready_locked(rec)
+            and not rec.in_flight and now >= rec.cooldown_until and self._deps_ready_locked(rec)
         )
 
     def _submit_locked(self, fn: Callable[..., None], rec: _Rec, kind: str, deadline_s: float, now: float) -> None:
@@ -532,6 +539,7 @@ class ModuleCoordinator:
         rec.failures += 1
         rec.dead_count = 0
         rec.retry_at, rec.exhausted = None, False
+        rec.cooldown_until = now + self._backoff[min(rec.failures - 1, len(self._backoff) - 1)]
         if not self._stopping and not rec.desc.blocked:
             if rec.failures >= self._max_attempts:
                 rec.exhausted = True
@@ -544,6 +552,7 @@ class ModuleCoordinator:
     def _ready_locked(self, rec: _Rec, now: float) -> None:
         self._emit_locked(rec, "ready", rec.want_cause if rec.state in ("loading", "warming") else "health", None)
         rec.failures, rec.exhausted, rec.retry_at, rec.deadline = 0, False, None, None
+        rec.cooldown_until = 0.0
         rec.attempt_no = 0
         rec.dead_count = 0
         rec.probe_due = now + self._probe_interval if self._probe_interval > 0 else None
@@ -569,7 +578,7 @@ class ModuleCoordinator:
         if self._stopping:
             return False
         if rec.state == "unloaded":
-            if self._can_begin_load_locked(rec):
+            if self._can_begin_load_locked(rec, now):
                 self._begin_load_locked(rec, now)
                 return True
             return False

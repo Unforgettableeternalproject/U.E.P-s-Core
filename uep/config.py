@@ -62,6 +62,7 @@ class UepSettings(BaseSettings):
     # 只在 UEP_TOOL_PATH=agent 下有效。目前沒有任何 producer，關閉時不訂閱＝與舊行為完全一致
     tool_module_events: bool = Field(default=False, validation_alias="UEP_TOOL_MODULE_EVENTS")
     # Module Coordinator（producer，D108／D109 R10）：預設關閉，與上面的 subscriber 旗標分別回滾。
+    # 破壞性變更：只開 UEP_TOOL_MODULE_EVENTS（subscriber）而不開本旗標會組裝失敗，請同時開 UEP_MODULE_COORDINATOR 或關掉前者。
     # subscriber 開而 producer 關 => 組裝失敗；producer 開、subscriber 關 => 觀測模式（只發事件，不 provisioning／驅逐）。
     # 不翻預設：正式 requires 沒有真 handle 之前，開啟並不代表生產管理已完成
     module_coordinator: bool = Field(default=False, validation_alias="UEP_MODULE_COORDINATOR")

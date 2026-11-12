@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from uep.adapters.tool import ToolDescriptor, ToolEntry, ToolScope, ToolSpec
+from uep.tools.module_events import apply_config_gates
 from uep.tools.registry import ToolRegistry
 
 CHATROOM_EXECUTOR = "core_chatroom"
@@ -186,15 +187,20 @@ def chatroom_entries() -> list[ToolEntry]:
     ]
 
 
-def with_chatroom(registry: ToolRegistry, *, configured: bool) -> ToolRegistry:
+def with_chatroom(registry: ToolRegistry, *, configured: bool, coordinator: Any = None) -> ToolRegistry:
     """在既有註冊表之上併入 Chatroom 工具，回傳新的（已驗證、已凍結）註冊表；不改動傳入的實例，已含者原樣回傳（冪等）。
 
     ``configured=False``（未設定 ``UEP_CHATROOM_*``）時不把 ``chatroom`` 列入 known_modules：readiness 恆為 ``unavailable``
-    （RA-15），工具不投出、不貢獻能力標籤，組裝照常成功。"""
+    （RA-15），工具不投出、不貢獻能力標籤，組裝照常成功。
+
+    ``coordinator`` 給了時：known modules 取自 ``coordinator.known_ids()``，未設定改為關閉 coordinator 的閘（見 ``with_lore``）。"""
     existing = registry.entries()
     if any(name in existing for name in (TOOL_READ, TOOL_WAIT, TOOL_POST)):
         return registry
     known = getattr(registry, "_known_modules", frozenset())
+    if coordinator is not None:
+        apply_config_gates(coordinator, {CHATROOM_MODULE: None if configured else "not_configured"})
+        return ToolRegistry.build([*existing.values(), *chatroom_entries()], known_modules={*known, *coordinator.known_ids()})
     if configured:
         known = frozenset(known) | {CHATROOM_MODULE}
     return ToolRegistry.build([*existing.values(), *chatroom_entries()], known_modules=known)

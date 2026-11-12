@@ -97,6 +97,8 @@ from uep.endpoint.service import EndpointService
 from uep.events.bus import EventBus
 from uep.events.payload_hash import MIN_KEY_BYTES
 from uep.events.publisher import EventPublisher
+from uep.lifecycle.coordinator import ModuleCoordinator
+from uep.lifecycle.publisher import bus_sink
 from uep.memory.foreground import StateBusForegroundProbe
 from uep.memory.host import MemoryHost
 from uep.output.manager import DeliveryManager
@@ -126,7 +128,7 @@ from uep.tasks.states import RunStatus
 from uep.tasks.supervisor import Supervisor, SupervisorLoop
 from uep.tools.cancel import ActionCanceller
 from uep.tools.catalog.memory import MEMORY_EXECUTOR, memory_registry
-from uep.tools.module_events import subscribe_module_events
+from uep.tools.module_events import seed_fail_closed, subscribe_module_events
 from uep.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:  # 組裝層不得硬依賴 uep.stream：只有 uep/echo/host 會 import 它
@@ -218,7 +220,8 @@ class CoreAssembly:
     supervisor: Supervisor | None = None  # D67：停用（UEP_SUPERVISOR_ENABLED=0）時為 None
     supervisor_loop: SupervisorLoop | None = None  # Supervisor 啟用且 supervisor_interval 不為 0 時建立（與維護迴圈各自獨立）
     loop_launcher: Any = None  # agent_loop 的 production 啟動器（UEP_AGENT_LOOP_ENTRY）；入口停止段先關閉，早於 Supervisor 關機暫停
-    module_events_unsubscribe: Callable[[], None] | None = None  # module.* 就緒事件訂閱的取消函式（事件名已定（D108 R2），producer 見 PR-2；UEP_TOOL_MODULE_EVENTS）
+    module_events_unsubscribe: Callable[[], None] | None = None  # module.* 就緒事件訂閱的取消函式（UEP_TOOL_MODULE_EVENTS，subscriber）
+    module_coordinator: ModuleCoordinator | None = None  # producer（UEP_MODULE_COORDINATOR，預設關閉）；關閉時為 None
     proactive_shadow: ProactiveShadow | None = None  # DL-6b：proactive.initiate 的 shadow 入口（有 echo 且決策日誌啟用時才有；不啟動 Run）
     dream_probe: StateBusForegroundProbe | None = None  # 做夢迴圈的前景 Probe（memory 啟用 dream_loop 且未自帶 Probe 時由組裝層建立）
 
@@ -257,6 +260,13 @@ class CoreAssembly:
         if self.dream_probe is not None:
             self.dream_probe.start()  # 訂閱 Bus：須早於 memory.start（迴圈啟動後第一個 tick 就會讀 Probe）
             self.start_log.append("dream_probe.start")
+        if self.module_coordinator is not None:
+            # 訂閱早在組裝期完成（先訂閱再 start）；啟動快照在此發出並被 registry 套用，先於 echo／endpoint 與 Core READY
+            self.module_coordinator.start()
+            self.start_log.append("module_coordinator.start")
+            if not self.module_coordinator.wait_settled(MODULE_COORDINATOR_SETTLE_TIMEOUT):
+                logger.warning("module coordinator 在 %.0f 秒內未穩定；未就緒的工具維持 fail-closed", MODULE_COORDINATOR_SETTLE_TIMEOUT)
+            self.start_log.append("module_coordinator.settled")
         if self.memory is not None:
             self.memory.start()  # 記憶 Host 在 Presence／Bus 之後（事件才有地方落）；ES Host（S3）將在它之後
             self.start_log.append("memory.start")
@@ -284,8 +294,8 @@ class CoreAssembly:
 
         停止序反向於啟動：ES Host 最先停（停 feed、cancel_all、等 commit 與事件寫完；它的 sink 與事件都還要
         經 Bus／Gateway，也還要用 memory 做 store），其次記憶 Host（它的 sink 還要經 Bus 發布），之後關 endpoint socket。"""
-        if self.module_events_unsubscribe is not None:
-            self.module_events_unsubscribe()  # 入口停止前先退訂：關機後不再改 readiness（冪等）
+        if self.module_events_unsubscribe is not None and self.module_coordinator is None:
+            self.module_events_unsubscribe()  # 沒有 producer：入口停止前先退訂，關機後不再改 readiness（冪等）
             self.module_events_unsubscribe = None
             self.start_log.append("module_events.unsubscribe")
         if self.loop_launcher is not None:
@@ -312,6 +322,17 @@ class CoreAssembly:
             self.start_log.append("dream_probe.close")
         if self.endpoint_server is not None:
             self.endpoint_server.close()
+        if self.module_coordinator is not None:
+            # 入口都停止之後才停 coordinator（最終 shutdown 事件仍送得出去、被 registry 套用），然後退訂；Bus 在 _stop_infrastructure 才關
+            try:
+                self.module_coordinator.stop()
+            except Exception:
+                logger.exception("ModuleCoordinator 停止失敗")
+            self.start_log.append("module_coordinator.stop")
+            if self.module_events_unsubscribe is not None:
+                self.module_events_unsubscribe()
+                self.module_events_unsubscribe = None
+                self.start_log.append("module_events.unsubscribe")
 
     def _stop_infrastructure(self) -> None:
         """第二段：決策日誌、stop API、迴圈、橋接與 Bus（在 Supervisor 關機暫停之後）。"""
@@ -364,6 +385,17 @@ class CoreAssembly:
 
 
 _UNKNOWN_PLATFORM = "unknown"
+MODULE_COORDINATOR_SETTLE_TIMEOUT = 10.0  # 啟動時等 coordinator 的初始載入穩定的上限（秒）；逾時不擋啟動，工具維持 fail-closed
+
+
+def check_module_events_policy(subscriber: bool, producer: bool) -> None:
+    """R10：subscriber（``UEP_TOOL_MODULE_EVENTS``）開而 producer（``UEP_MODULE_COORDINATOR``）缺席 => 啟動失敗。
+    producer 開、subscriber 關是允許的觀測模式（見 ``assemble_core``）。純函式，可離線測試。"""
+    if subscriber and not producer:
+        raise AssemblyError(
+            "UEP_TOOL_MODULE_EVENTS 開啟但沒有 producer（UEP_MODULE_COORDINATOR 未開）：註冊表會永遠等不到事件；"
+            "請同時開啟 producer 或關閉 subscriber"
+        )
 
 
 def _declare_interaction(
@@ -610,6 +642,10 @@ def assemble_core(
     platform_shadow: bool | None = None,
     require_source_location: bool | None = None,
     input_locations: Collection[str] = ("desktop",),
+    module_coordinator: bool | None = None,
+    tool_module_events: bool | None = None,
+    module_registrations: Sequence[tuple[Any, Any]] = (),
+    module_sink: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -637,6 +673,13 @@ def assemble_core(
     必須大於 ``TURN_MAX_DURATION``，否則 ``AssemblyError``。
     ``require_source_location``（None 依 ``UEP_REQUIRE_SOURCE_LOCATION``，預設 false）：缺 source_location 的輸入即否決；
     ``input_locations`` 為已註冊輸入 adapter 的場域，含非 desktop 而開關未開即 ``AssemblyError``（V18）。
+    ``module_coordinator``（None 依 ``UEP_MODULE_COORDINATOR``，預設關閉）與 ``tool_module_events``（None 依
+    ``UEP_TOOL_MODULE_EVENTS``，預設關閉）：兩旗標分別回滾（R10）。subscriber 開而 producer 關 => ``AssemblyError``；
+    producer 開、subscriber 關 => 觀測模式（coordinator 只觀測、發事件，不 provisioning／驅逐，註冊表也不訂閱）；兩者都開 =>
+    coordinator 管理模式，known modules 取自 coordinator、設定閘關閉後 probe 成功不得覆蓋，啟動快照先於 Core READY。
+    ``module_registrations`` 是 ``(ModuleDescriptor, ModuleHandle)`` 序列（真實 handle 屬 PR-4，目前由呼叫端注入）：
+    沒有登記的模組不在 known modules，依賴它的工具恆為 unavailable（fail-closed）。``module_sink`` 預設經 ``publisher`` 落
+    journal 並同步分發到 Bus，測試可注入。兩旗標都關閉時以上皆不存在，行為與先前完全相同。
     ``strict`` 為 True 時，缺少（或過短的）``UEP_PAYLOAD_HASH_KEY`` 直接拒絕組裝；預設只告警。
     ``maintenance_interval`` 為維護迴圈的間隔秒數，None 則不建立迴圈（測試或由外部排程時）。
     ``endpoint_socket_port`` 為 None 時不起端點 socket；給值時，``endpoint_secrets``（預設讀
@@ -684,6 +727,23 @@ def assemble_core(
     loop_entry_on = get_settings().agent_loop_entry if agent_loop_entry is None else agent_loop_entry
     if loop_entry_on and loop_entry is None and (tool_path != "agent" or echo is None):
         raise AssemblyError("UEP_AGENT_LOOP_ENTRY 只能在 UEP_TOOL_PATH=agent 且有 echo 時啟用（legacy 下 agent_loop 不可達）")
+    coordinator_on = get_settings().module_coordinator if module_coordinator is None else module_coordinator
+    events_on = get_settings().tool_module_events if tool_module_events is None else tool_module_events
+    check_module_events_policy(events_on, coordinator_on)
+    # 管理模式 = producer 與 subscriber 都開（且為 agent 路徑，註冊表才存在）；只開 producer = 觀測模式
+    coordinator_drives_registry = coordinator_on and events_on and tool_path == "agent"
+    coordinator_obj: ModuleCoordinator | None = None
+    if coordinator_on:
+        coordinator_obj = ModuleCoordinator(
+            module_sink if module_sink is not None else bus_sink(publisher, persona_id=persona_id),
+            epoch_source=lambda: presence.core_epoch,  # presence.start() 之後才讀得到（coordinator.start() 內才呼叫）
+            mode="manage" if coordinator_drives_registry else "observe",
+        )
+        for descriptor, handle in module_registrations:
+            coordinator_obj.register(descriptor, handle)
+    elif module_registrations:
+        raise AssemblyError("給了 module_registrations 但 UEP_MODULE_COORDINATOR 未開")
+    gate_coordinator = coordinator_obj if coordinator_drives_registry else None
     testkit_on = get_settings().tool_testkit if tool_testkit is None else tool_testkit
     if testkit_on and tool_path != "agent":
         raise AssemblyError("UEP_TOOL_TESTKIT 只能在 UEP_TOOL_PATH=agent 下啟用（測試工具只經 agent 路徑曝光）")
@@ -708,7 +768,7 @@ def assemble_core(
         if isinstance(tool_resolver, _ToolRegistry):
             # Chatroom 原生工具：一律註冊；UEP_CHATROOM_* 不齊時 readiness 恆為 unavailable（不投出），組裝不失敗
             chatroom_config = chatroom_config_from_settings(get_settings())
-            tool_resolver = with_chatroom(tool_resolver, configured=chatroom_config is not None)
+            tool_resolver = with_chatroom(tool_resolver, configured=chatroom_config is not None, coordinator=gate_coordinator)
             executors = {**executors, CHATROOM_EXECUTOR: ChatroomToolExecutor(chatroom_config, cache=agent_cache)}
         from uep.tools.registry import ToolRegistry as _Registry
 
@@ -716,7 +776,7 @@ def assemble_core(
             # web.search／web.fetch／image.read：條目一律註冊；未設定的工具 readiness 為 unavailable（不投出），組裝不失敗
             from uep.tools.web_image import with_web_image
 
-            tool_resolver, web_executors = with_web_image(tool_resolver, cache=agent_cache)
+            tool_resolver, web_executors = with_web_image(tool_resolver, cache=agent_cache, coordinator=gate_coordinator)
             executors = {**executors, **web_executors}
         from uep.tools.registry import ToolRegistry as _LoreRegistryType
 
@@ -728,6 +788,7 @@ def assemble_core(
             lore_config = LoreConfig.from_settings(get_settings())
             tool_resolver = with_lore(
                 tool_resolver, configured=lore_config.configured, delete_enabled=lore_config.delete_enabled,
+                coordinator=gate_coordinator,
             )
             executors = {**executors, LORE_EXECUTOR: LoreToolExecutor(lore_config, cache=agent_cache, allow_write=True)}
         if callable(getattr(tool_resolver, "entries", None)):
@@ -781,6 +842,8 @@ def assemble_core(
     )
     _assert_wired(tasks, delivery)
     agent_registry = tool_resolver if isinstance(tool_resolver, ToolRegistry) else memory_registry()
+    if gate_coordinator is not None:
+        seed_fail_closed(agent_registry, gate_coordinator)  # 全部 with_* 併入之後、在最終註冊表上只播一次 fail-closed 底
     if agent_cache is not None:
         assert echo is not None
         # 工具投影的平台取自 Host 本機的 Lease 與 location（授權邊界），不取 Presence peek
@@ -887,8 +950,8 @@ def assemble_core(
     for event_type in _PRESENCE_PROJECTED + ("core.component_health_changed",):
         bus.subscribe(event_type, state.project_event)
     module_events_unsubscribe: Callable[[], None] | None = None
-    if tool_path == "agent" and settings.tool_module_events:
-        # 暫定（module coordinator 待設計）：把 agent 路徑共用的註冊表接到 Bus 的 module.* 就緒事件
+    if tool_path == "agent" and events_on:
+        # 把 agent 路徑共用的註冊表接到 Bus 的 module.* 就緒事件；先訂閱，coordinator.start() 的快照才收得到
         module_events_unsubscribe = subscribe_module_events(bus, agent_registry)
     api = LocalStopServer(stop, port=stop_api_port) if stop_api_port is not None else None
     endpoint_server: SocketControlServer | None = None
@@ -933,6 +996,6 @@ def assemble_core(
         stop_api=api,
         endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory, echo=echo,
         decision_log=writer, supervisor=supervisor_obj, supervisor_loop=supervisor_loop, loop_launcher=loop_launcher,
-        module_events_unsubscribe=module_events_unsubscribe, dream_probe=dream_probe,
+        module_events_unsubscribe=module_events_unsubscribe, module_coordinator=coordinator_obj, dream_probe=dream_probe,
         proactive_shadow=proactive_shadow,
     )

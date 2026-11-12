@@ -21,6 +21,7 @@ from typing import Any
 
 from uep.adapters.tool import ToolDescriptor, ToolEntry, ToolScope, ToolSpec
 from uep.lifecycle.states import MODULE_STATE_CHANGED, unavailable_payload
+from uep.tools.module_events import apply_config_gates
 from uep.tools.registry import ToolRegistry
 
 LORE_EXECUTOR = "core_lore"
@@ -268,14 +269,27 @@ def lore_write_entries() -> list[ToolEntry]:
     ]
 
 
-def with_lore(registry: ToolRegistry, *, configured: bool, delete_enabled: bool = False) -> ToolRegistry:
+def with_lore(
+    registry: ToolRegistry, *, configured: bool, delete_enabled: bool = False, coordinator: Any = None,
+) -> ToolRegistry:
     """在既有註冊表之上併入 lore 條目，回傳新的（已驗證、已凍結）註冊表；不改動傳入的實例，已含 lore 者原樣回傳（冪等）。
 
     ``configured=False`` 時對新註冊表送 ``module.state_changed``（readiness=unavailable）：readiness 為 unavailable，Gateway 不投出也不執行；
-    組裝不失敗、也不會因 requires 含未知模組而警告。``lore.delete`` 另需 ``delete_enabled``（模組 ``lore_delete``）。"""
+    組裝不失敗、也不會因 requires 含未知模組而警告。``lore.delete`` 另需 ``delete_enabled``（模組 ``lore_delete``）。
+
+    ``coordinator`` 給了（module coordinator 啟用路徑）時：known modules 取自 ``coordinator.known_ids()``（登記不等於可用），
+    設定未允許／禁止 delete 改為關閉 coordinator 的閘（probe 成功也不得覆蓋）；不送靜態標記，改由組裝層在最終註冊表上
+    統一播種 fail-closed 底。``coordinator=None`` 時行為與先前完全相同。"""
     existing = registry.entries()
     if any(name in existing for name in LORE_TOOLS):
         return registry
+    if coordinator is not None:
+        known = getattr(registry, "_known_modules", frozenset())
+        apply_config_gates(coordinator, {
+            LORE_MODULE: None if configured else "not_configured",
+            LORE_DELETE_MODULE: None if delete_enabled else "delete_disabled",
+        })
+        return ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, *coordinator.known_ids()})
     known = getattr(registry, "_known_modules", frozenset())  # 同套件內取（沒有公開存取子；與 with_testkit 一致）
     built = ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, LORE_MODULE, LORE_DELETE_MODULE})
     if not configured:

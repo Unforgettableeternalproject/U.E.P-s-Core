@@ -43,6 +43,7 @@ from uep.tools.executors.web_search import (
     SearxngProvider,
     WikipediaProvider,
 )
+from uep.tools.module_events import apply_config_gates
 from uep.tools.outcomes import TurnOutcomeCache
 from uep.tools.registry import ToolRegistry
 
@@ -151,11 +152,12 @@ def with_web_image(
     registry: ToolRegistry, settings: UepSettings | None = None, *, cache: TurnOutcomeCache | None = None,
     transport: Transport | None = None, resolver: Resolver | None = None,
     search_chain: SearchChain | None = None, vision: VisionPort | None = None,
-    client_factory: Callable[[float], Any] | None = None,
+    client_factory: Callable[[float], Any] | None = None, coordinator: Any = None,
 ) -> tuple[ToolRegistry, Mapping[str, Any]]:
     """併入 web／image 條目，回傳 ``(新註冊表, {executor 名: executor})``。已含這些工具者原樣回傳註冊表（冪等）但仍給 executor。
 
-    ``search_chain``／``vision`` 可注入（測試與離線 Console）；省略則依設定組。"""
+    ``search_chain``／``vision`` 可注入（測試與離線 Console）；省略則依設定組。
+    ``coordinator`` 給了時：known modules 取自 ``coordinator.known_ids()``（登記不等於可用），條件不足改為關閉 coordinator 的閘。"""
     settings = settings or get_settings()
     chain = search_chain if search_chain is not None else build_search_chain(
         settings, transport=transport, resolver=resolver, client_factory=client_factory,
@@ -189,5 +191,13 @@ def with_web_image(
     existing = registry.entries()
     if any(name in existing for name in WEB_IMAGE_TOOLS):
         return registry, executors
+    if coordinator is not None:
+        apply_config_gates(coordinator, {
+            MODULE_WEB_SEARCH: None if chain.available() else "not_configured",
+            MODULE_WEB_FETCH: None if settings.web_fetch_enabled else "disabled",
+            MODULE_IMAGE_READ: None if vision_port is not None else "not_configured",
+        })
+        known = set(getattr(registry, "_known_modules", frozenset())) | set(coordinator.known_ids())
+        return ToolRegistry.build([*existing.values(), *web_entries(), *image_entries()], known_modules=known), executors
     built = ToolRegistry.build([*existing.values(), *web_entries(), *image_entries()], known_modules=modules)
     return built, executors

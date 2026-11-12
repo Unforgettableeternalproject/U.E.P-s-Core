@@ -61,6 +61,10 @@ class UepSettings(BaseSettings):
     # module.* 就緒事件訂閱（切片 F，註冊表端；事件名已定，D108 R2，producer 見 PR-2）：預設關閉，
     # 只在 UEP_TOOL_PATH=agent 下有效。目前沒有任何 producer，關閉時不訂閱＝與舊行為完全一致
     tool_module_events: bool = Field(default=False, validation_alias="UEP_TOOL_MODULE_EVENTS")
+    # Module Coordinator（producer，D108／D109 R10）：預設關閉，與上面的 subscriber 旗標分別回滾。
+    # subscriber 開而 producer 關 => 組裝失敗；producer 開、subscriber 關 => 觀測模式（只發事件，不 provisioning／驅逐）。
+    # 不翻預設：正式 requires 沒有真 handle 之前，開啟並不代表生產管理已完成
+    module_coordinator: bool = Field(default=False, validation_alias="UEP_MODULE_COORDINATOR")
     # 測試用工具組（test_echo／test_clock／test_sleep／test_approval_echo）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效。
     # 開啟後組裝層才註冊這些工具與 executor，並把測試標籤併入 /loop（route=agent_loop）的 capability_tags；關閉時完全不存在
     tool_testkit: bool = Field(default=False, validation_alias="UEP_TOOL_TESTKIT")

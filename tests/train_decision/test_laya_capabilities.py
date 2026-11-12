@@ -95,3 +95,27 @@ def test_schema_rejects_unknown_capability_and_keeps_fixed_order() -> None:
         laya_schema.format_capabilities(["teleport"])
     assert laya_schema.format_capabilities(["timer_alarm", "query"]) == "query, timer_alarm"
     assert set(get_spec("turn.reply").questions) >= {"reply_mode", "route", "addressed"}
+
+
+def test_cap_pairs_metrics_consistency_and_switch() -> None:
+    from laya_data.eval_testset import cap_pairs_metrics
+
+    def mk(i: str, pair: str, cls: str, variant: str, mode: str, route: str) -> dict[str, Any]:
+        return {"id": i, "pair_id": pair, "meta": {"pair_class": cls, "capabilities_variant": variant},
+                "expected": {"reply_mode": mode, "route": route}}
+
+    rows = [mk("a1", "A1", "A", "with", "respond", "task_request"), mk("a2", "A1", "A", "without", "respond", "task_request"),
+            mk("a3", "A2", "A", "with", "respond", "task_request"), mk("a4", "A2", "A", "without", "respond", "task_request"),
+            mk("b1", "B1", "B", "with", "passive", "ignore"), mk("b2", "B1", "B", "without", "pass", "ignore"),
+            mk("b3", "B2", "B", "with", "passive", "ignore"), mk("b4", "B2", "B", "without", "pass", "ignore")]
+
+    def p(mode: str, route: str) -> dict[str, Any]:
+        return {"reply_mode": {"pred": mode}, "route": {"pred": route}}
+
+    preds = {"a1": p("respond", "task_request"), "a2": p("respond", "task_request"),  # 一致、都對
+             "a3": p("respond", "task_request"), "a4": p("respond", "direct_chat"),  # 不一致
+             "b1": p("passive", "ignore"), "b2": p("pass", "ignore"),  # 正確切換
+             "b3": p("pass", "ignore"), "b4": p("pass", "ignore")}  # 沒切換
+    m = cap_pairs_metrics(rows, preds)
+    assert m["a_consistency"] == 0.5 and m["a_acc"] == 0.75
+    assert m["b_switch"] == 0.5 and m["b_with_acc"] == 0.5 and m["b_without_acc"] == 1.0

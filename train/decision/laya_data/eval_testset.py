@@ -448,6 +448,48 @@ def _load_runs(paths: list[Path]) -> list[dict[str, Any]]:
     return [json.loads(p.read_text(encoding="utf-8")) for p in paths]
 
 
+def cap_pairs_metrics(rows: list[dict[str, Any]], preds: dict[str, Any]) -> dict[str, float | None]:
+    """能力成對題（capability_pairs）：A 類＝私聊、換清單後 reply_mode／route 應不變；B 類＝群組未點名，有能力 passive、沒能力 pass。
+
+    - a_consistency：A 類每組兩題的 (reply_mode, route) 預測相同的比例（只看清單是否影響結果）；
+    - a_acc：A 類每題 reply_mode＋route 都對的比例；
+    - b_switch：B 類每組「有能力預測 passive 且沒能力預測 pass」的比例；b_with_acc／b_without_acc 各自的準確率。"""
+    by_pair: dict[str, dict[str, dict[str, Any]]] = {}
+    for r in rows:
+        meta = r.get("meta") or {}
+        by_pair.setdefault(str(r.get("pair_id")), {}).setdefault(str(meta.get("capabilities_variant")), r)
+
+    def pred(r: dict[str, Any], q: str) -> Any:
+        return preds[r["id"]][q]["pred"]
+
+    a_cons: list[bool] = []
+    a_acc: list[bool] = []
+    b_sw: list[bool] = []
+    b_with: list[bool] = []
+    b_without: list[bool] = []
+    for pair in by_pair.values():
+        if len(pair) != 2:
+            continue
+        w, wo = pair.get("with"), pair.get("without")
+        if w is None or wo is None:
+            continue
+        cls = (w.get("meta") or {}).get("pair_class")
+        if cls == "A":
+            a_cons.append((pred(w, "reply_mode"), pred(w, "route")) == (pred(wo, "reply_mode"), pred(wo, "route")))
+            for r in (w, wo):
+                a_acc.append(pred(r, "reply_mode") == r["expected"]["reply_mode"] and pred(r, "route") == r["expected"]["route"])
+        elif cls == "B":
+            b_sw.append(pred(w, "reply_mode") == "passive" and pred(wo, "reply_mode") == "pass")
+            b_with.append(pred(w, "reply_mode") == w["expected"]["reply_mode"])
+            b_without.append(pred(wo, "reply_mode") == wo["expected"]["reply_mode"])
+
+    def frac(x: list[bool]) -> float | None:
+        return sum(x) / len(x) if x else None
+
+    return {"a_consistency": frac(a_cons), "a_acc": frac(a_acc), "b_switch": frac(b_sw), "b_with_acc": frac(b_with), "b_without_acc": frac(b_without),
+            "n_a": float(len(a_cons)), "n_b": float(len(b_sw))}
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     """多個模型並列比較。``--model NAME PATTERN``（PATTERN 內的 ``{set}`` 換成測試集名稱，glob 取各 seed）、
     ``--set NAME DATA [RULES]``。第一個模型是基準，Δ 欄＝最後一個模型 − 基準。"""
@@ -463,10 +505,26 @@ def cmd_compare(args: argparse.Namespace) -> int:
         npend = sum(1 for r in rows if (r.get("meta") or {}).get("pending_review"))
         if npend:
             views.append((f"排除 meta.pending_review（{npend} 列）", [r for r in rows if not (r.get("meta") or {}).get("pending_review")]))
+        ex_ids = set(dict(x.split("=", 1) for x in (args.exclude or [])).get(name, "").split(",")) - {""}
+        if ex_ids:
+            views.append((f"排除標準答案與能力規則衝突的題目（{len(ex_ids)} 題：{', '.join(sorted(ex_ids))}）", [r for r in rows if r["id"] not in ex_ids]))
+        if name == "capability_pairs":
+            views = [("能力成對題", rows)]
         for vname, vrows in views:
             n_t = sum(1 for r in vrows if r["kind"] == "turn.reply")
             seeds = ", ".join(f"{n}={len(runs[n])}" for n in names)
             lines += ["", f"## {name} — {vname}（{len(vrows)} 列：turn.reply {n_t}、absent {len(vrows) - n_t}；seeds {seeds}）", ""]
+            if name == "capability_pairs":
+                cp = {n: [cap_pairs_metrics(vrows, x["preds"]) for x in runs[n]] for n in names}
+                labels = [("a_consistency", "A 類：換清單後 reply_mode＋route 不變的比例"), ("a_acc", "A 類：reply_mode＋route 都對"),
+                          ("b_switch", "B 類：有能力 passive 且沒能力 pass 的比例"), ("b_with_acc", "B 類：有能力版 reply_mode 準確率"),
+                          ("b_without_acc", "B 類：沒能力版 reply_mode 準確率")]
+                n_a = int(next(iter(cp.values()))[0]["n_a"]); n_b = int(next(iter(cp.values()))[0]["n_b"])
+                lines += [f"A 類 {n_a} 組、B 類 {n_b} 組（mean ± std over seeds）", "", "| 指標 | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
+                for key, label in labels:
+                    lines.append(f"| {label} | " + " | ".join(_agg_none([m[key] for m in cp[n]]) for n in names) + " |")
+                lines.append("")
+                continue
             mets = {n: [metrics_for(vrows, x["preds"]) for x in runs[n]] for n in names}
             mr = metrics_for(vrows, rules["preds"], rules=True) if rules else None
             lines += ["| 欄位 | " + " | ".join(names) + f" | Δ({names[-1]}-{names[0]}) | rules.default |", "|---|" + "---|" * (len(names) + 2)]
@@ -478,6 +536,14 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 f1 = [v for v in vals[names[-1]] if v is not None]
                 d = f"{statistics.fmean(f1) - statistics.fmean(f0):+.3f}" if f0 and f1 else "n/a"
                 lines.append(f"| {label} | " + " | ".join(_agg_none(vals[n]) for n in names) + f" | {d} | {fmt(mr.get(key)) if mr else 'n/a'} |")
+            if len(names) >= 2:
+                a_n, b_n = names[-2], names[-1]
+                lines += ["", f"逐 seed 配對差（{b_n} − {a_n}，同 seed 編號相減；mean ± std）", "", "| 欄位 | 差值 |", "|---|---|"]
+                for key, label in FIELDS:
+                    pa, pb = [m.get(key) for m in mets[a_n]], [m.get(key) for m in mets[b_n]]
+                    diffs = [y - x for x, y in zip(pa, pb) if x is not None and y is not None]
+                    if diffs:
+                        lines.append(f"| {label} | {statistics.fmean(diffs):+.3f}" + (f" ± {statistics.stdev(diffs):.3f}" if len(diffs) > 1 else "") + " |")
             if n_t:
                 prf = {n: [prf_by_mode(vrows, x["preds"]) for x in runs[n]] for n in names}
                 for title, key in (("precision", "precision"), ("recall", "recall")):
@@ -541,6 +607,7 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--model", action="append", nargs=2, required=True, metavar=("NAME", "PATTERN"))
     d.add_argument("--set", action="append", nargs="+", required=True, metavar="ARG")
     d.add_argument("--focus-ids", help="逗號分隔的測試列 id，逐題列出各 seed 預測")
+    d.add_argument("--exclude", action="append", metavar="SET=ID,ID", help="額外輸出一組排除這些題的比較（標準答案與能力規則衝突的題）")
     d.add_argument("--out", type=Path)
     args = p.parse_args(argv)
     return {"predict": cmd_predict, "rules": cmd_rules, "report": cmd_report, "compare": cmd_compare}[args.cmd](args)

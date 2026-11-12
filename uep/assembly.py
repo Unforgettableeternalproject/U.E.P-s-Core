@@ -801,6 +801,7 @@ def assemble_core(
                 registry=loop_registry, model_port=model_port, cache=agent_cache,
                 text_store=getattr(echo, "loop_text", None), persona_id=persona_id, executors=executors,
                 platform_source=platform_source, store=loop_store, memory_store=getattr(echo, "store_turn_memory", None),
+                on_resumed=getattr(echo, "accept_resumed_result", None),
                 extra_capability_tags=extra_tags, **_loop_resilience_kwargs(),
             )
         if loop_entry is not None:

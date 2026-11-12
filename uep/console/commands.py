@@ -25,6 +25,7 @@ from uep.console.rig import (
     ConsoleRuntime,
 )
 from uep.contracts.presence import PresenceLocation
+from uep.echo.resume_return import ResumeCause
 from uep.events.models import EventRow
 from uep.log import describe_levels, set_console_level, set_namespace_level
 from uep.state.coordinator import Axis
@@ -388,20 +389,22 @@ class Console:
             principal=AuthenticatedPrincipal(actor_id=owner, kind="human", verified=True), action_id=action_id,
         )
         self.out(f"已否決 {action_id}。")
-        self._resume(run_id, {})
+        self._resume(run_id, {}, cause=ResumeCause.REJECTED)
 
-    def _resume(self, run_id: str, approvals: dict[str, str]) -> None:
+    def _resume(self, run_id: str, approvals: dict[str, str], *, cause: ResumeCause = ResumeCause.APPROVED) -> None:
         """透過 launcher 的公開 ``resume`` 續跑 park 中的 Run，等結果並印出（Console 只負責呼叫與顯示）。"""
         launcher = self.rt.core.loop_launcher
         if launcher is None:
             self.out("沒有 loop launcher（未啟用 UEP_AGENT_LOOP_ENTRY），無法續跑。")
             return
         try:
-            result = launcher.resume(run_id, approvals).result(timeout=self.wait_s)
+            result = launcher.resume(run_id, approvals, cause=cause).result(timeout=self.wait_s)
         except Exception as exc:  # noqa: BLE001 - 續跑被拒或逾時都只回報
             self.out(f"續跑失敗：{type(exc).__name__}：{exc}")
             return
         self.out(f"續跑結果：Run {result.run_id}：{result.state}" + (f"（{result.reason_code}）" if result.reason_code else ""))
+        if result.disposition is not None:
+            self.out(f"回覆處置：{result.disposition.value}")
         if result.text:
             self.out(f"回應（續跑）：{result.text}")
         with self.rt.session_factory() as s:

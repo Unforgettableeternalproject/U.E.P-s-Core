@@ -37,6 +37,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from uep.stream.contracts.cancellation import CancellationToken
@@ -62,6 +63,7 @@ from uep.echo.memory import GuildRoster, make_memory_resolver
 from uep.echo.loop_text import LoopTextStore
 from uep.echo.metrics import Metrics
 from uep.echo.platform_context import PlatformShadow
+from uep.echo.resume_return import ResumeCause, ResumedRunResult, ResumeDisposition, ResumeOutcome
 from uep.echo.outcomes import facts_from_outcome
 from uep.echo.policy import CAUSE_TTL_REFRESH, CoreYieldPolicy, HostPolicySource
 from uep.echo.services import EchoServices
@@ -215,6 +217,8 @@ class EchoPipelineHost:
             session.platform, listener=self._decision.listener,
             barge_in_channel_modes=frozenset(ChannelMode(m) for m in self._decision.barge_in_channel_modes),
         )
+        self._resume_lock = threading.Lock()
+        self._resume_settled: OrderedDict[tuple[str, int], ResumeDisposition] = OrderedDict()  # (run_id, worker_epoch) -> 處置（冪等）
         self._stopped_reason: str | None = None  # 全域停止成立（直到取得新 Lease）：propose 之前即否決
         self._yield_policy = CoreYieldPolicy(self.policy)
         self._profile_provider = profile_provider
@@ -1310,6 +1314,77 @@ class EchoPipelineHost:
         """route=agent_loop 的 turn 收尾（由 LoopLauncher 呼叫）寫記憶：與 direct_chat 同一條 ``_store_memory``，
         agent_loop 沒有 member_recall 的工具脈絡所以不帶額外欄位。"""
         self._store_memory(ticket, facts, {})
+
+    # ---- 續跑結果回 Host 的入口（D107）----
+
+    RESUME_SETTLED_MAX = 1024
+    RESUME_VALID_S = 60
+
+    def accept_resumed_result(self, result: ResumedRunResult) -> ResumeDisposition:
+        """park → 核准 → resume 的 Run 到達終態後，唯一回 Host 的入口（由 ``LoopLauncher`` 注入呼叫，不對外開放）。
+
+        以 ``(run_id, worker_epoch)`` 為冪等鍵：同鍵再呼叫回原處置，不重送、不重寫。COMPLETED 且有文字才送：activity 綁定的
+        ``OutputIntent``（turn_* 為 None），授權於送出當下重取 ``lease_auth()``，經 DeliveryManager／Output Gate。
+        送達後才寫記憶（key 掛回原 turn 的 ``turn:<orig>``），``cause=REJECTED`` 不寫。Gate 拒絕本階段一律 DROPPED
+        （STALE 先重取 Lease 重試一次）；UNKNOWN／ENQUEUED 不重送。"""
+        key = (result.run_id, result.worker_epoch)
+        with self._resume_lock:
+            settled = self._resume_settled.get(key)
+            if settled is not None:
+                return settled
+            try:
+                disposition = self._deliver_resumed(result)
+            except Exception:
+                logger.exception("續跑結果送出失敗：run=%s", result.run_id)
+                self.metrics.inc("echo.resume_errors")
+                disposition = ResumeDisposition.UNCERTAIN  # 不知道送到哪一步：不重送、不寫記憶
+            self._resume_settled[key] = disposition
+            while len(self._resume_settled) > self.RESUME_SETTLED_MAX:
+                self._resume_settled.popitem(last=False)
+            return disposition
+
+    def _deliver_resumed(self, result: ResumedRunResult) -> ResumeDisposition:
+        if result.outcome is not ResumeOutcome.COMPLETED:
+            return ResumeDisposition.NOT_APPLICABLE  # FAILED／CANCELLED：不送、不寫（失敗訊息屬後續 PR）
+        services = self._services
+        if services is None or result.activity_id is None or not result.text.strip():
+            self.metrics.inc("echo.resume_dropped.unavailable")
+            return ResumeDisposition.DROPPED
+        ticket = result.ticket
+        for attempt in (1, 2):  # STALE 時重取 Lease 重試一次
+            auth = self.endpoint.lease_auth()  # 送出當下重取；不使用 ticket.auth（原 turn 的授權已作廢）
+            if auth is None:
+                self.metrics.inc("echo.resume_dropped.no_lease")
+                return ResumeDisposition.DROPPED
+            output_id = new_id("out")
+            ref = f"resume:{result.run_id}:{result.worker_epoch}:{attempt}"
+            self.loop_text.put(ref, ticket.turn_id, result.text)
+            intent = OutputIntent(
+                output_id=output_id, sequence=0, kind=OutputKind.TEXT, origin=OutputOrigin.PERSONA,
+                persona_id=auth.persona_id, endpoint_id=auth.endpoint_id, lease_id=auth.lease_id,
+                fencing_epoch=auth.fencing_epoch, core_epoch=auth.core_epoch, presence_generation=auth.presence_generation,
+                activity_id=result.activity_id, audience_scope=ticket.audience_scope, content_ref=ref,
+                valid_until=datetime.now(UTC) + timedelta(seconds=self.RESUME_VALID_S),
+            )
+            services.delivery.prepare(intent)
+            record = services.delivery.dispatch(intent)
+            status = record.status
+            if status in (DS.SENT, DS.ACCEPTED, DS.RENDERED_PLAYED):
+                if result.cause is ResumeCause.APPROVED:  # 送達後才寫；REJECTED 不寫
+                    self.store_turn_memory(ticket, TurnEndFacts(
+                        status="completed", generation_ok=True, generated_len=len(result.text), spoken_text=result.text,
+                        snapshot_version=ticket.snapshot_version,
+                    ))
+                return ResumeDisposition.DELIVERED
+            if status in (DS.UNKNOWN, DS.ENQUEUED):
+                return ResumeDisposition.UNCERTAIN  # 可能已送出：不重送、不寫
+            code = str((record.failure or {}).get("code", status.value))
+            if code == GateDecision.REJECT_STALE.value and attempt == 1:
+                self.metrics.inc("echo.resume_stale_retry")
+                continue
+            self.metrics.inc(f"echo.resume_dropped.{code.lower()}")
+            return ResumeDisposition.DROPPED
+        return ResumeDisposition.DROPPED
 
     def _store_memory(self, ticket: CoreTicket, facts: TurnEndFacts, tool_context: dict[str, Any]) -> None:
         """Q8：記憶寫入由 Core 依 outcome 自行 store（ES 的 think.memory 不寫入）；冪等鍵由 turn_id 衍生。

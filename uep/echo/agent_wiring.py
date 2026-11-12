@@ -32,6 +32,12 @@ from uep.decision.capability import (
     route_base,
 )
 from uep.echo.loop_text import LoopTextStore
+from uep.echo.resume_return import (
+    ResumeCause,
+    ResumeDisposition,
+    ResumedRunResult,
+    ResumeOutcome,
+)
 from uep.ids import new_id
 from uep.memory.protocol import MemoryPort
 from uep.output.delivery import DeliveryStatus
@@ -227,6 +233,8 @@ class _RunCtx:
     delivery_uncertain: str | None = None  # 送出結果不確定時的 reason_code：不補發失敗訊息（避免使用者看到兩則）
     cancel_requested: bool = False  # 心跳讀到 Supervisor 的取消旗標（SV-2）
     budget: Any = None  # 此 Run 的有效預算（建立時凍結；park／resume 沿用）
+    activity_id: str | None = None  # Task 的 activity：續跑回覆以它綁定送出（D107）
+    cause: ResumeCause = ResumeCause.APPROVED
     text: str = ""
     resumed: bool = False  # 核准後續跑的 Run：原 turn 已結束，取消判定不看 turn 終結狀態，結果不再經 Output Gate
 
@@ -240,6 +248,7 @@ class ParkedLoop:
     trigger: LoopTrigger
     parent_id: str
     budget: Any = None  # 凍結的有效預算（resume 沿用；重新解析更緊時取 min）
+    activity_id: str | None = None
 
 
 class LoopResumeRefused(RuntimeError):
@@ -254,6 +263,7 @@ class LoopResumeResult:
     state: str
     text: str = ""
     reason_code: str | None = None
+    disposition: ResumeDisposition | None = None  # 續跑結果回 Host 的處置；未接 Host（on_resumed=None）或再次 park 時為 None
 
 
 class LoopLauncher:
@@ -277,7 +287,10 @@ class LoopLauncher:
         executors: Mapping[str, Any] | None = None, platform_source: Callable[[], str | None] | None = None,
         memory_store: Callable[[Any, TurnEndFacts], None] | None = None, retry: RetryPolicy | None = None,
         step_timeout_s: float | None = None, budget_policies: BudgetPolicyTable | None = None,
+        on_resumed: Callable[[ResumedRunResult], ResumeDisposition] | None = None,
     ) -> None:
+        # 續跑的 Run 到達終態時回 Host 的入口（``EchoPipelineHost.accept_resumed_result``）；None = 退回舊行為（只回 LoopResumeResult）
+        self._on_resumed = on_resumed
         self._retry = retry  # None = 不自動重試（組裝層依 UEP_AGENT_* 傳入）
         # 記憶寫入（與 direct_chat 同一條路徑：Host 的 ``store_turn_memory``）；None = 不寫（例如未接記憶的組裝）
         self._memory_store = memory_store
@@ -342,7 +355,7 @@ class LoopLauncher:
         except BaseException:
             self._release()
             raise
-        ctx = _RunCtx(ticket, task.task_id, run, budget=effective)
+        ctx = _RunCtx(ticket, task.task_id, run, budget=effective, activity_id=getattr(task, "activity_id", None))
         thread = threading.Thread(
             target=self._work, args=(trigger, ctx), name=f"uep-agent-loop-{ticket.turn_id}", daemon=True,
         )
@@ -454,6 +467,7 @@ class LoopLauncher:
             if parked:  # park 不是終態：保留 child／parent 暫存與回合結果暫存，核准後由 ``resume`` 接手
                 self._parked[run.run_id] = ParkedLoop(
                     ticket, ctx.task_id, trigger, ticket.conversation_id or ticket.segment_id, ctx.budget,
+                    ctx.activity_id,
                 )
         except Exception:
             logger.exception("AgentLoop 收尾失敗：turn=%s", turn_id)
@@ -607,7 +621,9 @@ class LoopLauncher:
         with self._lock:
             return tuple(self._parked)
 
-    def resume(self, run_id: str, approvals: Mapping[str, str] | None = None) -> Future[LoopResumeResult]:
+    def resume(
+        self, run_id: str, approvals: Mapping[str, str] | None = None, *, cause: ResumeCause = ResumeCause.APPROVED,
+    ) -> Future[LoopResumeResult]:
         """接手 park 中的 Run 並在背景續跑（Console、日後的 Host 與平台共用的公開入口）。
 
         ``approvals``：``action_id -> approval_id``（Approval 通道已記錄的核准；缺核准＝再次 park；否決請先
@@ -634,7 +650,9 @@ class LoopLauncher:
             frozen = tighten(frozen, self._effective_budget(entry.trigger))  # 沿用凍結值；重新解析更緊時取 min（只收窄）
         except ValueError:
             logger.warning("resume 預算收窄失敗，沿用凍結值：run=%s", run_id)
-        ctx = _RunCtx(entry.ticket, entry.task_id, plan.run, resumed=True, budget=frozen)
+        ctx = _RunCtx(
+            entry.ticket, entry.task_id, plan.run, resumed=True, budget=frozen, activity_id=entry.activity_id, cause=cause,
+        )
         future: Future[LoopResumeResult] = Future()
         thread = threading.Thread(
             target=self._work_resume, args=(entry, ctx, dict(plan.checkpoint or {}), dict(approvals or {}), future),
@@ -655,6 +673,7 @@ class LoopLauncher:
         outcome = None
         raised = False
         state, code = "failed", None
+        disposition: ResumeDisposition | None = None
         try:
             scope = self._cache.turn_scope(turn_id) if self._cache is not None else contextlib.nullcontext()
             with scope:
@@ -673,13 +692,46 @@ class LoopLauncher:
                 if state != "awaiting_approval":  # 再次 park 時保留；其餘為終態：收尾並清理
                     reason = "loop_exception" if raised else f"loop_{code or state}"
                     self._settle(ctx, ok=state == "completed" and ctx.delivered, reason=reason)
+                    disposition = self._return_to_host(ctx, state, code, raised)  # 文字暫存清理之前（端點送出時要解析 content_ref）
                     with self._lock:
                         self._parked.pop(run_id, None)
                     self._cleanup(turn_id, run_id)
             finally:
                 self._release()
                 self._forget(threading.current_thread())
-                future.set_result(LoopResumeResult(run_id, state, ctx.text, None if code is None else str(code)))
+                future.set_result(LoopResumeResult(
+                    run_id, state, ctx.text, None if code is None else str(code), disposition,
+                ))
+
+    def _return_to_host(self, ctx: _RunCtx, state: str, code: Any, raised: bool) -> ResumeDisposition | None:
+        """續跑終態 -> Host 入口（送出與寫記憶都在 Host 內，launcher 不自己拼 OutputIntent）。``on_resumed`` 為 None 回 None。
+        冪等鍵 ``(run_id, worker_epoch)`` 由 Host 判定；epoch 已被別人接手（Supervisor／再次 resume）時，舊 worker 不呼叫。"""
+        if self._on_resumed is None:
+            return None
+        run = ctx.run
+        try:
+            row = self._tasks.get_run(run.run_id)
+            if row.worker_epoch != run.worker_epoch:
+                return None
+        except Exception:
+            logger.exception("讀取 Run 失敗，不回 Host：run=%s", run.run_id)
+            return None
+        if raised or state == "failed":
+            outcome = ResumeOutcome.FAILED
+        elif state == "completed":
+            outcome = ResumeOutcome.COMPLETED
+        else:
+            outcome = ResumeOutcome.CANCELLED
+        result = ResumedRunResult(
+            run_id=run.run_id, worker_epoch=run.worker_epoch, task_id=ctx.task_id, activity_id=ctx.activity_id,
+            ticket=ctx.ticket, outcome=outcome, cause=ctx.cause, text=ctx.text if outcome is ResumeOutcome.COMPLETED else "",
+            reason_code=None if code is None else str(code),
+        )
+        try:
+            return self._on_resumed(result)
+        except Exception:
+            logger.exception("續跑結果回 Host 失敗：run=%s", run.run_id)
+            return ResumeDisposition.UNCERTAIN
 
     def _on_budget(self, ctx: _RunCtx, kind: str) -> None:
         """三段門檻的通知：warn 只記錄（metric＋log）；notice／abort 送一次固定的 SYSTEM_NOTICE（經 Output Gate，

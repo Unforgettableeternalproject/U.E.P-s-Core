@@ -5,6 +5,7 @@ Run／Task 收尾、並發上限、關機、Console 層級可見性。
 """
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 import types
@@ -434,5 +435,154 @@ def test_production_wiring_hands_assembly_executors_to_the_loop_launcher(session
         launcher = rig.core.loop_launcher
         assert MEMORY_EXECUTOR in launcher._executors  # assembly 合併後的映射（含 memory executor）
         assert launcher._executors == dict(rig.core.tasks._executors)
+    finally:
+        rig.core.shutdown()
+
+
+# ---- 續跑結果回 Host 的入口（D107 R1）：真實 Gate／Delivery／端點 ----
+
+RESUMED_TEXT = "核准後完成了。"
+
+
+def _resume_rig(session_factory, tmp_path):
+    """跑完一個正常的 agent_loop turn，拿到原 ticket 與 Task 的 activity，並攔截記憶 store。"""
+    loop_port = FakePort([[text("原本的回覆。"), fin()]])
+    rig, _ = _agent_rig(session_factory, tmp_path, route="agent_loop", flag=True, loop_port=loop_port)
+    result = rig.say("幫我處理")
+    rig.wait_terminal(result.ticket.turn_id)
+    tasks, _ = _rows(session_factory)
+    stores: list[dict] = []
+    rig.host._memory.store = lambda **kw: stores.append(kw) if kw.get("spoken_text") == RESUMED_TEXT else None
+    return rig, result.ticket, tasks[0].activity_id, stores
+
+
+def _resumed(ticket, activity_id, **over):
+    from uep.echo.resume_return import ResumeCause, ResumedRunResult, ResumeOutcome
+
+    base = {
+        "run_id": "run_x", "worker_epoch": 2, "task_id": "task_x", "activity_id": activity_id, "ticket": ticket,
+        "outcome": ResumeOutcome.COMPLETED, "cause": ResumeCause.APPROVED, "text": "核准後完成了。",
+    }
+    base.update(over)
+    return ResumedRunResult(**base)
+
+
+def _resume_texts(rig):
+    return [t.text for t in rig.host.endpoint.rendered_texts() if t.text == "核准後完成了。"]
+
+
+def test_resumed_result_goes_through_gate_and_writes_memory_exactly_once(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        before = len(rig.deliveries())
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DELIVERED
+        assert _resume_texts(rig) == ["核准後完成了。"] and len(rig.deliveries()) == before + 1
+        assert len(stores) == 1 and stores[0]["idempotency_key"] == f"turn:{ticket.turn_id}"
+        assert stores[0]["spoken_text"] == "核准後完成了。" and stores[0]["session_id"] == ticket.segment_id
+        # 同一個 (run_id, epoch) 再來一次：不重送、不重寫
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DELIVERED
+        assert len(rig.deliveries()) == before + 1 and len(stores) == 1 and _resume_texts(rig) == ["核准後完成了。"]
+    finally:
+        rig.core.shutdown()
+
+
+def test_resumed_result_with_rejected_cause_is_sent_but_not_remembered(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeCause, ResumeDisposition
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        out = rig.host.accept_resumed_result(_resumed(ticket, activity, cause=ResumeCause.REJECTED))
+        assert out is ResumeDisposition.DELIVERED and _resume_texts(rig) == ["核准後完成了。"] and stores == []
+    finally:
+        rig.core.shutdown()
+
+
+@pytest.mark.parametrize("outcome", ["failed", "cancelled"])
+def test_failed_or_cancelled_resumed_result_sends_nothing_and_writes_nothing(session_factory, tmp_path, outcome):
+    from uep.echo.resume_return import ResumeDisposition, ResumeOutcome
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        before = len(rig.deliveries())
+        out = rig.host.accept_resumed_result(_resumed(ticket, activity, outcome=ResumeOutcome(outcome), text=""))
+        assert out is ResumeDisposition.NOT_APPLICABLE and len(rig.deliveries()) == before and stores == []
+    finally:
+        rig.core.shutdown()
+
+
+def test_resumed_result_without_lease_is_dropped_with_metric(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        rig.host.endpoint.lease_auth = lambda: None
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DROPPED
+        assert stores == [] and rig.host.metrics["echo.resume_dropped.no_lease"] == 1
+    finally:
+        rig.core.shutdown()
+
+
+def test_stale_lease_is_retried_once_with_fresh_authorization(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        real = rig.host.endpoint.lease_auth
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            auth = real()
+            return dataclasses.replace(auth, fencing_epoch=auth.fencing_epoch + 99) if calls["n"] == 1 else auth
+
+        rig.host.endpoint.lease_auth = flaky
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DELIVERED
+        assert calls["n"] == 2 and len(stores) == 1
+    finally:
+        rig.core.shutdown()
+
+
+def test_always_stale_lease_retries_only_once_then_drops(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        real = rig.host.endpoint.lease_auth
+        calls = {"n": 0}
+
+        def stale():
+            calls["n"] += 1
+            auth = real()
+            return dataclasses.replace(auth, fencing_epoch=auth.fencing_epoch + 99)
+
+        rig.host.endpoint.lease_auth = stale
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DROPPED
+        assert calls["n"] == 2 and stores == [] and _resume_texts(rig) == []
+    finally:
+        rig.core.shutdown()
+
+
+def test_unknown_delivery_is_uncertain_and_not_remembered(session_factory, tmp_path):
+    from types import SimpleNamespace
+
+    from uep.echo.resume_return import ResumeDisposition
+    from uep.output.delivery import DeliveryStatus
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        services = rig.host._services
+        original = services.delivery.dispatch
+        services.delivery.dispatch = lambda intent: SimpleNamespace(status=DeliveryStatus.UNKNOWN, failure=None)
+        try:
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.UNCERTAIN
+        finally:
+            services.delivery.dispatch = original
+        assert stores == []
+        # UNCERTAIN 也被冪等鍵記住：之後同鍵再呼叫不重送
+        before = len(rig.deliveries())
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.UNCERTAIN
+        assert len(rig.deliveries()) == before
     finally:
         rig.core.shutdown()

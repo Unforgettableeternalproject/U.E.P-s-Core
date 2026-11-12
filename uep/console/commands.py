@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 import threading
 import time
 import wave
@@ -29,6 +32,12 @@ from uep.tasks.manager import AuthenticatedPrincipal
 from uep.tasks.models import ActionIntentRow, RunRow, TaskRow
 from uep.tasks.states import APPROVAL_REQUIRED, ActionStatus
 from uep.turn.models import UtteranceFact
+
+logger = logging.getLogger(__name__)
+
+LATENCY_LOG_ENV = "UEP_CONSOLE_LATENCY_LOG"
+"""延遲報告 JSONL 的路徑覆寫；未設＝``<session_dir>/latency.jsonl``，``off``／``0``／``false``／``none``＝關閉。"""
+LATENCY_LOG_OFF = ("off", "0", "false", "none")
 
 TERMINAL_EVENTS = ("turn.completed", "turn.cancelled", "turn.skipped")
 DEFAULT_WAIT_S = 15.0
@@ -285,6 +294,7 @@ class Console:
             self.out(f"turn {turn_id} 逾時未結束（{self.wait_s:.0f} 秒），事件：{' > '.join(kinds)}")
             return
         self.out(f"turn {turn_id}：{kinds[-1]}（{time.perf_counter() - started:.2f} 秒）")
+        self._write_latency(turn_id, kinds[-1])
         claimed = getattr(rt.host.orchestrator, "loop_claimed", None)
         if callable(claimed) and claimed(turn_id):
             # agent_loop 回合：沒有走 Think／Speak，回覆是端點在 Output Gate 放行後渲染的文字（系統訊息另標示）
@@ -300,6 +310,24 @@ class Console:
             self.out(f"TTFA：{trace.ttfa_ms:.0f} ms")
         for wav in rt.wavs.get(turn_id, []):
             self.out(f"音訊：{wav}（{_wav_seconds(wav):.1f} 秒）")
+
+    def _write_latency(self, turn_id: str, terminal: str) -> None:
+        """每輪結束把 tracer 的延遲欄位（同 ``/trace`` 報告的資料）附加寫成一行 JSON 到 latency.jsonl，供 A8 事後彙整。
+        只寫檔、不進正式 journal；關閉或寫檔失敗都不影響回合（失敗只記警告）。"""
+        try:
+            raw = os.environ.get(LATENCY_LOG_ENV, "").strip()
+            if raw.lower() in LATENCY_LOG_OFF:
+                return
+            trace = self.rt.tracer.get(turn_id)
+            if trace is None:
+                return
+            path = Path(raw) if raw else Path(self.rt.session_dir) / "latency.jsonl"
+            record = {"ts": datetime.now(UTC).isoformat(), "terminal": terminal, **trace.to_dict()}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001 - 延遲紀錄是旁路，任何失敗都不能讓回合失敗
+            logger.warning("延遲報告寫檔失敗（turn %s）：%s", turn_id, exc)
 
     def _approve(self, arg: str) -> None:
         """核准等待中的 action：以 task 擁有者的已驗證人類身分呼叫 ``TaskManager.record_approval``（沿用既有規則：

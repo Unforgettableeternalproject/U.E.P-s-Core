@@ -130,6 +130,7 @@ class ConsoleRuntime:
     model_port: Any = None  # agent 路徑：驅動 AgentThinkStage 與 AgentLoop 的 ModelPort
     behavior_driver: Any = None  # PP-3b：Behavior driver（只在 real 記憶路徑；off 或 fake 時為 None）
     schedule_planner: Any = None  # PP-4b：PresencePlanner（UEP_SCHEDULE_PLANNER=shadow 且 real 記憶路徑才有）
+    presence_arbiter: Any = None  # AR-2：在場請求仲裁 shadow（UEP_PRESENCE_ARBITER=shadow 且 real 記憶路徑才有）
 
     def close(self) -> None:
         try:
@@ -143,6 +144,11 @@ class ConsoleRuntime:
                     self.schedule_planner.stop()
                 except Exception:
                     logger.exception("PresencePlanner 停止失敗")
+            if self.presence_arbiter is not None:
+                try:
+                    self.presence_arbiter.stop()
+                except Exception:
+                    logger.exception("仲裁 shadow 停止失敗")
             self.core.shutdown()  # 含決策日誌寫入器的關閉（排空佇列後才釋放連線）
         finally:
             engine = self.session_factory.kw.get("bind")
@@ -243,14 +249,20 @@ def build_fake_runtime(
             # PP-3b：只有 real_rig 組出的記憶 Host 才有 rest_window_policy 標記；fake 記憶不啟動 driver
             if memory_host is not None and hasattr(memory_host, "rest_window_policy"):
                 from uep.config import get_settings
-                from uep.echo.schedule_wiring import attach_behavior_driver, attach_schedule_planner
+                from uep.echo.schedule_wiring import (
+                    attach_behavior_driver,
+                    attach_presence_arbiter,
+                    attach_schedule_planner,
+                )
 
                 runtime.behavior_driver = attach_behavior_driver(
                     get_settings(), core, session_factory=session_factory, rest_policy=memory_host.rest_window_policy)
                 runtime.schedule_planner = attach_schedule_planner(
                     get_settings(), core, session_factory=session_factory)
+                runtime.presence_arbiter = attach_presence_arbiter(
+                    get_settings(), core, session_factory=session_factory)
         except BaseException:
-            for component in (runtime.behavior_driver, runtime.schedule_planner):
+            for component in (runtime.behavior_driver, runtime.schedule_planner, runtime.presence_arbiter):
                 if component is not None:
                     try:
                         component.stop()

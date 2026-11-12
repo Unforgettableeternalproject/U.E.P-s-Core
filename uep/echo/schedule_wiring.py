@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -338,7 +339,73 @@ def attach_schedule_planner(settings: Any, core: Any, *, session_factory: Any, r
     return planner
 
 
+# ---- 在場請求仲裁 shadow（AR-2）----
+
+ARBITER_MODES = ("off", "shadow")
+
+
+def parse_arbiter_mode(value: str | None) -> str:
+    """``UEP_PRESENCE_ARBITER``：off（預設）｜shadow；未知值 ``ValueError``（fail-fast）。"""
+    mode = (value or "off").strip().lower()
+    if mode not in ARBITER_MODES:
+        raise ValueError(f"UEP_PRESENCE_ARBITER 只接受 off 或 shadow：{value!r}")
+    return mode
+
+
+def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, reader: Any | None = None,
+                            metrics_inc: Callable[[str], None] | None = None) -> Any | None:
+    """依旗標組裝在場請求仲裁的 shadow 觀察（只記 log／指標；不呼叫 Presence 寫入、不寫 override）。
+
+    旗標：``settings.presence_arbiter``，沒有該欄位時讀環境變數 ``UEP_PRESENCE_ARBITER``（預設 off）。
+    訂閱 ``schedule.directive_issued``（重算 directive 後仲裁）與 ``turn.skipped``（缺席端輸入的 presence_request 觀察）。
+    Presence 用 ``peek()``（唯讀）；ACTIVE 但 Lease 已到期的視為不明（以 RECOVERING 表示）。
+    """
+    from uep.contracts.schedule import InterruptFacts
+    from uep.schedule.arbiter_shadow import PresenceArbiterShadow
+    from uep.schedule.planner import PresenceReading
+    from uep.state.coordinator import Axis
+
+    mode = parse_arbiter_mode(getattr(settings, "presence_arbiter", None) or os.environ.get("UEP_PRESENCE_ARBITER"))
+    if mode == "off":
+        return None
+    if reader is None:
+        from uep.schedule.store import PlanStore
+
+        reader = PlanStore(session_factory)
+    if metrics_inc is None:
+        echo_metrics = getattr(getattr(core, "echo", None), "metrics", None)
+        metrics_inc = getattr(echo_metrics, "inc", None)
+    memory, tasks, state, bus = getattr(core, "memory", None), getattr(core, "tasks", None), core.state, core.bus
+
+    def presence() -> Any:
+        view = core.presence.peek()
+        status = view.status.value
+        if status == "ACTIVE" and view.expires_at is not None and view.expires_at <= datetime.now(view.expires_at.tzinfo):
+            status = "RECOVERING"  # peek 不處理過期：Lease 已到期＝不明
+        return PresenceReading(status=status, location=view.location, transfer_active=view.transfer_id is not None,
+                               expires_at=view.expires_at)
+
+    def probe() -> Any:
+        try:
+            busy = has_uninterruptible_work(tasks)
+        except Exception:  # noqa: BLE001 - 查不到就保守地當作有不可中斷工作
+            busy = True
+        in_flight = bool(memory is not None and (memory.dream_status() or {}).get("in_flight"))
+        return InterruptFacts(dream_in_flight=in_flight,
+                              interaction_active=state.current(Axis.INTERACTION).state != "IDLE",
+                              has_uninterruptible_work=busy)
+
+    shadow = PresenceArbiterShadow(reader, presence, getattr(reader, "active_override", None), probe,
+                                   metrics_inc=metrics_inc)
+    for event_type, handler in (("schedule.directive_issued", shadow.on_directive_event),
+                                ("turn.skipped", shadow.on_turn_skipped)):
+        bus.subscribe(event_type, handler)
+        shadow.add_cleanup(lambda et=event_type, h=handler: bus.unsubscribe(et, h))
+    logger.info("在場請求仲裁 shadow 已啟動（只記錄判決）")
+    return shadow
+
+
 __all__ = [
-    "PlanBackedRestWindowPolicy", "attach_behavior_driver", "attach_schedule_planner",
+    "PlanBackedRestWindowPolicy", "attach_behavior_driver", "attach_presence_arbiter", "attach_schedule_planner",
     "build_rest_window_policy",
 ]

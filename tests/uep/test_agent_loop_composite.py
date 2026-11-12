@@ -19,6 +19,7 @@ from uep.adapters.tool import (
 from uep.agent.budget import LoopBudget
 from uep.agent.core import stable_action_id
 from uep.agent.scheduler import SchedItem, plan_waves
+from uep.fakes.composite_blobs import InMemoryCompositeBlobStore
 from uep.tasks.states import RunStatus
 from uep.tools.composite import COMPOSITE_STEP_SKIPPED
 from uep.tools.registry import ToolRegistry
@@ -493,3 +494,117 @@ def test_composite_resume_rejection_counts_towards_rejected_limit():
     loop._execute_composite = lambda *a, **k: denied
     out = loop.resume(RUN, cp, trigger=trigger(rig.tags), parent_id="ctx_parent", approvals={})
     assert (out.state, out.reason_code) == ("failed", "no_progress") and rig.last_runtime.requests == []
+
+
+# ---- D110：composite 引用 text 的持久 blob ----
+
+_TEXT = "內容:/a.md"
+
+
+def _blob_ref(rig, index: int = 0) -> dict:
+    row = rig.tasks.checkpoints[-1]["composite_cursor"]["rows"][index]
+    return {"ref": row["text_blob_ref"], "hash": row["text_blob_hash"], "size": row["text_blob_size"]}
+
+
+def _park_with_blobs(store, **kwargs):
+    rig, out = _park(composite_blobs=store, **kwargs)
+    assert out.state == "awaiting_approval"
+    rig.tasks.contents.clear()  # 重啟：回合範圍暫存已清
+    ask_id = sub_id("step_1", 0, 1)
+    rig.tasks.grant("appr_1", ask_id)
+    return rig, ask_id
+
+
+def _assert_blob_fail_closed(rig, out):
+    assert (out.state, out.reason_code) == ("failed", "intent_rejected")
+    assert rig.last_runtime.requests == []  # 不喚醒模型
+    assert rig.tasks.approvals["appr_1"].consumed_by is None  # 核准不消耗
+    assert [t for _, t in rig.tasks.executions] == ["fs.read"]
+
+
+def test_blob_keeps_referenced_text_so_pending_step_resumes_after_restart():
+    store = InMemoryCompositeBlobStore()
+    rig, out = _park(composite_blobs=store)
+    ref = _blob_ref(rig)
+    assert ref["size"] == len(_TEXT.encode()) and len(ref["ref"]) <= 64 and len(ref["hash"]) <= 64
+    assert _TEXT not in repr(rig.tasks.checkpoints[-1])  # D33：checkpoint 不放原文
+    assert store.blobs[ref["ref"]] == _TEXT.encode() and out.state == "awaiting_approval"  # park 不是終態，blob 還在
+    rig.tasks.contents.clear()
+    ask_id = sub_id("step_1", 0, 1)
+    rig.tasks.grant("appr_1", ask_id)
+    done = _resume(rig, {ask_id: "appr_1"})
+    assert (done.state, done.text) == ("completed", "全部完成")
+    assert [t for _, t in rig.tasks.executions] == ["fs.read", "fs.ask"]
+    assert rig.tasks.actions[ask_id]["params"]["content"] == _TEXT  # 重啟後仍重建出核准當時的參數
+    assert rig.tasks.approvals["appr_1"].consumed_by == ask_id
+    assert "cblob" not in "".join(_tool_texts(rig))  # blob 引用不給模型看
+    assert store.blobs == {}  # 終態即刪
+
+
+def test_lost_blob_keeps_failing_closed():
+    store = InMemoryCompositeBlobStore()
+    rig, ask_id = _park_with_blobs(store)
+    store.lose(_blob_ref(rig)["ref"])
+    _assert_blob_fail_closed(rig, _resume(rig, {ask_id: "appr_1"}, rounds=[Round("不該到這裡")]))
+
+
+@pytest.mark.parametrize("tampered", [lambda n: b"X" * n, lambda n: b"X" * (n + 3)], ids=["same_size", "other_size"])
+def test_tampered_blob_keeps_failing_closed_and_is_deleted(tampered):
+    store = InMemoryCompositeBlobStore()
+    rig, ask_id = _park_with_blobs(store)
+    ref = _blob_ref(rig)
+    store.tamper(ref["ref"], tampered(ref["size"]))
+    _assert_blob_fail_closed(rig, _resume(rig, {ask_id: "appr_1"}, rounds=[Round("不該到這裡")]))
+    assert store.blobs == {}  # 失敗終態也清掉
+
+
+def test_blob_over_limit_at_resume_keeps_failing_closed():
+    store = InMemoryCompositeBlobStore()
+    rig, ask_id = _park_with_blobs(store)
+    loop = _crash(rig, 2, rounds=[Round("不該到這裡")], composite_blob_max_bytes=_blob_ref(rig)["size"] - 1)
+    out = loop.resume(RUN, dict(rig.tasks.checkpoints[-1]), trigger=trigger(rig.tags), parent_id="ctx_parent", approvals={ask_id: "appr_1"})
+    _assert_blob_fail_closed(rig, out)
+
+
+def test_text_over_limit_at_write_is_not_persisted_and_fails_closed_on_resume():
+    store = InMemoryCompositeBlobStore()
+    rig, ask_id = _park_with_blobs(store, composite_blob_max_bytes=4)
+    assert "text_blob_ref" not in rig.tasks.checkpoints[-1]["composite_cursor"]["rows"][0] and store.blobs == {}
+    _assert_blob_fail_closed(rig, _resume(rig, {ask_id: "appr_1"}, rounds=[Round("不該到這裡")]))
+
+
+def test_put_failure_does_not_break_the_run_but_resume_fails_closed():
+    store = InMemoryCompositeBlobStore(fail_put=True)
+    rig, ask_id = _park_with_blobs(store)
+    assert "text_blob_ref" not in rig.tasks.checkpoints[-1]["composite_cursor"]["rows"][0]
+    _assert_blob_fail_closed(rig, _resume(rig, {ask_id: "appr_1"}, rounds=[Round("不該到這裡")]))
+
+
+def test_without_store_nothing_is_persisted_and_behaviour_is_unchanged():
+    rig, _ = _park()
+    assert "text_blob_ref" not in rig.tasks.checkpoints[-1]["composite_cursor"]["rows"][0]
+    rig.tasks.contents.clear()
+    ask_id = sub_id("step_1", 0, 1)
+    rig.tasks.grant("appr_1", ask_id)
+    _assert_blob_fail_closed(rig, _resume(rig, {ask_id: "appr_1"}, rounds=[Round("不該到這裡")]))
+
+
+def test_only_referenced_text_is_persisted():
+    noref = _notes(
+        [READ_STEP, CompositeStep("fs.ask", {"path": "$.input.source", "content": "$.input.title"})],
+        name="notes.noref", side="external_effect", cap="chatroom.post", approval="per_action",
+    )
+    store = InMemoryCompositeBlobStore()
+    rig, out = _park([Round("發佈", (("notes.noref", {"source": "/a.md"}),)), Round("完成")], noref, composite_blobs=store)
+    assert out.state == "awaiting_approval" and store.blobs == {}
+    assert "text_blob_ref" not in rig.tasks.checkpoints[-1]["composite_cursor"]["rows"][0]
+
+
+def test_terminal_run_deletes_blobs_even_when_not_resumed_to_success():
+    store = InMemoryCompositeBlobStore()
+    rig, ask_id = _park_with_blobs(store)
+    assert len(store.blobs) == 1
+    rig.tasks.grant("appr_bad", ask_id, state="consumed")
+    out = _resume(rig, {ask_id: "appr_bad"})
+    assert (out.state, out.reason_code) == ("failed", "approval_invalid")
+    assert store.blobs == {}

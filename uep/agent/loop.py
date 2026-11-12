@@ -45,6 +45,15 @@ from uep.agent.budget import (
     observe_call,
     observe_resumed,
 )
+from uep.agent.composite_blobs import (
+    BLOB_FIELD,
+    BLOB_HASH_KEY,
+    BLOB_REF_KEY,
+    BLOB_ROW_KEYS,
+    BLOB_SIZE_KEY,
+    DEFAULT_BLOB_MAX_BYTES,
+    CompositeBlobStore,
+)
 from uep.agent.core import (
     AgentCore,
     IntentRecord,
@@ -105,6 +114,7 @@ from uep.tools.catalog.decision import (
 from uep.tools.composite import (
     COMPOSITE_STEP_SKIPPED,
     CompositePathError,
+    iter_refs,
     resolve_params,
 )
 from uep.tools.gateway import (
@@ -290,7 +300,12 @@ class AgentLoop:
         step_output: Callable[[str], Mapping[str, Any] | None] | None = None,
         retry: RetryPolicy | None = None, sleep: Callable[[float], None] = time.sleep,
         on_budget: Callable[[str], None] | None = None,
+        composite_blobs: CompositeBlobStore | None = None, composite_blob_max_bytes: int = DEFAULT_BLOB_MAX_BYTES,
     ) -> None:
+        # composite 引用 ``text`` 的持久來源（D110）：None = 不持久化（跨重啟的待決子步驟 fail-closed，與先前相同）；
+        # ``composite_blob_max_bytes`` 為單筆上限（UTF-8 位元組），<= 0 等同停用
+        self._composite_blobs = composite_blobs
+        self._composite_blob_max = composite_blob_max_bytes
         # 三段門檻的通知回呼（``warn``／``notice``／``abort``）；由 launcher 負責固定訊息與 metric
         self._on_budget = on_budget
         self._hard = hard_budget(budget)  # 中斷點當硬上限（未啟用三段門檻時就是 budget 本身）
@@ -817,6 +832,11 @@ class AgentLoop:
         discard = getattr(self._consults, "discard_run", None)
         if callable(discard):
             discard(st.run_id)
+        if self._composite_blobs is not None:  # D110：Run 終態即刪 composite 的 text blob（TTL 只是兜底）
+            try:
+                self._composite_blobs.delete_run(st.run_id)
+            except Exception as exc:  # noqa: BLE001 - 清理失敗不影響 Run 終態
+                logger.warning("composite blob 清理失敗：%s", type(exc).__name__)
         if self._run_cleanup is not None:
             try:
                 self._run_cleanup(st.run_id)
@@ -1582,6 +1602,7 @@ class AgentLoop:
         inputs = self._composite_inputs(entry, m.args)
         sub_ids = [stable_action_id(m.run_id, m.step_id, m.ordinal, j) for j in range(len(steps))]
         outputs: dict[int, dict[str, Any]] = {}
+        text_steps = self._text_ref_steps(steps) if self._composite_blobs is not None else frozenset()
 
         def output_of(k: int) -> Mapping[str, Any] | None:
             if k >= len(rows) or rows[k]["status"] != "ok":
@@ -1589,7 +1610,12 @@ class AgentLoop:
             if k not in outputs:
                 schema = self._registry.entry(steps[k].tool).output_schema or {}
                 declared = set(schema.get("properties") or {})  # 受 output_schema 約束：沒宣告的欄位不可引用
-                outputs[k] = {key: v for key, v in self._step_outputs(sub_ids[k]).items() if key in declared}
+                raw = self._step_outputs(sub_ids[k])
+                if BLOB_FIELD not in raw and k in text_steps:  # 回合範圍暫存已清（例如重啟）：改讀持久 blob（D110）
+                    restored = self._blob_text(m.run_id, rows[k])
+                    if restored is not None:
+                        raw[BLOB_FIELD] = restored
+                outputs[k] = {key: v for key, v in raw.items() if key in declared}
             return outputs[k]
 
         while len(rows) < len(steps) and all(r["status"] == "ok" for r in rows):
@@ -1607,6 +1633,8 @@ class AgentLoop:
             if isinstance(step_result, IntentResult):  # 子步驟需核准：記下進度並停住（呼叫端 park）
                 st.composite_cursor = self._cursor_of(m.ordinal, entry, rows)
                 return step_result
+            if j in text_steps and step_result["status"] == "ok":
+                self._persist_text(m.run_id, sub_ids[j], step_result)
             rows.append(step_result)
             self._composite_progress(st, m, entry, rows)
 
@@ -1614,6 +1642,55 @@ class AgentLoop:
         if any(r["status"] == "unknown" for r in rows):
             st.unresolved = True
         return self._composite_result(m, steps, rows)
+
+    @staticmethod
+    def _text_ref_steps(steps: Sequence[Any]) -> frozenset[int]:
+        """composite 宣告中實際引用 ``$.steps[k].output.text`` 的步驟序號 k（只有這些步驟的 text 需要持久化）。"""
+        found: set[int] = set()
+        for step in steps:
+            for _, ref in iter_refs(step.params):
+                if ref.root == "steps" and ref.step is not None and ref.segments and ref.segments[0] == BLOB_FIELD:
+                    found.add(ref.step)
+        return frozenset(found)
+
+    def _persist_text(self, run_id: str, action_id: str, row: dict[str, Any]) -> None:
+        """把子步驟的 text 存成可刪除 blob，並在逐步狀態列記 ``{ref, hash, size}``（不存原文）。
+        取不到文字、超過單筆上限、寫入失敗都不寫引用：該步驟的輸出跨重啟不可得，續跑時 fail-closed。"""
+        store = self._composite_blobs
+        text = self._content_lookup(action_id) if self._content_lookup is not None else None
+        if store is None or text is None:
+            return
+        data = text.encode("utf-8")
+        if not 0 < len(data) <= self._composite_blob_max:
+            logger.warning("composite text 超過持久化上限或為空，不落地：run=%s size=%d", run_id, len(data))
+            return
+        try:
+            ref, digest = store.put(run_id, data)
+        except Exception as exc:  # noqa: BLE001 - 持久化失敗不影響本次執行
+            logger.warning("composite text 持久化失敗：%s", type(exc).__name__)
+            return
+        row[BLOB_REF_KEY], row[BLOB_HASH_KEY], row[BLOB_SIZE_KEY] = ref, digest, len(data)
+
+    def _blob_text(self, run_id: str, row: Mapping[str, Any]) -> str | None:
+        """依逐步狀態列的引用讀回 text 並驗雜湊與大小；任何一項不符（含引用形狀不合、超過上限）都回 None（呼叫端 fail-closed）。"""
+        store = self._composite_blobs
+        ref, digest, size = row.get(BLOB_REF_KEY), row.get(BLOB_HASH_KEY), row.get(BLOB_SIZE_KEY)
+        if store is None or ref is None:
+            return None
+        if not (isinstance(ref, str) and isinstance(digest, str) and isinstance(size, int) and not isinstance(size, bool)):
+            return None
+        if not 0 < size <= self._composite_blob_max:
+            logger.warning("composite blob 超過單筆上限，不續跑：run=%s size=%d", run_id, size)
+            return None
+        try:
+            data = store.get(ref)
+            if data is None or len(data) != size or not store.verify(data, digest):
+                logger.warning("composite blob 遺失或雜湊不符，不續跑：run=%s", run_id)
+                return None
+            return data.decode("utf-8")
+        except Exception as exc:  # noqa: BLE001 - 讀取失敗一律 fail-closed
+            logger.warning("composite blob 讀取失敗：%s", type(exc).__name__)
+            return None
 
     def _composite_step(
         self, st: _State, m: ScreenedIntent, j: int, tool: str, params: Mapping[str, Any], inputs: Mapping[str, Any],
@@ -1668,7 +1745,7 @@ class AgentLoop:
     def _composite_result(self, m: ScreenedIntent, steps: Sequence[Any], rows: Sequence[Mapping[str, Any]]) -> IntentResult:
         """彙整結果：逐步狀態列為 ``items``（沒執行的步驟列為 blocked(composite_step_skipped)），整體 ``status`` 取最差者；
         全部成功時，對外內容取最後一步的結果文字（若有）。經 Gateway 的 ``result_view`` 組成，不含例外文字與參數內容。"""
-        items = [dict(r) for r in rows]
+        items = [{k: v for k, v in r.items() if k not in BLOB_ROW_KEYS} for r in rows]  # blob 引用不給模型看
         items += [self._row(j, steps[j].tool, "blocked", reason_code=COMPOSITE_STEP_SKIPPED) for j in range(len(rows), len(steps))]
         worst = max((str(r["status"]) for r in rows), key=_SEVERITY.__getitem__)
         bad = next((r for r in rows if r["status"] != "ok"), {})

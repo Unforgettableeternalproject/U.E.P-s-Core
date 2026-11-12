@@ -591,6 +591,20 @@ def _loop_resilience_kwargs() -> dict[str, Any]:
     }
 
 
+def _composite_blob_kwargs(session_factory: sessionmaker[Session]) -> dict[str, Any]:
+    """composite 引用 ``text`` 的持久 blob（D110）：上限為 0 或沒有 ``UEP_PAYLOAD_HASH_KEY`` 時不注入（行為與先前相同）。"""
+    s = get_settings()
+    key = s.payload_hash_key
+    if s.composite_blob_max_bytes <= 0 or key is None or not key.get_secret_value().strip():
+        return {}
+    from uep.events.composite_blobs import DbCompositeBlobStore
+
+    return {
+        "composite_blobs": DbCompositeBlobStore(session_factory, ttl_s=s.composite_blob_ttl_s),
+        "composite_blob_max_bytes": s.composite_blob_max_bytes,
+    }
+
+
 def _loop_context_store() -> Any | None:
     """agent loop 的持久 child context store（echo_thought_core SessionStore）；子系統不可用時回 None（啟動器退回行程內暫存）。"""
     try:
@@ -874,7 +888,7 @@ def assemble_core(
                 platform_source=platform_source, store=loop_store, memory_store=getattr(echo, "store_turn_memory", None),
                 on_resumed=getattr(echo, "accept_resumed_result", None),
                 resume_cancel_check=getattr(echo, "resume_should_cancel", None),
-                extra_capability_tags=extra_tags, **_loop_resilience_kwargs(),
+                extra_capability_tags=extra_tags, **_loop_resilience_kwargs(), **_composite_blob_kwargs(session_factory),
             )
         if loop_entry is not None:
             echo.orchestrator.bind_loop_entry(loop_entry)

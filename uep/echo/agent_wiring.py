@@ -346,7 +346,11 @@ class LoopLauncher:
         step_timeout_s: float | None = None, budget_policies: BudgetPolicyTable | None = None,
         on_resumed: Callable[[ResumedRunResult], ResumeDisposition] | None = None,
         resume_cancel_check: Callable[[], bool] | None = None,
+        composite_blobs: Any | None = None, composite_blob_max_bytes: int | None = None,
     ) -> None:
+        # composite 引用 text 的持久 blob（D110）；None = 不持久化（行為不變）。上限 None = 用 AgentLoop 的預設
+        self._composite_blobs = composite_blobs
+        self._composite_blob_max = composite_blob_max_bytes
         # 續跑中的 Run 的額外取消條件（Q7）：Host 的 ``resume_should_cancel``（Lease 遺失或 global_stop）；None = 只看 cancel_requested／closing
         self._resume_cancel_check = resume_cancel_check
         # 續跑的 Run 到達終態時回 Host 的入口（``EchoPipelineHost.accept_resumed_result``）；None = 退回舊行為（只回 LoopResumeResult）
@@ -708,6 +712,8 @@ class LoopLauncher:
             content_lookup=self._cache.text if self._cache is not None else None,
             run_cleanup=self._cache.discard_about_refs_run if self._cache is not None else None,
             executors=self._executors, retry=self._retry,
+            composite_blobs=self._composite_blobs,
+            **({} if self._composite_blob_max is None else {"composite_blob_max_bytes": self._composite_blob_max}),
         )
 
     # ---- 交付（只經 Output Gate） ----

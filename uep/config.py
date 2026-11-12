@@ -58,6 +58,10 @@ class UepSettings(BaseSettings):
     agent_model_retry_backoff_s: float = Field(default=1.0, ge=0, validation_alias="UEP_AGENT_MODEL_RETRY_BACKOFF_S")
     agent_tool_retry_max: int = Field(default=1, ge=0, validation_alias="UEP_AGENT_TOOL_RETRY_MAX")
     agent_tool_retry_backoff_s: float = Field(default=0.5, ge=0, validation_alias="UEP_AGENT_TOOL_RETRY_BACKOFF_S")
+    # composite 引用前步 ``text`` 的持久來源（D110）：單筆上限（UTF-8 位元組，0 = 停用）與 TTL（秒，Run 終態即刪、TTL 兜底）。
+    # 需要 UEP_PAYLOAD_HASH_KEY（沒有密鑰則不注入、行為與先前相同）
+    composite_blob_max_bytes: int = Field(default=65536, ge=0, validation_alias="UEP_COMPOSITE_BLOB_MAX_BYTES")
+    composite_blob_ttl_s: float = Field(default=86400.0, gt=0, validation_alias="UEP_COMPOSITE_BLOB_TTL_S")
     # module.* 就緒事件訂閱（切片 F，註冊表端；事件名已定，D108 R2，producer 見 PR-2）：預設關閉，
     # 只在 UEP_TOOL_PATH=agent 下有效。目前沒有任何 producer，關閉時不訂閱＝與舊行為完全一致
     tool_module_events: bool = Field(default=False, validation_alias="UEP_TOOL_MODULE_EVENTS")

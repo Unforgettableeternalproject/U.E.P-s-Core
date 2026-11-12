@@ -2,17 +2,25 @@
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import Any
 
 from uep.contracts.presence import AcquireResult
 from uep.echo.endpoint import StopNotice
 from uep.echo.host import EchoPipelineHost
+from uep.echo.resume_return import ResumePending
 
 
 def _sync_host(*, tickets: list | None = None, switching: bool = False, closed: bool = False) -> Any:
     host = EchoPipelineHost.__new__(EchoPipelineHost)
     host._intake_lock = threading.Lock()
+    # 續跑回覆的 pending 佇列（R2）：_finish_turn 與取得 Lease 會讀它，不經 __init__ 時要補上空的欄位
+    host._resume_lock = threading.Lock()
+    host._resume_flush_lock = threading.Lock()
+    host._resume_flush_queued = False
+    host._resume_settled = OrderedDict()
+    host._resume_pending = ResumePending(ttl_s=1800.0, max_items=8)
     host._closed, host._switching, host._tools_refresh_pending = closed, switching, False
     host.orchestrator = SimpleNamespace(
         live_tickets=lambda: list(tickets or ()), cancel_turn=lambda *a, **k: None,

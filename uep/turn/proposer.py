@@ -60,6 +60,20 @@ class Interjection:
     speakers: tuple[str, ...] = ()  # buffer 內的所有說話者；插話後每個人都開 context window（bot 行為）
 
 
+@dataclass(frozen=True)
+class ShadowDiff:
+    """組合式 proposer（如 ``laya.primary``）內部 shadow 的逐句差異：不含原文，只有模式、route、addressed 與原因碼。
+
+    由 proposer 的 ``take_shadow_diff(candidate_id)`` 交給 ``TurnReplyEngine``，engine 補上決策 ID 後走既有 shadow 紀錄。
+    """
+
+    shadow_id: str  # 內部 shadow 的 proposer_id（如 rules.default）
+    primary: Proposal  # 實際採用的提案
+    shadow: Proposal  # 內部 shadow 的提案
+    fields: tuple[str, ...]  # 不一致的欄位：mode／route／addressed
+    elapsed_ms: int = 0
+
+
 @runtime_checkable
 class TickingProposer(Protocol):
     """選用：宿主定期呼叫 ``Orchestrator.tick``，轉給 proposer 的 ``tick``（插話與沉默觸發）。"""

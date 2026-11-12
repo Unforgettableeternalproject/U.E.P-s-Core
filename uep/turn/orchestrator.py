@@ -227,7 +227,13 @@ class TurnOrchestrator:
             shadow_proposers=shadow_proposers, on_shadow=on_shadow,
         )
         try:
-            self.hub.register(turn_reply_spec(self._decision.proposer_budget_ms), self._reply_engine)
+            # 只有主 proposer 自稱要 laya 預算（laya.primary：含翻譯與模型推論）時，turn.reply 才用 laya_budget_ms；
+            # turn.interject／presence.absent_intent 與其他 proposer 維持共用的 proposer_budget_ms
+            reply_budget = (
+                self._decision.laya_budget_ms if getattr(self._reply_engine.proposer, "uses_laya_budget", False)
+                else self._decision.proposer_budget_ms
+            )
+            self.hub.register(turn_reply_spec(reply_budget), self._reply_engine)
         except BaseException:
             self._reply_engine.close()
             raise

@@ -6,7 +6,10 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+
+logger = logging.getLogger("uep.turn.decision_config")
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,9 @@ class DecisionConfig:
     # D80：proposer 的決策預算（毫秒），暫定 300；S6 依 D73 的基準校正。
     # <= 0 代表不設預算（呼叫端會一直等 proposer，只建議測試使用；上一個呼叫還沒回來時仍會立即回預設）
     proposer_budget_ms: int = 300
+    # 主 proposer 是 laya.primary（組合式，含翻譯與模型推論）時的 turn.reply 預算；只有該情況取代 proposer_budget_ms，
+    # turn.interject／presence.absent_intent 與其他 proposer 仍用 proposer_budget_ms。UEP_LAYA_BUDGET_MS 覆寫
+    laya_budget_ms: int = 500
     # 哪些頻道模式允許 barge-in（對齊 bot 的 ``barge_in_modes``，預設只有主動頻道）；
     # 只在 proposer 有發布頻道模式時生效（沒有頻道模式的宿主維持 ES 既有的可打斷行為）
     barge_in_channel_modes: tuple[str, ...] = ("active",)
@@ -163,4 +169,24 @@ def decision_config_from_settings(settings: object | None = None, base: Decision
             f"（可用：{', '.join(known)}）"
         )
     shadows = tuple(pid for pid in dict.fromkeys(shadows) if pid != primary)
-    return replace(cfg, proposer_id=primary, shadow_proposer_ids=shadows)
+    cfg = replace(cfg, proposer_id=primary, shadow_proposer_ids=shadows)
+    budget = getattr(st, "laya_budget_ms", None)
+    if budget:
+        cfg = replace(cfg, laya_budget_ms=int(budget))
+    _warn_translate_vs_budget(cfg, st)
+    return cfg
+
+
+def _warn_translate_vs_budget(cfg: DecisionConfig, st: object) -> None:
+    """主 proposer 是 laya.primary 且翻譯開啟時，翻譯逾時必須小於 laya 預算，否則翻譯逾時前整個決策已先逾時、
+    退不回舊規則（只回 D80 預設）。不拋例外（避免擋啟動），只警告。"""
+    if cfg.proposer_id != "laya.primary" or not getattr(st, "decision_translate", False):
+        return
+    from uep.echo.translate_wiring import DEFAULT_TRANSLATE_TIMEOUT_MS
+
+    translate_ms = int(getattr(st, "translate_timeout_ms", None) or DEFAULT_TRANSLATE_TIMEOUT_MS)
+    if translate_ms >= cfg.laya_budget_ms:
+        logger.warning(
+            "UEP_TRANSLATE_TIMEOUT_MS=%d 不小於 UEP_LAYA_BUDGET_MS=%d：翻譯逾時前整個決策已先逾時，"
+            "無法退回舊規則；請讓翻譯逾時小於 laya 預算（例如 400 < 500）", translate_ms, cfg.laya_budget_ms,
+        )

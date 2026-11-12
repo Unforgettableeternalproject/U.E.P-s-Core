@@ -1,7 +1,12 @@
 """預設 proposer 的註冊（``proposer_id`` -> 工廠）。換 proposer = 註冊新 id、設定選用，Core 其他程式不動。"""
 from __future__ import annotations
 
-from uep.echo.laya_wiring import LAYA_PROPOSER_ID, create_laya_proposer
+from uep.echo.laya_wiring import (
+    LAYA_PRIMARY_ID,
+    LAYA_PROPOSER_ID,
+    create_laya_primary_proposer,
+    create_laya_proposer,
+)
 from uep.echo.nlp_wiring import NLP_PROPOSER_ID, create_nlp_proposer
 from uep.turn.proposer import ProposerRegistry, RespondProposer, TurnProposer
 from uep.turn.rule_proposer import RuleProposer
@@ -11,6 +16,8 @@ PROPOSERS.register(RespondProposer.proposer_id, lambda **_: RespondProposer())
 PROPOSERS.register(RuleProposer.proposer_id, lambda **kw: RuleProposer(**kw))
 # DL-2：laya 套件只在工廠建立時檢查；未安裝時 ValueError（啟動即報錯），預設不啟用
 PROPOSERS.register(LAYA_PROPOSER_ID, create_laya_proposer)
+# laya.primary：Laya 為主、舊規則為底與 shadow 的組合式 proposer；退回方式＝移除 UEP_DECISION_PROPOSER
+PROPOSERS.register(LAYA_PRIMARY_ID, create_laya_primary_proposer)
 # DL-5：英文 NLP 模型檔只在工廠建立時檢查；缺檔時 ValueError（啟動即報錯），預設不啟用
 PROPOSERS.register(NLP_PROPOSER_ID, create_nlp_proposer)
 

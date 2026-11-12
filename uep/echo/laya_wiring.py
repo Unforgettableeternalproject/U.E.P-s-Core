@@ -33,8 +33,9 @@ import logging
 import re
 import sys
 import threading
+import time
 from collections import Counter, OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,15 @@ from uep.decision.laya_schema import (
 from uep.echo.translate_wiring import BoundaryTranslator, create_boundary_translator
 from uep.turn.decision_config import DecisionConfig
 from uep.turn.models import Proposal, ReplyMode, TurnCandidate, TurnOutcomeFacts
-from uep.turn.proposer import ROUTES, fallback_proposal
+from uep.turn.proposer import (
+    ROUTES,
+    Interjection,
+    ProposerGuard,
+    ShadowDiff,
+    fallback_proposal,
+    validate_proposal,
+)
+from uep.turn.rule_proposer import RuleProposer
 
 logger = logging.getLogger("uep.echo.laya_wiring")
 
@@ -267,6 +276,13 @@ class LayaProposer:
             self._context_parts = parts
             self._context_speakers = speakers
 
+    def on_audience_changed(self) -> None:
+        """audience 切換：丟掉上一輪脈絡與待配對原文，避免舊 audience 的內容進新 audience 的 state。"""
+        with self._context_lock:
+            self._context_parts = None
+            self._context_speakers = frozenset()
+            self._recent_text.clear()
+
     def wait_context(self, timeout: float | None = None) -> None:
         """等背景脈絡翻譯結束；測試與診斷用。"""
         for thread in list(self._context_threads):
@@ -373,3 +389,265 @@ def create_laya_proposer(config: DecisionConfig | None = None, settings: object 
         assistant_name=cfg.bot_identity.primary_name,
         source_revision=source_revision,
     )
+
+
+# ---------------------------------------------------------------------------
+# laya.primary：Laya 為主、舊規則為底的組合式 proposer
+# ---------------------------------------------------------------------------
+
+LAYA_PRIMARY_ID = "laya.primary"
+# 每一句是誰決定的（寫進 Proposal.reason_code 的前綴，經決策日誌 primary 列的 reason_code 欄留存；
+# fallback 的完整格式為 ``<label>:<規則原本的原因碼>``）
+SOURCE_LAYA = "laya_model"  # Laya 決定（沿用 LayaProposer 的 reason_code，不加後綴）
+SOURCE_RULES_TIMEOUT = "rules_fallback_timeout"  # 翻譯／預算逾時、翻譯不可用、推論例外或提案無效：舊規則
+SOURCE_RULES_WARMING = "rules_fallback_warming"  # Laya 尚未載入完成或載入失敗：舊規則
+_WARMING_REASONS = frozenset({"laya_warming_up", "laya_load_failed"})
+_VERDICT_KEEP = 32  # 保留最近多少句的 Laya 判斷（供 tick 比對最後一句）
+_INNER_MARGIN_S = 0.03  # 內層等待 Laya 的期限比外層預算提早這麼多，讓外層還來得及收到舊規則的結果
+_LISTENING = "LISTENING"
+
+
+class LayaRulesProposer:
+    """``laya.primary``：每句先讓舊規則 ``RuleProposer`` 跑（餵 buffer 與耦合度，也是 Laya 不可用時的底），
+    再問 Laya；Laya 有結果就以它的 reply_mode／route／addressed／compound 為準，否則回舊規則的提案。
+
+    - 衝突時以 Laya 為準：舊規則只決定「什麼時候可以插話」（``tick``）；Laya 對該插話對應的最後一句判 pass／ignore 時丟棄。
+      只管針對對話內容的插話：``RuleProposer.tick`` 只由被動模式的 engagement buffer 產生，計時、提醒、事件觸發的主動輸出
+      走 ``proactive.initiate``／schedule，根本不經過 proposer，所以不受影響。
+    - 決策來源三種（見 ``SOURCE_*``），寫進 reason_code 前綴並累計 ``metrics``。
+    - 舊規則與 Laya 在 reply_mode／route／addressed 不一致時，留一筆 ``ShadowDiff``，由 ``TurnReplyEngine`` 補上決策 ID 後
+      走既有 shadow 紀錄與決策日誌（只有模式與原因碼，無原文）。
+    - 內層以自己的 ``ProposerGuard`` 等 Laya，期限取自 ``candidate.deadline``（外層預算）扣掉小邊界，
+      逾時時外層仍有時間收到舊規則的結果，而不是整個掉到 D80 預設。
+    """
+
+    proposer_id = LAYA_PRIMARY_ID
+    uses_laya_budget = True  # 讓 Orchestrator 對 turn.reply 套用 DecisionConfig.laya_budget_ms
+
+    def __init__(self, laya: LayaProposer, rules: RuleProposer, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._laya = laya
+        self._rules = rules
+        self._clock = clock
+        self._guard = ProposerGuard("laya-primary-inner")
+        self.metrics: Counter[str] = Counter()
+        self._lock = threading.Lock()
+        self._verdicts: OrderedDict[str, tuple[ReplyMode, str]] = OrderedDict()  # 最後一個 utterance ref -> (mode, route)
+        self._diffs: OrderedDict[str, ShadowDiff] = OrderedDict()  # candidate_id -> 差異，等 engine 取走
+
+    # ---- 身分與委派給規則的唯讀介面 ----
+
+    @property
+    def version(self) -> str:
+        return self._laya.version if self._laya.loaded else self._rules.version
+
+    @property
+    def laya(self) -> LayaProposer:
+        return self._laya
+
+    @property
+    def rules(self) -> RuleProposer:
+        return self._rules
+
+    @property
+    def wake(self) -> Any:
+        return self._rules.wake
+
+    @property
+    def channel_mode(self) -> Any:
+        return self._rules.channel_mode
+
+    @property
+    def coupling_value(self) -> float:
+        return self._rules.coupling_value
+
+    @property
+    def topic_term(self) -> float:
+        return self._rules.topic_term
+
+    @property
+    def pending_topics(self) -> int:
+        return self._rules.pending_topics
+
+    def add_mode_listener(self, listener: Callable[[Any], None]) -> None:
+        self._rules.add_mode_listener(listener)
+
+    def set_participant_count(self, count: int) -> None:
+        self._rules.set_participant_count(count)
+
+    def set_mode_override(self, mode: Any) -> Any:
+        return self._rules.set_mode_override(mode)
+
+    def is_listener_continuation(self, text: str) -> bool:
+        return self._rules.is_listener_continuation(text)
+
+    def reset(self, user_count: int = 0) -> None:
+        self._rules.reset(user_count)
+        self._clear_laya_state()
+
+    def on_audience_changed(self) -> None:
+        self._rules.on_audience_changed()
+        self._clear_laya_state()
+
+    def on_participant_left(self, speaker_ref: str) -> None:
+        self._rules.on_participant_left(speaker_ref)
+
+    def _clear_laya_state(self) -> None:
+        with self._lock:
+            self._verdicts.clear()
+            self._diffs.clear()
+        self._laya.on_audience_changed()
+
+    def close(self) -> None:
+        self._guard.close()
+
+    # ---- TurnProposer ----
+
+    def propose(self, candidate: TurnCandidate) -> Proposal:
+        started = self._clock()
+        # 規則一定先跑：它要餵 buffer 與耦合度，也是 Laya 不可用時的底。規則的例外不拖累 Laya 的結果
+        rules_prop: Proposal | None = None
+        rules_exc: Exception | None = None
+        try:
+            rules_prop = self._rules.propose(candidate)
+        except Exception as exc:
+            rules_exc = exc
+            self.metrics["rules_error"] += 1
+            logger.exception("laya.primary：規則 proposer 失敗")
+        laya_prop, fallback_source = self._ask_laya(candidate)
+        if laya_prop is not None:
+            merged = self._merge(candidate, laya_prop)
+            self._remember(candidate, merged, rules_prop, int((self._clock() - started) * 1000))
+            self.metrics[SOURCE_LAYA] += 1
+            return merged
+        if rules_prop is None:
+            raise rules_exc if rules_exc is not None else RuntimeError("laya.primary：Laya 與規則都沒有結果")
+        self.metrics[fallback_source] += 1
+        return replace(
+            rules_prop, proposer_id=LAYA_PRIMARY_ID,
+            reason_code=_safe_code(f"{fallback_source}:{rules_prop.reason_code}")[:64],
+        )
+
+    def _ask_laya(self, candidate: TurnCandidate) -> tuple[Proposal | None, str]:
+        """問 Laya：回 ``(提案, "")``；不可用時回 ``(None, 退回來源標籤)``。"""
+        remaining: float | None = None
+        if candidate.deadline is not None:
+            remaining = candidate.deadline - self._clock() - _INNER_MARGIN_S
+            if remaining <= 0:
+                self.metrics["laya_no_time"] += 1
+                return None, SOURCE_RULES_TIMEOUT
+        result, status = self._guard.call(self._laya.propose, candidate, remaining)
+        if status != "ok":
+            self.metrics[f"laya_{status}"] += 1  # timeout／busy／error
+            return None, SOURCE_RULES_TIMEOUT
+        if not isinstance(result, Proposal):
+            self.metrics["laya_invalid"] += 1
+            return None, SOURCE_RULES_TIMEOUT
+        if result.reason_code != SOURCE_LAYA:  # LayaProposer 的 shadow 預設：尚未載入、載入失敗或翻譯不可用
+            if result.reason_code in _WARMING_REASONS:
+                return None, SOURCE_RULES_WARMING
+            return None, SOURCE_RULES_TIMEOUT
+        if validate_proposal(self._merge(candidate, result)) is not None:
+            self.metrics["laya_invalid"] += 1
+            return None, SOURCE_RULES_TIMEOUT
+        return result, ""
+
+    def _merge(self, candidate: TurnCandidate, laya_prop: Proposal) -> Proposal:
+        """以 Laya 的 reply_mode／route／addressed／compound 為準；Interaction 軸沿用規則 pass 的慣例（IDLE 才轉 LISTENING）。"""
+        listening = _LISTENING if laya_prop.reply_mode is ReplyMode.PASS and candidate.interaction_state == "IDLE" else None
+        return replace(laya_prop, proposer_id=LAYA_PRIMARY_ID, interaction_to=listening)
+
+    def _remember(self, candidate: TurnCandidate, merged: Proposal, rules_prop: Proposal | None, elapsed_ms: int) -> None:
+        """記下 Laya 對這一句的判斷（供 tick 比對）、與規則的差異（供 engine 取走），並在 Laya 判 pass 時結算規則的待結算話題項。"""
+        if candidate.utterance_refs:
+            with self._lock:
+                self._verdicts[candidate.utterance_refs[-1]] = (merged.reply_mode, merged.route)
+                while len(self._verdicts) > _VERDICT_KEEP:
+                    self._verdicts.popitem(last=False)
+        if rules_prop is None:
+            return
+        fields = tuple(
+            name for name, differs in (
+                ("mode", merged.reply_mode is not rules_prop.reply_mode),
+                ("route", merged.route != rules_prop.route),
+                ("addressed", merged.addressed != rules_prop.addressed),
+            ) if differs
+        )
+        if fields:
+            self.metrics["shadow_diff"] += 1
+            diff = ShadowDiff(
+                shadow_id=getattr(self._rules, "proposer_id", "rules.default"), primary=merged, shadow=rules_prop,
+                fields=fields, elapsed_ms=elapsed_ms,
+            )
+            with self._lock:
+                self._diffs[candidate.candidate_id] = diff
+                while len(self._diffs) > _VERDICT_KEEP:
+                    self._diffs.popitem(last=False)
+        if merged.reply_mode is ReplyMode.PASS and rules_prop.reply_mode is not ReplyMode.PASS:
+            # 規則提議回應但 Laya 判 pass：回合不會開，規則等不到 outcome，主動模式下的話題項會一直待結算。
+            # 補一筆「LLM 判 PASS」的結果，讓耦合度照常下降
+            self._feed_rules_outcome(TurnOutcomeFacts(
+                turn_id="", candidate_id=candidate.candidate_id, speakers=candidate.speakers, reply_mode="pass",
+                reason_code=rules_prop.reason_code, status="skipped", end_reason="pass",
+            ))
+
+    def take_shadow_diff(self, candidate_id: str) -> ShadowDiff | None:
+        """取走（並移除）這一句與規則的差異；沒有差異回 None。"""
+        with self._lock:
+            return self._diffs.pop(candidate_id, None)
+
+    # ---- tick：規則決定何時可插話，Laya 對最後一句判 pass／ignore 時不插 ----
+
+    def tick(self) -> list[Interjection]:
+        interjections = self._rules.tick()
+        if not interjections:
+            return interjections
+        kept: list[Interjection] = []
+        for ij in interjections:
+            if self._laya_vetoes(ij):
+                self.metrics["interjection_dropped_by_laya"] += 1
+                self._release_dropped(ij)
+            else:
+                kept.append(ij)
+        return kept
+
+    def _laya_vetoes(self, ij: Interjection) -> bool:
+        if not ij.utterance_refs:
+            return False
+        with self._lock:
+            verdict = self._verdicts.get(ij.utterance_refs[-1])
+        return verdict is not None and (verdict[0] is ReplyMode.PASS or verdict[1] == "ignore")
+
+    def _release_dropped(self, ij: Interjection) -> None:
+        """被丟棄的插話：解除規則的 in-flight 並套用冷卻（等同「沒能開始」），避免下個 tick 立刻重提同一批。"""
+        self._feed_rules_outcome(TurnOutcomeFacts(
+            turn_id="", candidate_id="tick:laya_drop", speakers=ij.speakers, reply_mode=ij.proposal.reply_mode.value,
+            reason_code=ij.proposal.reason_code, status="skipped", end_reason="laya_pass", started=False,
+        ))
+
+    # ---- OutcomeObserver：started 只給規則；outcome 兩邊都收 ----
+
+    def on_turn_started(self, turn_id: str, candidate_id: str, speakers: tuple[str, ...]) -> None:
+        self._rules.on_turn_started(turn_id, candidate_id, speakers)
+
+    def on_turn_outcome(self, facts: TurnOutcomeFacts) -> None:
+        self._feed_rules_outcome(facts)
+        try:
+            self._laya.on_turn_outcome(facts)
+        except Exception:
+            logger.exception("laya.primary：Laya on_turn_outcome 失敗")
+
+    def _feed_rules_outcome(self, facts: TurnOutcomeFacts) -> None:
+        try:
+            self._rules.on_turn_outcome(facts)
+        except Exception:
+            logger.exception("laya.primary：規則 on_turn_outcome 失敗")
+
+
+def create_laya_primary_proposer(
+    config: DecisionConfig | None = None, settings: object | None = None, **kwargs: object
+) -> LayaRulesProposer:
+    """registry 工廠（``laya.primary``）：Laya 設定同 ``create_laya_proposer``，規則部分用同一份 ``DecisionConfig``。"""
+    cfg = config or DecisionConfig()
+    laya = create_laya_proposer(cfg, settings)
+    rules_kwargs = {k: v for k, v in kwargs.items() if k in ("clock", "on_mode_change")}
+    return LayaRulesProposer(laya, RuleProposer(cfg, **rules_kwargs))  # type: ignore[arg-type]

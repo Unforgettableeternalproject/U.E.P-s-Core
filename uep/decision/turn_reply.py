@@ -205,7 +205,40 @@ class TurnReplyEngine:
                 result = fallback_proposal(candidate, spec.on_invalid_reason)
         decision = proposal_to_result(result, request, fallback=fallback)
         self._run_shadows(candidate, result, request, decision.decision_id)
+        self._record_proposer_diff(candidate, request, decision.decision_id, fallback=fallback)
         return decision
+
+    def _record_proposer_diff(
+        self, candidate: TurnCandidate, request: DecisionRequest, primary_decision_id: str, *, fallback: bool
+    ) -> None:
+        """組合式 proposer（如 laya.primary）內部 shadow 的逐句差異：沿用 ShadowRecord／on_shadow／決策日誌，
+        不另開通道。只記不一致的句子；記錄不含原文（只有模式、原因碼、candidate_id）。"""
+        take = getattr(self.proposer, "take_shadow_diff", None)
+        if not callable(take):
+            return
+        try:
+            diff = take(candidate.candidate_id)
+        except Exception:
+            logger.exception("take_shadow_diff 失敗")
+            return
+        if diff is None or fallback:
+            return
+        reason = f"{diff.shadow.reason_code}:diff_{'_'.join(diff.fields)}"[:64]
+        record = ShadowRecord(
+            candidate_id=candidate.candidate_id, shadow_id=str(diff.shadow_id)[:64],
+            primary_mode=diff.primary.reply_mode.value, primary_reason=diff.primary.reason_code,
+            shadow_mode=diff.shadow.reply_mode.value, shadow_reason=reason,
+            agree=diff.primary.reply_mode == diff.shadow.reply_mode, status="ok", elapsed_ms=diff.elapsed_ms,
+            decision_id=new_id("dec"), primary_decision_id=primary_decision_id, request_id=request.request_id,
+            kind=request.kind,
+        )
+        self.shadow_log.append(record)
+        self.metrics["shadow.proposer_diff"] += 1
+        if self.on_shadow is not None:
+            try:
+                self.on_shadow(record)
+            except Exception:
+                logger.exception("on_shadow 回呼失敗")
 
     # ---- shadow mode ----
 

@@ -96,6 +96,8 @@ class UepSettings(BaseSettings):
     laya_model: str | None = Field(default=None, validation_alias="UEP_LAYA_MODEL")
     laya_revision: str | None = Field(default=None, validation_alias="UEP_LAYA_REVISION")
     laya_device: str | None = Field(default=None, validation_alias="UEP_LAYA_DEVICE")
+    # laya.primary 專屬的 turn.reply 決策預算（毫秒，未設＝DecisionConfig.laya_budget_ms＝500）；不影響 turn.interject／presence.absent_intent
+    laya_budget_ms: int | None = Field(default=None, validation_alias="UEP_LAYA_BUDGET_MS")
     # Boundary Translator（決策模型輸入 zh→en，決策中樞提案 §5.4）：預設關閉＝laya.shadow 收原文；開啟＝收英文
     # 模型目錄未設＝~/.uep/models/mt/opus-mt-zh-en；aliases 為逗號分隔（未設＝內建「小U、小優、小悠、U.E.P、UEP」）
     # unavailable 時：fallback＝laya.shadow 回 reason_code=translate_unavailable（預設，訓練只用英文）；original＝改送原文

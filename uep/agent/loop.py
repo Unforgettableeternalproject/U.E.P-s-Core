@@ -33,7 +33,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 
 from uep.adapters.runtime import Runtime, RuntimeRequest
-from uep.agent.budget import BudgetCounters, LoopBudget, exhausted, observe_call
+from uep.agent.budget import (
+    STATUS_APPROVAL_PENDING,
+    BudgetCounters,
+    LoopBudget,
+    exhausted,
+    observe_call,
+    observe_resumed,
+)
 from uep.agent.core import (
     AgentCore,
     IntentRecord,
@@ -1009,6 +1016,8 @@ class AgentLoop:
             self._gate(st)
             for m, res in self._execute_wave(wave, members, st):
                 views[m.ordinal], observed[m.ordinal] = res.view, str(res.view.get("status", "unknown"))
+                if res.approval_required:
+                    observed[m.ordinal] = STATUS_APPROVAL_PENDING  # park 不重置連續被拒（結果由 resume 計入）
                 if self._composite_entry(m.tool) is None:  # composite 的子步驟已各自計次（_execute_composite）
                     st.counters.tool_calls += 1
                 if res.view.get("status") == "unknown":
@@ -1640,11 +1649,15 @@ class AgentLoop:
             # 回 failed 視圖續跑（與工具失敗一致），不再 park（再 park 會讓已消耗核准的 action 永遠等不到下一份核准）
             st.counters.tool_calls += 1
             st.consumed.append(action_id)
+            observe_resumed(self._budget, st.counters, "failed")
             return self._gateway.result_view("failed")
         stop = self._pending_stop(res)
         if stop is None:  # 已執行（成功或失敗）：沿用既有計數續跑
             st.counters.tool_calls += 1
             st.consumed.append(action_id)
+            # 人類否決（rejected）計入連續被拒、其餘重置；達上限不再喚醒模型（否則被否決後反覆提同一動作會一直要核准）
+            if observe_resumed(self._budget, st.counters, str(res.view.get("status"))) is not None:
+                return self._finish(st, "failed", LoopReason.NO_PROGRESS)
             return res.view
         if stop == "repark":
             return self._repark(st, action_id)

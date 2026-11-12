@@ -569,3 +569,30 @@ def test_policy_excluded_and_warming_reparks_but_becomes_revoked_once_ready():
     registry.apply_module_event("module.ready", {"module_id": "mod:b", "revision": 2})
     second = _resume(rig, _park_checkpoint(rig), None, epoch=3, projector=policy_excluded)
     assert (second.state, second.reason_code) == ("failed", "capability_revoked")
+
+
+# ---- rejected_streak 跨 park／resume ----
+
+def _denied_resume(rig, checkpoint, streak):
+    checkpoint["budget_counters"] = {**checkpoint["budget_counters"], "rejected": streak}
+    loop = _crash(rig, 2, rounds=[Round("不該到這裡")])
+    core = loop._core
+    loop._core.create_screened = lambda item: None
+    loop._core.execute_screened = lambda item, approval_id=None: IntentResult(
+        IntentRecord(item.ordinal, item.tool, item.action_id, "rejected", "approval_denied"),
+        core._gateway.result_view("rejected", reason_code="approval_denied"),
+    )
+    return loop.resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent", approvals={})
+
+
+def test_denied_resume_reaching_rejected_limit_ends_run_without_waking_model():
+    rig, checkpoint = _parked()
+    out = _denied_resume(rig, checkpoint, streak=2)  # 預設 rejected_limit=3：第 3 次否決終止
+    _assert_ended_without_waking_model(rig, out, "no_progress")
+
+
+def test_denied_resume_below_limit_continues_and_persists_streak():
+    rig, checkpoint = _parked()
+    _denied_resume(rig, checkpoint, streak=0)
+    assert rig.last_runtime.requests != []  # 未達上限：模型被喚醒，看到被否決
+    assert rig.tasks.checkpoints[-1]["budget_counters"]["rejected"] == 1

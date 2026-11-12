@@ -16,6 +16,7 @@ from typing import Any, Literal
 ExhaustedDimension = Literal["steps", "tool_calls", "tokens", "run_deadline"]
 NO_PROGRESS_REPEAT = "repeated_call"
 NO_PROGRESS_REJECTED = "repeated_rejection"
+STATUS_APPROVAL_PENDING = "approval_pending"  # park 中的待核准項：對連續被拒計數中性（不重置、不累加），由 resume 的結果決定
 
 
 @dataclass(frozen=True)
@@ -118,15 +119,25 @@ def observe_call(
 ) -> str | None:
     """記錄一次已處理的工具呼叫（依處理順序）並判斷無進展。回傳 ``NO_PROGRESS_*`` 原因碼，未觸發回 None。
 
-    status 為 ``rejected`` 者計入「連續被拒」；其餘狀態重置該計數。相同指紋連續出現就累計（不論成敗）。"""
+    status 為 ``rejected`` 者計入「連續被拒」；``approval_pending`` 保持原值；其餘狀態重置該計數。相同指紋連續出現就累計（不論成敗）。"""
     fp = fingerprint(tool, args)
     if fp == counters.last_fingerprint:
         counters.repeat_count += 1
     else:
         counters.last_fingerprint, counters.repeat_count = fp, 1
-    counters.rejected_streak = counters.rejected_streak + 1 if status == "rejected" else 0
+    if status == "rejected":
+        counters.rejected_streak += 1
+    elif status != STATUS_APPROVAL_PENDING:
+        counters.rejected_streak = 0
     if counters.repeat_count >= budget.repeat_limit:
         return NO_PROGRESS_REPEAT
     if counters.rejected_streak >= budget.rejected_limit:
         return NO_PROGRESS_REJECTED
     return None
+
+
+def observe_resumed(budget: LoopBudget, counters: BudgetCounters, status: str) -> str | None:
+    """resume 時 park 項的結果（指紋在 park 時已計過，這裡只更新連續被拒）：``rejected``（人類否決）累加，其餘重置。
+    達 ``rejected_limit`` 回 ``NO_PROGRESS_REJECTED``。"""
+    counters.rejected_streak = counters.rejected_streak + 1 if status == "rejected" else 0
+    return NO_PROGRESS_REJECTED if counters.rejected_streak >= budget.rejected_limit else None

@@ -89,3 +89,24 @@ def test_consecutive_rejections_trip_and_success_resets():
     assert observe_call(budget, counters, "d", {}, "rejected") is None
     assert observe_call(budget, counters, "e", {}, "rejected") is None
     assert observe_call(budget, counters, "f", {}, "rejected") == NO_PROGRESS_REJECTED
+
+
+def test_approval_pending_keeps_rejected_streak():
+    """park 的待核准項對連續被拒中性：不重置也不累加（否決後反覆提同一動作要累計）。"""
+    from uep.agent.budget import STATUS_APPROVAL_PENDING, observe_resumed
+
+    budget = LoopBudget(rejected_limit=3, repeat_limit=99)
+    counters = BudgetCounters()
+    observe_call(budget, counters, "a", {}, "rejected")
+    observe_call(budget, counters, "b", {}, STATUS_APPROVAL_PENDING)
+    assert counters.rejected_streak == 1
+    assert observe_resumed(budget, counters, "rejected") is None
+    observe_call(budget, counters, "c", {}, STATUS_APPROVAL_PENDING)
+    assert observe_resumed(budget, counters, "rejected") == NO_PROGRESS_REJECTED
+    assert observe_resumed(budget, counters, "ok") is None and counters.rejected_streak == 0
+
+
+def test_missing_rejected_key_in_old_checkpoint_counts_as_zero():
+    counters = BudgetCounters.from_checkpoint({"steps": 2})
+    assert counters.rejected_streak == 0
+    assert BudgetCounters.from_checkpoint({"rejected": 2}).rejected_streak == 2

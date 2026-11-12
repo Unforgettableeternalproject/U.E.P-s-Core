@@ -88,7 +88,7 @@ def test_bad_item_is_skipped_with_warning_and_others_still_resolve(caplog):
         o = r.resolve([broken, good], ov, tpe(2026, 11, 12, 15), TZ)
     assert s.availability == "available" and s.item_ref == "good"
     assert o.source == PlanSource.OVERRIDE  # override 不受壞項影響
-    assert sum("行程項資料無效" in rec.message for rec in caplog.records) >= 4
+    assert sum("行程項資料無效" in rec.message for rec in caplog.records) == 3
 
 
 def test_programming_errors_propagate():

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -44,6 +44,16 @@ _MAX_UPCOMING = 500
 LOOKBACK = timedelta(days=8)  # 向後掃描：只用來找上一個邊界（starts_at／directive_id 錨）
 DEFAULT_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)  # 預設格找不到上一個邊界時的固定錨
 logger = logging.getLogger(__name__)
+_warned_keys: set[tuple[str, str]] = set()  # (對象, 錯誤類別) 去重：同一問題不在每次 resolve 都重複 warning
+
+
+def _warn_once(key: tuple[str, str], message: str, *args) -> None:
+    if key in _warned_keys:
+        return
+    if len(_warned_keys) >= 1024:  # 上限：避免無限成長
+        _warned_keys.clear()
+    _warned_keys.add(key)
+    logger.warning(message, *args)
 
 
 @dataclass(frozen=True)
@@ -210,13 +220,15 @@ def _apply_delay(occs: list[_Occ], delay: PlanDelay | None, tz: str,
     anchor_start = _utc(delay.planned_start_at)
     anchor = next((o for o in occs if o.item.item_id == delay.item_ref and o.bp_start == anchor_start), None)
     if anchor is None:
-        logger.warning("delay 的 anchor 不在藍圖中，已忽略：item=%s planned_start=%s", delay.item_ref, anchor_start)
+        _warn_once((delay.item_ref, "delay_anchor_missing"), "delay 的 anchor 不在藍圖中，已忽略：item=%s planned_start=%s",
+                   delay.item_ref, anchor_start)
         return occs
     if (delay.item_ref, anchor_start) in marked:  # 投影優先序 abandon > pause > delay：被標記的出現不延長
         logger.debug("該次出現已被暫停／放棄，delay 失效：item=%s", delay.item_ref)
         return occs
     if anchor.item.role == "rest_window":
-        logger.warning("rest_window 不可被順延（PP-10），已忽略 delay：item=%s", delay.item_ref)
+        _warn_once((delay.item_ref, "delay_rest_window"), "rest_window 不可被順延（PP-10），已忽略 delay：item=%s",
+                   delay.item_ref)
         return occs
     hold = min(_utc(delay.held_until), round_bounds(anchor.bp_start, tz)[1])  # 不跨輪次
     if hold <= anchor.bp_end:
@@ -235,26 +247,31 @@ def _apply_delay(occs: list[_Occ], delay: PlanDelay | None, tz: str,
     return out
 
 
-def _apply_abandon(occs: list[_Occ], marks: Sequence[SlotMark], tz: str) -> list[_Occ]:
-    """abandon：該次出現自 mark.started_at 起轉 fallback REST（host），到出現終點或 mark 所屬輪次結束；其後依藍圖。"""
-    for mark in marks:
-        if mark.kind != "abandon":
-            continue
-        at, planned = _utc(mark.started_at), _utc(mark.planned_start_at)
-        target = next((o for o in occs if o.item.item_id == mark.item_ref and o.bp_start == planned and o.tag == ""
-                       and o.item.activity_kind == ActivityKind.WORK and o.start <= at < o.end), None)
-        if target is None:
-            logger.debug("abandon mark 沒有對應的工作出現，已忽略：item=%s", mark.item_ref)
-            continue
-        rend = round_bounds(at, tz)[1]
-        pieces: list[_Occ] = []
-        if at > target.start:
-            pieces.append(_Occ(target.item, target.bp_start, target.bp_end, target.start, at, target.delay_s))
-        pieces.append(_Occ(target.item, target.bp_start, target.bp_end, at, min(target.end, rend),
-                           target.delay_s, "abandoned"))
-        if rend < target.end:
-            pieces.append(_Occ(target.item, target.bp_start, target.bp_end, rend, target.end, target.delay_s))
-        occs = [x for o in occs for x in (pieces if o is target else [o])]
+def _apply_marks(occs: list[_Occ], marks: Sequence[SlotMark], tz: str) -> list[_Occ]:
+    """abandon／pause：該次出現自 mark.started_at 起轉 abandoned（host＋REST）或 paused（留原平台待命）。
+
+    兩者效力上限一致：出現終點或 mark 所屬輪次結束（取先到）；輪次結束後依藍圖。先處理 abandon 再處理 pause。
+    """
+    for kind, tag in (("abandon", "abandoned"), ("pause", "paused")):
+        for mark in marks:
+            if mark.kind != kind:
+                continue
+            at, planned = _utc(mark.started_at), _utc(mark.planned_start_at)
+            target = next((o for o in occs if o.item.item_id == mark.item_ref and o.bp_start == planned
+                           and o.tag == "" and o.item.activity_kind == ActivityKind.WORK
+                           and o.start <= at < o.end), None)
+            if target is None:
+                logger.debug("%s mark 沒有對應的工作出現，已忽略：item=%s", kind, mark.item_ref)
+                continue
+            rend = round_bounds(at, tz)[1]
+            pieces: list[_Occ] = []
+            if at > target.start:
+                pieces.append(_Occ(target.item, target.bp_start, target.bp_end, target.start, at, target.delay_s))
+            pieces.append(_Occ(target.item, target.bp_start, target.bp_end, at, min(target.end, rend),
+                               target.delay_s, tag))
+            if rend < target.end:
+                pieces.append(_Occ(target.item, target.bp_start, target.bp_end, rend, target.end, target.delay_s))
+            occs = [x for o in occs for x in (pieces if o is target else [o])]
     return occs
 
 
@@ -285,6 +302,8 @@ def resolve(items: list[PlanItem] | tuple[PlanItem, ...], override: OverrideView
     - 行程不可用是狀態值：行程時區（``tz``）無法載入 → ``availability="unavailable"``、``reason_code="tz_unavailable"``。
     - 單一壞項（資料驗證失敗：缺欄位、未知地點、項自身 tz 不可用）略過並 ``logger.warning``，override 與其他項照常解析。
     - TypeError／AttributeError 等程式錯誤不攔截，往上拋。
+    - 壞項 warning 以 (項, 錯誤類別) 去重，同一問題只記一次（進程內）。
+    - 輪次邊界（本地日界）與 mark／override 的效力上限一致；``delay`` 同樣不跨輪次。
     - ``marks``：暫停／放棄標記。投影優先序 override > abandon > pause > delay > 藍圖：
       abandon 令該次出現轉 host＋REST（``slot_state="abandoned"``）；pause 令工作格留在原平台待命、建議 [CHAT]
       （``slot_state="paused"``）；被標記的出現其 delay 失效。藍圖不改寫。
@@ -306,9 +325,10 @@ def _resolve(items, override, now: datetime, tz: str, rev: int, delay, marks) ->
         try:
             occs.extend(_item_occurrences(item, lo, hi))
         except (ZoneInfoNotFoundError, ValueError) as exc:
-            logger.warning("行程項資料無效，已略過：item=%s error=%s", getattr(item, "item_id", "?"), exc)
+            _warn_once((str(getattr(item, "item_id", "?")), type(exc).__name__),
+                       "行程項資料無效，已略過：item=%s error=%s", getattr(item, "item_id", "?"), exc)
     marked = frozenset((m.item_ref, _utc(m.planned_start_at)) for m in marks)
-    occs = _apply_abandon(_apply_delay(occs, delay, tz, marked), marks, tz)
+    occs = _apply_marks(_apply_delay(occs, delay, tz, marked), marks, tz)
     ov = override if override is not None and override.status in ("pending", "active") else None
 
     def key_at(t: datetime):
@@ -355,9 +375,7 @@ def _resolve(items, override, now: datetime, tz: str, rev: int, delay, marks) ->
     location = item.location if item.location is not None else PRESENCE_TARGET_HOST
     kind = ActivityKind.REST if item.location is None else item.activity_kind  # X3
     interrupt = item.interrupt_policy or default_interrupt_policy(kind)
-    paused = kind == ActivityKind.WORK and any(
-        m.kind == "pause" and m.item_ref == item.item_id and _utc(m.planned_start_at) == win.bp_start
-        and _utc(m.started_at) <= now for m in marks)
+    paused = win.tag == "paused"
     if paused:  # 留在原平台待命：位置與 activity_kind 不變，建議 [CHAT]
         return PlanSlot(location=location, activity_kind=kind, interrupt_policy=interrupt,
                         suggestions=suggestions_for(kind, source, slot_state="paused"),
@@ -374,7 +392,8 @@ def upcoming(items, override: OverrideView | None, start: datetime, horizon_s: i
     """[start, start+horizon) 內依序的投影格（含 start 當下那一格）。
 
     ``resolve`` 的 next_boundary_at 為 None 只代表掃描窗內沒有；這裡在 horizon 未到時往前推窗繼續找。
-    ``marks``／``delay`` 與 resolve 相同，對整段投影套用。
+    ``marks``／``delay`` 與 resolve 相同，對整段投影套用（「現在」的狀態，不預測未來才加入的標記）。
+    推窗時，前一格的 ends_at／next_boundary_at 補成下一格的起點。
     """
     end = _utc(start) + timedelta(seconds=horizon_s)
     kw = {"plan_revision": plan_revision, "delay": delay, "marks": marks}
@@ -390,9 +409,12 @@ def upcoming(items, override: OverrideView | None, start: datetime, horizon_s: i
             nxt = resolve(items, override, cur_t, tz, **kw)
             same = (nxt.source, nxt.item_ref, nxt.blueprint_start_at, nxt.slot_state) == (
                 slot.source, slot.item_ref, slot.blueprint_start_at, slot.slot_state)
+            if not same:  # 前一格在新格起點結束：補上 ends_at／next_boundary_at
+                out[-1] = replace(out[-1], ends_at=nxt.starts_at, next_boundary_at=nxt.starts_at)
+                out.append(nxt)
+            else:  # 同一格延續：把後續掃描找到的終點補回該格
+                out[-1] = replace(out[-1], ends_at=nxt.ends_at, next_boundary_at=nxt.next_boundary_at)
             slot = nxt
-            if not same:
-                out.append(slot)
             continue
         if slot.next_boundary_at >= end:
             break

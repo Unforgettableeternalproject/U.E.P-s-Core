@@ -46,6 +46,9 @@ turn.reply 的題目與 state 取自 `uep/decision/laya_schema.py`（訓練與�
   - 第三人稱提到她做過的事（稱讚、評論、回憶）、旁人之間的陳述、轉述別人的消息、不帶她能回答的問題的自言自語 → pass。
   - 「值得記下來」（例：航班改到週四）屬記憶功能，不進 reply_mode。
   - **能力依據**：她的能力只限電腦與各平台內的操作（查詢、訂位訂場、檔案與程式操作等），另加打電話、傳訊息、寄信等通訊；判斷時以訓練資料實際出現過的為準。電腦與平台以外的操作一律視為做不到，包括實體裝置控制（燈光、烤箱、窗戶等）與現場感知（看路標、看印表機墨水量等）。新增能力時，回頭檢查依此判為 pass 的題目。
+- **passive 收窄實作**：既有 passive 逐筆重審的結果在 `resolve.PASSIVE_NARROW`（`label_rule=passive_narrow`）；沒點名的翻譯請求等訓練資料沒出現過的能力改標 pass 見 `resolve.PASSIVE_CAPABILITY`（`label_rule=passive_capability`）。判準本身以上面「passive 界線」為準。
+- **r4 補強卡組**（`--card-set r4_passive｜r4_pass｜r4_side｜r4_defer｜r4_ack｜r4_mt｜r4_info`）：passive 三條正例、看似 passive 的 pass 反例、群組對旁人說的祈使句、defer（晚點再說／資訊不足／有風險）、ack、passive 第 1 條的資訊對照（r4_info：她給的資訊正要被使用＝passive，已核對／已結束＝pass）、貼近 MT 的雜訊說法；sample_id 前綴 `r4-`。生成走 `--export-prompts`／`--import-responses`，新列先過 `laya_data.leak_filter`（與 `en_test`、`en_reference`、`en_independent` 比對，近似重複者剔除，只輸出 id 與分數），再盲標（盲標員另帶上面的 passive 判準）。r4 列 reply_mode 為 pass／passive 時 route 一律視為 ignore（`resolve.normalize_r4_labels`），只比對 reply_mode 與 addressed。
+- 評估比較：`python -m laya_data.eval_testset compare --set NAME DATA R1_GLOB R2_GLOB [RULES]`，各欄位分列、passive／pass／defer 的 precision 與 recall、混淆矩陣與指定題逐題結果。
 - 一句多個指示先取第一個；`task` 與 `message` 的文字邊界由 `resolve.py` 的 `relay_vs_task` 規則判定，並須與盲標一致。
 - 對照卡（`synth.ABSENT_CONTRAST_CARDS`，`--card-set contrast`）另成一組，避免動到主卡組的 plan 而無法重現；卡片標籤改版後直接重跑 `python -m laya_data.resolve --mass-dir out/mass`（會依目前卡片重標 `synth_all.jsonl`、重算 accepted／disputed）。
 

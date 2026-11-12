@@ -113,6 +113,10 @@ DROPPED: dict[str, str] = {
 }
 
 
+def sid_is_r4(row: Mapping[str, Any]) -> bool:
+    return str(row["sample_id"]).startswith("r4-")
+
+
 def rule_of(row: Mapping[str, Any]) -> str:
     meta = row.get("meta") or {}
     return str(meta.get("label_rule") or CARD_RULES.get(meta.get("card", ""), ""))
@@ -210,7 +214,7 @@ def resolve_row(row: Mapping[str, Any], blind: Mapping[str, Any] | None) -> tupl
             return None, f"relay:rule_{label}_blind_{blind.get('absent.intent')}"
         return {**row, "expected": _expected_with(row, **{"absent.intent": label, "absent.target_location": "none"})}, f"relay_{label}"
     if rule == "ack_ruling":
-        if blind.get("reply_mode") != "pass" or blind.get("route") != "ignore":
+        if blind.get("reply_mode") != "pass" or (blind.get("route") != "ignore" and not sid_is_r4(row)):
             return None, "ack_ruling:blind_not_pass_ignore"
         return {**row, "expected": _expected_with(row, reply_mode="pass", addressed=True, route="ignore")}, "ack_ruling"
     if rule == "route_follows_action":
@@ -295,11 +299,27 @@ def relabel_from_cards(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
     return out, changed
 
 
+def normalize_r4_labels(rows: list[dict[str, Any]], labels: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """r4 新增列的盲標正規化：reply_mode 為 pass／passive 的列，route 只是結果（一律 ignore），盲標員依題目定義
+    把「對她說但不必回」的列標成 direct_chat 等，不代表分歧；reply_mode 與 addressed 一致時把 route 視為 ignore。
+    只動 sample_id 以 ``r4-`` 開頭者，既有列的比對不變。"""
+    out = dict(labels)
+    for r in rows:
+        sid = r["sample_id"]
+        if not sid.startswith("r4-") or sid not in labels:
+            continue
+        exp, got = r["expected"], labels[sid]
+        if exp.get("route") == "ignore" and exp.get("reply_mode") in ("pass", "passive")                 and got.get("reply_mode") == exp["reply_mode"] and got.get("addressed") == exp.get("addressed"):
+            out[sid] = {**got, "route": "ignore"}
+    return out
+
+
 def run(mass_dir: Path, val_ratio: float = 0.1, seed: int = 0) -> dict[str, Any]:
     rows, relabeled = relabel_from_cards(read_jsonl(mass_dir / "synth_all.jsonl"))
     rows = [r for r in rows if r["sample_id"] not in DROPPED]
     data = {r["sample_id"]: r for r in rows}
     labels = {r["sample_id"]: r["answers"] for r in read_jsonl(mass_dir / "labels.jsonl")}
+    labels = normalize_r4_labels(rows, labels)
     accepted, disputed, blind_stats = compare_labels(rows, labels)[:3]
     write_jsonl(mass_dir / "blind" / "accepted.jsonl", accepted)
     write_jsonl(mass_dir / "blind" / "disputed.jsonl", disputed)

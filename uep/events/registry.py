@@ -127,10 +127,19 @@ DEFAULT_EVENT_SPECS["input.utterance_final"] = EventSpec(
 _PARTICIPANT_KEYS = _keys("speaker_ref", "role")
 DEFAULT_EVENT_SPECS["conversation.participant_joined"] = EventSpec(_D, payload_keys=_PARTICIPANT_KEYS)
 DEFAULT_EVENT_SPECS["conversation.participant_left"] = EventSpec(_D, payload_keys=_PARTICIPANT_KEYS)
-# module coordinator 就緒事件（暫定：事件名與 payload 待 module coordinator 設計時確認；Agent架構與工具契約提案 §5.8）
-_MODULE_KEYS = _keys("module_id", "revision", "epoch")
-for _t in ("module.ready", "module.warming", "module.unavailable"):
-    DEFAULT_EVENT_SPECS[_t] = EventSpec(_D, payload_keys=_MODULE_KEYS)
+# module coordinator 事件（D108 R2；Module Coordinator 設計稿 §8）。鍵須與 ``uep.lifecycle.states`` 的
+# ``STATE_CHANGED_KEYS``／``PROVISION_RESOLVED_KEYS`` 一致（由測試鎖住；events 不 import lifecycle 以免循環）
+DEFAULT_EVENT_SPECS["module.state_changed"] = EventSpec(
+    _D,
+    payload_keys=_keys(
+        "module_id", "revision", "epoch", "state", "prev_state", "readiness", "reason_code", "cause", "decision_id",
+        "attempt",
+    ),
+)
+DEFAULT_EVENT_SPECS["module.provision_resolved"] = EventSpec(
+    _D,
+    payload_keys=_keys("module_id", "decision_id", "plan_version", "action", "outcome", "reason_code"),
+)
 
 
 class EventRegistry:

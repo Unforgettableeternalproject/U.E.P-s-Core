@@ -13,7 +13,7 @@ Lore Vault 是她自己的長期記憶與設定庫（原生能力），不屬於
 - 範圍：可存取所有 dev 與 lore 的 vault，Core 端不設 vault 白名單（space 限制由 Vault 服務端強制，Core 只留 space 檢查）。
   讀取類 vault 省略 = 該 space 全部（``*``）；寫入類 vault 必填。
 - 沒設定（URL／token）時 readiness 為 unavailable：條目以 ``requires=("lore",)`` 宣告，
-  ``with_lore`` 在未設定時對註冊表送 ``module.unavailable``，Gateway 不會投出也不會執行。
+  ``with_lore`` 在未設定時對註冊表送 ``module.state_changed``（readiness=unavailable），Gateway 不會投出也不會執行。
 """
 from __future__ import annotations
 
@@ -270,7 +270,7 @@ def lore_write_entries() -> list[ToolEntry]:
 def with_lore(registry: ToolRegistry, *, configured: bool, delete_enabled: bool = False) -> ToolRegistry:
     """在既有註冊表之上併入 lore 條目，回傳新的（已驗證、已凍結）註冊表；不改動傳入的實例，已含 lore 者原樣回傳（冪等）。
 
-    ``configured=False`` 時對新註冊表送 ``module.unavailable``：readiness 為 unavailable，Gateway 不投出也不執行；
+    ``configured=False`` 時對新註冊表送 ``module.state_changed``（readiness=unavailable）：readiness 為 unavailable，Gateway 不投出也不執行；
     組裝不失敗、也不會因 requires 含未知模組而警告。``lore.delete`` 另需 ``delete_enabled``（模組 ``lore_delete``）。"""
     existing = registry.entries()
     if any(name in existing for name in LORE_TOOLS):
@@ -278,7 +278,16 @@ def with_lore(registry: ToolRegistry, *, configured: bool, delete_enabled: bool 
     known = getattr(registry, "_known_modules", frozenset())  # 同套件內取（沒有公開存取子；與 with_testkit 一致）
     built = ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, LORE_MODULE, LORE_DELETE_MODULE})
     if not configured:
-        built.apply_module_event("module.unavailable", {"module_id": LORE_MODULE, "revision": 1})
+        built.apply_module_event(
+            "module.state_changed",
+            {"module_id": LORE_MODULE, "revision": 1, "state": "unloaded", "readiness": "unavailable", "reason_code": "not_configured"},
+        )
     if not delete_enabled:
-        built.apply_module_event("module.unavailable", {"module_id": LORE_DELETE_MODULE, "revision": 1})
+        built.apply_module_event(
+            "module.state_changed",
+            {
+                "module_id": LORE_DELETE_MODULE, "revision": 1, "state": "unloaded", "readiness": "unavailable",
+                "reason_code": "delete_disabled",
+            },
+        )
     return built

@@ -288,3 +288,30 @@ def test_whitelist_rules_catch_violations(tmp_path):
     found = _whitelist_violations(agent, "uep.decision", _AGENT_MAY_IMPORT_DECISION)
     assert sorted({v.split(":")[0] for v in found}) == ["bad_c.py"]
     assert len(found) == 3
+
+
+# Module Coordinator（D108）：lifecycle 只認 contracts 與 events，不得反向依賴工具／決策／Echo／Agent／串流或子系統
+_LIFECYCLE_FORBIDDEN = ("uep.tools", "uep.decision", "uep.echo", "uep.stream", "uep.agent")
+
+
+def test_lifecycle_stays_independent_of_tools_decision_echo_stream_and_subsystems():
+    root = UEP_ROOT / "lifecycle"
+    assert root.is_dir()
+    for target in _LIFECYCLE_FORBIDDEN:
+        violations = _whitelist_violations(root, target, ())
+        assert not violations, f"uep/lifecycle 不得 import {target}：\n" + "\n".join(violations)
+    for path in sorted(root.rglob("*.py")):
+        hit = _imported_top_levels(path) & (SUBSYSTEM_NAMES | LEGACY_NAMES | RETIRED_NAMES)
+        assert not hit, f"uep/lifecycle/{path.name} 不得 import 子系統／legacy：{sorted(hit)}"
+
+
+def test_provision_contract_depends_on_nothing_in_uep():
+    modules = {m for m in _resolved_imports(UEP_ROOT / "contracts" / "provision.py", ("uep",)) if m.split(".")[0] == "uep"}
+    assert not modules, f"uep/contracts/provision.py 必須零依賴：{sorted(modules)}"
+
+
+def test_lifecycle_boundary_rule_catches_violations(tmp_path):
+    (tmp_path / "bad.py").write_text("from uep.tools.registry import ToolRegistry\nimport uep.decision\n", encoding="utf-8")
+    (tmp_path / "ok.py").write_text("from uep.contracts.provision import ProvisionItem\nfrom uep.events import bus\n", encoding="utf-8")
+    found = _whitelist_violations(tmp_path, "uep.tools", ()) + _whitelist_violations(tmp_path, "uep.decision", ())
+    assert sorted({v.split(":")[0] for v in found}) == ["bad.py"] and len(found) == 2

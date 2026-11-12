@@ -1,7 +1,6 @@
 """module.* 就緒事件訂閱（切片 F，註冊表端）。
 
-暫定：事件名（``module.ready``／``module.warming``／``module.unavailable``）與 payload
-``{module_id, revision, epoch?}`` 待 module coordinator 設計時確認（Agent架構與工具契約提案 §5.8）；
+事件為單一類型 ``module.state_changed``（payload 含 ``readiness``，D108 R2；Module Coordinator 設計稿 §8）；
 coordinator 本體不在此處。亂序／重送／未知模組由 ``ToolRegistry.apply_module_event`` 以 ``(epoch, revision)`` 處理。
 """
 from __future__ import annotations
@@ -11,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from uep.events.envelope import UEPEvent
-from uep.tools.registry import MODULE_EVENT_STATES
+from uep.tools.registry import MODULE_EVENT_TYPE
 
 logger = logging.getLogger("uep.tools.module_events")
 
@@ -27,7 +26,7 @@ def subscribe_module_events(bus: Any, registry: Any) -> Callable[[], None]:
         except Exception as exc:  # noqa: BLE001  錯誤隔離
             logger.error("模組事件處理失敗（%s）：%s", event.event_type, type(exc).__name__)
 
-    types = tuple(MODULE_EVENT_STATES)
+    types = (MODULE_EVENT_TYPE,)
     for event_type in types:
         bus.subscribe(event_type, handler)
     cancelled = False

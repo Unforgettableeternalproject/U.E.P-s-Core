@@ -35,7 +35,7 @@ def cap_of(registry: ToolRegistry) -> dict:
 
 
 def event(registry: ToolRegistry, kind: str, module: str, revision: int) -> None:
-    assert registry.apply_module_event(f"module.{kind}", {"module_id": module, "revision": revision})
+    assert registry.apply_module_event("module.state_changed", {"module_id": module, "revision": revision, "readiness": kind})
 
 
 # ---- 投出後才轉非 ready ----

@@ -1,4 +1,4 @@
-"""切片 F：module.* 就緒事件訂閱（註冊表端；事件名暫定，module coordinator 待設計）。離線，不需 DB（除組裝一項）。
+"""切片 F：module.* 就緒事件訂閱（註冊表端；D108 R2：單一事件類型 module.state_changed）。離線，不需 DB（除組裝一項）。
 
 fake coordinator 經真 Bus 發事件 -> ``registry.readiness`` -> 投影（warming 進 pending、unavailable 不投出）
 -> Gateway 執行前檢查（``tool_not_ready``）；亂序／重送忽略；handler 例外隔離；退訂後不再接收。
@@ -39,8 +39,8 @@ class FakeCoordinator:
     def emit(self, state: str, revision: int, module_id: str = MODULE, **extra: Any) -> None:
         self._n += 1
         draft = EventDraft(
-            event_type=f"module.{state}", idempotency_key=f"mc-{self._n}",
-            payload={"module_id": module_id, "revision": revision, **extra},
+            event_type="module.state_changed", idempotency_key=f"mc-{self._n}",
+            payload={"module_id": module_id, "revision": revision, "readiness": state, **extra},
         )
         trusted = TrustedContext(source="module.coordinator", actor_id="system", scope_ref="scope_public", external=False)
         self.bus.publish(build_event(draft, trusted), sync=True)
@@ -103,11 +103,11 @@ def test_handler_exception_is_isolated_from_bus_and_other_subscribers(caplog):
     registry = _registry()
     seen: list[str] = []
     subscribe_module_events(bus, Boom())
-    bus.subscribe("module.ready", lambda e: seen.append(e.event_type))  # 其他訂閱者
+    bus.subscribe("module.state_changed", lambda e: seen.append(e.event_type))  # 其他訂閱者
     subscribe_module_events(bus, registry)  # 同事件上的另一個正常 registry 訂閱者
     with caplog.at_level(logging.ERROR, logger="uep.tools.module_events"):
         FakeCoordinator(bus).emit("ready", 1)
-    assert seen == ["module.ready"] and registry.readiness("speak.tool") == "ready"
+    assert seen == ["module.state_changed"] and registry.readiness("speak.tool") == "ready"
     assert "RuntimeError" in caplog.text and "私人內容" not in caplog.text
     assert bus.get_stats()["handler_errors"] == 0  # 已在 handler 內吞掉，不外溢給 Bus
 
@@ -129,7 +129,9 @@ def test_real_consumer_thread_delivers_events():
     bus.start()
     try:
         trusted = TrustedContext(source="module.coordinator", actor_id="system", scope_ref="scope_public", external=False)
-        draft = EventDraft(event_type="module.ready", idempotency_key="mc-async", payload={"module_id": MODULE, "revision": 1})
+        draft = EventDraft(event_type="module.state_changed", idempotency_key="mc-async",
+            payload={"module_id": MODULE, "revision": 1, "readiness": "ready"},
+        )
         bus.publish(build_event(draft, trusted))
     finally:
         bus.stop()  # 排空佇列

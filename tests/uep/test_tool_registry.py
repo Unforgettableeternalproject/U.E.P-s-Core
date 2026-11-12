@@ -407,7 +407,7 @@ def test_ra15_requires_and_readiness():
     # （舊斷言 "ready" 會讓需預熱的工具在預熱完成前被投出給模型）
     built = ToolRegistry.build([entry], known_modules=["gpu:indextts"])
     assert built.readiness("demo.tool") == "warming"
-    built.apply_module_event("module.ready", {"module_id": "gpu:indextts", "revision": 1})
+    built.apply_module_event("module.state_changed", {"module_id": "gpu:indextts", "revision": 1, "readiness": "ready"})
     assert built.readiness("demo.tool") == "ready"
     cold = make_entry(requires=("gpu:indextts",))  # 沒有 warm_required：已知模組維持預設 ready
     assert ToolRegistry.build([cold], known_modules=["gpu:indextts"]).readiness("demo.tool") == "ready"

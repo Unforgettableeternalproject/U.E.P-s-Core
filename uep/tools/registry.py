@@ -88,9 +88,9 @@ _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _SCALAR_TYPES = frozenset({"string", "integer", "number", "boolean"})
 
 Readiness = Literal["ready", "warming", "unavailable"]
-MODULE_EVENT_STATES: Mapping[str, Readiness] = MappingProxyType({
-    "module.ready": "ready", "module.warming": "warming", "module.unavailable": "unavailable",
-})
+# D108 R2：單一事件類型，readiness 由 coordinator 計算並放在 payload（註冊表不重新推導）
+MODULE_EVENT_TYPE = "module.state_changed"
+_READINESS_VALUES: frozenset[str] = frozenset({"ready", "warming", "unavailable"})
 
 
 class ToolRegistryError(ValueError):
@@ -525,20 +525,21 @@ class ToolRegistry:
         return result
 
     def apply_module_event(self, event_type: str, payload: Mapping[str, Any]) -> bool:
-        """接 module coordinator 事件（``module.ready``／``module.warming``／``module.unavailable``，
-        payload ``{module_id, revision, epoch?, reason_code?}``，§5.8）。以 ``(epoch, revision)`` 的字典序取**最新**：
+        """接 module coordinator 事件（``module.state_changed``，payload 取 ``{module_id, revision, epoch?, readiness}``，
+        其餘鍵如 ``state``／``reason_code`` 此處不使用；§5.8、D108 R2）。``readiness`` 必須是 ready／warming／unavailable，
+        否則忽略。以 ``(epoch, revision)`` 的字典序取**最新**：
         epoch 變大（module coordinator 重啟）時 revision 重新計；沒有 epoch 視為 0。排序鍵不大於已記錄者
         （重送、亂序）一律忽略；未知事件、未知模組、格式不符也忽略（維持原狀態，fail-closed）並記警告。
         回傳是否採用。"""
-        state = MODULE_EVENT_STATES.get(event_type)
         body = payload if isinstance(payload, Mapping) else {}
         module, revision, epoch = body.get("module_id"), body.get("revision"), body.get("epoch", 0)
+        state = body.get("readiness") if event_type == MODULE_EVENT_TYPE else None
         if (
-            state is None or not isinstance(module, str)
+            not isinstance(state, str) or state not in _READINESS_VALUES or not isinstance(module, str)
             or isinstance(revision, bool) or not isinstance(revision, int)
             or isinstance(epoch, bool) or not isinstance(epoch, int)
         ):
-            logger.warning("忽略格式不符的模組事件：%s", event_type if state is None else "payload")
+            logger.warning("忽略格式不符的模組事件：%s", event_type if event_type != MODULE_EVENT_TYPE else "payload")
             return False
         if module not in self._known_modules:
             logger.debug("忽略未知模組的事件：%s", module)

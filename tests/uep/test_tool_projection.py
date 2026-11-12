@@ -211,9 +211,9 @@ def test_al3_ceiling_is_the_upper_bound_even_when_readiness_changes():
         known_modules=["gpu:x"],
     )
     ctx = ProjectionContext()
-    reg.apply_module_event("module.warming", {"module_id": "gpu:x", "revision": 1})
+    reg.apply_module_event("module.state_changed", {"module_id": "gpu:x", "revision": 1, "readiness": "warming"})
     assert names(reg.project({"memory.read"}, ctx, ceiling={"memory.read"})) == ["deep_recall"]
-    reg.apply_module_event("module.ready", {"module_id": "gpu:x", "revision": 2})
+    reg.apply_module_event("module.state_changed", {"module_id": "gpu:x", "revision": 2, "readiness": "ready"})
     assert names(reg.project({"memory.read"}, ctx, ceiling={"memory.read"})) == ["deep_recall", "warm.tool"]
     assert names(reg.project({"memory.read"}, ctx, ceiling={"memory.write"})) == []
 
@@ -232,7 +232,9 @@ class FakeModuleCoordinator:
         if revision is None:
             self._rev += 1
             revision = self._rev
-        return self.registry.apply_module_event(f"module.{state}", {"module_id": module_id, "revision": revision, **extra})
+        return self.registry.apply_module_event(
+            "module.state_changed", {"module_id": module_id, "revision": revision, "readiness": state, **extra}
+        )
 
 
 @pytest.fixture()
@@ -285,9 +287,9 @@ def test_readiness_bad_events_are_ignored_fail_closed(warm_registry):
     mc.emit("unavailable")
     reg = warm_registry
     assert not reg.apply_module_event("module.exploded", {"module_id": "gpu:indextts", "revision": 99})
-    assert not reg.apply_module_event("module.ready", {"module_id": "gpu:indextts"})  # 缺 revision
-    assert not reg.apply_module_event("module.ready", {"module_id": "gpu:indextts", "revision": True})
-    assert not reg.apply_module_event("module.ready", {"module_id": "gpu:unknown", "revision": 99})  # 未知模組
+    assert not reg.apply_module_event("module.state_changed", {"module_id": "gpu:indextts", "readiness": "ready"})  # 缺 revision
+    assert not reg.apply_module_event("module.state_changed", {"module_id": "gpu:indextts", "revision": True, "readiness": "ready"})
+    assert not reg.apply_module_event("module.state_changed", {"module_id": "gpu:unknown", "revision": 99, "readiness": "ready"})  # 未知模組
     assert reg.readiness("speak.tool") == "unavailable"
 
 
@@ -924,16 +926,16 @@ def test_al3_prior_random_property(registry):
 def test_readiness_epoch_orders_before_revision(warm_registry):
     reg = warm_registry
     ev = reg.apply_module_event
-    assert ev("module.ready", {"module_id": "gpu:indextts", "revision": 50})  # epoch 缺省＝0
+    assert ev("module.state_changed", {"module_id": "gpu:indextts", "revision": 50, "readiness": "ready"})  # epoch 缺省＝0
     assert reg.readiness("speak.tool") == "ready"
-    assert not ev("module.unavailable", {"module_id": "gpu:indextts", "revision": 10})  # 同 epoch 舊 revision
-    assert ev("module.unavailable", {"module_id": "gpu:indextts", "revision": 1, "epoch": 1})  # epoch 變大：revision 重算
+    assert not ev("module.state_changed", {"module_id": "gpu:indextts", "revision": 10, "readiness": "unavailable"})  # 同 epoch 舊 revision
+    assert ev("module.state_changed", {"module_id": "gpu:indextts", "revision": 1, "epoch": 1, "readiness": "unavailable"})  # epoch 變大：revision 重算
     assert reg.readiness("speak.tool") == "unavailable"
-    assert not ev("module.ready", {"module_id": "gpu:indextts", "revision": 999, "epoch": 0})  # 舊 epoch 的遲到事件
-    assert not ev("module.ready", {"module_id": "gpu:indextts", "revision": 1, "epoch": 1})  # 同鍵重送
-    assert ev("module.ready", {"module_id": "gpu:indextts", "revision": 2, "epoch": 1})
-    assert not ev("module.ready", {"module_id": "gpu:indextts", "revision": 3, "epoch": "1"})  # 型別不合：忽略
-    assert not ev("module.ready", {"module_id": "gpu:indextts", "revision": 3, "epoch": True})
+    assert not ev("module.state_changed", {"module_id": "gpu:indextts", "revision": 999, "epoch": 0, "readiness": "ready"})  # 舊 epoch 的遲到事件
+    assert not ev("module.state_changed", {"module_id": "gpu:indextts", "revision": 1, "epoch": 1, "readiness": "ready"})  # 同鍵重送
+    assert ev("module.state_changed", {"module_id": "gpu:indextts", "revision": 2, "epoch": 1, "readiness": "ready"})
+    assert not ev("module.state_changed", {"module_id": "gpu:indextts", "revision": 3, "epoch": "1", "readiness": "ready"})  # 型別不合：忽略
+    assert not ev("module.state_changed", {"module_id": "gpu:indextts", "revision": 3, "epoch": True, "readiness": "ready"})
     assert reg.readiness("speak.tool") == "ready"
 
 
@@ -948,7 +950,7 @@ def test_project_uses_one_readiness_snapshot_and_its_revision(warm_registry, mon
     def racing(entry, states):
         calls["n"] += 1
         if calls["n"] == 1:  # 投影途中來了一個 unavailable 事件
-            reg.apply_module_event("module.unavailable", {"module_id": "gpu:indextts", "revision": 99})
+            reg.apply_module_event("module.state_changed", {"module_id": "gpu:indextts", "revision": 99, "readiness": "unavailable"})
         return original(entry, states)
 
     monkeypatch.setattr(reg, "_readiness_in", racing)

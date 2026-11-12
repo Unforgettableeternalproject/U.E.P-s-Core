@@ -407,7 +407,7 @@ def test_pending_tool_not_ready_parks_again_and_a_later_resume_completes():
     action = stable_action_id(RUN, "step_1", 1)
     checkpoint = _park_checkpoint(rig)
     rig.tasks.grant("appr_ok", action)
-    assert registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    assert registry.apply_module_event("module.state_changed", {"module_id": "mod:b", "revision": 1, "readiness": "warming"})
     parks_before = len(rig.tasks.park_calls)
 
     out = _resume(rig, checkpoint, {action: "appr_ok"}, projector=stale)
@@ -416,7 +416,7 @@ def test_pending_tool_not_ready_parks_again_and_a_later_resume_completes():
     assert rig.tasks.approvals["appr_ok"].consumed_by is None and action not in rig.tasks.outcomes
     assert rig.tasks.run_status == []  # 沒有失敗
 
-    assert registry.apply_module_event("module.ready", {"module_id": "mod:b", "revision": 2})
+    assert registry.apply_module_event("module.state_changed", {"module_id": "mod:b", "revision": 2, "readiness": "ready"})
     done = _resume(rig, _park_checkpoint(rig), {action: "appr_ok"}, epoch=3, projector=stale)
     assert done.state == "completed" and rig.tasks.approvals["appr_ok"].consumed_by == action
     assert [t for _, t in rig.tasks.executions] == ["read.lone", "post.mod"]
@@ -441,7 +441,7 @@ def test_precheck_reparks_while_module_is_not_ready_and_completes_after_it_recov
     rig, registry, action = _module_rig()
     checkpoint = _park_checkpoint(rig)
     rig.tasks.grant("appr_ok", action)
-    assert registry.apply_module_event(f"module.{state}", {"module_id": "mod:b", "revision": 1})
+    assert registry.apply_module_event("module.state_changed", {"module_id": "mod:b", "revision": 1, "readiness": state})
     assert "post.mod" not in {t["tool"] for t in projector_for(registry)(TAGS, None)["tools"]}  # 真實投影已排除它
     parks = len(rig.tasks.park_calls)
 
@@ -452,7 +452,7 @@ def test_precheck_reparks_while_module_is_not_ready_and_completes_after_it_recov
     # AL-3：再 park 不改寫 checkpoint，被暫時排除的工具仍在 visible_tools，下一次 resume 重新跑完整預檢
     assert _park_checkpoint(rig) == checkpoint
 
-    assert registry.apply_module_event("module.ready", {"module_id": "mod:b", "revision": 2})
+    assert registry.apply_module_event("module.state_changed", {"module_id": "mod:b", "revision": 2, "readiness": "ready"})
     done = _resume(rig, _park_checkpoint(rig), {action: "appr_ok"}, epoch=3)
     assert done.state == "completed" and rig.tasks.approvals["appr_ok"].consumed_by == action
     assert [t for _, t in rig.tasks.executions] == ["read.lone", "post.mod"]
@@ -461,7 +461,7 @@ def test_precheck_reparks_while_module_is_not_ready_and_completes_after_it_recov
 def test_precheck_reparks_again_each_time_it_is_still_not_ready():
     rig, registry, _action = _module_rig()
     checkpoint = _park_checkpoint(rig)
-    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    registry.apply_module_event("module.state_changed", {"module_id": "mod:b", "revision": 1, "readiness": "warming"})
     for epoch in (2, 3, 4):
         assert _resume(rig, checkpoint, None, epoch=epoch).state == "awaiting_approval"
     assert len(rig.tasks.park_calls) == 4 and rig.tasks.run_status == []
@@ -497,7 +497,7 @@ def test_precheck_not_in_frozen_set_is_capability_revoked():
     rig, registry, _action = _module_rig()
     checkpoint = _park_checkpoint(rig)
     checkpoint["frozen_tools"] = {k: v for k, v in checkpoint["frozen_tools"].items() if k != "post.mod"}
-    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})  # 即使同時非 ready 也是撤銷
+    registry.apply_module_event("module.state_changed", {"module_id": "mod:b", "revision": 1, "readiness": "warming"})  # 即使同時非 ready 也是撤銷
     out = _resume(rig, checkpoint, None)
     assert (out.state, out.reason_code) == ("failed", "capability_revoked")
 
@@ -541,7 +541,7 @@ def test_precheck_repark_with_superseded_epoch_stops_without_marking_parked():
     """預檢再 park 時 park_run 發現 Run 已被別的 worker 接手 ⇒ stale，不 mark_parked。"""
     rig, registry, _action = _module_rig()
     checkpoint = _park_checkpoint(rig)
-    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    registry.apply_module_event("module.state_changed", {"module_id": "mod:b", "revision": 1, "readiness": "warming"})
     entries_before = list(rig.store.parent_entries["ctx_parent"])
     loop = _crash(rig, 2, rounds=[Round("不該到這裡")])
     original = rig.tasks.park_run
@@ -563,10 +563,10 @@ def test_policy_excluded_and_warming_reparks_but_becomes_revoked_once_ready():
     checkpoint = _park_checkpoint(rig)
     base = projector_for(registry)
     policy_excluded = lambda tags, prior: {"tools": [t for t in base(tags, prior)["tools"] if t["tool"] != "post.mod"]}
-    registry.apply_module_event("module.warming", {"module_id": "mod:b", "revision": 1})
+    registry.apply_module_event("module.state_changed", {"module_id": "mod:b", "revision": 1, "readiness": "warming"})
     first = _resume(rig, checkpoint, None, projector=policy_excluded)
     assert first.state == "awaiting_approval" and rig.tasks.run_status == []
-    registry.apply_module_event("module.ready", {"module_id": "mod:b", "revision": 2})
+    registry.apply_module_event("module.state_changed", {"module_id": "mod:b", "revision": 2, "readiness": "ready"})
     second = _resume(rig, _park_checkpoint(rig), None, epoch=3, projector=policy_excluded)
     assert (second.state, second.reason_code) == ("failed", "capability_revoked")
 

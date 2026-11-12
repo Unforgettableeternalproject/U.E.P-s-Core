@@ -52,7 +52,7 @@ def test_enabled_tags_excludes_disabled_and_unavailable_but_keeps_warming():
     # disabled 不算；requires 未知 -> unavailable 不算；warming 算（在投影裡是 pending，等轉 ready）
     assert reg.readiness("chat.warm") == "warming" and reg.readiness("lore.gone") == "unavailable"
     assert reg.enabled_tags() == frozenset({"memory.read", "chatroom.read"})
-    reg.apply_module_event("module.unavailable", {"module_id": "gpu:x", "revision": 1})
+    reg.apply_module_event("module.state_changed", {"module_id": "gpu:x", "revision": 1, "readiness": "unavailable"})
     assert reg.enabled_tags() == frozenset({"memory.read"})
 
 

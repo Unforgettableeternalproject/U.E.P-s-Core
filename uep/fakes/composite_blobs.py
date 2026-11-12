@@ -17,6 +17,7 @@ class InMemoryCompositeBlobStore:
     hashes: dict[str, str] = field(default_factory=dict)
     owners: dict[str, str] = field(default_factory=dict)
     fail_put: bool = False
+    delete_calls: int = 0
     _seq: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -38,6 +39,7 @@ class InMemoryCompositeBlobStore:
 
     def delete_run(self, run_id: str) -> int:
         with self._lock:
+            self.delete_calls += 1
             refs = [r for r, owner in self.owners.items() if owner == run_id and r in self.blobs]
             for ref in refs:
                 del self.blobs[ref]

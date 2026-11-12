@@ -114,6 +114,23 @@ def test_ttl_expired_blob_reads_as_missing_and_is_purged_on_next_put(session_fac
         assert s.get(PayloadBlob, ref).content is None
 
 
+def test_delete_run_also_purges_expired_blobs_of_other_runs(session_factory):
+    now = [datetime.now(UTC)]
+    store = _store(session_factory, ttl_s=60, clock=lambda: now[0])
+    old, _ = store.put("run_A", b"old-secret")
+    now[0] += timedelta(seconds=61)
+    store.delete_run("run_nobody")  # 沒有新寫入，只呼叫 delete_run
+    with session_factory() as s:
+        row = s.get(PayloadBlob, old)
+        assert row.content is None and row.deleted_at is not None
+
+
+def test_empty_content_roundtrip(session_factory):
+    store = _store(session_factory)
+    ref, digest = store.put("run_A", b"")
+    assert store.get(ref) == b"" and store.verify(b"", digest)
+
+
 def test_ttl_boundary_keeps_fresh_blob(session_factory):
     now = [datetime.now(UTC)]
     store = _store(session_factory, ttl_s=60, clock=lambda: now[0])

@@ -53,6 +53,7 @@ from uep.agent.composite_blobs import (
     BLOB_SIZE_KEY,
     DEFAULT_BLOB_MAX_BYTES,
     CompositeBlobStore,
+    run_ref_prefix,
 )
 from uep.agent.core import (
     AgentCore,
@@ -225,6 +226,7 @@ class _State:
     escalate_gap: str = ""  # escalate 的缺口碼（進終態 checkpoint，崩潰後仍可重送候選事件）
     unresolved: bool = False  # 本次執行中出現過 UNKNOWN 的 action：Run 不可宣稱 SUCCEEDED
     usage_seen: dict[str, int] = field(default_factory=dict)
+    blobs_written: bool = False  # 本 Run 寫過（或續跑時 cursor 帶有）composite text blob：終態才需要 delete_run
     composite_cursor: dict[str, Any] | None = None  # 進行中的 composite（§5.7.4）：進 checkpoint，完成即清除
     batch: _BatchCtx | None = None  # 目前批次的呼叫／文字／已得結果（composite 逐步 checkpoint 重建 history 用）
     deadline_flag: LoopReason | None = None  # 心跳讀到 Supervisor 的 deadline 取消旗標（F-4）：下一次 gate 自行收尾
@@ -426,6 +428,7 @@ class AgentLoop:
             if st.composite_cursor is None:  # 形狀不合：不猜、不從頭重播已成功的步驟
                 logger.error("composite_cursor 形狀不合，不續跑：run=%s", run_id)
                 return self._guarded(st, lambda: self._finish(st, "failed", LoopReason.CHECKPOINT_INCOMPLETE))
+            st.blobs_written = any(BLOB_REF_KEY in row for row in st.composite_cursor["rows"])
         pending = frozenset(checkpoint.get("pending_approvals") or ())
         if not self._resume_consistent(st, pending):  # pending／cursor 與 history 對不上：不猜，fail-closed
             logger.error("checkpoint 的 pending_approvals／composite_cursor 與 history 不一致，不續跑：run=%s", run_id)
@@ -832,7 +835,7 @@ class AgentLoop:
         discard = getattr(self._consults, "discard_run", None)
         if callable(discard):
             discard(st.run_id)
-        if self._composite_blobs is not None:  # D110：Run 終態即刪 composite 的 text blob（TTL 只是兜底）
+        if self._composite_blobs is not None and st.blobs_written:  # D110：Run 終態即刪 composite 的 text blob（TTL 只是兜底）
             try:
                 self._composite_blobs.delete_run(st.run_id)
             except Exception as exc:  # noqa: BLE001 - 清理失敗不影響 Run 終態
@@ -1634,7 +1637,7 @@ class AgentLoop:
                 st.composite_cursor = self._cursor_of(m.ordinal, entry, rows)
                 return step_result
             if j in text_steps and step_result["status"] == "ok":
-                self._persist_text(m.run_id, sub_ids[j], step_result)
+                st.blobs_written = self._persist_text(m.run_id, sub_ids[j], step_result) or st.blobs_written
             rows.append(step_result)
             self._composite_progress(st, m, entry, rows)
 
@@ -1653,23 +1656,24 @@ class AgentLoop:
                     found.add(ref.step)
         return frozenset(found)
 
-    def _persist_text(self, run_id: str, action_id: str, row: dict[str, Any]) -> None:
+    def _persist_text(self, run_id: str, action_id: str, row: dict[str, Any]) -> bool:
         """把子步驟的 text 存成可刪除 blob，並在逐步狀態列記 ``{ref, hash, size}``（不存原文）。
         取不到文字、超過單筆上限、寫入失敗都不寫引用：該步驟的輸出跨重啟不可得，續跑時 fail-closed。"""
         store = self._composite_blobs
         text = self._content_lookup(action_id) if self._content_lookup is not None else None
-        if store is None or text is None:
-            return
+        if store is None or text is None or self._composite_blob_max <= 0:
+            return False
         data = text.encode("utf-8")
-        if not 0 < len(data) <= self._composite_blob_max:
-            logger.warning("composite text 超過持久化上限或為空，不落地：run=%s size=%d", run_id, len(data))
-            return
+        if len(data) > self._composite_blob_max:
+            logger.warning("composite text 超過持久化上限，不落地：run=%s size=%d", run_id, len(data))
+            return False
         try:
             ref, digest = store.put(run_id, data)
         except Exception as exc:  # noqa: BLE001 - 持久化失敗不影響本次執行
             logger.warning("composite text 持久化失敗：%s", type(exc).__name__)
-            return
+            return False
         row[BLOB_REF_KEY], row[BLOB_HASH_KEY], row[BLOB_SIZE_KEY] = ref, digest, len(data)
+        return True
 
     def _blob_text(self, run_id: str, row: Mapping[str, Any]) -> str | None:
         """依逐步狀態列的引用讀回 text 並驗雜湊與大小；任何一項不符（含引用形狀不合、超過上限）都回 None（呼叫端 fail-closed）。"""
@@ -1677,9 +1681,12 @@ class AgentLoop:
         ref, digest, size = row.get(BLOB_REF_KEY), row.get(BLOB_HASH_KEY), row.get(BLOB_SIZE_KEY)
         if store is None or ref is None:
             return None
+        if not isinstance(ref, str) or not ref.startswith(run_ref_prefix(run_id)):  # 只認本 Run 的 blob
+            logger.warning("composite blob 引用不屬於本 Run，不續跑：run=%s", run_id)
+            return None
         if not (isinstance(ref, str) and isinstance(digest, str) and isinstance(size, int) and not isinstance(size, bool)):
             return None
-        if not 0 < size <= self._composite_blob_max:
+        if not 0 <= size <= self._composite_blob_max:
             logger.warning("composite blob 超過單筆上限，不續跑：run=%s size=%d", run_id, size)
             return None
         try:

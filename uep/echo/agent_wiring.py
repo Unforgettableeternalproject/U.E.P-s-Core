@@ -663,6 +663,11 @@ class LoopLauncher:
             try:
                 self._tasks.transition_run(run.run_id, RunStatus.FAILED, worker_epoch=run.worker_epoch)
                 status = RunStatus.FAILED.value
+                if self._composite_blobs is not None:  # D110：Run 在這裡進終態，Loop 的收尾沒跑到，補刪 composite blob
+                    try:
+                        self._composite_blobs.delete_run(run.run_id)
+                    except Exception as exc:  # noqa: BLE001 - 清理失敗不影響 Run 終態
+                        logger.warning("composite blob 清理失敗：%s", type(exc).__name__)
             except Exception:
                 logger.exception("Run 轉 FAILED 失敗：run=%s", run.run_id)
         succeeded = ok and status == RunStatus.SUCCEEDED.value

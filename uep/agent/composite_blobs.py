@@ -5,7 +5,10 @@
 cursor 的逐步狀態列只記 ``{ref, hash, size}``，checkpoint／receipt 不放原文（D33 不變）。
 
 續跑時讀 blob 並驗雜湊；blob 遺失、雜湊不符、超過單筆上限都維持 fail-closed（Run 以 ``intent_rejected`` 結束、
-核准不消耗、不喚醒模型）。Run 進終態即刪除該 Run 的 blob，TTL 是兜底。未注入 store 時行為與先前完全相同。
+核准不消耗、不喚醒模型）。Run 進終態即刪除該 Run 的 blob，TTL 是兜底。
+
+TTL 不得短於核准有效期：核准在 TTL 之後才到，blob 已過期，續跑會 fail-closed（核准不消耗、Run 失敗）。
+核准的有效期由呼叫端在 ``record_approval(expiry=...)`` 給，Core 沒有預設值；目前唯一的 production 呼叫端（Console）給 10 分鐘。未注入 store 時行為與先前完全相同。
 
 本模組只定義介面與常數；DB 實作在 ``uep.events.composite_blobs``，離線實作在 ``uep.fakes.composite_blobs``。
 """
@@ -19,6 +22,12 @@ BLOB_REF_KEY = "text_blob_ref"
 BLOB_HASH_KEY = "text_blob_hash"
 BLOB_SIZE_KEY = "text_blob_size"
 BLOB_ROW_KEYS = (BLOB_REF_KEY, BLOB_HASH_KEY, BLOB_SIZE_KEY)
+BLOB_REF_PREFIX = "cblob:"
+
+
+def run_ref_prefix(run_id: str) -> str:
+    """ref 的前綴約定：``cblob:<run_id>:``。Loop 讀 blob 前會驗 ref 屬於本 Run，store 的 ``delete_run`` 也依此前綴刪除。"""
+    return f"{BLOB_REF_PREFIX}{run_id}:"
 DEFAULT_BLOB_MAX_BYTES = 65536  # 單筆上限的預設（UTF-8 位元組）；超過者不落地、續跑時 fail-closed
 
 
@@ -27,7 +36,8 @@ class CompositeBlobStore(Protocol):
 
     def put(self, run_id: str, data: bytes) -> tuple[str, str]:
         """寫入並回傳 ``(ref, hash)``；失敗（例如沒有雜湊密鑰）拋例外，呼叫端視為未持久化。
-        ``ref``／``hash`` 都要能進 checkpoint：<= 64 字元、字元集 ``[A-Za-z0-9_.:-]``。"""
+        ``ref`` 必須以 ``run_ref_prefix(run_id)`` 開頭（``cblob:<run_id>:``）；``ref``／``hash`` 都要能進 checkpoint：
+        <= 64 字元、字元集 ``[A-Za-z0-9_.:-]``。"""
         ...
 
     def get(self, ref: str) -> bytes | None:

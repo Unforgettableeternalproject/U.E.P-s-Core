@@ -6,7 +6,8 @@
   cursor 要過 checkpoint 的 64 字元短碼限制，所以回傳給呼叫端的 hash 只取 HMAC 的 64 位十六進位摘要
   （完整格式仍存在 ``payload_blobs.content_hash``）；驗證時以現行密鑰重算比對，密鑰已換則不符（fail-closed）。
 - 刪除：內容設 NULL、保留雜湊與 ``deleted_at``（與 journal 的 ``delete_blob`` 同一語意）；冪等。
-- TTL：讀取時超過 ``created_at + ttl_s`` 視同不存在；每次寫入順手清除已過期者（兜底，Run 終態刪除才是主路徑）。
+- TTL 不得短於核准有效期（見 ``uep.agent.composite_blobs``）。讀取時超過 ``created_at + ttl_s`` 視同不存在；每次寫入與 ``delete_run`` 順手清除已過期者（兜底，Run 終態刪除才是主路徑；沒有背景排程，
+  所以過期原文最晚在下一次寫入或任一 Run 終態刪除時被清掉）。
 """
 from __future__ import annotations
 
@@ -79,7 +80,9 @@ class DbCompositeBlobStore:
                 .where(PayloadBlob.payload_ref.startswith(_run_prefix(run_id), autoescape=True), PayloadBlob.deleted_at.is_(None))
                 .values(content=None, deleted_at=func.now())
             )
-            return result.rowcount or 0
+            deleted = result.rowcount or 0
+        self._purge_expired()  # 過期者即使沒人再寫入也要在這裡清掉原文
+        return deleted
 
     def _purge_expired(self) -> None:
         """TTL 兜底：清除已過期的 composite blob；失敗不影響寫入。"""

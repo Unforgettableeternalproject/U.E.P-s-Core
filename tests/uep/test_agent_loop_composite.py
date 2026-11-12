@@ -608,3 +608,73 @@ def test_terminal_run_deletes_blobs_even_when_not_resumed_to_success():
     out = _resume(rig, {ask_id: "appr_bad"})
     assert (out.state, out.reason_code) == ("failed", "approval_invalid")
     assert store.blobs == {}
+
+
+def test_blob_ref_of_another_run_is_rejected():
+    store = InMemoryCompositeBlobStore()
+    rig, ask_id = _park_with_blobs(store)
+    foreign_ref, foreign_hash = store.put("run_other", _TEXT.encode())  # 內容與雜湊都對，但不屬於本 Run
+    cp = {k: v for k, v in rig.tasks.checkpoints[-1].items()}
+    cursor = {**cp["composite_cursor"], "rows": [dict(r) for r in cp["composite_cursor"]["rows"]]}
+    cursor["rows"][0].update(text_blob_ref=foreign_ref, text_blob_hash=foreign_hash)
+    cp["composite_cursor"] = cursor
+    out = _resume(rig, {ask_id: "appr_1"}, checkpoint=cp, rounds=[Round("不該到這裡")])
+    _assert_blob_fail_closed(rig, out)
+    assert foreign_ref in store.blobs  # 別的 Run 的 blob 不受影響
+
+
+def test_empty_text_is_persisted_and_resumes():
+    store = InMemoryCompositeBlobStore()
+    rig, out = _park(composite_blobs=store, behaviors={"fs.read": lambda a: ""})
+    assert out.state == "awaiting_approval" and _blob_ref(rig)["size"] == 0
+    rig.tasks.contents.clear()
+    ask_id = sub_id("step_1", 0, 1)
+    rig.tasks.grant("appr_1", ask_id)
+    done = _resume(rig, {ask_id: "appr_1"})
+    assert done.state == "completed" and rig.tasks.actions[ask_id]["params"]["content"] == ""
+
+
+def test_run_that_never_wrote_a_blob_skips_delete_run():
+    noref = _notes(
+        [READ_STEP, CompositeStep("fs.ask", {"path": "$.input.source", "content": "$.input.title"})],
+        name="notes.noref", side="external_effect", cap="chatroom.post", approval="per_action",
+    )
+    store = InMemoryCompositeBlobStore()
+    rig, _ = _park([Round("發佈", (("notes.noref", {"source": "/a.md"}),)), Round("完成")], noref, composite_blobs=store)
+    ask_id = sub_id("step_1", 0, 1)
+    rig.tasks.grant("appr_1", ask_id)
+    assert _resume(rig, {ask_id: "appr_1"}).state == "completed"
+    assert store.delete_calls == 0
+
+
+def test_resumed_run_with_blob_refs_in_cursor_still_deletes_at_terminal():
+    store = InMemoryCompositeBlobStore()
+    rig, ask_id = _park_with_blobs(store)  # 換 worker：新 loop 的 flag 由 cursor 的引用推回
+    assert _resume(rig, {ask_id: "appr_1"}).state == "completed"
+    assert store.delete_calls >= 1 and store.blobs == {}
+
+
+def test_settle_deletes_blobs_after_failing_the_run():
+    from types import SimpleNamespace
+
+    from uep.echo.agent_wiring import LoopLauncher
+    from uep.tasks.states import RunStatus
+
+    store = InMemoryCompositeBlobStore()
+    store.put("run_x", b"secret")
+    calls = []
+    tasks = SimpleNamespace(
+        get_run=lambda rid: SimpleNamespace(worker_epoch=3, status=RunStatus.RUNNING.value),
+        transition_run=lambda rid, status, worker_epoch: calls.append((rid, status)),
+        transition_task=lambda *a, **k: None,
+    )
+    me = SimpleNamespace(_tasks=tasks, _composite_blobs=store)
+    ctx = SimpleNamespace(run=SimpleNamespace(run_id="run_x", worker_epoch=3), task_id="task_x")
+    LoopLauncher._settle(me, ctx, ok=False, reason="boom")
+    assert calls == [("run_x", RunStatus.FAILED)] and store.blobs == {}
+    # 清理失敗不影響終結
+    store2 = InMemoryCompositeBlobStore()
+    store2.delete_run = lambda rid: (_ for _ in ()).throw(RuntimeError("x"))  # type: ignore[method-assign]
+    me2 = SimpleNamespace(_tasks=tasks, _composite_blobs=store2)
+    LoopLauncher._settle(me2, ctx, ok=False, reason="boom")
+    assert len(calls) == 2

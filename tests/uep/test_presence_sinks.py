@@ -167,7 +167,7 @@ def test_default_rules_engine_also_reports_the_full_result():
 
 def test_real_abandon_judge_turn_path_signals_only_for_the_abandon_phrase():
     got: list = []
-    orch = _orch(Capture(), on_abandon_signal=got.append)
+    orch = _orch(Capture(), on_abandon_signal=_owner_sink(got))
     orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
     assert len(got) == 1 and got[0].path == "turn" and got[0].actor_ref == "actor_owner"
     assert got[0].actor_authenticated is True and got[0].signal_id.startswith("abandon:turn:run1:")
@@ -180,7 +180,7 @@ def test_real_abandon_judge_turn_path_signals_only_for_the_abandon_phrase():
 
 def test_real_abandon_judge_absent_path_and_no_sink_and_veto():
     got: list = []
-    orch = _orch(Capture(), on_abandon_signal=got.append)
+    orch = _orch(Capture(), on_abandon_signal=_owner_sink(got))
     _absent(orch, text="放棄這次工作")
     assert len(got) == 1 and got[0].path == "absent" and got[0].source_platform == "discord"
     _absent(orch, text="放棄這次工作", seq=2, endpoint=None)
@@ -193,7 +193,7 @@ def test_real_abandon_judge_absent_path_and_no_sink_and_veto():
     vetoed = TurnOrchestrator(
         Capture(), TurnGenerations(), auth_provider=lambda: AUTH, proposer=Pass(),  # type: ignore[arg-type]
         identity=IdentityDirectory({OWNER: "actor_owner"}, {"actor_owner": "owner1"}),
-        on_abandon_signal=vetoed_got.append, veto=lambda ctx: "audience_blocked",
+        on_abandon_signal=_owner_sink(vetoed_got), veto=lambda ctx: "audience_blocked",
     )
     vetoed.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
     assert vetoed_got == []
@@ -206,7 +206,7 @@ def test_shared_hub_with_abandon_kind_already_registered_is_reused():
     hub = DecisionHub()
     register_abandon_work(hub)
     got: list = []
-    orch = _orch(Capture(), decision_hub=hub, on_abandon_signal=got.append)
+    orch = _orch(Capture(), decision_hub=hub, on_abandon_signal=_owner_sink(got))
     orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
     assert len(got) == 1
 
@@ -220,9 +220,19 @@ def _wired(orch: TurnOrchestrator, calls: list) -> TurnOrchestrator:
     return orch
 
 
+def _owner_sink(got: list, owners: list | None = None):
+    """放棄訊號 sink 替身：簽名為 ``(signal, *, is_owner)``；signal 進 got，is_owner 進 owners。"""
+    def sink(signal, *, is_owner):
+        got.append(signal)
+        if owners is not None:
+            owners.append(is_owner)
+
+    return sink
+
+
 def test_abandon_sink_on_turn_path_only_for_authenticated_actor_after_veto():
     got, judged = [], []
-    orch = _wired(_orch(Capture(), on_abandon_signal=got.append), judged)
+    orch = _wired(_orch(Capture(), on_abandon_signal=_owner_sink(got)), judged)
     orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="算了不用做了", seq=1, source_endpoint_id="ep"))
     assert got == ["SIGNAL"] and judged[0]["path"] == "turn" and judged[0]["actor_ref"] == "actor_owner"
     assert judged[0]["utterance_id"] and judged[0]["actor_authenticated"] is True
@@ -231,7 +241,7 @@ def test_abandon_sink_on_turn_path_only_for_authenticated_actor_after_veto():
     assert len(got) == 1  # 未認證與未映射都不判斷
     vetoed = _wired(TurnOrchestrator(
         Capture(), TurnGenerations(), auth_provider=lambda: AUTH, proposer=Pass(),  # type: ignore[arg-type]
-        identity=IdentityDirectory({OWNER: "actor_owner"}, {"actor_owner": "owner1"}), on_abandon_signal=got.append,
+        identity=IdentityDirectory({OWNER: "actor_owner"}, {"actor_owner": "owner1"}), on_abandon_signal=_owner_sink(got),
         veto=lambda ctx: "audience_blocked",
     ), judged)
     n = len(judged)
@@ -241,11 +251,11 @@ def test_abandon_sink_on_turn_path_only_for_authenticated_actor_after_veto():
 
 def test_abandon_sink_on_absent_path_and_failures_are_isolated():
     got, judged = [], []
-    orch = _wired(_orch(Capture(), on_abandon_signal=got.append), judged)
+    orch = _wired(_orch(Capture(), on_abandon_signal=_owner_sink(got)), judged)
     _absent(orch)
     assert got == ["SIGNAL"] and judged[0]["path"] == "absent" and judged[0]["source_platform"] == "discord"
 
-    def boom(signal):
+    def boom(signal, **kw):
         raise RuntimeError("down")
 
     bad = _wired(_orch(Capture(), on_abandon_signal=boom), [])
@@ -255,6 +265,27 @@ def test_abandon_sink_on_absent_path_and_failures_are_isolated():
     n = len(judged)
     _absent(no_sink)
     assert len(judged) == n  # sink 為 None：完全不判斷
-    unverified = _wired(_orch(Capture(), on_abandon_signal=got.append), judged)
+    unverified = _wired(_orch(Capture(), on_abandon_signal=_owner_sink(got)), judged)
     _absent(unverified, speaker="discord:999", endpoint=None)
     assert len(judged) == n
+
+
+def test_abandon_sink_receives_is_owner_from_identity_mapping_on_both_paths():
+    """owner 收到 True；已認證（映射到 actor）但不是 owner 的人收到 False；訊號本體不帶 is_owner。"""
+    got, owners = [], []
+    other = "discord:200"
+    identity = IdentityDirectory({OWNER: "actor_owner", other: "actor_guest"}, {"actor_owner": "owner1"})
+    orch = TurnOrchestrator(
+        Capture(), TurnGenerations(), auth_provider=lambda: AUTH, proposer=Pass(),  # type: ignore[arg-type]
+        identity=identity, host_location="desktop", run_id="run1", on_abandon_signal=_owner_sink(got, owners),
+    )
+    phrase = "放棄這次工作"
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=phrase, seq=1, source_endpoint_id="ep"))
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=other, text=phrase, seq=2, source_endpoint_id="ep"))
+    _absent(orch, text=phrase, speaker=OWNER, seq=3)
+    _absent(orch, text=phrase, speaker=other, seq=4)
+    assert [(s.path, s.actor_ref) for s in got] == [
+        ("turn", "actor_owner"), ("turn", "actor_guest"), ("absent", "actor_owner"), ("absent", "actor_guest"),
+    ]
+    assert owners == [True, False, True, False]
+    assert all(not hasattr(s, "is_owner") for s in got)

@@ -208,7 +208,7 @@ class TurnOrchestrator:
         host_location: str | None = None,
         require_source_location: bool = False,
         presence_request_hook: Callable[[UtteranceFact], bool | None] | None = None,
-        on_abandon_signal: Callable[[Any], None] | None = None,
+        on_abandon_signal: Callable[..., None] | None = None,
         on_presence_request: Callable[..., None] | None = None,
     ) -> None:
         self._publisher = publisher
@@ -218,7 +218,8 @@ class TurnOrchestrator:
         # None = 預設走核心決策點 presence.absent_intent（見 _presence_request）；傳入 callable 則完全取代
         self._presence_request_hook = presence_request_hook
         # 仲裁用的選用 sink（預設 None＝完全不呼叫、行為不變）。sink 例外一律吞掉並計數，不影響回合。
-        # on_abandon_signal(signal)：放棄工作訊號（型別 AbandonWorkSignal，judge 模組接上前以 Any 表示）
+        # on_abandon_signal(signal, *, is_owner)：放棄工作訊號（AbandonWorkSignal）；is_owner 與 on_presence_request 同源
+        #   （身分映射 platform_links 命中 owner 才為 True），訊號本體不帶 owner 欄位
         # on_presence_request(proposal, *, request_id, actor_ref, actor_authenticated, is_owner, source_platform)
         self._on_abandon_signal = on_abandon_signal
         self._on_presence_request = on_presence_request
@@ -643,8 +644,11 @@ class TurnOrchestrator:
 
     def _emit_abandon(
         self, text: str, utterance_id: str, actor_id: str, actor_authenticated: bool, source_platform: str, path: str,
+        is_owner: bool,
     ) -> None:
-        """判斷並通知 on_abandon_signal。sink 為 None 時完全不判斷；只處理已認證的 actor；任何失敗只計數。"""
+        """判斷並通知 ``on_abandon_signal(signal, *, is_owner)``。sink 為 None 時完全不判斷；只處理已認證的 actor；任何失敗只計數。
+
+        ``is_owner`` 由呼叫端依身分映射（platform_links）算出，與 ``on_presence_request`` 同源；不寫進訊號。"""
         sink = self._on_abandon_signal
         if sink is None or not actor_authenticated:
             return
@@ -656,7 +660,7 @@ class TurnOrchestrator:
                 source_platform=source_platform, path=path,
             )
             if signal is not None:
-                sink(signal)
+                sink(signal, is_owner=is_owner)
         except Exception:
             self.metrics["intake.abandon_signal_error"] += 1
             logger.exception("放棄工作訊號判斷或 sink 失敗（已吞掉，不影響回合）")
@@ -711,7 +715,7 @@ class TurnOrchestrator:
             logger.exception("缺席端輸入 shadow 紀錄寫入失敗")
         self._notify_presence_request(proposal, fact, actor_id, actor_authenticated, is_owner)
         source = str(fact.source_location) if fact.source_location is not None else "missing"
-        self._emit_abandon(fact.text, ref, actor_id, actor_authenticated, source, "absent")  # ref＝es:<run>:<session>:<seq>
+        self._emit_abandon(fact.text, ref, actor_id, actor_authenticated, source, "absent", is_owner == "true")  # ref＝es:<run>:<session>:<seq>
 
     def _decide_turn(self, ctx: SessionContext, turn: AggregatedTurn) -> IntakeResult:
         intake = turn.last.payload
@@ -733,7 +737,7 @@ class TurnOrchestrator:
             # 桌面輸入若沒有 source_endpoint_id 就不會觸發，這是預期行為（fail-closed）
             authenticated = bool(ident.actor_id is not None and fact.source_endpoint_id is not None)
             uid = f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}"
-            self._emit_abandon(fact.text, uid, actor_id, authenticated, ctx.platform, "turn")
+            self._emit_abandon(fact.text, uid, actor_id, authenticated, ctx.platform, "turn", not ident.guest)
         candidate = self._candidate(ctx, fact, turn.refs or (intake.event_id,), len(turn.segments), True)
         proposal = self._propose(candidate)
         degraded: Degraded | None = None

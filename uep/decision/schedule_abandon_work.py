@@ -63,17 +63,19 @@ def schedule_abandon_work_spec() -> DecisionPointSpec:
 
 # 允許的句首贅詞與句尾語氣詞（整句 fullmatch，其餘一律不觸發）
 _LEAD = r"(?:請|麻煩你?|那|好|嗯|欸|我們|我要|我)?"
+# 「先不要工作了」類句型不收「我／我要／我們」開頭：「我先不要工作了」較像在說自己不想工作
+_LEAD_NO_SELF = r"(?:請|麻煩你?|那|好|嗯|欸)?"
 _TAIL = r"(?:了|吧|啦|囉|喔|哦)?"
 # 「放棄」＋指向工作的名詞片語
-_ABANDON_OBJ = r"(?:這次|這個|這回|本次|今天的?|這輪)(?:的)?工作(?:階段)?"
+_ABANDON_OBJ = r"(?:這次|本次|今天的?)(?:的)?工作(?:階段)?"  # 不收「這個／這回／這輪」：易被理解成專案或 agent 任務
 # 「不用做了」只在主語明確是工作時才算
 _NO_NEED_SUBJ = r"(?:今天|這次|這個|本次)的?工作"
 
 _ZH_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(rf"{_LEAD}放棄{_ABANDON_OBJ}{_TAIL}"),  # 放棄這次工作／放棄這個工作／放棄今天的工作
+    re.compile(rf"{_LEAD}放棄{_ABANDON_OBJ}{_TAIL}"),  # 放棄這次工作／放棄本次工作／放棄今天的工作
     re.compile(rf"{_LEAD}{_NO_NEED_SUBJ}(?:就|都)?不用(?:再)?做{_TAIL}"),  # 今天的工作不用做了
-    re.compile(rf"{_LEAD}(?:今天)?先不要工作{_TAIL}"),  # 先不要工作了
-    re.compile(rf"{_LEAD}(?:今天)?先不工作{_TAIL}"),  # 先不工作了
+    re.compile(rf"{_LEAD_NO_SELF}(?:今天)?先不要工作{_TAIL}"),  # 先不要工作了
+    re.compile(rf"{_LEAD_NO_SELF}(?:今天)?先不工作{_TAIL}"),  # 先不工作了
 )
 # 「放棄這次工作了」等句尾「了」已由 _TAIL 涵蓋；「不用做了」的「了」同理
 _EN_PATTERNS: tuple[re.Pattern[str], ...] = (

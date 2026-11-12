@@ -40,6 +40,14 @@ def payload_hash_key(monkeypatch) -> str:
     return key
 
 
+@pytest.fixture(autouse=True)
+def agent_loop_dir(monkeypatch, tmp_path) -> Path:
+    """agent loop 持久 context store 一律落在 tmp_path，測試不寫入使用者家目錄（~/.uep/agent_loop）。"""
+    path = tmp_path / "agent_loop"
+    monkeypatch.setattr(get_settings(), "agent_loop_dir", path)
+    return path
+
+
 @pytest.fixture(scope="session")
 def test_db_url() -> str:
     settings = get_settings()

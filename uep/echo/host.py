@@ -279,7 +279,7 @@ class EchoPipelineHost:
         # 仲裁器在 core 啟動後才組裝，由 ``attach_presence_arbiter`` 對它 bind
         self.presence_sinks = (
             PresenceSinkProxy(metrics_inc=lambda name: self.metrics.inc(name))
-            if get_settings().presence_arbiter != "off" else None)
+            if (get_settings().presence_arbiter or "").strip().lower() not in ("", "off") else None)
         self.orchestrator = TurnOrchestrator(
             publisher, self.generations, auth_provider=self.endpoint.lease_auth, persona_id=persona_id,
             proposer=proposer, aggregator=aggregator, shadow_proposers=shadow_proposers, on_shadow=on_shadow,

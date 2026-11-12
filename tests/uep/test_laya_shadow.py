@@ -69,7 +69,8 @@ def test_build_state_excludes_ids_and_handles_headcount():
     state = build_state(_cand(count=3), "小艾")
     assert state == {
         "assistant_name": "小艾", "speaker": "user", "other_people_present": "2 other people present",
-        "recent_context": "(none)", "message": "小艾，今天會下雨嗎？",
+        "recent_context": "(none)",
+        "available_capabilities": "query, booking, messaging, calling, files, media_control, timer_alarm, host_control", "message": "小艾，今天會下雨嗎？",
     }
     assert "12345" not in repr(state)
     assert build_state(_cand(count=None), "x")["other_people_present"] == "none"

@@ -121,7 +121,8 @@ def test_translator_on_sends_english_state_with_placeholder_name(monkeypatch):
     state = agent.calls[-1][0]
     assert state == {
         "assistant_name": "Yuki", "speaker": "user", "other_people_present": "1 other person present",
-        "recent_context": "(none)", "message": "Yuki, will it rain tomorrow?",
+        "recent_context": "(none)", "available_capabilities": "query, booking, messaging, calling, files, media_control, timer_alarm, host_control",
+        "message": "Yuki, will it rain tomorrow?",
     }
     assert _all_ascii(state) and "12345" not in repr(state)
 
@@ -279,3 +280,15 @@ def test_translator_warmup_starts_only_after_laya_load(monkeypatch):
     p = LayaProposer(device="cpu", translator=tr)
     assert p.wait_ready(5) and tr.wait_ready(5)
     assert order == ["laya.load", "mt.load"]
+
+
+def test_available_capabilities_default_excludes_device_control_and_is_overridable():
+    """能力清單是模型輸入：預設不含 device_control；工具層清單接上後由 capabilities 參數覆蓋；類別固定順序、未知類別拒絕。"""
+    assert "device_control" not in laya_schema.DEFAULT_CAPABILITIES
+    assert laya_schema.format_capabilities() == "query, booking, messaging, calling, files, media_control, timer_alarm, host_control"
+    assert laya_schema.format_capabilities(["device_control", "query"]) == "query, device_control"
+    assert laya_schema.format_capabilities([]) == "none"
+    with pytest.raises(ValueError):
+        laya_schema.format_capabilities(["teleport"])
+    state = laya_schema.build_state_dict(assistant_name="Yuki", message="hi", capabilities=["query", "device_control"])
+    assert state["available_capabilities"] == "query, device_control"

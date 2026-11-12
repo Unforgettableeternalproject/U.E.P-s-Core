@@ -34,6 +34,7 @@ import re
 import sys
 import threading
 from collections import Counter, OrderedDict
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,7 @@ def resolve_device(requested: str, cuda_available: bool | None = None) -> str:
 
 def build_state(
     candidate: TurnCandidate, assistant_name: str, *, message: str | None = None, recent_context: str = NO_CONTEXT,
+    capabilities: Sequence[str] | None = None,
 ) -> dict[str, str]:
     """TurnCandidate -> laya 的 state dict。不送 speaker_ref、事件／會話 ID 與任何 Risky／秘密欄位。
 
@@ -119,7 +121,7 @@ def build_state(
     """
     return build_state_dict(
         assistant_name=assistant_name, message=candidate.text if message is None else message,
-        participant_count=candidate.participant_count, recent_context=recent_context,
+        participant_count=candidate.participant_count, recent_context=recent_context, capabilities=capabilities,
     )
 
 
@@ -145,6 +147,7 @@ class LayaProposer:
         translator: BoundaryTranslator | None = None,
         on_translate_unavailable: str = "fallback",
         autoload: bool = True,
+        capabilities: Sequence[str] | None = None,
     ) -> None:
         if not laya_available():
             raise ValueError(
@@ -152,6 +155,8 @@ class LayaProposer:
                 "或從 UEP_DECISION_SHADOW_PROPOSERS 移除 laya.shadow"
             )
         self._model_id = model_id
+        # 可用能力清單：None＝laya_schema.DEFAULT_CAPABILITIES；工具層清單接上後由組裝層傳入（接點：這個參數）
+        self._capabilities = tuple(capabilities) if capabilities is not None else None
         self._revision = revision or None
         self._source_revision = source_revision or None  # 本地載入時的來源 revision，只用於 version 標示
         self._device = device
@@ -206,7 +211,7 @@ class LayaProposer:
                 self._translator.start_warmup()
             # 假推論：CUDA 冷啟動（實測第一次約 16 秒）要在 warmup 內發生，ready 之後才算可用
             agent.predict(
-                build_state_dict(assistant_name=self._state_assistant_name(), message=WARMUP_MESSAGE), QUESTIONS,
+                build_state_dict(assistant_name=self._state_assistant_name(), message=WARMUP_MESSAGE, capabilities=self._capabilities), QUESTIONS,
             )
             if self._translator is not None:
                 self._translator.wait_ready()  # 翻譯器失敗不擋 Laya，propose 會走 translate_unavailable
@@ -293,7 +298,7 @@ class LayaProposer:
                 self._recent_text[candidate.candidate_id] = candidate.text
                 while len(self._recent_text) > 16:
                     self._recent_text.popitem(last=False)
-        state = build_state(candidate, assistant, message=message, recent_context=context)
+        state = build_state(candidate, assistant, message=message, recent_context=context, capabilities=self._capabilities)
         result = agent.predict(state, QUESTIONS)
         answers = result["answers"]
         reply = answers["reply_mode"]

@@ -26,7 +26,7 @@ def _wired():
 
 
 def test_each_stage_writes_one_row_with_sub_kind_and_run_id_only():
-    hub, writer, sink, recorder = _wired()
+    _hub, writer, sink, recorder = _wired()
     for stage in ("warn", "notice", "abort"):
         recorder("run_1", "task_1", stage)
     assert writer.flush()
@@ -35,6 +35,23 @@ def test_each_stage_writes_one_row_with_sub_kind_and_run_id_only():
     assert [r["reason_code"] for r in sink.rows] == ["threshold_1_0x", "threshold_1_5x", "threshold_2_0x"]
     assert all(r["request_id"].startswith("run_1:budget:") for r in sink.rows)
     assert all(r["utterance_refs"] is None for r in sink.rows)  # 不含任何文字或其參照
+
+
+def test_tool_calls_fuse_abort_shares_sub_kind_but_has_own_reason_code():
+    _hub, writer, sink, recorder = _wired()
+    recorder("run_2", "task_2", "abort_tool_calls")
+    assert writer.flush()
+    assert len(sink.rows) == 1
+    assert sink.rows[0]["sub_kind"] == "task_budget_exceeded" and sink.rows[0]["reason_code"] == "tool_calls_fuse"
+
+
+def test_mismatched_reason_code_falls_back():
+    hub, writer, sink, _ = _wired()
+    hub.publish(KIND_AGENT_BUDGET, DecisionRequest(
+        request_id="y", kind=KIND_AGENT_BUDGET, trigger="event",
+        facts={"sub_kind": "budget_warn", "reason_code": "tool_calls_fuse", "run_id": "run_3"}))
+    assert writer.flush()
+    assert len(sink.rows) == 1 and sink.rows[0]["status"] == "invalid"
 
 
 def test_unknown_stage_is_ignored_and_invalid_facts_fall_back():

@@ -292,6 +292,8 @@ class LoopLauncher:
     ) -> None:
         # 續跑的 Run 到達終態時回 Host 的入口（``EchoPipelineHost.accept_resumed_result``）；None = 退回舊行為（只回 LoopResumeResult）
         self._on_resumed = on_resumed
+        # 預算門檻事件的決策日誌記錄器 (run_id, task_id, kind)；由組裝層在日誌啟用時以 set_budget_recorder 掛上，None = 不記
+        self._budget_recorder: Callable[[str, str | None, str], None] | None = None
         self._retry = retry  # None = 不自動重試（組裝層依 UEP_AGENT_* 傳入）
         # 記憶寫入（與 direct_chat 同一條路徑：Host 的 ``store_turn_memory``）；None = 不寫（例如未接記憶的組裝）
         self._memory_store = memory_store
@@ -743,12 +745,22 @@ class LoopLauncher:
             logger.exception("續跑結果回 Host 失敗：run=%s", run.run_id)
             return ResumeDisposition.UNCERTAIN
 
+    def set_budget_recorder(self, recorder: Callable[[str, str | None, str], None] | None) -> None:
+        """掛上預算門檻事件記錄器（決策日誌）；launcher 早於日誌寫入器建立，所以用事後掛載。"""
+        self._budget_recorder = recorder
+
     def _on_budget(self, ctx: _RunCtx, kind: str) -> None:
         """三段門檻的通知：warn 只記錄（metric＋log）；notice／abort 送一次固定的 SYSTEM_NOTICE（經 Output Gate，
         不設 ``delivered``；送出結果不確定也不補發）。"""
         metrics = getattr(self._orchestrator, "metrics", None)
         if metrics is not None:
             metrics[f"budget.{kind}"] += 1
+        recorder = self._budget_recorder
+        if recorder is not None:  # 決策日誌記錄（只記事實，不含文字）；失敗不影響後續通知
+            try:
+                recorder(ctx.run.run_id, ctx.task_id, kind)
+            except Exception:
+                logger.exception("預算事件寫入決策日誌失敗：run=%s kind=%s", ctx.run.run_id, kind)
         if kind == "warn" or ctx.resumed:
             # warn 只記錄；續跑中的 Run 原 turn 已結束，Gate 必拒，只記 metric 不送
             logger.info("預算 %s：run=%s", kind, ctx.run.run_id)

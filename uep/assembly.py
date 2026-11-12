@@ -67,6 +67,7 @@ from uep.control.channel import (
     ControlSubscription,
 )
 from uep.control.socket_transport import SocketControlServer
+from uep.decision.budget_events import register_budget_events
 from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
 from uep.decision.db import DbSink
 from uep.decision.log import DecisionLogWriter
@@ -922,6 +923,9 @@ def assemble_core(
         policy = getattr(echo, "policy", None)
         if policy is not None:
             register_policy_publish(echo.decision_hub, policy, run_id=getattr(echo, "run_id", None))
+        if loop_launcher is not None:
+            # 預算門檻事件（budget_warn／budget_notice／task_budget_exceeded）寫進決策日誌
+            loop_launcher.set_budget_recorder(register_budget_events(echo.decision_hub))
     return CoreAssembly(
         persona_id=persona_id, bus=bus, publisher=publisher, control=control, presence=presence, gate=gate,
         delivery=delivery, tasks=tasks, state=state, stop=stop, bridge=bridge, maintenance=maintenance,

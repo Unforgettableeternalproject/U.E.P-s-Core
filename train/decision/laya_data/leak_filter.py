@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -99,3 +100,54 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---- 正規化近似比對（抓只差幾個錯字的近似重複）----
+def canon(text: str) -> str:
+    """小寫、去撇號與標點、重複字母壓成兩個、空白收斂；字元層級比對用，不做語意判斷。"""
+    t = text.lower().replace("'", "").replace("’", "")
+    t = "".join(ch if ch.isalnum() else " " for ch in t)
+    t = re.sub(r"(.)\1{2,}", r"\1\1", t)
+    return " ".join(t.split())
+
+
+def trigrams(text: str) -> set[str]:
+    padded = f"  {text} "
+    return {padded[i:i + 3] for i in range(len(padded) - 2)}
+
+
+def tri_jaccard(a: set[str], b: set[str]) -> float:
+    return len(a & b) / len(a | b) if a and b else 0.0
+
+
+def fuzzy_key(row: dict[str, Any]) -> tuple[str, str, bool]:
+    """(本句 canon, 本句＋前文 canon, 是否短句)；短句只用本句＋前文比對。"""
+    state = row["state"]
+    msg = canon(str(state.get("message", "")))
+    full = canon(f"{state.get('message', '')} {state.get('recent_context', '')}")
+    return msg, full, len(msg.split()) <= SHORT_WORDS
+
+
+def fuzzy_score(a: tuple[str, str, bool], b: tuple[str, str, bool], ta: tuple[set, set], tb: tuple[set, set]) -> float:
+    if a[2] or b[2]:
+        return tri_jaccard(ta[1], tb[1])
+    return tri_jaccard(ta[0], tb[0])
+
+
+def fuzzy_pairs(left: list[dict[str, Any]], right: list[dict[str, Any]] | None = None, threshold: float = 0.8) -> list[tuple[int, int, float]]:
+    """left 對 right（None＝left 內部互比，只回 i<j）的近似重複 (i, j, 分數)。"""
+    lk = [fuzzy_key(r) for r in left]
+    lt = [(trigrams(k[0]), trigrams(k[1])) for k in lk]
+    if right is None:
+        rk, rt, internal = lk, lt, True
+    else:
+        rk = [fuzzy_key(r) for r in right]
+        rt = [(trigrams(k[0]), trigrams(k[1])) for k in rk]
+        internal = False
+    out = []
+    for i in range(len(lk)):
+        for j in range(i + 1 if internal else 0, len(rk)):
+            s = fuzzy_score(lk[i], rk[j], lt[i], rt[j])
+            if s >= threshold:
+                out.append((i, j, round(s, 3)))
+    return out

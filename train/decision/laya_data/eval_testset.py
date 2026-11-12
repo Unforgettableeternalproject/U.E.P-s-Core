@@ -39,11 +39,29 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 # ---------------------------------------------------------------- predict (Laya)
 
+def refresh_row(row: dict[str, Any]) -> dict[str, Any]:
+    """題目說明取目前的 schema 定義；turn.reply 的 state 沒有能力欄位時補上現行預設清單（測試集在正式環境的樣子）。"""
+    from .kinds import get_spec, laya_schema
+
+    spec = get_spec(row["kind"])
+    out = {**row, "questions": {q: dict(spec.questions[q]) for q in row["questions"]}}
+    if row["kind"] == "turn.reply" and "available_capabilities" not in row["state"]:
+        state: dict[str, Any] = {}
+        for k, v in row["state"].items():
+            if k == "message":
+                state["available_capabilities"] = laya_schema.format_capabilities()
+            state[k] = v
+        out["state"] = state
+    return out
+
+
 def cmd_predict(args: argparse.Namespace) -> int:
     import laya
     import torch
 
     rows = read_jsonl(args.data)
+    if args.schema == "current":
+        rows = [refresh_row(r) for r in rows]
     t0 = time.perf_counter()
     agent = laya.load(args.model, device=args.device)
     load_s = time.perf_counter() - t0
@@ -431,13 +449,15 @@ def _load_runs(paths: list[Path]) -> list[dict[str, Any]]:
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
+    """多個模型並列比較。``--model NAME PATTERN``（PATTERN 內的 ``{set}`` 換成測試集名稱，glob 取各 seed）、
+    ``--set NAME DATA [RULES]``。第一個模型是基準，Δ 欄＝最後一個模型 − 基準。"""
+    names = [m[0] for m in args.model]
     lines: list[str] = []
     for spec in args.set:
-        name, data, r1_glob, r2_glob = spec[:4]
-        rules_path = Path(spec[4]) if len(spec) > 4 else None
+        name, data = spec[0], spec[1]
+        rules_path = Path(spec[2]) if len(spec) > 2 else None
         rows = read_jsonl(Path(data))
-        r1 = _load_runs(sorted(Path().glob(r1_glob)))
-        r2 = _load_runs(sorted(Path().glob(r2_glob)))
+        runs = {m[0]: _load_runs(sorted(Path().glob(m[1].replace("{set}", name)))) for m in args.model}
         rules = json.loads(rules_path.read_text(encoding="utf-8")) if rules_path else None
         views = [("全部列", rows)]
         npend = sum(1 for r in rows if (r.get("meta") or {}).get("pending_review"))
@@ -445,30 +465,30 @@ def cmd_compare(args: argparse.Namespace) -> int:
             views.append((f"排除 meta.pending_review（{npend} 列）", [r for r in rows if not (r.get("meta") or {}).get("pending_review")]))
         for vname, vrows in views:
             n_t = sum(1 for r in vrows if r["kind"] == "turn.reply")
-            lines += ["", f"## {name} — {vname}（{len(vrows)} 列：turn.reply {n_t}、absent {len(vrows) - n_t}；seeds r1={len(r1)} r2={len(r2)}）", ""]
-            m1 = [metrics_for(vrows, x["preds"]) for x in r1]
-            m2 = [metrics_for(vrows, x["preds"]) for x in r2]
+            seeds = ", ".join(f"{n}={len(runs[n])}" for n in names)
+            lines += ["", f"## {name} — {vname}（{len(vrows)} 列：turn.reply {n_t}、absent {len(vrows) - n_t}；seeds {seeds}）", ""]
+            mets = {n: [metrics_for(vrows, x["preds"]) for x in runs[n]] for n in names}
             mr = metrics_for(vrows, rules["preds"], rules=True) if rules else None
-            lines += ["| 欄位 | ft-r1 | ft-r2 | Δ(r2-r1) | rules.default |", "|---|---|---|---|---|"]
+            lines += ["| 欄位 | " + " | ".join(names) + f" | Δ({names[-1]}-{names[0]}) | rules.default |", "|---|" + "---|" * (len(names) + 2)]
             for key, label in FIELDS:
-                v1, v2 = [m.get(key) for m in m1], [m.get(key) for m in m2]
-                if all(v is None for v in v1 + v2):
+                vals = {n: [m.get(key) for m in mets[n]] for n in names}
+                if all(v is None for vs in vals.values() for v in vs):
                     continue
-                d = statistics.fmean([v for v in v2 if v is not None]) - statistics.fmean([v for v in v1 if v is not None])
-                lines.append(f"| {label} | {_agg_none(v1)} | {_agg_none(v2)} | {d:+.3f} | {fmt(mr.get(key)) if mr else 'n/a'} |")
+                f0 = [v for v in vals[names[0]] if v is not None]
+                f1 = [v for v in vals[names[-1]] if v is not None]
+                d = f"{statistics.fmean(f1) - statistics.fmean(f0):+.3f}" if f0 and f1 else "n/a"
+                lines.append(f"| {label} | " + " | ".join(_agg_none(vals[n]) for n in names) + f" | {d} | {fmt(mr.get(key)) if mr else 'n/a'} |")
             if n_t:
-                lines += ["", "reply_mode 各類 precision／recall（mean ± std over seeds）", "",
-                          "| 類別 | n_gold | P r1 | P r2 | R r1 | R r2 |", "|---|---|---|---|---|---|"]
-                p1 = [prf_by_mode(vrows, x["preds"]) for x in r1]
-                p2 = [prf_by_mode(vrows, x["preds"]) for x in r2]
-                for m in FOCUS_MODES:
-                    cells = [_agg_none([x[m]["precision"] for x in p1]), _agg_none([x[m]["precision"] for x in p2]),
-                             _agg_none([x[m]["recall"] for x in p1]), _agg_none([x[m]["recall"] for x in p2])]
-                    lines.append(f"| {m} | {p1[0][m]['n_gold']} | " + " | ".join(cells) + " |")
+                prf = {n: [prf_by_mode(vrows, x["preds"]) for x in runs[n]] for n in names}
+                for title, key in (("precision", "precision"), ("recall", "recall")):
+                    lines += ["", f"reply_mode 各類 {title}（mean ± std over seeds）", "", "| 類別 | n_gold | " + " | ".join(names) + " |", "|---|---|" + "---|" * len(names)]
+                    for m in FOCUS_MODES:
+                        ng = prf[names[0]][0][m]["n_gold"]
+                        lines.append(f"| {m} | {ng} | " + " | ".join(_agg_none([x[m][key] for x in prf[n]]) for n in names) + " |")
                 lines += ["", "reply_mode 混淆矩陣（列＝標準答案，欄＝預測；各 seed 加總）", ""]
-                for tag, runs in (("ft-r1", r1), ("ft-r2", r2)):
-                    cf = confusion(vrows, runs)
-                    lines += [f"{tag}", "", "| gold \\ pred | " + " | ".join(REPLY_MODES) + " |", "|---|" + "---|" * len(REPLY_MODES)]
+                for n in names:
+                    cf = confusion(vrows, runs[n])
+                    lines += [f"{n}", "", "| gold \\ pred | " + " | ".join(REPLY_MODES) + " |", "|---|" + "---|" * len(REPLY_MODES)]
                     lines += [f"| {g} | " + " | ".join(str(cf[g][p]) for p in REPLY_MODES) + " |" for g in REPLY_MODES]
                     lines.append("")
         if args.focus_ids and name in ("en_test", "en_reference"):
@@ -482,11 +502,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 ctx = r["state"].get("recent_context")
                 lines.append(f"- {rid} text: {r['text']}" + (f" (context: {ctx})" if ctx else "") + f" [others={r['state'].get('other_people_present')}]")
                 lines.append(f"    gold: {g['reply_mode']}, {g['addressed']}, {g['route']}")
-                for tag, runs in (("r1", r1), ("r2", r2)):
-                    for i, x in enumerate(runs):
+                for n in names:
+                    for i, x in enumerate(runs[n]):
                         pr = x["preds"][rid]
                         ok = pr["reply_mode"]["pred"] == g["reply_mode"] and pr["addressed"]["pred"] == g["addressed"] and pr["route"]["pred"] == g["route"]
-                        lines.append(f"    {tag} seed{i}: {pr['reply_mode']['pred']}, {pr['addressed']['pred']}, {pr['route']['pred']}" + ("  OK" if ok else ""))
+                        lines.append(f"    {n} seed{i}: {pr['reply_mode']['pred']}, {pr['addressed']['pred']}, {pr['route']['pred']}" + ("  OK" if ok else ""))
     text = "\n".join(lines)
     if args.out:
         args.out.write_text(text, encoding="utf-8")
@@ -505,6 +525,8 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--out", type=Path, required=True)
     a.add_argument("--device", default="cuda")
     a.add_argument("--warmup", type=int, default=5)
+    a.add_argument("--schema", choices=("legacy", "current"), default="legacy",
+                   help="current＝題目說明取目前的定義，turn.reply 的 state 補上預設能力清單（ft-r3 以後）；legacy＝照測試檔原樣（ft-r1／r2）")
     b = sub.add_parser("rules")
     b.add_argument("--data", type=Path, required=True)
     b.add_argument("--out", type=Path, required=True)
@@ -515,7 +537,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--exclude", help="逗號分隔的測試列 id（例如與訓練集本句相同的裸附和）")
     c.add_argument("--out", type=Path)
     c.add_argument("--json-out", type=Path)
-    d = sub.add_parser("compare", help="ft-r1 vs ft-r2 的分欄比較（--set NAME DATA R1_GLOB R2_GLOB [RULES]）")
+    d = sub.add_parser("compare", help="多個模型的分欄比較（--model NAME PATTERN，--set NAME DATA [RULES]）")
+    d.add_argument("--model", action="append", nargs=2, required=True, metavar=("NAME", "PATTERN"))
     d.add_argument("--set", action="append", nargs="+", required=True, metavar="ARG")
     d.add_argument("--focus-ids", help="逗號分隔的測試列 id，逐題列出各 seed 預測")
     d.add_argument("--out", type=Path)

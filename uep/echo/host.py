@@ -228,6 +228,8 @@ class EchoPipelineHost:
             barge_in_channel_modes=frozenset(ChannelMode(m) for m in self._decision.barge_in_channel_modes),
         )
         self._resume_lock = threading.Lock()
+        self._resume_flush_lock = threading.Lock()
+        self._resume_flush_queued = False
         settings = get_settings()
         self._resume_pending = ResumePending(
             ttl_s=settings.resume_pending_ttl_s if resume_pending_ttl_s is None else resume_pending_ttl_s,
@@ -1375,7 +1377,11 @@ class EchoPipelineHost:
         最舊的先送；遇到仍不能送（PENDING）就停止（其餘同樣送不出去，不重複碰）。回傳這次送達的筆數。
 
         執行緒：``_finish_turn`` 與 ``_enqueue`` 的工作都在同一條 Core 工作緒上，flush 一律從那裡（或 ``accept_resumed_result``
-        所在的 resume 執行緒）進來，並以 ``_resume_lock`` 與入口互斥；進行中的回合以 ``_resume_blocked`` 判定，不疊送。"""
+        所在的 resume 執行緒）進來，並以 ``_resume_lock`` 與入口互斥；進行中的回合以 ``_resume_blocked`` 判定，不疊送。
+
+        已接受的限制：busy 檢查通過到實際送出之間，若剛好有新回合開始，兩者仍可能短暫重疊（Gate 與端點會序列化輸出，
+        影響極小，不另外加鎖）。pending 的原因分兩類：全域原因（muted／busy／無 Lease／Lease 狀態）遇到就停止；個別項目的原因
+        （聽眾比 Presence 寬、端點未宣告 interaction）略過該筆、繼續送後面的。"""
         sent = 0
         with self._resume_lock:
             self._expire_resume_pending()
@@ -1388,7 +1394,9 @@ class EchoPipelineHost:
                     self.metrics.inc("echo.resume_errors")
                     disposition, reason = ResumeDisposition.UNCERTAIN, "error"  # 不知道送到哪一步：不重送、不寫
                 if disposition is ResumeDisposition.PENDING:
-                    break
+                    if reason in self._RESUME_GLOBAL_PENDING:
+                        break  # 全域原因（muted／busy／無 Lease／Lease 狀態）：其餘項目同樣送不出去，不重複碰
+                    continue  # 個別項目的原因（聽眾比 Presence 寬等）：不擋住後面的項目（避免 head-of-line blocking）
                 self._resume_pending.remove(key)
                 if disposition is ResumeDisposition.DROPPED:
                     self.metrics.inc(f"echo.resume_dropped.{reason}")
@@ -1400,8 +1408,18 @@ class EchoPipelineHost:
 
     def _request_resume_flush(self, trigger: str) -> None:
         """任意執行緒觸發 flush：交給 Core 工作緒（與 ``_finish_turn`` 同一條，不與 turn 收尾競態）；工作緒未啟動就地執行。"""
-        if len(self._resume_pending):
-            self._enqueue(functools.partial(self.flush_resume_pending, trigger=trigger), "resume_flush")
+        if not len(self._resume_pending):
+            return
+        with self._resume_flush_lock:
+            if self._resume_flush_queued:
+                return  # 已有 flush 排在工作緒上，不重複排隊（tick 每輪都會來）
+            self._resume_flush_queued = True
+        self._enqueue(functools.partial(self._run_queued_flush, trigger), "resume_flush")
+
+    def _run_queued_flush(self, trigger: str) -> None:
+        with self._resume_flush_lock:
+            self._resume_flush_queued = False
+        self.flush_resume_pending(trigger=trigger)
 
     def _expire_resume_pending(self) -> None:
         for gone in self._resume_pending.expire():
@@ -1440,7 +1458,13 @@ class EchoPipelineHost:
     # Gate 拒絕中「之後可能可以送」的結果碼（Lease 回來、聽眾收窄…）；其餘拒絕或失敗視為確定失敗
     _RESUME_RETRYABLE_GATE = frozenset({
         GateDecision.REJECT_NO_PRESENCE.value, GateDecision.REJECT_REVOKED.value, GateDecision.REJECT_EXPIRED.value,
-        GateDecision.REJECT_AUDIENCE.value, GateDecision.REJECT_NOT_INTERACTION.value,
+        GateDecision.REJECT_AUDIENCE.value, GateDecision.REJECT_NOT_INTERACTION.value, "GATE_ERROR",
+    })
+    # PENDING 的原因中屬「全域」者（與單一項目無關）：flush 遇到就停止。其餘（reject_audience、reject_not_interaction）是個別項目的原因
+    _RESUME_GLOBAL_PENDING = frozenset({
+        "muted", "busy", "no_lease", "gate_error",
+        GateDecision.REJECT_STALE.value.lower(), GateDecision.REJECT_NO_PRESENCE.value.lower(),
+        GateDecision.REJECT_REVOKED.value.lower(), GateDecision.REJECT_EXPIRED.value.lower(),
     })
 
     def _deliver_resumed(self, result: ResumedRunResult) -> tuple[ResumeDisposition, str]:

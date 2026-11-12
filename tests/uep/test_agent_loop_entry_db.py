@@ -834,3 +834,153 @@ def test_flush_trigger_runs_on_the_core_worker_thread(session_factory, tmp_path)
         assert threads and threads[0] == "uep-echo-worker" and len(stores) == 1
     finally:
         rig.core.shutdown()
+
+
+# ---- R2 審查修正：head-of-line、GATE_ERROR、loop_text、競態與去重 ----
+
+def _pend_two_then_restore(rig, ticket, activity, run_ids):
+    """無 Lease 時讓幾筆進 pending，再還原 Lease。"""
+    real = rig.host.endpoint.lease_auth
+    rig.host.endpoint.lease_auth = lambda: None
+    for run_id in run_ids:
+        rig.host.accept_resumed_result(_resumed(ticket, activity, run_id=run_id))
+    rig.host.endpoint.lease_auth = real
+
+
+def test_item_specific_rejection_does_not_block_the_items_behind_it(session_factory, tmp_path):
+    from types import SimpleNamespace
+
+    from uep.echo.resume_return import ResumeDisposition
+    from uep.output.delivery import DeliveryStatus
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        _pend_two_then_restore(rig, ticket, activity, ["run_wide", "run_narrow"])
+        services = rig.host._services
+        original = services.delivery.dispatch
+
+        def picky(intent):  # 隊頭那筆的聽眾比 Presence 寬：Gate 拒絕；後面的正常
+            if "run_wide" in intent.content_ref:
+                return SimpleNamespace(status=DeliveryStatus.REJECTED, failure={"code": "REJECT_AUDIENCE"})
+            return original(intent)
+
+        services.delivery.dispatch = picky
+        try:
+            assert rig.host.flush_resume_pending(trigger="tick") == 1
+        finally:
+            services.delivery.dispatch = original
+        assert [r.run_id for r in rig.host._resume_pending.snapshot()] == ["run_wide"]  # 寬的留在佇列，窄的已送出
+        assert len(stores) == 1 and rig.host._resume_settled[("run_narrow", 2)] is ResumeDisposition.DELIVERED
+    finally:
+        rig.core.shutdown()
+
+
+def test_global_reason_stops_the_flush_without_touching_other_items(session_factory, tmp_path):
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        _pend_two_then_restore(rig, ticket, activity, ["run_a", "run_b"])
+        calls, restore = _patch_dispatch(rig, __import__("uep.output.delivery", fromlist=["x"]).DeliveryStatus.REJECTED, "REJECT_NO_PRESENCE")
+        try:
+            assert rig.host.flush_resume_pending(trigger="tick") == 0
+        finally:
+            restore()
+        assert calls["n"] == 1 and len(rig.host._resume_pending) == 2  # 全域原因：只試第一筆就停
+    finally:
+        rig.core.shutdown()
+
+
+def test_gate_error_goes_pending(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+    from uep.output.delivery import DeliveryStatus
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        _calls, restore = _patch_dispatch(rig, DeliveryStatus.REJECTED, "GATE_ERROR")
+        try:
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.PENDING
+        finally:
+            restore()
+        assert rig.host.metrics["echo.resume_pending.gate_error"] == 1 and stores == []
+        assert rig.host.flush_resume_pending(trigger="tick") == 1
+    finally:
+        rig.core.shutdown()
+
+
+def test_flush_clears_loop_text_and_never_resends(session_factory, tmp_path):
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        _pend_two_then_restore(rig, ticket, activity, ["run_x"])
+        calls = {"n": 0}
+        services = rig.host._services
+        original = services.delivery.dispatch
+
+        def counting(intent):
+            calls["n"] += 1
+            return original(intent)
+
+        services.delivery.dispatch = counting
+        assert rig.host.flush_resume_pending(trigger="lease") == 1 and len(rig.host.loop_text) == 0
+        assert rig.host.flush_resume_pending(trigger="lease") == 0 and rig.host.flush_resume_pending(trigger="tick") == 0
+        assert calls["n"] == 1 and len(stores) == 1  # 明確斷言：dispatch 只有一次
+    finally:
+        rig.core.shutdown()
+
+
+def test_accept_and_flush_racing_on_the_same_key_send_once(session_factory, tmp_path):
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        _pend_two_then_restore(rig, ticket, activity, ["run_x"])
+        before = len(rig.deliveries())
+        barrier = threading.Barrier(2)
+        out: dict = {}
+
+        def do_accept():
+            barrier.wait()
+            out["accept"] = rig.host.accept_resumed_result(_resumed(ticket, activity, run_id="run_x"))
+
+        def do_flush():
+            barrier.wait()
+            out["flush"] = rig.host.flush_resume_pending(trigger="tick")
+
+        threads = [threading.Thread(target=do_accept), threading.Thread(target=do_flush)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        assert len(rig.deliveries()) == before + 1 and len(stores) == 1 and len(rig.host._resume_pending) == 0
+    finally:
+        rig.core.shutdown()
+
+
+def test_flush_that_ends_uncertain_is_remembered_so_later_accept_is_not_pending(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+    from uep.output.delivery import DeliveryStatus
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        _pend_two_then_restore(rig, ticket, activity, ["run_x"])
+        calls, restore = _patch_dispatch(rig, DeliveryStatus.UNKNOWN)
+        try:
+            assert rig.host.flush_resume_pending(trigger="tick") == 0
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity, run_id="run_x")) is ResumeDisposition.UNCERTAIN
+        finally:
+            restore()
+        assert calls["n"] == 1 and stores == [] and len(rig.host._resume_pending) == 0
+    finally:
+        rig.core.shutdown()
+
+
+def test_tick_flush_requests_are_deduplicated_while_one_is_queued(session_factory, tmp_path):
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        _pend_two_then_restore(rig, ticket, activity, ["run_x"])
+        queued: list = []
+        rig.host._enqueue = lambda fn, label="job": queued.append(fn)
+        rig.host._request_resume_flush("tick")
+        rig.host._request_resume_flush("tick")
+        assert len(queued) == 1  # 已有 flush 排隊就不重複排
+        queued[0]()  # 工作緒執行後旗標清掉，可以再排
+        rig.host._request_resume_flush("tick")
+        assert len(stores) == 1 and len(queued) == 1  # 佇列已空，不再排
+    finally:
+        rig.core.shutdown()

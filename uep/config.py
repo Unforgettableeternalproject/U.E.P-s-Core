@@ -44,6 +44,8 @@ class UepSettings(BaseSettings):
     # route=agent_loop 的 production 入口（DL-4 PR4）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效，開啟後
     # route=agent_loop 的回合由 AgentLoop 處理（不再走 direct_chat 回覆）
     agent_loop_entry: bool = Field(default=False, validation_alias="UEP_AGENT_LOOP_ENTRY")
+    # agent loop 的 child context 持久目錄（SessionStore）；未設 = ~/.uep/agent_loop
+    agent_loop_dir: Path | None = Field(default=None, validation_alias="UEP_AGENT_LOOP_DIR")
     # module.* 就緒事件訂閱（切片 F，註冊表端；事件名暫定，module coordinator 待設計）：預設關閉，
     # 只在 UEP_TOOL_PATH=agent 下有效。目前沒有任何 producer，關閉時不訂閱＝與舊行為完全一致
     tool_module_events: bool = Field(default=False, validation_alias="UEP_TOOL_MODULE_EVENTS")

@@ -3,7 +3,7 @@
 術語：parent ＝該 conversation 的 ContextManager 工作 context；child ＝Run 專屬的平行 context（鍵 ``loop:<run_id>``）。
 
 - ``uep/`` 不能 import ``echo_thought_core``（import boundary）：ContextManager 與其 session store 在這裡只是 ``LoopContextStore``
-  協定；真正接 echo_thought_core 的 session_store 尚未做（§15 既有假設：其後端耐久性是否滿足 D10 未核實）。
+  協定；production 實作在 ``uep.echo.loop_store_wiring.SessionLoopContextStore``（接 echo_thought_core 的 SessionStore）。
   離線用的實作在 ``uep.fakes.loop_context``。
 - fork 只取：Persona 系統提示、目標代碼與觸發內容、parent 壓縮摘要、有界的近期視窗（只含純文字對話）；
   不取 parent 的工具呼叫與結果訊息，也不取待合併的 aggregation。迴圈期間 parent 的新訊息不自動進 child。

@@ -288,7 +288,7 @@ class LoopLauncher:
         self._cache = cache
         if store is None:
             from uep.fakes.loop_context import (
-                InMemoryLoopContextStore,  # 尚無 production store（session_store 未接）：行程內暫存，Run 終態時清理
+                InMemoryLoopContextStore,  # 未注入 store（測試或持久 store 不可用）時的行程內暫存，Run 終態時清理
             )
 
             store = InMemoryLoopContextStore()

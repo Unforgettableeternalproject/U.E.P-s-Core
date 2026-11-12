@@ -509,6 +509,21 @@ def _probe_payload_hash_key(strict: bool = False) -> None:
         logger.warning("UEP_PAYLOAD_HASH_KEY 少於 %d 位元組：寫入私人 payload 會被拒絕", MIN_KEY_BYTES)
 
 
+
+def _loop_context_store() -> Any | None:
+    """agent loop 的持久 child context store（echo_thought_core SessionStore）；子系統不可用時回 None（啟動器退回行程內暫存）。"""
+    try:
+        from pathlib import Path
+
+        from uep.echo.loop_store_wiring import SessionLoopContextStore
+
+        base = get_settings().agent_loop_dir or Path.home() / ".uep" / "agent_loop"
+        return SessionLoopContextStore(base)
+    except Exception:
+        logger.warning("持久 loop context store 不可用，改用行程內暫存（park 後跨行程不能 resume）", exc_info=True)
+        return None
+
+
 def assemble_core(
     session_factory: sessionmaker[Session],
     *,
@@ -728,11 +743,12 @@ def assemble_core(
             from uep.tools.catalog.testkit import TESTKIT_TAGS
 
             extra_tags = TESTKIT_TAGS if testkit_on else frozenset()
+            loop_store = _loop_context_store()
             loop_entry, loop_launcher = build_loop_entry(
                 tool_path=tool_path, tasks=tasks, delivery=delivery, orchestrator=echo.orchestrator,
                 registry=loop_registry, model_port=model_port, cache=agent_cache,
                 text_store=getattr(echo, "loop_text", None), persona_id=persona_id, executors=executors,
-                platform_source=platform_source, memory_store=getattr(echo, "store_turn_memory", None),
+                platform_source=platform_source, store=loop_store, memory_store=getattr(echo, "store_turn_memory", None),
                 extra_capability_tags=extra_tags,
             )
         if loop_entry is not None:

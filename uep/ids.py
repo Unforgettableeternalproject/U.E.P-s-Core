@@ -12,6 +12,7 @@ PREFIXES = frozenset(
         "evt", "actv", "task", "run", "step", "act", "turn", "seg", "conv",
         "lease", "xfer", "out", "dsp", "dlv", "snap", "appr", "req",
         "obx", "blob", "trc", "rcpt", "att", "ctl", "dec", "chain",
+        "plan", "povr", "pmark",  # 行程項、臨時覆蓋、行程標記（PresencePlan）
     }
 )
 

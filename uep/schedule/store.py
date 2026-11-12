@@ -1,0 +1,703 @@
+"""行程持久化（PP-1）：PlanReader／PlanWriter／OverrideWriter／SlotMarkWriter 的 PostgreSQL 實作。
+
+- 解析一律委派 ``uep.schedule.resolver``（純函式）；本模組只負責讀寫資料表與重啟調和。
+- 每次行程寫入（items／overrides／marks／tz）同一交易內 ``presence_plan_meta.revision`` +1（樂觀併發與變更偵測）。
+- 時間以可注入 clock 為準（不依賴 DB 時鐘）；DB 讀取失敗時 ``resolve`` 回 ``unavailable``（PP-1、X1）。
+- 依賴方向：只依賴 ``uep.contracts``、``uep.schedule``、``uep.ids``、sqlalchemy；不 import Presence Manager 或 ``uep.memory``。
+- 資料表以 ``text()`` 存取（不新增 ORM model）；DDL 由 migration 0021 負責。
+- 事件（``schedule.plan_changed`` 等）屬 PP-4：這裡只提供提交後的 ``on_change`` callback。
+"""
+from __future__ import annotations
+
+import logging
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, time
+from typing import Literal, Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import Session, sessionmaker
+
+from uep.contracts.schedule import (
+    PLAN_LOCATIONS,
+    ActivityKind,
+    InterruptPolicy,
+    OverrideView,
+    PlanDelay,
+    PlanItem,
+    PlanLocation,
+    PlanSlot,
+    SlotMark,
+)
+from uep.ids import new_id
+from uep.schedule import resolver
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_TZ = "Asia/Taipei"
+MAX_USER_ITEMS = 200  # 每 persona 未刪除 user 項上限（§9.2）
+REST_WINDOW_PRIORITY = 10
+USER_PRIORITY = 50
+_ALL_WEEKDAYS = (1, 2, 3, 4, 5, 6, 7)
+_BEHAVIOR_MODES = frozenset({"REST", "SLEEP", "CHAT", "WORK", "MISCHIEF"})
+_ACTOR_REF = re.compile(r"^[a-z0-9_.:-]{1,128}$")
+_BLOB_REF = re.compile(r"^[a-z0-9_.:-]{1,128}$")
+OVERRIDE_END_REASONS = frozenset({
+    "completed", "idle_timeout", "round_ended", "expired", "owner_ended", "superseded", "emergency",
+    "transfer_failed", "presence_lost", "restart"})
+MARK_END_REASONS = frozenset({"owner_resumed", "item_ended", "round_ended", "superseded"})
+ALLOWED_SOURCES = ("owner_console",)  # 第一階段只接受 owner_console（§9.2）
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+# ---- 寫入介面型別（PlanWriter；之後可移入 contracts）----
+
+@dataclass(frozen=True)
+class PlanActor:
+    """與 PresenceRequest 同一套身分規則：不收顯示名稱；is_owner 由 Core 計算，非自報。"""
+
+    actor_ref: str
+    source_platform: str
+    actor_authenticated: bool
+    is_owner: bool
+
+
+@dataclass(frozen=True)
+class PlanItemCommand:
+    activity_kind: str
+    location: str | None
+    recurrence: str
+    once_start_at: datetime | None = None
+    once_end_at: datetime | None = None
+    weekdays: tuple[int, ...] = ()
+    local_start: time | None = None
+    local_end: time | None = None
+    tz: str | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+    priority: int = USER_PRIORITY
+    flexibility: str = "fixed"
+    interrupt_policy: str | None = None
+    suggested_behaviors: tuple[str, ...] | None = None
+    note_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    status: Literal["OK", "REVISION_CONFLICT", "INVALID", "NOT_OWNER", "LIMIT_EXCEEDED"]
+    reason_code: str | None = None
+    revision: int | None = None
+    ref_id: str | None = None
+
+
+@dataclass(frozen=True)
+class PlanSnapshot:
+    revision: int
+    tz: str
+    items: tuple[PlanItem, ...]
+    rest_window: PlanItem | None
+    active_override: OverrideView | None
+    slots: tuple[PlanSlot, ...]
+
+
+@dataclass(frozen=True)
+class ReconcileSummary:
+    overrides_ended: dict[str, int]  # end_reason -> 數量
+    marks_ended: dict[str, int]
+    revision: int | None  # 有變更時 +1 後的 revision；無變更為 None
+
+
+class PlanWriter(Protocol):
+    def snapshot(self, actor: PlanActor) -> PlanSnapshot: ...
+    def create_item(self, actor: PlanActor, cmd: PlanItemCommand, *, expected_revision: int) -> WriteResult: ...
+    def update_item(self, actor: PlanActor, item_id: str, cmd: PlanItemCommand, *,
+                    expected_revision: int) -> WriteResult: ...
+    def delete_item(self, actor: PlanActor, item_id: str, *, expected_revision: int) -> WriteResult: ...
+    def set_rest_window(self, actor: PlanActor, *, local_start: time, local_end: time, tz: str,
+                        expected_revision: int) -> WriteResult: ...
+    def end_assignment(self, actor: PlanActor, *, expected_revision: int) -> WriteResult: ...
+
+
+# ---- 驗證（純函式）----
+
+def _tz_ok(name: str | None) -> bool:
+    if not isinstance(name, str) or not name:
+        return False
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
+
+
+def validate_item_command(cmd: PlanItemCommand) -> str | None:
+    """寫入前驗證；回固定的 reason_code，None＝通過。DB CHECK 是第二道防線。"""
+    if cmd.activity_kind not in {k.value for k in ActivityKind}:
+        return "invalid_activity_kind"
+    if cmd.location is not None and cmd.location not in PLAN_LOCATIONS:
+        return "invalid_location"
+    if cmd.location is None and cmd.activity_kind != ActivityKind.REST.value:
+        return "location_required_for_non_rest"
+    if cmd.flexibility not in ("fixed", "deferrable", "flexible"):
+        return "invalid_flexibility"
+    if cmd.interrupt_policy is not None and cmd.interrupt_policy not in {p.value for p in InterruptPolicy}:
+        return "invalid_interrupt_policy"
+    if not isinstance(cmd.priority, int) or isinstance(cmd.priority, bool) or not 0 <= cmd.priority <= 99:
+        return "invalid_priority"
+    if cmd.suggested_behaviors is not None and (
+            not cmd.suggested_behaviors or any(m not in _BEHAVIOR_MODES for m in cmd.suggested_behaviors)):
+        return "invalid_suggested_behaviors"
+    if cmd.note_ref is not None and _BLOB_REF.fullmatch(cmd.note_ref) is None:
+        return "invalid_note_ref"
+    for stamp in (cmd.valid_from, cmd.valid_until, cmd.once_start_at, cmd.once_end_at):
+        if stamp is not None and stamp.tzinfo is None:
+            return "naive_datetime"
+    if cmd.valid_from is not None and cmd.valid_until is not None and cmd.valid_until <= cmd.valid_from:
+        return "invalid_validity"
+    if cmd.recurrence == "once":
+        if cmd.once_start_at is None or cmd.once_end_at is None:
+            return "once_requires_range"
+        if cmd.once_end_at <= cmd.once_start_at:
+            return "once_end_before_start"
+        if cmd.weekdays or cmd.local_start is not None or cmd.local_end is not None or cmd.tz is not None:
+            return "once_has_weekly_fields"
+    elif cmd.recurrence == "weekly":
+        if cmd.once_start_at is not None or cmd.once_end_at is not None:
+            return "weekly_has_once_fields"
+        if not cmd.weekdays or any(d not in _ALL_WEEKDAYS for d in cmd.weekdays):
+            return "invalid_weekdays"
+        if cmd.local_start is None or cmd.local_end is None:
+            return "weekly_requires_local_time"
+        if cmd.local_start == cmd.local_end:
+            return "weekly_equal_times"
+        if not _tz_ok(cmd.tz):
+            return "invalid_tz"
+    else:
+        return "invalid_recurrence"
+    return None
+
+
+def _is_owner(actor: PlanActor, allowed_sources: tuple[str, ...]) -> bool:
+    return (actor.actor_authenticated is True and actor.is_owner is True
+            and isinstance(actor.actor_ref, str) and _ACTOR_REF.fullmatch(actor.actor_ref) is not None
+            and actor.source_platform in allowed_sources)
+
+
+# ---- 資料列 → 契約型別 ----
+
+_ITEM_COLUMNS = (
+    "item_id, role, activity_kind, location, recurrence, once_start_at, once_end_at, weekdays, local_start, local_end, "
+    "tz, valid_from, valid_until, priority, flexibility, interrupt_policy, suggested_behaviors, created_at")
+_OVERRIDE_COLUMNS = ("override_id, location, activity_kind, started_at, expires_at, round_end_at, status, "
+                     "cause_request_id, authority, priority")
+_MARK_COLUMNS = "mark_id, kind, item_ref, planned_start_at, started_at, cause_request_id"
+
+
+def _item_from_row(m) -> PlanItem:
+    return PlanItem(
+        item_id=m["item_id"], activity_kind=ActivityKind(m["activity_kind"]), location=m["location"],
+        recurrence=m["recurrence"], role=m["role"], once_start_at=m["once_start_at"], once_end_at=m["once_end_at"],
+        weekdays=tuple(int(d) for d in (m["weekdays"] or ())), local_start=m["local_start"],
+        local_end=m["local_end"], tz=m["tz"], valid_from=m["valid_from"], valid_until=m["valid_until"],
+        priority=int(m["priority"]), flexibility=m["flexibility"],
+        interrupt_policy=InterruptPolicy(m["interrupt_policy"]) if m["interrupt_policy"] else None,
+        suggested_behaviors=tuple(m["suggested_behaviors"]) if m["suggested_behaviors"] is not None else None,
+        created_at=m["created_at"])
+
+
+def _override_from_row(m) -> OverrideView:
+    return OverrideView(
+        override_id=m["override_id"], location=m["location"], activity_kind=ActivityKind(m["activity_kind"]),
+        started_at=m["started_at"], expires_at=m["expires_at"], round_end_at=m["round_end_at"],
+        status="pending" if m["status"] == "PENDING" else "active", cause_request_id=m["cause_request_id"],
+        authority=m["authority"], priority=m["priority"])
+
+
+def _mark_from_row(m) -> SlotMark:
+    return SlotMark(kind=m["kind"], item_ref=m["item_ref"], planned_start_at=m["planned_start_at"],
+                    started_at=m["started_at"], mark_id=m["mark_id"], cause_request_id=m["cause_request_id"])
+
+
+class PlanStore:
+    """PlanReader＋PlanWriter＋OverrideWriter＋SlotMarkWriter（單一 persona）。"""
+
+    def __init__(self, session_factory: sessionmaker[Session], *, persona_id: str = "uep",
+                 clock: Callable[[], datetime] = _utcnow, override_policy: resolver.OverridePolicy | None = None,
+                 allowed_sources: tuple[str, ...] = ALLOWED_SOURCES,
+                 on_change: Callable[[int, str, str | None], None] | None = None) -> None:
+        self._sf = session_factory
+        self._persona = persona_id
+        self._clock = clock
+        self._policy = override_policy or resolver.OverridePolicy()
+        self._allowed_sources = allowed_sources
+        self._on_change = on_change
+        self._delay: PlanDelay | None = None
+
+    # ---- Planner 注入（delay 不持久化；只活在記憶體）----
+
+    def set_delay(self, delay: PlanDelay | None) -> None:
+        self._delay = delay
+
+    # ---- 內部 ----
+
+    def _now(self) -> datetime:
+        now = self._clock()
+        if now.tzinfo is None:
+            raise ValueError("clock 必須回傳帶時區的 datetime")
+        return now.astimezone(UTC)
+
+    def _lock_meta(self, s: Session) -> tuple[int, str]:
+        s.execute(text("INSERT INTO presence_plan_meta (persona_id) VALUES (:p) ON CONFLICT DO NOTHING"),
+                  {"p": self._persona})
+        row = s.execute(text("SELECT revision, tz FROM presence_plan_meta WHERE persona_id = :p FOR UPDATE"),
+                        {"p": self._persona}).one()
+        return int(row.revision), row.tz
+
+    def _bump(self, s: Session, now: datetime) -> int:
+        row = s.execute(text(
+            "UPDATE presence_plan_meta SET revision = revision + 1, updated_at = :now WHERE persona_id = :p "
+            "RETURNING revision"), {"p": self._persona, "now": now}).one()
+        return int(row.revision)
+
+    def _notify(self, revision: int, kind: str, ref_id: str | None) -> None:
+        if self._on_change is not None:
+            try:
+                self._on_change(revision, kind, ref_id)
+            except Exception:
+                logger.exception("on_change callback 失敗：kind=%s", kind)
+
+    def _owner_gate(self, actor: PlanActor) -> WriteResult | None:
+        return None if _is_owner(actor, self._allowed_sources) else WriteResult("NOT_OWNER", "not_owner")
+
+    # ---- PlanReader ----
+
+    def revision(self) -> int:
+        with self._sf() as s:
+            row = s.execute(text("SELECT revision FROM presence_plan_meta WHERE persona_id = :p"),
+                            {"p": self._persona}).first()
+        return int(row.revision) if row else 0
+
+    def tz(self) -> str:
+        with self._sf() as s:
+            row = s.execute(text("SELECT tz FROM presence_plan_meta WHERE persona_id = :p"),
+                            {"p": self._persona}).first()
+        return row.tz if row else DEFAULT_TZ
+
+    def _load(self) -> tuple[list[PlanItem], OverrideView | None, list[SlotMark], int, str]:
+        with self._sf() as s:
+            meta = s.execute(text("SELECT revision, tz FROM presence_plan_meta WHERE persona_id = :p"),
+                             {"p": self._persona}).first()
+            items = [_item_from_row(r._mapping) for r in s.execute(text(
+                f"SELECT {_ITEM_COLUMNS} FROM presence_plan_items WHERE persona_id = :p AND deleted_at IS NULL "
+                "ORDER BY item_id"), {"p": self._persona})]
+            ov = s.execute(text(
+                f"SELECT {_OVERRIDE_COLUMNS} FROM presence_plan_overrides "
+                "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE')"), {"p": self._persona}).first()
+            marks = [_mark_from_row(r._mapping) for r in s.execute(text(
+                f"SELECT {_MARK_COLUMNS} FROM presence_plan_slot_marks WHERE persona_id = :p AND ended_at IS NULL"),
+                {"p": self._persona})]
+        return (items, _override_from_row(ov._mapping) if ov else None, marks,
+                int(meta.revision) if meta else 0, meta.tz if meta else DEFAULT_TZ)
+
+    def resolve(self, at: datetime | None = None) -> PlanSlot:
+        now = (at or self._now())
+        try:
+            items, override, marks, revision, tz = self._load()
+        except SQLAlchemyError as exc:  # 儲存讀取失敗 → 行程不可用（不誤刪任何資料）
+            logger.warning("行程儲存讀取失敗，行程標示為不可用：%s", exc)
+            return resolver.unavailable_slot(now, 0, "store_unavailable")
+        return resolver.resolve(items, override, now, tz, plan_revision=revision, delay=self._delay, marks=marks)
+
+    def upcoming(self, start: datetime, horizon_s: int) -> tuple[PlanSlot, ...]:
+        try:
+            items, override, marks, revision, tz = self._load()
+        except SQLAlchemyError as exc:
+            logger.warning("行程儲存讀取失敗，行程標示為不可用：%s", exc)
+            return (resolver.unavailable_slot(start, 0, "store_unavailable"),)
+        return resolver.upcoming(items, override, start, horizon_s, tz, plan_revision=revision, delay=self._delay,
+                                 marks=marks)
+
+    # ---- OverrideWriter（僅仲裁器持有）----
+
+    def begin_override(self, *, cause_request_id: str, authority: str, priority: int, location: PlanLocation,
+                       activity_kind: ActivityKind, expires_at: datetime) -> str:
+        """建立 PENDING override；同 cause 冪等。已有未結束的 override 時，舊的以 superseded 結束。"""
+        started = self._now()
+        for attempt in range(2):
+            try:
+                with self._sf() as s, s.begin():
+                    existing = s.execute(text(
+                        "SELECT override_id FROM presence_plan_overrides WHERE cause_request_id = :c"),
+                        {"c": cause_request_id}).first()
+                    if existing:
+                        return existing.override_id
+                    _, tz = self._lock_meta(s)
+                    round_end = resolver.round_end_at(started, tz)
+                    expires = min(expires_at.astimezone(UTC), round_end)
+                    # 先以契約型別驗證（host 不得為 override 位置；expires > started）
+                    view = OverrideView("probe", location, ActivityKind(activity_kind), started, expires, round_end)
+                    s.execute(text(
+                        "UPDATE presence_plan_overrides SET status = 'ENDED', ended_at = :now, "
+                        "end_reason = 'superseded' WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE')"),
+                        {"p": self._persona, "now": started})
+                    override_id = new_id("povr")
+                    s.execute(text(
+                        "INSERT INTO presence_plan_overrides (override_id, persona_id, cause_request_id, authority, "
+                        "priority, location, activity_kind, started_at, expires_at, round_end_at, status, created_at) "
+                        "VALUES (:id, :p, :c, :a, :pr, :loc, :k, :st, :ex, :re, 'PENDING', :st)"),
+                        {"id": override_id, "p": self._persona, "c": cause_request_id, "a": authority,
+                         "pr": priority, "loc": view.location, "k": ActivityKind(activity_kind).value,
+                         "st": started, "ex": expires, "re": round_end})
+                    revision = self._bump(s, started)
+                self._notify(revision, "override_started", override_id)
+                return override_id
+            except IntegrityError:
+                if attempt:  # 競態：另一個交易搶先以同 cause 建立 → 第二輪走冪等分支
+                    raise
+        raise RuntimeError("unreachable")  # pragma: no cover
+
+    def activate_override(self, override_id: str) -> bool:
+        now = self._now()
+        with self._sf() as s, s.begin():
+            row = s.execute(text(
+                "UPDATE presence_plan_overrides SET status = 'ACTIVE' WHERE override_id = :id AND persona_id = :p "
+                "AND status = 'PENDING' RETURNING override_id"), {"id": override_id, "p": self._persona}).first()
+            if row is None:
+                return False
+            self._lock_meta(s)
+            revision = self._bump(s, now)
+        self._notify(revision, "override_activated", override_id)
+        return True
+
+    def end_override(self, override_id: str, reason: str) -> bool:
+        if reason not in OVERRIDE_END_REASONS:
+            raise ValueError(f"未知的 override 結束原因：{reason}")
+        now = self._now()
+        with self._sf() as s, s.begin():
+            row = s.execute(text(
+                "UPDATE presence_plan_overrides SET status = 'ENDED', ended_at = :now, end_reason = :r "
+                "WHERE override_id = :id AND persona_id = :p AND status <> 'ENDED' RETURNING override_id"),
+                {"id": override_id, "p": self._persona, "now": now, "r": reason}).first()
+            if row is None:
+                return False
+            self._lock_meta(s)
+            revision = self._bump(s, now)
+        self._notify(revision, "override_ended", override_id)
+        return True
+
+    def active_override(self) -> OverrideView | None:
+        with self._sf() as s:
+            row = s.execute(text(
+                f"SELECT {_OVERRIDE_COLUMNS} FROM presence_plan_overrides "
+                "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE')"), {"p": self._persona}).first()
+        return _override_from_row(row._mapping) if row else None
+
+    # ---- SlotMarkWriter ----
+
+    def begin_mark(self, *, kind: Literal["pause", "abandon"], item_ref: str, planned_start_at: datetime,
+                   cause_request_id: str) -> str:
+        """建立標記；同 cause 冪等，同一出現同 kind 已有未結束標記時回既有 id。abandon 令同一出現的 pause 以 superseded 結束。"""
+        if kind not in ("pause", "abandon"):
+            raise ValueError(f"未知的 mark kind：{kind}")
+        started = self._now()
+        for attempt in range(2):
+            try:
+                with self._sf() as s, s.begin():
+                    existing = s.execute(text(
+                        "SELECT mark_id FROM presence_plan_slot_marks WHERE cause_request_id = :c"),
+                        {"c": cause_request_id}).first()
+                    if existing:
+                        return existing.mark_id
+                    _, tz = self._lock_meta(s)
+                    open_same = s.execute(text(
+                        "SELECT mark_id FROM presence_plan_slot_marks WHERE persona_id = :p AND item_ref = :i "
+                        "AND planned_start_at = :ps AND kind = :k AND ended_at IS NULL"),
+                        {"p": self._persona, "i": item_ref, "ps": planned_start_at, "k": kind}).first()
+                    if open_same:
+                        return open_same.mark_id
+                    if kind == "abandon":
+                        s.execute(text(
+                            "UPDATE presence_plan_slot_marks SET ended_at = :now, end_reason = 'superseded' "
+                            "WHERE persona_id = :p AND item_ref = :i AND planned_start_at = :ps AND kind = 'pause' "
+                            "AND ended_at IS NULL"),
+                            {"p": self._persona, "i": item_ref, "ps": planned_start_at, "now": started})
+                    mark_id = new_id("pmark")
+                    s.execute(text(
+                        "INSERT INTO presence_plan_slot_marks (mark_id, persona_id, kind, item_ref, planned_start_at, "
+                        "cause_request_id, started_at, round_end_at, created_at) "
+                        "VALUES (:id, :p, :k, :i, :ps, :c, :st, :re, :st)"),
+                        {"id": mark_id, "p": self._persona, "k": kind, "i": item_ref, "ps": planned_start_at,
+                         "c": cause_request_id, "st": started, "re": resolver.round_end_at(started, tz)})
+                    revision = self._bump(s, started)
+                self._notify(revision, "mark_started", mark_id)
+                return mark_id
+            except IntegrityError:
+                if attempt:
+                    raise
+        raise RuntimeError("unreachable")  # pragma: no cover
+
+    def end_mark(self, mark_id: str, reason: str) -> bool:
+        if reason not in MARK_END_REASONS:
+            raise ValueError(f"未知的 mark 結束原因：{reason}")
+        now = self._now()
+        with self._sf() as s, s.begin():
+            kind_row = s.execute(text(
+                "SELECT kind FROM presence_plan_slot_marks WHERE mark_id = :id AND persona_id = :p"),
+                {"id": mark_id, "p": self._persona}).first()
+            if kind_row is None:
+                return False
+            if kind_row.kind == "abandon" and reason in ("owner_resumed", "superseded"):
+                raise ValueError("abandon 不可恢復，只會 item_ended／round_ended")
+            row = s.execute(text(
+                "UPDATE presence_plan_slot_marks SET ended_at = :now, end_reason = :r "
+                "WHERE mark_id = :id AND persona_id = :p AND ended_at IS NULL RETURNING mark_id"),
+                {"id": mark_id, "p": self._persona, "now": now, "r": reason}).first()
+            if row is None:
+                return False
+            self._lock_meta(s)
+            revision = self._bump(s, now)
+        self._notify(revision, "mark_ended", mark_id)
+        return True
+
+    def active_marks(self) -> tuple[SlotMark, ...]:
+        with self._sf() as s:
+            rows = s.execute(text(
+                f"SELECT {_MARK_COLUMNS} FROM presence_plan_slot_marks WHERE persona_id = :p AND ended_at IS NULL "
+                "ORDER BY started_at"), {"p": self._persona})
+            return tuple(_mark_from_row(r._mapping) for r in rows)
+
+    # ---- PlanWriter（僅已認證 owner）----
+
+    def snapshot(self, actor: PlanActor) -> PlanSnapshot:
+        if not _is_owner(actor, self._allowed_sources):
+            raise PermissionError("not_owner")
+        items, override, marks, revision, tz = self._load()
+        now = self._now()
+        slots = resolver.upcoming(items, override, now, 24 * 3600, tz, plan_revision=revision, delay=self._delay,
+                                  marks=marks)
+        rest = next((i for i in items if i.role == "rest_window"), None)
+        return PlanSnapshot(revision, tz, tuple(items), rest, override, slots)
+
+    def _write(self, expected_revision: int, change_kind: str, body: Callable[[Session, datetime, str], WriteResult]
+               ) -> WriteResult:
+        now = self._now()
+        with self._sf() as s, s.begin():
+            revision, tz = self._lock_meta(s)
+            if revision != expected_revision:
+                return WriteResult("REVISION_CONFLICT", "revision_conflict", revision)
+            result = body(s, now, tz)
+            if result.status != "OK":  # body 在任何寫入前就回報失敗，不留下半套寫入
+                return WriteResult(result.status, result.reason_code, revision)
+            new_revision = self._bump(s, now)
+            result = WriteResult("OK", None, new_revision, result.ref_id)
+        self._notify(new_revision, change_kind, result.ref_id)
+        return result
+
+    @staticmethod
+    def _item_params(cmd: PlanItemCommand) -> dict:
+        return {
+            "kind": cmd.activity_kind, "loc": cmd.location, "rec": cmd.recurrence, "os": cmd.once_start_at,
+            "oe": cmd.once_end_at, "wd": list(cmd.weekdays) if cmd.recurrence == "weekly" else None,
+            "ls": cmd.local_start, "le": cmd.local_end, "tz": cmd.tz, "vf": cmd.valid_from, "vu": cmd.valid_until,
+            "pr": cmd.priority, "fx": cmd.flexibility, "ip": cmd.interrupt_policy,
+            "sb": list(cmd.suggested_behaviors) if cmd.suggested_behaviors is not None else None,
+            "nr": cmd.note_ref}
+
+    def create_item(self, actor: PlanActor, cmd: PlanItemCommand, *, expected_revision: int) -> WriteResult:
+        if (denied := self._owner_gate(actor)) is not None:
+            return denied
+        if (reason := validate_item_command(cmd)) is not None:
+            return WriteResult("INVALID", reason)
+
+        def body(s: Session, now: datetime, tz: str) -> WriteResult:
+            count = s.execute(text(
+                "SELECT count(*) FROM presence_plan_items WHERE persona_id = :p AND role = 'user' "
+                "AND deleted_at IS NULL"), {"p": self._persona}).scalar_one()
+            if count >= MAX_USER_ITEMS:
+                return WriteResult("LIMIT_EXCEEDED", "user_item_limit")
+            item_id = new_id("plan")
+            s.execute(text(
+                "INSERT INTO presence_plan_items (item_id, persona_id, role, activity_kind, location, recurrence, "
+                "once_start_at, once_end_at, weekdays, local_start, local_end, tz, valid_from, valid_until, priority, "
+                "flexibility, interrupt_policy, suggested_behaviors, note_ref, created_by, updated_by, created_at, "
+                "updated_at) VALUES (:id, :p, 'user', :kind, :loc, :rec, :os, :oe, :wd, :ls, :le, :tz, :vf, :vu, :pr, "
+                ":fx, :ip, :sb, :nr, :by, :by, :now, :now)"),
+                {**self._item_params(cmd), "id": item_id, "p": self._persona, "by": actor.actor_ref, "now": now})
+            return WriteResult("OK", ref_id=item_id)
+
+        return self._write(expected_revision, "item_created", body)
+
+    def update_item(self, actor: PlanActor, item_id: str, cmd: PlanItemCommand, *,
+                    expected_revision: int) -> WriteResult:
+        if (denied := self._owner_gate(actor)) is not None:
+            return denied
+        if (reason := validate_item_command(cmd)) is not None:
+            return WriteResult("INVALID", reason)
+
+        def body(s: Session, now: datetime, tz: str) -> WriteResult:
+            row = s.execute(text(
+                "SELECT role FROM presence_plan_items WHERE item_id = :id AND persona_id = :p AND deleted_at IS NULL "
+                "FOR UPDATE"), {"id": item_id, "p": self._persona}).first()
+            if row is None:
+                return WriteResult("INVALID", "item_not_found")
+            if row.role == "rest_window":
+                return WriteResult("INVALID", "use_set_rest_window")
+            s.execute(text(
+                "UPDATE presence_plan_items SET activity_kind = :kind, location = :loc, recurrence = :rec, "
+                "once_start_at = :os, once_end_at = :oe, weekdays = :wd, local_start = :ls, local_end = :le, "
+                "tz = :tz, valid_from = :vf, valid_until = :vu, priority = :pr, flexibility = :fx, "
+                "interrupt_policy = :ip, suggested_behaviors = :sb, note_ref = :nr, version = version + 1, "
+                "updated_by = :by, updated_at = :now WHERE item_id = :id"),
+                {**self._item_params(cmd), "id": item_id, "by": actor.actor_ref, "now": now})
+            return WriteResult("OK", ref_id=item_id)
+
+        return self._write(expected_revision, "item_updated", body)
+
+    def delete_item(self, actor: PlanActor, item_id: str, *, expected_revision: int) -> WriteResult:
+        if (denied := self._owner_gate(actor)) is not None:
+            return denied
+
+        def body(s: Session, now: datetime, tz: str) -> WriteResult:
+            row = s.execute(text(
+                "SELECT role FROM presence_plan_items WHERE item_id = :id AND persona_id = :p AND deleted_at IS NULL "
+                "FOR UPDATE"), {"id": item_id, "p": self._persona}).first()
+            if row is None:
+                return WriteResult("INVALID", "item_not_found")
+            if row.role == "rest_window":  # 避免行程失去休息時段
+                return WriteResult("INVALID", "rest_window_not_deletable")
+            s.execute(text(
+                "UPDATE presence_plan_items SET deleted_at = :now, updated_at = :now, updated_by = :by, "
+                "version = version + 1 WHERE item_id = :id"), {"id": item_id, "now": now, "by": actor.actor_ref})
+            # 指向它的未結束標記隨項目結束
+            s.execute(text(
+                "UPDATE presence_plan_slot_marks SET ended_at = :now, end_reason = 'item_ended' "
+                "WHERE persona_id = :p AND item_ref = :id AND ended_at IS NULL"),
+                {"id": item_id, "p": self._persona, "now": now})
+            return WriteResult("OK", ref_id=item_id)
+
+        return self._write(expected_revision, "item_deleted", body)
+
+    def set_rest_window(self, actor: PlanActor, *, local_start: time, local_end: time, tz: str,
+                        expected_revision: int) -> WriteResult:
+        if (denied := self._owner_gate(actor)) is not None:
+            return denied
+        if local_start == local_end:
+            return WriteResult("INVALID", "weekly_equal_times")
+        if not _tz_ok(tz):
+            return WriteResult("INVALID", "invalid_tz")
+
+        def body(s: Session, now: datetime, _tz: str) -> WriteResult:
+            row = s.execute(text(
+                "SELECT item_id FROM presence_plan_items WHERE persona_id = :p AND role = 'rest_window' "
+                "AND deleted_at IS NULL FOR UPDATE"), {"p": self._persona}).first()
+            params = {"p": self._persona, "ls": local_start, "le": local_end, "tz": tz, "by": actor.actor_ref,
+                      "now": now}
+            if row is not None:
+                s.execute(text(
+                    "UPDATE presence_plan_items SET local_start = :ls, local_end = :le, tz = :tz, "
+                    "version = version + 1, updated_by = :by, updated_at = :now WHERE item_id = :id"),
+                    {**params, "id": row.item_id})
+                return WriteResult("OK", ref_id=row.item_id)
+            item_id = new_id("plan")
+            s.execute(text(
+                "INSERT INTO presence_plan_items (item_id, persona_id, role, activity_kind, location, recurrence, "
+                "weekdays, local_start, local_end, tz, priority, created_by, updated_by, created_at, updated_at) "
+                "VALUES (:id, :p, 'rest_window', 'rest', NULL, 'weekly', :wd, :ls, :le, :tz, :pr, :by, :by, :now, :now)"),
+                {**params, "id": item_id, "wd": list(_ALL_WEEKDAYS), "pr": REST_WINDOW_PRIORITY})
+            return WriteResult("OK", ref_id=item_id)
+
+        return self._write(expected_revision, "rest_window", body)
+
+    def set_tz(self, actor: PlanActor, tz: str, *, expected_revision: int) -> WriteResult:
+        """變更行程時區（輪次日界取此值；之後新建的 override／mark 以新時區計算）。"""
+        if (denied := self._owner_gate(actor)) is not None:
+            return denied
+        if not _tz_ok(tz):
+            return WriteResult("INVALID", "invalid_tz")
+
+        def body(s: Session, now: datetime, _tz: str) -> WriteResult:
+            s.execute(text("UPDATE presence_plan_meta SET tz = :tz WHERE persona_id = :p"),
+                      {"tz": tz, "p": self._persona})
+            return WriteResult("OK")
+
+        return self._write(expected_revision, "tz_changed", body)
+
+    def end_assignment(self, actor: PlanActor, *, expected_revision: int) -> WriteResult:
+        """owner 顯式結束臨時指示（沒有進行中的指示時為無操作，回 OK 與 ref_id=None；revision 不變）。"""
+        if (denied := self._owner_gate(actor)) is not None:
+            return denied
+        now = self._now()
+        with self._sf() as s, s.begin():
+            revision, _ = self._lock_meta(s)
+            if revision != expected_revision:
+                return WriteResult("REVISION_CONFLICT", "revision_conflict", revision)
+            row = s.execute(text(
+                "UPDATE presence_plan_overrides SET status = 'ENDED', ended_at = :now, end_reason = 'owner_ended' "
+                "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE') RETURNING override_id"),
+                {"p": self._persona, "now": now}).first()
+            if row is None:
+                return WriteResult("OK", None, revision, None)
+            new_revision = self._bump(s, now)
+        self._notify(new_revision, "override_ended", row.override_id)
+        return WriteResult("OK", None, new_revision, row.override_id)
+
+    # ---- 重啟調和（§7）----
+
+    def reconcile(self, now: datetime | None = None, *,
+                  presence_status: Literal["NONE", "ACTIVE", "RECOVERING"] | None = None) -> ReconcileSummary:
+        """啟動／維護時的一次調和；不補錯過的邊界。
+
+        - override：已過期／已過輪次 → ENDED(expired／round_ended)；未過期但 ``presence_status`` 為 NONE／RECOVERING
+          （她已不在 override 的位置）→ ENDED(restart)。``presence_status=None`` 不做此項。
+        - mark：已過輪次 → ended(round_ended)；指向的行程項已刪除／不存在 → ended(item_ended)；其餘保留
+          （owner 的明示決定不因重啟消失）。
+        - 有任何變更時 revision +1。
+        """
+        stamp = (now or self._now()).astimezone(UTC)
+        ov_ended: dict[str, int] = {}
+        mk_ended: dict[str, int] = {}
+        with self._sf() as s, s.begin():
+            self._lock_meta(s)
+            for row in s.execute(text(
+                    f"SELECT {_OVERRIDE_COLUMNS} FROM presence_plan_overrides "
+                    "WHERE persona_id = :p AND status IN ('PENDING', 'ACTIVE') FOR UPDATE"), {"p": self._persona}).all():
+                view = _override_from_row(row._mapping)
+                reason = resolver.override_end_reason(view, stamp)
+                if reason is None and presence_status in ("NONE", "RECOVERING"):
+                    reason = "restart"
+                if reason is None:
+                    continue
+                s.execute(text(
+                    "UPDATE presence_plan_overrides SET status = 'ENDED', ended_at = :now, end_reason = :r "
+                    "WHERE override_id = :id"), {"id": view.override_id, "now": stamp, "r": reason})
+                ov_ended[reason] = ov_ended.get(reason, 0) + 1
+            for row in s.execute(text(
+                    "SELECT m.mark_id, m.round_end_at, "
+                    "EXISTS (SELECT 1 FROM presence_plan_items i WHERE i.item_id = m.item_ref "
+                    "AND i.deleted_at IS NULL) AS item_alive "
+                    "FROM presence_plan_slot_marks m WHERE m.persona_id = :p AND m.ended_at IS NULL FOR UPDATE OF m"),
+                    {"p": self._persona}).all():
+                reason = ("round_ended" if row.round_end_at <= stamp else None) or (
+                    "item_ended" if not row.item_alive else None)
+                if reason is None:
+                    continue
+                s.execute(text(
+                    "UPDATE presence_plan_slot_marks SET ended_at = :now, end_reason = :r WHERE mark_id = :id"),
+                    {"id": row.mark_id, "now": stamp, "r": reason})
+                mk_ended[reason] = mk_ended.get(reason, 0) + 1
+            revision = self._bump(s, stamp) if (ov_ended or mk_ended) else None
+        if revision is not None:
+            self._notify(revision, "reconcile", None)
+        return ReconcileSummary(ov_ended, mk_ended, revision)
+
+
+__all__ = [
+    "ALLOWED_SOURCES", "MAX_USER_ITEMS", "PlanActor", "PlanItemCommand", "PlanSnapshot", "PlanStore", "PlanWriter",
+    "ReconcileSummary", "WriteResult", "validate_item_command",
+]

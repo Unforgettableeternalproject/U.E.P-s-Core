@@ -128,9 +128,12 @@ class ConsoleRuntime:
     tool_path: str = "legacy"  # 組裝的工具路徑（agent 時才有 loop_switch 與 model_port）
     loop_switch: Any = None  # agent 路徑：``/loop`` 的一次性 route 開關（None＝非 agent 路徑）
     model_port: Any = None  # agent 路徑：驅動 AgentThinkStage 與 AgentLoop 的 ModelPort
+    behavior_driver: Any = None  # PP-3b：Behavior driver（只在 real 記憶路徑；off 或 fake 時為 None）
 
     def close(self) -> None:
         try:
+            if self.behavior_driver is not None:
+                self.behavior_driver.stop()
             self.core.shutdown()  # 含決策日誌寫入器的關閉（排空佇列後才釋放連線）
         finally:
             engine = self.session_factory.kw.get("bind")
@@ -231,6 +234,13 @@ def build_fake_runtime(
         except BaseException:
             core.shutdown()
             raise
+        # PP-3b：只有 real_rig 組出的記憶 Host 才有 rest_window_policy 標記；fake 記憶不啟動 driver
+        if memory_host is not None and hasattr(memory_host, "rest_window_policy"):
+            from uep.config import get_settings
+            from uep.echo.schedule_wiring import attach_behavior_driver
+
+            runtime.behavior_driver = attach_behavior_driver(
+                get_settings(), core, session_factory=session_factory, rest_policy=memory_host.rest_window_policy)
     return runtime
 
 

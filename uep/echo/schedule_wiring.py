@@ -157,4 +157,60 @@ def build_rest_window_policy(settings: Any, fixed_policy: RestWindowPolicy | Non
     return policy
 
 
-__all__ = ["PlanBackedRestWindowPolicy", "build_rest_window_policy"]
+# ---- Behavior driver（PP-3b）----
+
+_PRESENCE_EVENTS = ("presence.granted", "presence.activated", "presence.revoked", "presence.recovering",
+                    "presence.recovered", "state.changed")
+
+
+def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, rest_policy: RestWindowPolicy | None,
+                           reader: Any | None = None, metrics_inc: Callable[[str], None] | None = None) -> Any | None:
+    """依 ``settings.schedule_behavior_driver``（``off|shadow|on``，預設 shadow）組裝並啟動 BehaviorDriver。
+
+    ``off`` 回 None。輸入事實：State 軸（Presence／Interaction／Runtime／Behavior）、全域停止旗標、
+    DreamLoop 的 ``dream_status()["in_flight"]``、``rest_policy.window_at``（與做夢迴圈用同一個 policy，N4）。
+    ``has_uninterruptible_work`` 第一版固定 False（Task 層尚無可查詢介面）。shadow 只記 log／指標，不提請求。
+    """
+    from uep.schedule.driver import BehaviorDriver, BehaviorFacts, parse_driver_mode
+    from uep.state.coordinator import Axis, StateTransitionRequest
+
+    mode = parse_driver_mode(getattr(settings, "schedule_behavior_driver", None))
+    if mode == "off":
+        return None
+    if reader is None:
+        from uep.schedule.store import PlanStore
+
+        reader = PlanStore(session_factory)
+    window_policy = rest_policy if rest_policy is not None else FixedWindowPolicy()
+    state, stop, memory, bus = core.state, core.stop, getattr(core, "memory", None), getattr(core, "bus", None)
+
+    def facts(now: datetime) -> Any:
+        presence = state.current(Axis.PRESENCE).state
+        behavior = state.current(Axis.BEHAVIOR)
+        runtime = state.current(Axis.RUNTIME).state
+        in_flight = False
+        if memory is not None:
+            in_flight = bool((memory.dream_status() or {}).get("in_flight"))
+        return BehaviorFacts(
+            presence_status=presence, current_behavior=behavior.state, behavior_version=behavior.version,
+            interaction_idle=state.current(Axis.INTERACTION).state == "IDLE", global_stop=bool(stop.is_engaged()),
+            runtime_ready=runtime in ("READY", "DEGRADED"), dream_in_flight=in_flight,
+            in_rest_window=window_policy.window_at(now) is not None)
+
+    def submit(from_state: str, to_state: str, version: int, reason_code: str) -> str:
+        decision = state.request_transition(StateTransitionRequest(
+            request_id=f"policy_behavior:{from_state}>{to_state}:v{version}", axis=Axis.BEHAVIOR.value,
+            proposer="core.policy", expected_version=version, from_state=from_state, to_state=to_state,
+            reason={"source": "behavior_driver", "reason_code": reason_code}))
+        return decision.decision.value
+
+    driver = BehaviorDriver(reader, facts, submit, mode=mode, metrics_inc=metrics_inc)
+    if bus is not None:
+        for event_type in _PRESENCE_EVENTS:
+            bus.subscribe(event_type, lambda _event: driver.poke())
+    driver.start()
+    logger.info("BehaviorDriver 已啟動：mode=%s", mode)
+    return driver
+
+
+__all__ = ["PlanBackedRestWindowPolicy", "attach_behavior_driver", "build_rest_window_policy"]

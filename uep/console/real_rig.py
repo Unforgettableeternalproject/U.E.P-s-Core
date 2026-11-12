@@ -177,10 +177,12 @@ def build_memory_host(
         kwargs["engine_factory"], warmups, model=settings.memory_embedding_model, device=memory_device(settings),
         backend=settings.memory_embedding_backend,
     )
-    return MemoryHost(
+    host = MemoryHost(
         data_root=root, namespaces=(NamespaceSpec(MEMORY_NAMESPACE, owner_id=MEMORY_OWNER),), identity=identity,
         publisher=publisher, session_factory=session_factory, **kwargs,
     )
+    host.rest_window_policy = dream_rest_policy  # 供 BehaviorDriver 判定 in_rest_window（與做夢迴圈同一個 policy；PP-3b）
+    return host
 
 
 def memory_status_lines(host: MemoryHost, root: Path) -> list[str]:

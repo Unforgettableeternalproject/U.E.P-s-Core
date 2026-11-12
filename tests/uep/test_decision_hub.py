@@ -298,6 +298,8 @@ def test_decision_package_boundary():
             # DL-P1c：memory.dream 包裝 DreamPlanner.decide（memory 端不反向 import decision）
             "memory_dream.py": {"uep.ids", "uep.memory.dream_planner"},
             "policy_publish.py": {"uep.ids"},  # DL-P1d：policy.snapshot／channel.mode（鴨子型別接 HostPolicySource）
+            # agent.budget：比照 policy_publish 的 publish 模式，decision_id 用 new_id；不 import uep.agent／uep.echo
+            "budget_events.py": {"uep.ids"},
             "presence_absent_intent.py": {"uep.ids"},  # V18 後續：presence.absent_intent（不 import uep.turn／contracts.platform）
             # DL-6a：proactive.initiate（Agent 層只認 trigger；scope 驗證與 Presence 共用型別）
             "proactive.py": {

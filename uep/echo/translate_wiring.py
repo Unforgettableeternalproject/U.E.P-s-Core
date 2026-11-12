@@ -108,6 +108,20 @@ def _is_oom(exc: BaseException) -> bool:
     return "out of memory" in str(exc).lower() or type(exc).__name__ == "OutOfMemoryError"
 
 
+class _Job:
+    """一次翻譯工作：``done`` 設起代表結束；成功時 ``out`` 有值，失敗時 ``reason`` 有值，被放棄則兩者皆空。"""
+
+    __slots__ = ("abandonable", "abandoned", "done", "out", "reason", "urgent")
+
+    def __init__(self, urgent: bool, abandonable: bool) -> None:
+        self.urgent = urgent
+        self.abandonable = abandonable
+        self.abandoned = False
+        self.done = threading.Event()
+        self.out: str | None = None
+        self.reason = ""
+
+
 class BoundaryTranslator:
     """同步翻譯介面 ``translate(text) -> TranslateResult``；執行緒安全。"""
 
@@ -138,6 +152,11 @@ class BoundaryTranslator:
         self._run_lock = threading.Lock()  # 序列化推論（單一 GPU 模型）
         self._cache: OrderedDict[str, str] = OrderedDict()
         self._cache_lock = threading.Lock()
+        self._inflight: dict[str, _Job] = {}  # 進行中的翻譯工作（同一句只翻一次）；受 _cache_lock 保護
+        self._urgent = 0  # 當句翻譯（含預翻譯）進行中的數量；背景脈絡翻譯在它為 0 時才搶模型
+        self._urgent_lock = threading.Lock()
+        self._urgent_idle = threading.Event()
+        self._urgent_idle.set()
 
     # ---- 別名替換 ----
 
@@ -204,7 +223,7 @@ class BoundaryTranslator:
 
     # ---- 翻譯 ----
 
-    def translate(self, text: str, timeout_ms: int | None = None) -> TranslateResult:
+    def translate(self, text: str, timeout_ms: int | None = None, *, background: bool = False) -> TranslateResult:
         """翻成英文。``timeout_ms`` 覆寫預設逾時（背景工作可放寬）；任何失敗都回 unavailable，不拋例外。"""
         t0 = time.perf_counter()
 
@@ -230,40 +249,109 @@ class BoundaryTranslator:
             return done(None, STATUS_UNAVAILABLE, "warming")
 
         budget = (timeout_ms if timeout_ms is not None else self._timeout_ms) / 1000.0
-        box: dict[str, Any] = {}
-        finished = threading.Event()
-        abandoned = threading.Event()
+        # 同一句已有進行中的翻譯（預翻譯或背景脈絡）就等它，不重複翻；等的時間仍受原本的逾時限制
+        job, created = self._submit(prepared, urgent=not background, abandonable=True)
+        if not job.done.wait(budget):
+            if created and job.abandonable:
+                job.abandoned = True  # 還沒開始跑就不佔用模型（已開始的無法中止，結果仍會寫進快取）
+            return done(None, STATUS_UNAVAILABLE, "timeout")
+        if job.reason:
+            return done(None, STATUS_UNAVAILABLE, job.reason)
+        if job.out is None:
+            return done(None, STATUS_UNAVAILABLE, "timeout")  # 被放棄的工作
+        return done(job.out, STATUS_OK, "" if created else "inflight")
 
-        def work() -> None:
+    # ---- 翻譯工作（預翻譯、當句、背景脈絡共用）----
+
+    def _submit(self, prepared: str, *, urgent: bool, abandonable: bool) -> tuple[_Job, bool]:
+        """取得（或建立）這句的翻譯工作；回傳 ``(job, 是否由本次呼叫建立)``。同一句同時只會有一個工作。"""
+        with self._cache_lock:
+            job = self._inflight.get(prepared)
+            if job is not None:
+                return job, False
+            job = _Job(urgent, abandonable)
+            self._inflight[prepared] = job
+        if urgent:
+            self._urgent_enter()
+        threading.Thread(target=self._work, args=(prepared, job), name="uep-mt-run", daemon=True).start()
+        return job, True
+
+    def _urgent_enter(self) -> None:
+        with self._urgent_lock:
+            self._urgent += 1
+            self._urgent_idle.clear()
+
+    def _urgent_exit(self) -> None:
+        with self._urgent_lock:
+            self._urgent -= 1
+            if self._urgent <= 0:
+                self._urgent = 0
+                self._urgent_idle.set()
+
+    def _work(self, prepared: str, job: _Job) -> None:
+        try:
+            if not job.urgent:
+                # 背景脈絡翻譯讓路：有當句翻譯在等（含預翻譯）時先不搶模型；已在推論中的無法中止
+                while not job.abandoned and not self._urgent_idle.wait(0.02):
+                    pass
             with self._run_lock:
-                if abandoned.is_set():  # 呼叫端已放棄，不佔用模型
+                backend = self._backend
+                if job.abandoned or backend is None:
                     return
                 try:
-                    box["out"] = backend.translate(prepared)
+                    out = str(backend.translate(prepared)).strip()
                 except BaseException as exc:  # noqa: BLE001 - 後端錯誤不可往外洩
-                    box["err"] = exc
-                finally:
-                    finished.set()
-
-        threading.Thread(target=work, name="uep-mt-run", daemon=True).start()
-        if not finished.wait(budget):
-            abandoned.set()
-            return done(None, STATUS_UNAVAILABLE, "timeout")
-        err = box.get("err")
-        if err is not None:
-            if _is_oom(err):
+                    if _is_oom(exc):
+                        job.reason = "oom"
+                    else:
+                        logger.warning("MT 推論失敗：%s", type(exc).__name__)
+                        job.reason = "error"
+                else:
+                    if is_degenerate(out):
+                        job.reason = "degenerate"
+                    else:
+                        with self._cache_lock:
+                            self._cache[prepared] = out
+                            while len(self._cache) > _CACHE_SIZE:
+                                self._cache.popitem(last=False)
+                        job.out = out
+            if job.reason == "oom":
                 self._on_oom()
-                return done(None, STATUS_UNAVAILABLE, "oom")
-            logger.warning("MT 推論失敗：%s", type(err).__name__)
-            return done(None, STATUS_UNAVAILABLE, "error")
-        out = str(box.get("out", "")).strip()
-        if is_degenerate(out):
-            return done(None, STATUS_UNAVAILABLE, "degenerate")
-        with self._cache_lock:
-            self._cache[prepared] = out
-            while len(self._cache) > _CACHE_SIZE:
-                self._cache.popitem(last=False)
-        return done(out, STATUS_OK)
+        finally:
+            with self._cache_lock:
+                self._inflight.pop(prepared, None)
+            job.done.set()
+            if job.urgent:
+                self._urgent_exit()
+
+    def prefetch(self, text: str) -> None:
+        """不阻塞：在背景翻這句並寫進快取，之後的 ``translate`` 直接命中或等這個進行中的工作。
+
+        已在快取、已在翻譯中、非中文、模型未就緒都直接略過；任何失敗都只計數，不往外拋。
+        """
+        try:
+            if not text or not text.strip():
+                return
+            prepared = self.replace_aliases(text.strip())
+            if not cjk_dominant(prepared):
+                return
+            with self._cache_lock:
+                if prepared in self._cache:
+                    self.metrics["prefetch_skip_cached"] += 1
+                    return
+            self.start_warmup()
+            if self._load_error or self._backend is None:
+                self.metrics["prefetch_skip_unready"] += 1
+                return
+            _job, created = self._submit(prepared, urgent=True, abandonable=False)
+            self.metrics["prefetch_started" if created else "prefetch_skip_inflight"] += 1
+        except Exception:
+            self.metrics["prefetch_error"] += 1
+            logger.exception("MT prefetch 失敗")
+
+    def translate_background(self, text: str, timeout_ms: int | None = None) -> TranslateResult:
+        """背景工作用（上一輪脈絡）：與 ``translate`` 相同，但讓當句翻譯（含預翻譯）優先使用模型。"""
+        return self.translate(text, timeout_ms, background=True)
 
     def _on_oom(self) -> None:
         """推論 OOM：允許就丟掉 GPU 後端、改用 CPU 重新載入；否則維持 unavailable。"""

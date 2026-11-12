@@ -186,6 +186,11 @@ class BufferedAggregator:
         """回覆被作廢／失敗（對方沒有真的聽到）：不算「回覆過」。"""
         self._replied_at.pop(speaker_ref, None)
 
+    def buffered_text(self, speaker_ref: str) -> str | None:
+        """這位說話者目前緩衝中的合併全文（沒有緩衝回 None）；預翻譯用，與交出 turn 時的 ``text`` 相同。"""
+        buf = self._buffers.get(speaker_ref)
+        return buf.text if buf is not None else None
+
     @property
     def pending_wait_s(self) -> float:
         """目前模式下，最後一段抵達後最久還要等多久 turn 才會交出（被動 max_wait；主動模式含敘述中的安靜時間）。"""
@@ -441,6 +446,11 @@ class VoiceRoutedAggregator:
             hook = getattr(part, "discard_speaker", None)
             if callable(hook):
                 hook(speaker_ref)
+
+    def buffered_text(self, speaker_ref: str) -> str | None:
+        """語音緩衝中這位說話者的合併全文；沒有緩衝或聚合器不支援回 None。"""
+        hook = getattr(self.voice, "buffered_text", None)
+        return hook(speaker_ref) if callable(hook) else None
 
     @property
     def pending_wait_s(self) -> float:

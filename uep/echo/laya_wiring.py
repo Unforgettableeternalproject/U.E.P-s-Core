@@ -265,7 +265,9 @@ class LayaProposer:
             text = text.strip()[:CONTEXT_MAX_CHARS]
             if not text:
                 return None
-            return translator.translate(text, timeout_ms=2000).text_en  # 背景工作，逾時放寬
+            # 背景工作，逾時放寬；有 translate_background 的翻譯器會讓當句翻譯（含預翻譯）優先使用模型
+            translate = getattr(translator, "translate_background", translator.translate)
+            return translate(text, timeout_ms=2000).text_en
 
         try:
             parts = (to_en(user_text), to_en(reply_text))
@@ -275,6 +277,14 @@ class LayaProposer:
         with self._context_lock:
             self._context_parts = parts
             self._context_speakers = speakers
+
+    def prefetch(self, text: str) -> None:
+        """PrefetchProposer：句子一進來就在背景先翻（不阻塞；之後的 propose 直接命中快取或等進行中的翻譯）。
+        翻譯關閉、模型尚未載入完成時不做事；任何失敗都不外洩。"""
+        translator = self._translator
+        if translator is None or self._agent is None:
+            return
+        translator.prefetch(text)
 
     def on_audience_changed(self) -> None:
         """audience 切換：丟掉上一輪脈絡與待配對原文，避免舊 audience 的內容進新 audience 的 state。"""
@@ -500,6 +510,10 @@ class LayaRulesProposer:
 
     def close(self) -> None:
         self._guard.close()
+
+    def prefetch(self, text: str) -> None:
+        """PrefetchProposer：轉給 Laya 先翻譯（規則不需要）。"""
+        self._laya.prefetch(text)
 
     def bind_metrics(self, sink: Counter[str]) -> None:
         """把計數同步進 Orchestrator 的 metrics（鍵加 ``laya_primary.`` 前綴）；由 ``TurnReplyEngine`` 建構時呼叫。"""

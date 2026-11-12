@@ -93,6 +93,7 @@ from uep.turn.proposer import (
     Interjection,
     ListenerAware,
     ParticipantAware,
+    PrefetchProposer,
     ProposerGuard,
     RespondProposer,
     TickingProposer,
@@ -404,6 +405,7 @@ class TurnOrchestrator:
             # 連 input.utterance_final（含原文 blob）都不寫，只留不含原文的 shadow 紀錄
             self._record_absent_input(ctx, fact, absent)
             return IntakeResult(None, absent, None, fact=dataclasses.replace(fact, text=""))
+        self._prefetch(fact.text)  # 句子一進來就先翻（缺席端輸入已在上面丟棄，不會走到這裡）
         ident = self._identity.resolve_platform(fact.speaker_ref) if self._identity is not None else GUEST
         actor_id = ident.actor_id or UNVERIFIED_ACTOR
         payload: dict[str, object] = {"speaker_ref": fact.speaker_ref, "len": len(fact.text)}
@@ -439,10 +441,28 @@ class TurnOrchestrator:
             logger.exception("TurnAggregator 失敗，退回逐句處理")
             self.metrics["aggregator.error"] += 1
             completed = [AggregatedTurn(fact.speaker_ref, fact.text, (segment,))]
+        if not completed:
+            # 語音緩衝還在等後續：合併後的全文也先翻（交出 turn 時的 candidate.text 就是這段全文）
+            hook = getattr(self._aggregator, "buffered_text", None)
+            if callable(hook):
+                merged = hook(fact.speaker_ref)
+                if merged and merged != fact.text:
+                    self._prefetch(merged)
         results = [self._decide_turn(ctx, turn) for turn in completed]
         if not results:
             return IntakeResult(None, "buffered", utterance_event_id=event.event_id, yield_for=yield_for)
         return dataclasses.replace(results[0], extra=tuple(results[1:]), yield_for=yield_for)
+
+    def _prefetch(self, text: str) -> None:
+        """通知 proposer 預先準備這段文字（如先翻譯）。非阻塞；任何失敗只計數，不影響主路徑。"""
+        proposer = self._proposer
+        if not isinstance(proposer, PrefetchProposer) or not text:
+            return
+        try:
+            proposer.prefetch(text)
+        except Exception:
+            self.metrics["proposer.prefetch_error"] += 1
+            logger.exception("proposer.prefetch 失敗")
 
     def tick(self, session: SessionContext | None = None) -> list[IntakeResult]:
         """宿主定期呼叫（不可在 ES loop 上，會寫 DB）：aggregator 的等待逾時與被動模式插話。

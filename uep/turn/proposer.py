@@ -82,6 +82,13 @@ class TickingProposer(Protocol):
 
 
 @runtime_checkable
+class PrefetchProposer(Protocol):
+    """選用：句子一進來（還沒輪到 propose）就通知 proposer 預先準備（例如先翻譯）。非阻塞；失敗不得影響主路徑。"""
+
+    def prefetch(self, text: str) -> None: ...
+
+
+@runtime_checkable
 class AudienceAware(Protocol):
     """選用：audience 切換時清掉所有進行中的狀態（buffer、context window、生成中標記）。"""
 

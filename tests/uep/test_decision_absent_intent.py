@@ -14,6 +14,7 @@ from uep.decision.presence_absent_intent import (
     INTENT_MESSAGE,
     INTENT_OTHER,
     INTENT_PRESENCE_REQUEST,
+    INTENT_TASK,
     KIND_PRESENCE_ABSENT_INTENT,
     AbsentIntentEngine,
     AbsentIntentInput,
@@ -199,6 +200,7 @@ def test_timeout_then_busy_map_to_none():
     None, "presence_request", AbsentIntentProposal("bogus", 0.5), AbsentIntentProposal(INTENT_OTHER, float("nan")),
     AbsentIntentProposal(INTENT_OTHER, 1.5), AbsentIntentProposal(INTENT_PRESENCE_REQUEST, 0.5, "mars"),
     AbsentIntentProposal(INTENT_OTHER, 0.5, "host"), AbsentIntentProposal(INTENT_OTHER, 0.5, None, "Bad Id"),
+    AbsentIntentProposal(INTENT_TASK, 0.5, "host"), AbsentIntentProposal(INTENT_OTHER, 0.5, compound="yes"),
 ])
 def test_invalid_output_maps_to_none(bad):
     hub, engine = _hub(AbsentIntentEngine(_Invalid(bad)))
@@ -279,3 +281,45 @@ def test_neutral_input_enforces_actor_invariants():
         AbsentIntentInput(text="x", actor_ref="discord:1", actor_authenticated=False, is_owner=True)
     with pytest.raises(ValueError):
         AbsentIntentInput(text="x", actor_ref="Bernie")  # 顯示名稱
+
+
+def test_task_intent_is_valid_and_does_not_trigger_presence_request():
+    class _Task:
+        proposer_id = "laya.absent_intent"
+        proposer_version = "1"
+
+        def propose(self, inp):
+            return AbsentIntentProposal(INTENT_TASK, 0.9, None, self.proposer_id, self.proposer_version)
+
+    hub, _ = _hub(AbsentIntentEngine(_Task()))
+    res = _decide(hub, "remind me at five")
+    assert not res.fallback and res.outcome == INTENT_TASK
+    assert res.reason_code == "task"  # decision_log 的 reason_code 只放意圖代碼
+    assert res.plan.placement.presence_intent == "none" and res.plan.placement.target_platform is None
+    assert presence_request_from_result(res) is None  # task 不觸發到場請求（下游未接）
+
+
+def test_compound_defaults_none_and_does_not_change_result():
+    assert AbsentIntentProposal(INTENT_OTHER, 0.5).compound is None
+    base = AbsentIntentEngine(RulesAbsentIntentProposer())
+    assert base.proposer.propose(AbsentIntentInput(text="過來")).compound is None
+
+    class _Compound:
+        proposer_id = "laya.absent_intent"
+        proposer_version = "1"
+
+        def propose(self, inp):
+            return AbsentIntentProposal(INTENT_TASK, 0.9, None, self.proposer_id, self.proposer_version, compound=True)
+
+    hub, _ = _hub(AbsentIntentEngine(_Compound()))
+    res = _decide(hub, "x")
+    assert not res.fallback and res.outcome == INTENT_TASK
+
+
+def test_read_absent_compound():
+    from uep.echo.laya_wiring import read_absent_compound
+
+    assert read_absent_compound({"absent.compound": {"noul": 0.8}}) is True
+    assert read_absent_compound({"absent.compound": {"noul": 0.2}}) is False
+    assert read_absent_compound({}) is None  # 舊模型沒有此題
+    assert read_absent_compound({"absent.compound": {}}) is None

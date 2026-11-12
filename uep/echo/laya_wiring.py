@@ -323,6 +323,14 @@ def _read_compound(answers: dict) -> bool | None:
         return None
 
 
+def read_absent_compound(answers: dict) -> bool | None:
+    """讀 ``absent.compound`` 題的答案（noul 機率 >= 0.5 視為 yes）；舊模型或答案缺漏回 None。"""
+    try:
+        return float(answers["absent.compound"]["noul"]) >= 0.5
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def create_laya_proposer(config: DecisionConfig | None = None, settings: object | None = None, **_: object) -> LayaProposer:
     """registry 工廠：組態來自 ``UEP_LAYA_MODELS_DIR``／``UEP_LAYA_MODEL``／``UEP_LAYA_REVISION``／``UEP_LAYA_DEVICE``。
 

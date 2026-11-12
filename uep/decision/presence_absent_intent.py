@@ -38,8 +38,9 @@ logger = logging.getLogger("uep.decision.presence_absent_intent")
 KIND_PRESENCE_ABSENT_INTENT = "presence.absent_intent"
 INTENT_PRESENCE_REQUEST = "presence_request"
 INTENT_MESSAGE = "message"
+INTENT_TASK = "task"
 INTENT_OTHER = "other"
-INTENTS = (INTENT_PRESENCE_REQUEST, INTENT_MESSAGE, INTENT_OTHER)
+INTENTS = (INTENT_PRESENCE_REQUEST, INTENT_MESSAGE, INTENT_TASK, INTENT_OTHER)
 TARGET_LOCATIONS = ("desktop", "discord", "website", "host")
 
 ON_TIMEOUT_REASON = "absent_intent_timeout"
@@ -113,13 +114,18 @@ def absent_intent_input_from_item(item: AbsentInboundLike, text: str) -> AbsentI
 
 @dataclass(frozen=True)
 class AbsentIntentProposal:
-    """proposer 的輸出：只有意圖、選填目標場域與信心；刻意沒有任何授權相關欄位。"""
+    """proposer 的輸出：只有意圖、選填目標場域與信心；刻意沒有任何授權相關欄位。
+
+    ``compound`` 為 None 表示 proposer 不支援該題；True 時其餘欄位照退回優先序
+    （presence_request > task > message > other）。目前只記錄，不影響決策結果。
+    """
 
     intent: str
     confidence: float
     target_location: str | None = None
     proposer_id: str = "unknown"
     proposer_version: str = "unknown"
+    compound: bool | None = None
 
 
 @runtime_checkable
@@ -143,6 +149,8 @@ def validate_proposal(proposal: object) -> str | None:
         return "bad_confidence"
     if proposal.intent != INTENT_PRESENCE_REQUEST and proposal.target_location is not None:
         return "target_without_request"
+    if proposal.compound is not None and not isinstance(proposal.compound, bool):
+        return "bad_compound"
     for ident in (proposal.proposer_id, proposal.proposer_version):
         if not isinstance(ident, str) or not _SAFE_CODE.fullmatch(ident):
             return "bad_proposer_id"
@@ -323,14 +331,17 @@ class AbsentIntentEngine:
 
 
 def presence_request_from_result(result: DecisionResult) -> bool | None:
-    """決策結果 -> V18 ``presence_request`` 欄位：fallback／無法判斷（other）為 None，message 為 False。"""
+    """決策結果 -> V18 ``presence_request`` 欄位：fallback／無法判斷（other）為 None，message 為 False。
+
+    task 不觸發到場請求（下游尚未接，PR-R 之前）：回 None，與 other 同樣視為未判斷。
+    """
     if result.fallback:
         return None
     if result.outcome == INTENT_PRESENCE_REQUEST:
         return True
     if result.outcome == INTENT_MESSAGE:
         return False
-    return None
+    return None  # other／task
 
 
 def judge_absent_intent(

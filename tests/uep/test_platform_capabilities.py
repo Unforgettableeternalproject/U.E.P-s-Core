@@ -212,6 +212,8 @@ _NEW_NAMES = {
 
 _GATE_MODULE = "presence/gate.py"
 _GATE_ALLOWED = {"PlatformCapabilities", "InteractionCapability"}
+# 組裝層登記出站端點的 interaction 宣告（E3 resolver 接線）；只可引用這兩個型別
+_ASSEMBLY_MODULE = "assembly.py"
 
 
 def _referenced_names(path, names):
@@ -234,7 +236,7 @@ def test_capability_types_have_no_production_consumer():
         rel = path.relative_to(_UEP).as_posix()
         if rel == "contracts/platform.py":
             continue
-        if rel == _GATE_MODULE:
+        if rel in (_GATE_MODULE, _ASSEMBLY_MODULE):
             extra = _referenced_names(path, _NEW_NAMES) - _GATE_ALLOWED
             offenders += [f"{rel} {n}" for n in sorted(extra)]
             continue

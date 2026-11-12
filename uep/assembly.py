@@ -53,7 +53,12 @@ from uep.adapters.tool import (
     supports_cancel,
 )
 from uep.config import get_settings
-from uep.contracts.platform import platform_from_presence_location
+from uep.contracts.platform import (
+    InteractionCapability,
+    PlatformCapabilities,
+    platform_from_endpoint_location,
+    platform_from_presence_location,
+)
 from uep.contracts.presence import PresenceStatus
 from uep.control.channel import (
     ControlChannel,
@@ -343,7 +348,34 @@ class CoreAssembly:
                 logger.exception("Supervisor 關機暫停失敗")
             self.start_log.append("supervisor.shutdown")
         self._stop_infrastructure()
+        self._log_gate_shadow_summary()
         self.started = False
+
+    def _log_gate_shadow_summary(self) -> None:
+        """E3 shadow 的可觀察出口：關機時記一次「端點未宣告 interaction」的累計摘要（log 內只有 endpoint_id 與次數）。"""
+        try:
+            logger.info(
+                "Output Gate shadow 摘要：not_interaction=%d by_endpoint=%s",
+                self.gate.not_interaction_count, self.gate.not_interaction_by_endpoint(),
+            )
+        except Exception:
+            logger.exception("Output Gate shadow 摘要失敗")
+
+
+_UNKNOWN_PLATFORM = "unknown"
+
+
+def _declare_interaction(
+    table: dict[str, PlatformCapabilities], endpoint_id: str, platform: str, facets: frozenset[str],
+) -> None:
+    """登記一個出站（互動）端點的能力宣告；endpoint_id 不是合法 ref 時不登記（Gate 視為查無宣告），不擋組裝。"""
+    try:
+        table.setdefault(endpoint_id, PlatformCapabilities(
+            platform=platform, endpoint_instance_id=endpoint_id, protocol_version=1,
+            interaction=InteractionCapability(facets),  # type: ignore[arg-type]
+        ))
+    except ValueError:
+        logger.warning("端點 %r 無法產生能力宣告（id 不合法），Gate 將視為未宣告", endpoint_id)
 
 
 def _assert_wired(tasks: TaskManager, delivery: DeliveryManager) -> None:
@@ -700,9 +732,13 @@ def assemble_core(
         session_factory, persona_id=persona_id, epoch_store=epoch_store, publisher=publisher, control=control,
         acquire_guard=flag_blocker, **clock_kw,
     )
+    # 出站端點能力宣告（IC-3、E3）：持有 Lease 的端點身分即互動端點（IC-4），所以「可 acquire 的端點」＝已宣告 interaction。
+    # 來源只有兩處：ES 內建端點與 socket 端點的 secrets 鍵；其餘 endpoint_id 查無宣告（shadow 下計數）。
+    # 表在端點註冊時才填入（下方 echo／endpoint socket 區段），Gate 以 ``declared_capabilities.get`` 即時查詢。
+    declared_capabilities: dict[str, PlatformCapabilities] = {}
     gate = OutputGate(
         session_factory, presence, turn_generation_source=turn_generation_source,
-        presence_audience=presence_audience, publisher=publisher,
+        presence_audience=presence_audience, publisher=publisher, capability_resolver=declared_capabilities.get,
         require_interaction=get_settings().gate_require_interaction, **clock_kw,
     )
     delivery = DeliveryManager(session_factory, adapter, gate=gate)
@@ -758,6 +794,11 @@ def assemble_core(
         # 不離開 loopback）；secret 不落地、不離開行程
         secret = token_bytes(32)
         service = EndpointService(presence, build_request_verifier({echo.endpoint_id: secret}), **clock_kw)
+        _declare_interaction(
+            declared_capabilities, echo.endpoint_id,
+            platform_from_endpoint_location(getattr(echo, "_location", None)) or _UNKNOWN_PLATFORM,
+            frozenset({"text", "audio_in", "audio_out"}),
+        )
         core_api = RpcCoreApi(
             echo.endpoint_id, secret, lambda wire: service.handle(SignedRequest.from_wire(wire))
         )
@@ -836,6 +877,8 @@ def assemble_core(
         if endpoint_socket_port is not None:
             secrets = endpoint_secrets if endpoint_secrets is not None else load_secrets_from_env()
             if secrets:
+                for socket_endpoint_id in secrets:  # 場域在 acquire 時才決定，宣告階段只能記 unknown
+                    _declare_interaction(declared_capabilities, socket_endpoint_id, _UNKNOWN_PLATFORM, frozenset({"text"}))
                 service = EndpointService(presence, build_request_verifier(secrets), **clock_kw)
                 endpoint_server = SocketControlServer(service, port=endpoint_socket_port)
                 fanout.remote = endpoint_server

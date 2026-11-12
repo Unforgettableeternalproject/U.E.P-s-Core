@@ -129,7 +129,9 @@ class LoopEntry:
     def __init__(
         self, tool_path: str, *, capability_tags_for: Callable[[Any, Any], frozenset[str]],
         launch: Callable[[LoopTrigger, Any], object], policy_ref: str, owner_for: Callable[[Any], str],
+        metrics: Counter[str] | None = None,
     ) -> None:
+        self._metrics = metrics
         if tool_path != "agent":
             raise ValueError("LoopEntry 只能在 UEP_TOOL_PATH=agent 下建立（legacy 不可達）")
         self._tags_for = capability_tags_for
@@ -143,7 +145,13 @@ class LoopEntry:
             return None
         tags = frozenset(self._tags_for(ticket, proposal))
         if not tags:
-            logger.error("route=%s 但 capability_tags 為空（介面違規），不啟動迴圈：turn=%s", route, ticket.turn_id)
+            if route == "task_request":
+                # 工具層沒有提醒／轉告類工具時的預期情況（降回 direct_chat），不是介面違規
+                logger.warning("route=task_request 但 capability_tags 為空，不啟動迴圈：turn=%s", ticket.turn_id)
+                if self._metrics is not None:
+                    self._metrics["turn.task_request_capability_empty"] += 1
+            else:
+                logger.error("route=%s 但 capability_tags 為空（介面違規），不啟動迴圈：turn=%s", route, ticket.turn_id)
             return None
         trigger = trigger_from_turn(
             ticket, proposal, capability_tags=tags, policy_ref=self._policy_ref, owner_actor_id=self._owner_for(ticket),
@@ -258,6 +266,7 @@ class _RunCtx:
     budget: Any = None  # 此 Run 的有效預算（建立時凍結；park／resume 沿用）
     activity_id: str | None = None  # Task 的 activity：續跑回覆以它綁定送出（D107）
     cause: ResumeCause = ResumeCause.APPROVED
+    route: str = "agent_loop"  # 這個 Run 的 route（abort 的 metric 依 route 分開）
     abort_notice_ok: bool = False  # 預算中斷的固定訊息已送出（或結果不確定而不補發）；沒送出時 _conclude 補送失敗訊息
     text: str = ""
     resumed: bool = False  # 核准後續跑的 Run：原 turn 已結束，取消判定不看 turn 終結狀態，結果不再經 Output Gate
@@ -384,7 +393,9 @@ class LoopLauncher:
         except BaseException:
             self._release()
             raise
-        ctx = _RunCtx(ticket, task.task_id, run, budget=effective, activity_id=getattr(task, "activity_id", None))
+        ctx = _RunCtx(
+            ticket, task.task_id, run, budget=effective, activity_id=getattr(task, "activity_id", None), route=trigger.route,
+        )
         thread = threading.Thread(
             target=self._work, args=(trigger, ctx), name=f"uep-agent-loop-{ticket.turn_id}", daemon=True,
         )
@@ -407,6 +418,19 @@ class LoopLauncher:
             tier=request.tier if request is not None else None, cap=request.cap if request is not None else None,
             metrics=getattr(self._orchestrator, "metrics", None),
         )
+        if trigger.route == "task_request" and (
+            self._budget_policies is None
+            or self._budget_policies.lookup(trigger.policy_ref, trigger.route, (request.tier if request else None) or "standard") is None
+        ):
+            # 查不到 task_request 的政策列：不退回寬鬆的預設預算（fail-closed），改取預設與緊預算組的逐維度較緊者
+            logger.warning("task_request 查不到預算政策列，改用緊預算組：policy_ref=%s", trigger.policy_ref)
+            metrics = getattr(self._orchestrator, "metrics", None)
+            if metrics is not None:
+                metrics["budget.task_request_policy_missing"] += 1
+            try:
+                out = tighten(out, TASK_REQUEST_BUDGET)
+            except ValueError:
+                out = TASK_REQUEST_BUDGET
         if out.step_timeout_s is None and self._budget.step_timeout_s is not None:
             out = dataclasses.replace(out, step_timeout_s=self._budget.step_timeout_s)  # 政策列沒設的 Step 逾時沿用 launcher 的
         return out
@@ -706,6 +730,7 @@ class LoopLauncher:
             logger.warning("resume 預算收窄失敗，沿用凍結值：run=%s", run_id)
         ctx = _RunCtx(
             entry.ticket, entry.task_id, plan.run, resumed=True, budget=frozen, activity_id=entry.activity_id, cause=cause,
+            route=entry.trigger.route,
         )
         future: Future[LoopResumeResult] = Future()
         thread = threading.Thread(
@@ -799,7 +824,12 @@ class LoopLauncher:
         不設 ``delivered``；送出結果不確定也不補發）。"""
         metrics = getattr(self._orchestrator, "metrics", None)
         if metrics is not None:
-            metrics[f"budget.{kind}"] += 1
+            is_abort = kind.startswith("abort")  # "abort"（2.0 倍輪數／token）與 "abort_tool_calls"（工具次數保險絲）共用通知文字
+            metrics["budget.abort" if is_abort else f"budget.{kind}"] += 1
+            if kind == "abort_tool_calls":
+                metrics["budget.abort_tool_calls"] += 1
+            if is_abort and ctx.route == "task_request":
+                metrics["budget.abort.task_request"] += 1  # task_budget_exceeded 依 route 分開看
         recorder = self._budget_recorder
         if recorder is not None:  # 決策日誌記錄（只記事實，不含文字）；失敗不影響後續通知
             try:
@@ -816,7 +846,7 @@ class LoopLauncher:
         except Exception:
             logger.exception("預算%s訊息交付失敗：turn=%s", kind, ctx.ticket.turn_id)
             return
-        if kind == "abort" and status is not None and (status in _DELIVERED or status in _DELIVERY_UNCERTAIN):
+        if kind.startswith("abort") and status is not None and (status in _DELIVERED or status in _DELIVERY_UNCERTAIN):
             ctx.abort_notice_ok = True  # 已送出或結果不確定（不補發）；被拒／送不出去則 _conclude 補送失敗訊息
 
     def _notify_failure(self, ctx: _RunCtx) -> None:
@@ -869,6 +899,6 @@ def build_loop_entry(
         tags_for = with_extra_capability_tags(tags_for, frozenset(extra_capability_tags), registry)
     entry = LoopEntry(
         tool_path, capability_tags_for=tags_for, launch=launcher,
-        policy_ref=policy_ref, owner_for=lambda ticket: ticket.actor_id,
+        policy_ref=policy_ref, owner_for=lambda ticket: ticket.actor_id, metrics=orchestrator.metrics,
     )
     return entry, launcher

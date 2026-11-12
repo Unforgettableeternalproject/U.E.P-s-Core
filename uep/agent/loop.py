@@ -223,6 +223,7 @@ class _State:
     budget_stage: int = 0  # 已觸發的門檻階段（0..2）；不進 checkpoint，resume 由計數器推回，不重送
     budget_hint: str | None = None
     trail: list[dict[str, Any]] = field(default_factory=list)  # 已處理的工具呼叫（結構化：tool／status／reason_code），digest 與部分結果彙整用
+    budget_deferred: bool = False  # 本 Run 出現過 deferred_budget（模型還想呼叫工具但被預算擋下）；task_request 用它判斷是否超預算
     rebuilt: bool = False  # resume 後：loop_digest 的 trace 由已提交 history 重建（trace_source="rebuilt"）
 
 
@@ -880,9 +881,12 @@ class AgentLoop:
             return self._escalate(st, end)
         if end.kind == "exhausted":
             task_request = st.trigger.route == "task_request"
-            if (self._budget.thresholds.enabled or task_request) and end.dim in ("steps", "tokens"):
-                # 三段門檻的中斷點（task_request 的緊預算沒有分段，超出步數／token 直接視為 task_budget_exceeded）：
-                # FAILED(budget_exhausted)＋partial，決策日誌的 task_budget_exceeded 由 launcher 的 abort 通知記錄
+            over_budget = end.dim in ("steps", "tokens") or (end.dim == "tool_calls" and st.budget_deferred)
+            if (self._budget.thresholds.enabled and end.dim in ("steps", "tokens")) or (task_request and over_budget):
+                # 三段門檻的中斷點；task_request 的緊預算沒有分段：步數／token 超出，或工具次數用完且模型還想呼叫（出現過
+                # deferred_budget）都視為 task_budget_exceeded——FAILED(budget_exhausted)＋partial，
+                # 該事件經 launcher 的 abort 通知與 ``_budget_recorder`` 由決策層寫進 decision_log（本層不自己記）。
+                # 只用完工具次數、模型沒有要求更多的，照舊走下面的 finalize
                 return self._abort(st, end.dim)
             # 其餘維度（tool_calls、牆鐘、rounds）是不分段的保險絲：契約（Chain §2.3.1）明定沿用今天的處置，即使三段門檻已啟用，
             # tool_calls 先耗盡也走下面的 finalize（BUDGET_FINALIZED）／FAILED(budget_exhausted)，不標 partial
@@ -930,7 +934,8 @@ class AgentLoop:
         """中斷點（abort）：不再呼叫工具；允許一個 ``tools=[]`` 的收束 Step（受 ``step_timeout_s`` 約束，用量可超出一步）；
         收束失敗則以已完成工具結果確定性彙整（不經模型）。Run 終態 ``FAILED(budget_exhausted)``，一律標 ``partial``；
         部分結果在終態寫入之後才經 ``deliver_result`` 交付（``_finish`` 的 FAILED 路徑本身不送文字）。"""
-        self._notify_budget("abort")
+        # tool_calls 保險絲觸發的 abort 用獨立的 kind（決策層對應 reason_code=tool_calls_fuse）；2.0 倍輪數或 token 維持 "abort"
+        self._notify_budget("abort_tool_calls" if dim == "tool_calls" else "abort")
         final = self._run_attempt(st, {"tools": []}, finalize=True)
         if final.kind == "result" and final.text.strip():
             text = final.text
@@ -1273,6 +1278,7 @@ class AgentLoop:
         runnable, over = defer_tail(screened, remaining, DEFERRED_BUDGET)
         for item, reason in over:
             views[item.ordinal] = self._blocked(reason)
+            st.budget_deferred = st.budget_deferred or reason == DEFERRED_BUDGET
 
         by_ordinal = {s.ordinal: s for s in runnable}
         waves = plan_waves(

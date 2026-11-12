@@ -218,7 +218,7 @@ class CoreAssembly:
     supervisor: Supervisor | None = None  # D67：停用（UEP_SUPERVISOR_ENABLED=0）時為 None
     supervisor_loop: SupervisorLoop | None = None  # Supervisor 啟用且 supervisor_interval 不為 0 時建立（與維護迴圈各自獨立）
     loop_launcher: Any = None  # agent_loop 的 production 啟動器（UEP_AGENT_LOOP_ENTRY）；入口停止段先關閉，早於 Supervisor 關機暫停
-    module_events_unsubscribe: Callable[[], None] | None = None  # module.* 就緒事件訂閱的取消函式（暫定；UEP_TOOL_MODULE_EVENTS）
+    module_events_unsubscribe: Callable[[], None] | None = None  # module.* 就緒事件訂閱的取消函式（事件名已定（D108 R2），producer 見 PR-2；UEP_TOOL_MODULE_EVENTS）
     proactive_shadow: ProactiveShadow | None = None  # DL-6b：proactive.initiate 的 shadow 入口（有 echo 且決策日誌啟用時才有；不啟動 Run）
     dream_probe: StateBusForegroundProbe | None = None  # 做夢迴圈的前景 Probe（memory 啟用 dream_loop 且未自帶 Probe 時由組裝層建立）
 

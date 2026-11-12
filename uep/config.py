@@ -85,6 +85,7 @@ class UepSettings(BaseSettings):
     translate_device: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_DEVICE")
     translate_timeout_ms: int | None = Field(default=None, validation_alias="UEP_TRANSLATE_TIMEOUT_MS")
     translate_aliases: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_ALIASES")
+    translate_glossary: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_GLOSSARY")
     translate_placeholder: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_PLACEHOLDER")
     translate_cpu_fallback: bool = Field(default=True, validation_alias="UEP_TRANSLATE_CPU_FALLBACK")
     translate_on_unavailable: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_ON_UNAVAILABLE")

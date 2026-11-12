@@ -6,6 +6,8 @@
 
 行為：
 - 翻譯前先把助理別名（小U、小優、UEP…）換成固定佔位英文名，避免被機翻拼壞。
+- 翻譯前再把詞彙表內的目標位置詞（桌面、主機、網站…）換成佔位名（Alpha、Gamma、Omega…），翻完還原成英文詞；
+  opus 對這類詞翻得不穩，會害決策模型誤判 target_location。佔位名遺失時照常回傳翻譯結果。
 - 輸入不以 CJK 為主時直接略過（原樣當英文，仍套用別名替換）。
 - 退化輸出（單一詞重複佔比過高）與逾時、載入失敗、例外一律回 ``unavailable``，不丟例外；呼叫端自行決定降級。
 - 懶載入＋背景 warmup（載入後跑數句短句）；warmup 完成前 ``translate`` 回 ``unavailable``（reason=``warming``）。
@@ -35,6 +37,12 @@ DEFAULT_ALIASES: tuple[str, ...] = ("小U", "小優", "小悠", "U.E.P", "UEP", 
 MT_MODEL_SUBDIR = "opus-mt-zh-en"
 WARMUP_SENTENCES: tuple[str, ...] = ("你好", "今天天氣怎麼樣？", "幫我查一下明天的行程。")
 CJK_RATIO_THRESHOLD = 0.3  # Han 字佔（Han + 拉丁字母）的比例低於此值視為非 CJK 為主
+CJK_MIN_HAN = 2  # Han 字數達此值即視為 CJK（如「到 discord 來」比例僅約 0.22 仍須翻譯）
+# 詞彙保護：(中文詞, 佔位名, 還原英文詞)。佔位名挑 opus 不會改拼的名字。
+DEFAULT_GLOSSARY: tuple[tuple[str, str, str], ...] = (
+    ("桌面", "Alpha", "desktop"), ("主機", "Gamma", "host"), ("網站", "Omega", "website"),
+)
+_PLACEHOLDER_POOL: tuple[str, ...] = ("Alpha", "Gamma", "Omega", "Delta", "Sigma", "Theta", "Kappa", "Zeta")
 _CACHE_SIZE = 64
 _HAN = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 _LATIN = re.compile(r"[A-Za-z]")
@@ -85,11 +93,27 @@ class MarianBackend:
         return self._tokenizer.decode(out[0], skip_special_tokens=True)
 
 
+def parse_glossary(raw: str | None) -> tuple[tuple[str, str, str], ...]:
+    """解析 ``UEP_TRANSLATE_GLOSSARY``（``桌面=desktop,主機=host``）；佔位名依序自動配。空值用預設詞彙表。"""
+    pairs: list[tuple[str, str]] = []
+    for item in (raw or "").split(","):
+        zh, sep, en = item.partition("=")
+        if sep and zh.strip() and en.strip():
+            pairs.append((zh.strip(), en.strip()))
+    if not pairs:
+        return DEFAULT_GLOSSARY
+    if len(pairs) > len(_PLACEHOLDER_POOL):
+        logger.warning("詞彙表超過 %d 組，多的忽略", len(_PLACEHOLDER_POOL))
+    return tuple((zh, ph, en) for (zh, en), ph in zip(pairs, _PLACEHOLDER_POOL))
+
+
 def cjk_dominant(text: str) -> bool:
-    """文字是否以 CJK（Han）為主：Han 字數 / (Han + 拉丁字母) >= 門檻。沒有 Han 字一律 False。"""
+    """文字是否以 CJK（Han）為主：Han 字數 >= 2，或 Han / (Han + 拉丁字母) >= 門檻。沒有 Han 字一律 False。"""
     han = len(_HAN.findall(text))
     if han == 0:
         return False
+    if han >= CJK_MIN_HAN:
+        return True
     latin = len(_LATIN.findall(text))
     return han / (han + latin) >= CJK_RATIO_THRESHOLD
 
@@ -119,6 +143,7 @@ class BoundaryTranslator:
         timeout_ms: int = DEFAULT_TRANSLATE_TIMEOUT_MS,
         aliases: tuple[str, ...] = DEFAULT_ALIASES,
         placeholder: str = DEFAULT_PLACEHOLDER,
+        glossary: tuple[tuple[str, str, str], ...] = DEFAULT_GLOSSARY,
         cpu_fallback: bool = True,
         warmup_sentences: tuple[str, ...] = WARMUP_SENTENCES,
     ) -> None:
@@ -126,6 +151,7 @@ class BoundaryTranslator:
         self._device = device
         self._timeout_ms = max(1, int(timeout_ms))
         self.placeholder = placeholder
+        self._glossary = glossary
         self._cpu_fallback = cpu_fallback
         self._warmup_sentences = warmup_sentences
         self._alias_re = self._compile_aliases(aliases)
@@ -155,6 +181,28 @@ class BoundaryTranslator:
         if self._alias_re is None:
             return text
         return self._alias_re.sub(self.placeholder, text)
+
+    # ---- 詞彙保護 ----
+
+    def protect_terms(self, text: str) -> tuple[str, list[tuple[str, str]]]:
+        """把詞彙表內的中文詞換成前後加空格的佔位名；回傳 (替換後文字, [(佔位名, 英文詞)])。"""
+        used: list[tuple[str, str]] = []
+        for zh, ph, en in self._glossary:
+            if zh in text:
+                text = text.replace(zh, f" {ph} ")
+                used.append((ph, en))
+        return (re.sub(r" {2,}", " ", text).strip() if used else text), used
+
+    @staticmethod
+    def restore_terms(text_en: str, used: list[tuple[str, str]]) -> str:
+        """把佔位名（不分大小寫、整詞）換回英文詞；找不到只記 debug，不報錯。"""
+        for ph, en in used:
+            pattern = re.compile(rf"\b{re.escape(ph)}\b", re.IGNORECASE)
+            if pattern.search(text_en):
+                text_en = pattern.sub(en, text_en)
+            else:
+                logger.debug("MT 輸出遺失佔位名 %s（原詞 %s），照常回傳", ph, en)
+        return text_en
 
     # ---- 載入 ----
 
@@ -222,6 +270,7 @@ class BoundaryTranslator:
             if cached is not None:
                 self._cache.move_to_end(prepared)
                 return done(cached, STATUS_OK, "cache")
+        protected, used = self.protect_terms(prepared)
         self.start_warmup()  # lazy load；就緒前一律 unavailable
         if self._load_error:
             return done(None, STATUS_UNAVAILABLE, "load_failed")
@@ -239,7 +288,7 @@ class BoundaryTranslator:
                 if abandoned.is_set():  # 呼叫端已放棄，不佔用模型
                     return
                 try:
-                    box["out"] = backend.translate(prepared)
+                    box["out"] = backend.translate(protected)
                 except BaseException as exc:  # noqa: BLE001 - 後端錯誤不可往外洩
                     box["err"] = exc
                 finally:
@@ -259,6 +308,7 @@ class BoundaryTranslator:
         out = str(box.get("out", "")).strip()
         if is_degenerate(out):
             return done(None, STATUS_UNAVAILABLE, "degenerate")
+        out = self.restore_terms(out, used)
         with self._cache_lock:
             self._cache[prepared] = out
             while len(self._cache) > _CACHE_SIZE:
@@ -292,6 +342,7 @@ def create_boundary_translator(
     model_dir = mt_model_dir(getattr(st, "translate_model_dir", None))
     raw_aliases = (getattr(st, "translate_aliases", None) or "").strip()
     aliases = tuple(a.strip() for a in raw_aliases.split(",") if a.strip()) if raw_aliases else DEFAULT_ALIASES
+    glossary = parse_glossary(getattr(st, "translate_glossary", None))
     device = (getattr(st, "translate_device", None) or "").strip() or DEFAULT_TRANSLATE_DEVICE
 
     def default_factory(dev: str) -> MtBackend:
@@ -307,5 +358,6 @@ def create_boundary_translator(
         timeout_ms=int(timeout) if timeout else DEFAULT_TRANSLATE_TIMEOUT_MS,
         aliases=(*aliases, *extra_aliases),
         placeholder=(getattr(st, "translate_placeholder", None) or "").strip() or DEFAULT_PLACEHOLDER,
+        glossary=glossary,
         cpu_fallback=True if cpu_fallback is None else bool(cpu_fallback),
     )

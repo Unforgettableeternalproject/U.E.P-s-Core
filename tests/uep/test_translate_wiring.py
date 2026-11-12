@@ -181,3 +181,44 @@ def test_non_runtime_load_error_does_not_fall_back_to_cpu():
     tr = BoundaryTranslator(backend_factory=factory, device="cuda", cpu_fallback=True)
     tr.start_warmup()
     assert tr.wait_ready(5) and not tr.available and devices == ["cuda"]
+
+
+def test_glossary_placeholder_swapped_in_and_restored():
+    tr, backend = _make(FakeBackend(fn=lambda t: "please open Alpha now"))
+    res = tr.translate("把桌面打開")
+    assert backend.calls[-1] == "把 Alpha 打開"  # 送進後端的是佔位名
+    assert res.status == "ok" and res.text_en == "please open desktop now"
+    tr2, b2 = _make(FakeBackend(fn=lambda t: "Open the ALPHA and the gamma, omega."))
+    out = tr2.translate("桌面與主機與網站").text_en
+    assert b2.calls[-1] == "Alpha 與 Gamma 與 Omega"
+    assert out == "Open the desktop and the host, website."
+
+
+def test_glossary_placeholder_lost_returns_result_without_error(caplog):
+    tr, _ = _make(FakeBackend(fn=lambda t: "open the screen"))
+    with caplog.at_level("DEBUG", logger="uep.echo.translate_wiring"):
+        res = tr.translate("打開桌面")
+    assert res.status == "ok" and res.text_en == "open the screen"
+    assert "遺失佔位名" in caplog.text
+
+
+def test_glossary_env_override_and_default():
+    assert tw.parse_glossary(None) == tw.DEFAULT_GLOSSARY
+    assert tw.parse_glossary("  ") == tw.DEFAULT_GLOSSARY
+    assert tw.parse_glossary("桌面=desktop, 主機=host") == (("桌面", "Alpha", "desktop"), ("主機", "Gamma", "host"))
+    st = UepSettings(_env_file=None, UEP_TRANSLATE_GLOSSARY="檔案夾=folder")
+    backend = FakeBackend(fn=lambda t: "open Alpha")
+    tr = create_boundary_translator(st, backend_factory=lambda d: backend)
+    tr.start_warmup()
+    assert tr.wait_ready(5)
+    out = tr.translate("打開檔案夾").text_en
+    assert backend.calls[-1] == "打開 Alpha" and out == "open folder"
+    # 覆寫後預設詞不再保護
+    tr.translate("打開桌面")
+    assert backend.calls[-1] == "打開桌面"
+
+
+def test_cjk_dominant_han_count_rule():
+    assert cjk_dominant("到 discord 來") is True  # Han 2 個、比例約 0.22
+    assert cjk_dominant("open the desktop") is False
+    assert cjk_dominant("go 來 discord please now") is False  # 單一 Han 且比例低

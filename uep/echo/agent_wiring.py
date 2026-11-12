@@ -512,7 +512,9 @@ class LoopLauncher:
             self._settle(ctx, ok=ctx.delivered, reason=reason)
         if getattr(outcome, "partial", False):
             # 預算中斷（FAILED＋partial）：不是完整回覆，Turn 不記成 completed，保留原因碼；部分結果沒送出（或中斷通知沒送出）時補固定失敗訊息
-            if not (ctx.delivered and ctx.abort_notice_ok) and not self._cancelled(ticket.turn_id):
+            # 交付狀態不確定（UNKNOWN／ENQUEUED）時可能已送達，不補送失敗訊息（避免使用者看到兩則）
+            needs_notice = not (ctx.delivered and ctx.abort_notice_ok) and ctx.delivery_uncertain is None
+            if needs_notice and not self._cancelled(ticket.turn_id):
                 self._notify_failure(ctx)
             return TurnEndFacts(
                 status="failed", reason_code=reason, generated_len=len(ctx.text) if ctx.delivered else 0,

@@ -936,11 +936,14 @@ class AgentLoop:
             text = self._partial_summary(st)
         outcome = self._finish(st, "failed", LoopReason.BUDGET_EXHAUSTED, detail=dim, merge=False)
         delivered = bool(text) and self._deliver_result is not None and bool(self._deliver_result(text))
-        merge_back(  # 交付之後才寫：summary／delivered 與實際交付的部分結果一致
-            self._store, run_id=st.run_id, parent_id=st.parent_id, scope_ref=st.trigger.scope_ref, state="failed",
-            reason_code=LoopReason.BUDGET_EXHAUSTED, summary=text, result=text, delivered=delivered,
-            trail_ref=f"trail:{st.run_id}", partial=True,
-        )
+        try:
+            merge_back(  # 交付之後才寫：summary／delivered 與實際交付的部分結果一致
+                self._store, run_id=st.run_id, parent_id=st.parent_id, scope_ref=st.trigger.scope_ref, state="failed",
+                reason_code=LoopReason.BUDGET_EXHAUSTED, summary=text, result=text, delivered=delivered,
+                trail_ref=f"trail:{st.run_id}", partial=True,
+            )
+        except Exception:
+            logger.exception("預算中斷的 merge-back 失敗：run=%s", st.run_id)
         return dataclasses.replace(outcome, text=text, partial=True, delivered=delivered)
 
     @staticmethod
@@ -1935,6 +1938,7 @@ class AgentLoop:
                 if isinstance(outcome, LoopOutcome):
                     return outcome
                 st.transcript.append(ChatMessage("tool", result_text(outcome), tool_call_id=call["id"]))
+                st.trail.append(self._trail_item(call["name"], outcome))  # resume 補上的結果也進 trail（digest／部分結果彙整）
                 continue
             if action_id in pending and call["name"] not in allowed:
                 # pending 項的能力已被撤銷或收窄（預檢理應已攔下，這裡是保險）：Run 此時仍是 WAITING_APPROVAL
@@ -1953,6 +1957,7 @@ class AgentLoop:
             else:
                 view = self._blocked(DEFERRED_BY_APPROVAL_WAIT)
             st.transcript.append(ChatMessage("tool", result_text(view), tool_call_id=call["id"]))
+            st.trail.append(self._trail_item(call["name"], view))
         return None
 
     def _resume_pending(

@@ -21,6 +21,7 @@ from uep.agent.budget import (
     resolve_budget,
     tighten,
 )
+from uep.agent.core import stable_action_id
 from uep.agent.trigger import BudgetCap, BudgetRequest, LoopTrigger
 
 STAGED = BudgetThresholds(1.0, 1.5, 2.0)
@@ -425,3 +426,53 @@ def test_merge_back_carries_the_delivered_partial_result():
                summary="部分", result="部分", delivered=True, partial=True)
     entry = store.parent_entries["p"][0]
     assert entry.payload.state == "failed" and entry.payload.result == "部分"
+
+
+# ---- 複審 Minor：不確定交付不補失敗訊息、resume 補上的結果進 trail、merge-back 失敗不蓋掉 partial ----
+
+def test_conclude_partial_with_uncertain_delivery_does_not_send_a_second_message():
+    from uep.echo.agent_wiring import _RunCtx
+
+    launcher, delivery = _partial_launcher()
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1))
+    ctx.delivered, ctx.abort_notice_ok, ctx.delivery_uncertain = False, True, "loop_delivery_unknown"
+    facts = launcher._conclude(ctx, _outcome(), False)
+    assert facts.partial is True and delivery.sent == []  # 可能已送達：不補發
+
+
+def test_results_filled_in_on_resume_enter_the_trail():
+    from tests.uep.test_agent_loop import (
+        RUN,
+        _crash,
+        _park_checkpoint,
+        _park_rig,
+        trigger,
+    )
+
+    rig = _park_rig()
+    rig.run()
+    checkpoint = _park_checkpoint(rig)
+    rig.tasks.grant("appr_ok", stable_action_id(RUN, "step_1", 1))
+    loop = _crash(rig, 2)
+    seen = []
+    original = loop._guarded
+    loop._guarded = lambda st, action: seen.append(st) or original(st, action)
+    loop.resume(RUN, checkpoint, trigger=trigger(), parent_id="ctx_parent", approvals={stable_action_id(RUN, "step_1", 1): "appr_ok"})
+    st = seen[0]
+    assert any(item["tool"] == "post.ask" and item["status"] == "ok" for item in st.trail)
+
+
+def test_abort_survives_a_failing_merge_back():
+    kinds: list[str] = []
+    delivered: list[str] = []
+    rig = _staged_rig(_tool_rounds(4) + [Round("收束文字")], kinds=kinds, delivered=delivered)
+    original = rig.store.merge_into_parent
+
+    def broken(key, parent_id, payload):
+        if getattr(payload, "state", "") == "failed":
+            raise RuntimeError("store down")
+        return original(key, parent_id, payload)
+
+    rig.store.merge_into_parent = broken
+    out = rig.run()
+    assert out.partial and out.state == "failed" and delivered == ["收束文字"]

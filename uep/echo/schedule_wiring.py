@@ -420,6 +420,10 @@ def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, r
         shadow.add_cleanup(lambda et=event_type, h=handler: bus.unsubscribe(et, h))
     if start:
         shadow.start()
+    sinks = getattr(getattr(core, "echo", None), "presence_sinks", None)
+    if sinks is not None:  # Host 在 off 以外的旗標下會建 sink 代理：把決策層的 sink 接到仲裁器，關閉時解除
+        sinks.bind(shadow)
+        shadow.add_cleanup(sinks.unbind)
     logger.info("在場請求仲裁已啟動：mode=%s", mode)
     return shadow
 

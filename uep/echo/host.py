@@ -74,6 +74,7 @@ from uep.memory.protocol import MemoryPort
 from uep.output.delivery import DeliveryEvidence
 from uep.output.delivery import DeliveryStatus as DS
 from uep.output.intent import OutputIntent, OutputKind, OutputOrigin
+from uep.schedule.sink_proxy import PresenceSinkProxy
 from uep.state.coordinator import Axis, BehaviorState, InteractionState
 from uep.stream.contracts.cancellation import CancellationToken
 from uep.stream.contracts.output import (
@@ -274,6 +275,11 @@ class EchoPipelineHost:
                 if pid != primary_id
             )
         self.decision_hub = decision_hub if decision_hub is not None else DecisionHub()
+        # 仲裁用的 sink 代理：只有 UEP_PRESENCE_ARBITER != off 才建立（off 時 orchestrator 收到 None＝行為完全不變）；
+        # 仲裁器在 core 啟動後才組裝，由 ``attach_presence_arbiter`` 對它 bind
+        self.presence_sinks = (
+            PresenceSinkProxy(metrics_inc=lambda name: self.metrics.inc(name))
+            if get_settings().presence_arbiter != "off" else None)
         self.orchestrator = TurnOrchestrator(
             publisher, self.generations, auth_provider=self.endpoint.lease_auth, persona_id=persona_id,
             proposer=proposer, aggregator=aggregator, shadow_proposers=shadow_proposers, on_shadow=on_shadow,
@@ -283,6 +289,8 @@ class EchoPipelineHost:
             participants=self._participant_count, veto=self._veto, decision=self._decision,
             identity=identity, snapshot_version=lambda: self.policy.version, decision_hub=self.decision_hub,
             host_location=location,
+            on_abandon_signal=self.presence_sinks.on_abandon_signal if self.presence_sinks is not None else None,
+            on_presence_request=self.presence_sinks.on_presence_request if self.presence_sinks is not None else None,
         )
         self._wire_decision_slot()
         self._tick_thread: threading.Thread | None = None

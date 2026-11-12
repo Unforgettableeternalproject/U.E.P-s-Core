@@ -545,13 +545,13 @@ def _probe_payload_hash_key(strict: bool = False) -> None:
 
 def _loop_resilience_kwargs() -> dict[str, Any]:
     """AgentLoop 的 Step 逾時與重試政策（``UEP_AGENT_*``）；預算其餘欄位由 LoopLauncher 的預設決定。"""
-    from uep.agent.budget import BudgetPolicyTable
     from uep.agent.retry import RetryPolicy
+    from uep.echo.agent_wiring import task_request_budget_table
 
     s = get_settings()
     return {
         "step_timeout_s": s.agent_step_timeout_s or None,  # 0 = 關閉
-        "budget_policies": BudgetPolicyTable(),  # 政策表（目前為空：全部退回 launcher 預算；production 門檻另開關）
+        "budget_policies": task_request_budget_table(),  # 政策表：task_request 的緊預算組；agent_loop 查不到列，退回 launcher 預算
         "retry": RetryPolicy(
             model_max=s.agent_model_retry_max, model_backoff_s=s.agent_model_retry_backoff_s,
             tool_max=s.agent_tool_retry_max, tool_backoff_s=s.agent_tool_retry_backoff_s,

@@ -879,8 +879,11 @@ class AgentLoop:
         if end.kind == "escalate":
             return self._escalate(st, end)
         if end.kind == "exhausted":
-            if self._budget.thresholds.enabled and end.dim in ("steps", "tokens"):
-                return self._abort(st, end.dim)  # 三段門檻的中斷點：FAILED(budget_exhausted)＋partial
+            task_request = st.trigger.route == "task_request"
+            if (self._budget.thresholds.enabled or task_request) and end.dim in ("steps", "tokens"):
+                # 三段門檻的中斷點（task_request 的緊預算沒有分段，超出步數／token 直接視為 task_budget_exceeded）：
+                # FAILED(budget_exhausted)＋partial，決策日誌的 task_budget_exceeded 由 launcher 的 abort 通知記錄
+                return self._abort(st, end.dim)
             # 其餘維度（tool_calls、牆鐘、rounds）是不分段的保險絲：契約（Chain §2.3.1）明定沿用今天的處置，即使三段門檻已啟用，
             # tool_calls 先耗盡也走下面的 finalize（BUDGET_FINALIZED）／FAILED(budget_exhausted)，不標 partial
             by_consult = end.dim == "consult"  # 中樞建議 finalize：不是預算耗盡

@@ -24,7 +24,7 @@ from uep.agent.bridge import AgentToolTurns
 from uep.agent.budget import BudgetPolicyTable, LoopBudget, resolve_budget, tighten
 from uep.agent.loop_context import ParentSnapshot
 from uep.agent.retry import RetryPolicy
-from uep.agent.trigger import LoopTrigger
+from uep.agent.trigger import BudgetRequest, LoopTrigger
 from uep.decision.capability import (
     HINT_SOURCE_RULE,
     narrow_capability,
@@ -86,16 +86,36 @@ logger = logging.getLogger(__name__)
 LOOP_GOAL_USER_TURN = "user_turn_request"
 
 
+DEFAULT_LOOP_POLICY_REF = "pol_agent_loop"
+LOOP_GOAL_TASK_REQUEST = "task_request"
+# route=task_request 的能力標籤（Chain 契約 PR-R／E3：lore.write、chatroom.post，不含 memory.write）。決策層的 route 表
+# （``ROUTE_DEFAULT_CAPABILITIES["task_request"]``）目前仍是空集合，待決策層改表後這份常數即可移除，
+# 現在由工具層以自己的 base 呼叫 ``narrow_capability``（仍受註冊表快照與閉集約束，不放寬）
+TASK_REQUEST_CAPABILITIES: frozenset[str] = frozenset({"lore.write", "chatroom.post"})
+# task_request 的緊預算組：兩步（一次工具、一次收束）、一次工具呼叫、不平行、不 consult；政策表鍵 (policy_ref, "task_request", "lite")
+TASK_REQUEST_BUDGET = LoopBudget(max_steps=2, max_tool_calls=1, max_parallel=1, max_consults=0, run_deadline_s=300.0)
+TASK_REQUEST_TIER = "lite"
+
+
+def task_request_budget_table(policy_ref: str = DEFAULT_LOOP_POLICY_REF) -> BudgetPolicyTable:
+    """assembly 注入 launcher 的政策表：目前只登記 task_request 的緊預算組；agent_loop 查不到列，退回 launcher 預設預算。"""
+    return BudgetPolicyTable({(policy_ref, "task_request", TASK_REQUEST_TIER): TASK_REQUEST_BUDGET})
+
+
 def trigger_from_turn(
     ticket: Any, proposal: Any, *, capability_tags: frozenset[str], policy_ref: str, owner_actor_id: str,
-    goal_code: str = LOOP_GOAL_USER_TURN,
+    goal_code: str | None = None, route: str = "agent_loop",
 ) -> LoopTrigger:
-    """``route=agent_loop`` 的回合 -> ``LoopTrigger(kind="user_turn")``（§4.2）。``capability_tags`` 是決策層 I-1 已收窄的結果
-    （D1 由呼叫端提供）；``owner_actor_id`` 由呼叫端依 D64 決定（非 owner 來源固定為艾斯維爾）。外部文字不進 goal。"""
+    """``route=agent_loop`` 的回合 -> ``LoopTrigger(kind="user_turn")``（§4.2）；``route=task_request`` -> ``kind="task_request"``、
+    預算 tier=lite。``capability_tags`` 是決策層 I-1 已收窄的結果（D1 由呼叫端提供）；``owner_actor_id`` 由呼叫端依 D64 決定
+    （非 owner 來源固定為艾斯維爾）。外部文字不進 goal。"""
+    task = route == "task_request"
     return LoopTrigger(
-        kind="user_turn", origin_ref=ticket.turn_id, goal_code=goal_code, capability_tags=frozenset(capability_tags),
-        scope_ref=ticket.audience_scope, owner_actor_id=owner_actor_id, policy_ref=policy_ref,
-        snapshot_ref=f"snapshot_{ticket.snapshot_version}", plan_ref=None,
+        kind="task_request" if task else "user_turn", origin_ref=ticket.turn_id,
+        goal_code=goal_code or (LOOP_GOAL_TASK_REQUEST if task else LOOP_GOAL_USER_TURN),
+        capability_tags=frozenset(capability_tags), scope_ref=ticket.audience_scope, owner_actor_id=owner_actor_id,
+        policy_ref=policy_ref, snapshot_ref=f"snapshot_{ticket.snapshot_version}", plan_ref=None,
+        route="task_request" if task else "agent_loop", budget=BudgetRequest(tier=TASK_REQUEST_TIER) if task else None,
     )
 
 
@@ -118,14 +138,16 @@ class LoopEntry:
         self._owner_for = owner_for
 
     def __call__(self, ticket: Any, proposal: Any) -> LoopTrigger | None:
-        if getattr(proposal, "route", None) != "agent_loop":
+        route = getattr(proposal, "route", None)
+        if route not in ("agent_loop", "task_request"):
             return None
         tags = frozenset(self._tags_for(ticket, proposal))
         if not tags:
-            logger.error("route=agent_loop 但 capability_tags 為空（介面違規），不啟動迴圈：turn=%s", ticket.turn_id)
+            logger.error("route=%s 但 capability_tags 為空（介面違規），不啟動迴圈：turn=%s", route, ticket.turn_id)
             return None
         trigger = trigger_from_turn(
             ticket, proposal, capability_tags=tags, policy_ref=self._policy_ref, owner_actor_id=self._owner_for(ticket),
+            route=route,
         )
         self._launch(trigger, ticket)
         return trigger
@@ -189,8 +211,9 @@ def make_capability_tags_for(
 
     def tags_for(ticket: Any, proposal: Any) -> frozenset[str]:
         route = getattr(proposal, "route", None)
+        base = TASK_REQUEST_CAPABILITIES if route == "task_request" else route_base(route)
         result = narrow_capability(
-            route_base(route), getattr(proposal, "capability_hint", None), registry.enabled_tags(),
+            base, getattr(proposal, "capability_hint", None), registry.enabled_tags(),
             CAPABILITY_CEILING.keys(), route=route, hint_source=HINT_SOURCE_RULE,
         )
         record_narrow(result, sink, ref=getattr(ticket, "turn_id", None))
@@ -376,11 +399,14 @@ class LoopLauncher:
     def _effective_budget(self, trigger: LoopTrigger) -> LoopBudget:
         """Run 的有效預算：政策表（查不到退回預設）∩ trigger 的 cap，只收窄。Run 建立時凍結。"""
         request = trigger.budget
-        return resolve_budget(
+        out = resolve_budget(
             self._budget_policies, self._budget, policy_ref=trigger.policy_ref, route=trigger.route,
             tier=request.tier if request is not None else None, cap=request.cap if request is not None else None,
             metrics=getattr(self._orchestrator, "metrics", None),
         )
+        if out.step_timeout_s is None and self._budget.step_timeout_s is not None:
+            out = dataclasses.replace(out, step_timeout_s=self._budget.step_timeout_s)  # 政策列沒設的 Step 逾時沿用 launcher 的
+        return out
 
     def _run_deadline(self, budget: LoopBudget | None = None) -> datetime:
         budget = budget or self._budget
@@ -809,7 +835,7 @@ class LoopLauncher:
 def build_loop_entry(
     *, tool_path: str, tasks: TaskManager, delivery: Any, orchestrator: Any, registry: ToolRegistry, model_port: Any,
     cache: TurnOutcomeCache | None, text_store: LoopTextStore | None, persona_id: str = "uep",
-    policy_ref: str = "pol_agent_loop", extra_capability_tags: frozenset[str] = frozenset(), **launcher_kwargs: Any,
+    policy_ref: str = DEFAULT_LOOP_POLICY_REF, extra_capability_tags: frozenset[str] = frozenset(), **launcher_kwargs: Any,
 ) -> tuple[LoopEntry, LoopLauncher]:
     """組裝層用：production 的 ``(LoopEntry, LoopLauncher)``（capability 收窄 + 啟動器）。只在 ``tool_path == "agent"`` 可建。
     launcher 另回傳是為了讓 ``CoreAssembly.shutdown`` 能關閉它。``owner_for`` 取 ticket 的 ``actor_id``

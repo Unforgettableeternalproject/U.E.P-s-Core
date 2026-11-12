@@ -694,8 +694,9 @@ class TurnOrchestrator:
         return IntakeResult(ticket, "issued", proposal, utterance_event_id=event_id, fact=fact)
 
     def _enter_loop(self, ticket: CoreTicket, proposal: Proposal) -> None:
-        """route=agent_loop 且已綁定入口時交給 Agent 層（Run 之後脫離 turn 獨立存活，§4.6）；入口失敗不影響 turn。"""
-        if self._loop_entry is None or proposal.route != "agent_loop":
+        """route=agent_loop／task_request 且已綁定入口時交給 Agent 層（Run 之後脫離 turn 獨立存活，§4.6）；入口失敗不影響 turn。
+        task_request 由入口依 route 組緊預算的 Run（Chain 契約 PR-R）；入口不啟動（標籤空、投影空、額滿）時照 direct_chat 處理。"""
+        if self._loop_entry is None or proposal.route not in ("agent_loop", "task_request"):
             return
         with self._lock:
             self._loop_claims[ticket.turn_id] = None

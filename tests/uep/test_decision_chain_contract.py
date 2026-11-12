@@ -270,7 +270,11 @@ def test_migration_0020_revision_chain_and_head():
     rev = script.get_revision("0020_decision_log_chain")
     assert rev is not None and rev.down_revision == "0019_decision_log_target"
     assert callable(rev.module.upgrade) and callable(rev.module.downgrade)
-    assert script.get_heads() == ["0020_decision_log_chain"]
+    # 不寫死 head：只要求單一 head，且 0020 在 head 的祖先鏈上（之後的 migration 會往後疊）
+    heads = script.get_heads()
+    assert len(heads) == 1
+    ancestry = {r.revision for r in script.walk_revisions(base="base", head=heads[0])}
+    assert "0020_decision_log_chain" in ancestry
 
 
 def test_db_migration_0020_roundtrip(alembic_cfg, engine, session_factory):

@@ -18,7 +18,7 @@ train/decision/
 │   ├── overlap.py        # 評估端：測試集與 train／val 的逐列重疊報告（含 state 層級）
 │   └── eval_testset.py   # 評估端：Laya checkpoint（predict）、rules.default（rules）、指標與錯誤分析（report）
 ├── testset/zh_candidates_draft.jsonl   # 測試集 zh-TW 原句草稿（status=pending_review，待艾斯維爾核）
-├── testset/en_reference.jsonl          # 84 筆中文測試集的人工參考英譯（id／text_en／context_en；uild_en_test --reference 用）
+├── testset/en_reference.jsonl          # 84 筆中文測試集的人工參考英譯（id／text_en／context_en；build_en_test --reference 用）
 ├── testset/en_independent.jsonl        # 獨立英文測試集（231 筆，只量 Laya 本身；meta.pending_review=true 的列待艾斯維爾核，評分可排除）
 ├── pool/           # synthetic 內容池（入庫；量產後才有）
 ├── pool_private/   # real_owner 日誌（.gitignore，不入 git）
@@ -38,7 +38,14 @@ turn.reply 的題目與 state 取自 `uep/decision/laya_schema.py`（訓練與�
 - `compound`（turn.reply）／`absent.compound`（absent_intent）：`noul` 是／否題。符合這個定義就標 yes：一句裡有好幾個彼此獨立、各自交給不同處理路線或對象的意圖（`remind me at four…, and tell Rob…`、閒聊＋交辦、去某處＋轉告只是例子，不是限定）。no＝同一目標的多步驟（agent_loop）、一個意圖多項內容（`tell Rob I'm late and sorry`、`remind me to buy milk and eggs`）、段落間有條件或資料依賴（`check the forecast and if sunny tell Rob`；在場走 agent_loop，不在場照意圖標，多為 task）。`request_two_places` 維持 yes。
 - compound=yes 時其餘欄位照退回優先序（拆分失敗時的答案）：absent_intent `presence_request > task > message > other`；turn.reply 的 route `agent_loop > task_request > direct_chat`，reply_mode 只要有一段對她說就 respond，addressed 同理（只要有一段對她說就 True，例：「Yuki 幫我訂位，Rob 你去買飲料」→ True）。absent 的 `request_two_places`（去兩個地方）退回時 `target_location` 填第一個字面地點，其餘留到拆分時處理。
 - 既有資料預設 compound=no，例外見 `compound.py`；候選句（含連接詞＋第二個動作）另經獨立盲標抽驗。新樣本走 `--card-set compound`（正例）與 `--card-set single`（反例）。
-- **ack_after_statement 裁決（艾斯維爾）**：她剛說完一句陳述、使用者回裸附和（好的、嗯嗯、ok），這句是對她的回應，ddressed=True；她不必回話，eply_mode=pass、oute=ignore，只用來進一步確認先前的決策。前提是接在她的發言之後；沒有前文的冷啟動附和（ck_cold_start）維持 ddressed=False。訓練卡片 ck_after_statement 與測試集都照此標；盲標當時依舊規則標 False，以裁決為準（esolve.py 規則 ck_ruling）。
+- **ack_after_statement 裁決（艾斯維爾）**：她剛說完一句陳述、使用者回裸附和（好的、嗯嗯、ok），這句是對她的回應，`addressed=True`；她不必回話，`reply_mode=pass`、`route=ignore`，只用來進一步確認先前的決策。前提是接在她的發言之後；沒有前文的冷啟動附和（`ack_cold_start`）維持 `addressed=False`。訓練卡片 `ack_after_statement` 與測試集都照此標；盲標當時依舊規則標 False，以裁決為準（`resolve.py` 規則 `ack_ruling`）。
+- **passive 界線（艾斯維爾，11/12）**：passive 代表她有具體理由開口，至少符合一條，否則一律 pass；群組裡拿不準時往 pass 靠（該 pass 卻插話的代價高於錯過一次幫忙）。判斷時問：她插話，在場的人會覺得幫上忙還是被打斷？
+  1. 跟她答應過、記下或說過的事有關，而且這件事現在還在進行或正要被使用（例：她給的資訊被當場指出可能有誤、使用者正要照著做 → passive；她過去出過錯但使用者已自行核對 → pass）。
+  2. 沒點名的提問，而且她答得出來。
+  3. 沒點名的請求，而且她確實做得到。
+  - 第三人稱提到她做過的事（稱讚、評論、回憶）、旁人之間的陳述、轉述別人的消息、不帶她能回答的問題的自言自語 → pass。
+  - 「值得記下來」（例：航班改到週四）屬記憶功能，不進 reply_mode。
+  - **能力依據**：只承認訓練資料裡出現過的能力（查詢類如天氣、新聞、班次；訂位、訂場；傳訊息、寄信；燈光控制等）。訓練資料沒出現的（烤箱、看路標、看印表機墨水量等）一律視為做不到。新增能力時，回頭檢查依此判為 pass 的題目。
 - 一句多個指示先取第一個；`task` 與 `message` 的文字邊界由 `resolve.py` 的 `relay_vs_task` 規則判定，並須與盲標一致。
 - 對照卡（`synth.ABSENT_CONTRAST_CARDS`，`--card-set contrast`）另成一組，避免動到主卡組的 plan 而無法重現；卡片標籤改版後直接重跑 `python -m laya_data.resolve --mass-dir out/mass`（會依目前卡片重標 `synth_all.jsonl`、重算 accepted／disputed）。
 

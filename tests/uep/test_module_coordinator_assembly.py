@@ -460,7 +460,7 @@ def test_db_budget_is_wired_into_coordinator_and_admits_gpu_load(session_factory
 
 def test_db_budget_not_configured_rejects_gpu_load_but_keeps_services(session_factory, tmp_path):
     gpu_desc = ModuleDescriptor("gpu_svc", uses_gpu=True, vram_mb=4000, autoload=True)
-    svc_desc = ModuleDescriptor("lore", autoload=True)
+    svc_desc = ModuleDescriptor("plain_svc", autoload=True)  # 不用 lore：真組裝下 lore 會被設定閘住
     core, _ = _db_core(
         session_factory, tmp_path, module_coordinator=True, tool_module_events=True,
         module_registrations=[(gpu_desc, FakeHandle()), (svc_desc, FakeHandle())], module_sink=lambda t, p: None,
@@ -468,7 +468,7 @@ def test_db_budget_not_configured_rejects_gpu_load_but_keeps_services(session_fa
     try:
         core.start()
         assert core.module_coordinator.wait_settled(5)
-        assert core.module_coordinator.status("lore").state == "ready"
+        assert core.module_coordinator.status("plain_svc").state == "ready"
         assert core.module_coordinator.status("gpu_svc").state == "unloaded"
         assert core.module_coordinator.status("gpu_svc").admission_reason == "gpu_budget_unconfigured"
     finally:

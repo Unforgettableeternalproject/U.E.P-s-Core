@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -238,4 +239,64 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
     return driver
 
 
-__all__ = ["PlanBackedRestWindowPolicy", "attach_behavior_driver", "build_rest_window_policy"]
+# ---- PresencePlanner（PP-4b）----
+
+PLANNER_MODES = ("off", "shadow")
+
+
+def parse_planner_mode(value: str | None) -> str:
+    """``UEP_SCHEDULE_PLANNER``：off（預設）｜shadow；未知值 ``ValueError``（fail-fast）。"""
+    mode = (value or "off").strip().lower()
+    if mode not in PLANNER_MODES:
+        raise ValueError(f"UEP_SCHEDULE_PLANNER 只接受 off 或 shadow：{value!r}")
+    return mode
+
+
+def attach_schedule_planner(settings: Any, core: Any, *, session_factory: Any, reader: Any | None = None,
+                            metrics_inc: Callable[[str], None] | None = None) -> Any | None:
+    """依旗標組裝並啟動 PresencePlanner（只發 ``schedule.*`` 事件；目前沒有仲裁器，directive 不被消費）。
+
+    旗標優先取 ``settings.schedule_planner``，沒有該欄位時讀環境變數 ``UEP_SCHEDULE_PLANNER``（預設 off）。
+    讀 Presence 用 ``core.presence.current()``（唯讀）；``reader`` 是 PlanStore 時順便掛上
+    ``schedule.plan_changed`` 的發布（寫入端的 store 實例也需要 ``set_on_change``）。
+    """
+    from uep.schedule.events import ScheduleEvents
+    from uep.schedule.planner import PresencePlanner, PresenceReading
+
+    mode = parse_planner_mode(getattr(settings, "schedule_planner", None) or os.environ.get("UEP_SCHEDULE_PLANNER"))
+    if mode == "off":
+        return None
+    if reader is None:
+        from uep.schedule.store import PlanStore
+
+        reader = PlanStore(session_factory)
+    if metrics_inc is None:
+        echo_metrics = getattr(getattr(core, "echo", None), "metrics", None)
+        metrics_inc = getattr(echo_metrics, "inc", None)
+    events = ScheduleEvents(core.publisher, persona_id=core.persona_id)
+    if hasattr(reader, "set_on_change"):
+        reader.set_on_change(events.on_store_change)
+
+    def presence() -> Any:
+        view = core.presence.current()
+        return PresenceReading(status=view.status.value, location=view.location,
+                               transfer_active=view.transfer_id is not None)
+
+    planner = PresencePlanner(reader, presence, events, override_fn=getattr(reader, "active_override", None),
+                              metrics_inc=metrics_inc)
+    bus = getattr(core, "bus", None)
+    if bus is not None:
+        def on_event(_event: Any) -> None:
+            planner.poke()
+
+        bus.subscribe("schedule.plan_changed", on_event)
+        planner.add_cleanup(lambda: bus.unsubscribe("schedule.plan_changed", on_event))
+    planner.start()
+    logger.info("PresencePlanner 已啟動：mode=%s", mode)
+    return planner
+
+
+__all__ = [
+    "PlanBackedRestWindowPolicy", "attach_behavior_driver", "attach_schedule_planner",
+    "build_rest_window_policy",
+]

@@ -165,12 +165,50 @@ def test_default_rules_engine_also_reports_the_full_result():
 # ---- 放棄工作 sink（judge 模組接上前只有接點）----
 
 
-def test_abandon_judge_is_not_wired_yet_so_the_sink_is_never_called():
+def test_real_abandon_judge_turn_path_signals_only_for_the_abandon_phrase():
     got: list = []
     orch = _orch(Capture(), on_abandon_signal=got.append)
-    _absent(orch)
-    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="算了不用做了", seq=2, source_endpoint_id="ep"))
-    assert got == []
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
+    assert len(got) == 1 and got[0].path == "turn" and got[0].actor_ref == "actor_owner"
+    assert got[0].actor_authenticated is True and got[0].signal_id.startswith("abandon:turn:run1:")
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="不用做了", seq=2, source_endpoint_id="ep"))
+    assert len(got) == 1  # 不是明確的放棄工作語句
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=3))  # 沒有 endpoint：未認證
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref="discord:999", text="放棄這次工作", seq=4, source_endpoint_id="ep"))
+    assert len(got) == 1  # 未認證與未映射 fail-closed
+
+
+def test_real_abandon_judge_absent_path_and_no_sink_and_veto():
+    got: list = []
+    orch = _orch(Capture(), on_abandon_signal=got.append)
+    _absent(orch, text="放棄這次工作")
+    assert len(got) == 1 and got[0].path == "absent" and got[0].source_platform == "discord"
+    _absent(orch, text="放棄這次工作", seq=2, endpoint=None)
+    _absent(orch, text="不用做了", seq=3)
+    assert len(got) == 1
+    plain = _orch(Capture())  # 沒有 sink：不註冊決策點、不判斷
+    assert plain.hub.engine("schedule.abandon_work") is None
+    plain.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
+    vetoed_got: list = []
+    vetoed = TurnOrchestrator(
+        Capture(), TurnGenerations(), auth_provider=lambda: AUTH, proposer=Pass(),  # type: ignore[arg-type]
+        identity=IdentityDirectory({OWNER: "actor_owner"}, {"actor_owner": "owner1"}),
+        on_abandon_signal=vetoed_got.append, veto=lambda ctx: "audience_blocked",
+    )
+    vetoed.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
+    assert vetoed_got == []
+
+
+def test_shared_hub_with_abandon_kind_already_registered_is_reused():
+    from uep.decision import DecisionHub
+    from uep.decision.schedule_abandon_work import register_abandon_work
+
+    hub = DecisionHub()
+    register_abandon_work(hub)
+    got: list = []
+    orch = _orch(Capture(), decision_hub=hub, on_abandon_signal=got.append)
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
+    assert len(got) == 1
 
 
 def _wired(orch: TurnOrchestrator, calls: list) -> TurnOrchestrator:

@@ -52,6 +52,11 @@ from uep.decision.presence_absent_intent import (
     presence_absent_intent_spec,
     proposal_from_result,
 )
+from uep.decision.schedule_abandon_work import (
+    KIND_SCHEDULE_ABANDON_WORK,
+    judge_abandon_work,
+    register_abandon_work,
+)
 from uep.decision.turn_interject import TurnInterjectEngine, turn_interject_spec
 from uep.decision.turn_reply import (
     KIND_TURN_REPLY,
@@ -269,6 +274,9 @@ class TurnOrchestrator:
         except BaseException:
             self._reply_engine.close()
             raise
+        # 放棄工作判斷（schedule.abandon_work）：有 sink 才註冊；共用 hub 已註冊同 kind 時沿用，不重複註冊
+        if self._on_abandon_signal is not None and self.hub.engine(KIND_SCHEDULE_ABANDON_WORK) is None:
+            register_abandon_work(self.hub)
         self._identity = identity
         self._snapshot_version = snapshot_version
         self._ttl = ticket_ttl
@@ -624,13 +632,14 @@ class TurnOrchestrator:
     def _judge_abandon(
         self, *, text: str, utterance_id: str, actor_ref: str, actor_authenticated: bool, source_platform: str, path: str,
     ) -> Any | None:
-        """放棄工作判斷的接點：呼叫 ``uep.decision.abandon_work.judge_abandon``（該模組接上前一律回 None）。
+        """放棄工作判斷：呼叫 ``judge_abandon_work``（決策點 ``schedule.abandon_work``）；命中回訊號，其餘回 None。
 
-        接上時：``return judge_abandon(self.hub, text, utterance_id=utterance_id, actor_ref=actor_ref,
-        actor_authenticated=actor_authenticated, source_platform=source_platform, path=path, now=self._clock())``。
-        文字只在記憶體經參數傳入，不進 sink 以外的任何地方。
+        文字只在記憶體經參數傳入。``now`` 取 Orchestrator 的時鐘（須帶時區，否則判斷端 fail-closed 回 None）。
         """
-        return None
+        return judge_abandon_work(
+            self.hub, text, utterance_id=utterance_id, actor_ref=actor_ref, actor_authenticated=actor_authenticated,
+            source_platform=source_platform, path=path, now=self._clock(),
+        )
 
     def _emit_abandon(
         self, text: str, utterance_id: str, actor_id: str, actor_authenticated: bool, source_platform: str, path: str,
@@ -702,7 +711,7 @@ class TurnOrchestrator:
             logger.exception("缺席端輸入 shadow 紀錄寫入失敗")
         self._notify_presence_request(proposal, fact, actor_id, actor_authenticated, is_owner)
         source = str(fact.source_location) if fact.source_location is not None else "missing"
-        self._emit_abandon(fact.text, ref, actor_id, actor_authenticated, source, "absent")
+        self._emit_abandon(fact.text, ref, actor_id, actor_authenticated, source, "absent")  # ref＝es:<run>:<session>:<seq>
 
     def _decide_turn(self, ctx: SessionContext, turn: AggregatedTurn) -> IntakeResult:
         intake = turn.last.payload
@@ -720,8 +729,11 @@ class TurnOrchestrator:
             self._skip(ctx, intake.trace_id, intake.event_id, fact, vetoed, ReplyMode.PASS)
             return IntakeResult(None, vetoed, None, utterance_event_id=intake.event_id, fact=fact)
         if self._on_abandon_signal is not None:  # 通過否決（Presence ACTIVE 等）後、只處理已認證的 actor
+            # 認證規則與缺席路徑一致（不得更鬆）：身分映射命中且輸入帶有 ingress 簽發的 source_endpoint_id。
+            # 桌面輸入若沒有 source_endpoint_id 就不會觸發，這是預期行為（fail-closed）
             authenticated = bool(ident.actor_id is not None and fact.source_endpoint_id is not None)
-            self._emit_abandon(fact.text, intake.event_id, actor_id, authenticated, ctx.platform, "turn")
+            uid = f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}"
+            self._emit_abandon(fact.text, uid, actor_id, authenticated, ctx.platform, "turn")
         candidate = self._candidate(ctx, fact, turn.refs or (intake.event_id,), len(turn.segments), True)
         proposal = self._propose(candidate)
         degraded: Degraded | None = None

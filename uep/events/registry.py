@@ -116,7 +116,8 @@ DEFAULT_EVENT_SPECS["turn.skipped"] = EventSpec(
     _D,
     payload_keys=_keys(
         "reply_mode", "proposal_ref", "utterance_ref", "speaker_ref", "actor_id", "source_location",
-        "source_endpoint_id", "is_owner", "presence_request", "actor_authenticated",
+        "source_endpoint_id", "is_owner", "presence_request", "actor_authenticated", "presence_intent",
+        "target_location",
     ),
 )
 # ES 轉錄進 journal（§1.5 (a)）：payload 只放 ID、語言、信心、毫秒統計與 speaker_ref（平台字串），

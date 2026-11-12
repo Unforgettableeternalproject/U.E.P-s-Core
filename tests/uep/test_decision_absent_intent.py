@@ -116,7 +116,7 @@ def test_result_is_intent_only_and_has_no_authorization_fields():
     names |= {f.name for f in dataclasses.fields(res.plan)}
     assert not [n for n in names if any(w in n for w in _AUTH_WORDS)]
     spec = presence_absent_intent_spec()
-    assert spec.shadow and spec.mode == "sync" and spec.plan_sections == ()
+    assert spec.shadow and spec.mode == "sync" and spec.plan_sections == ("chain",)  # chain 只帶 compound（不含授權欄位）
 
 
 def test_proposer_cannot_smuggle_authorization_via_extra_attributes():

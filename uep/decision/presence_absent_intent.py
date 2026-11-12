@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from uep.decision.contracts import (
+    DecisionChain,
     DecisionEngineInfo,
     DecisionPlacement,
     DecisionPlan,
@@ -60,7 +61,7 @@ def presence_absent_intent_spec(budget_ms: int = DEFAULT_BUDGET_MS) -> DecisionP
     return DecisionPointSpec(
         kind=KIND_PRESENCE_ABSENT_INTENT, mode="sync", owner="presence", outcomes=INTENTS, budget_ms=budget_ms,
         on_timeout_reason=ON_TIMEOUT_REASON, on_busy_reason=ON_BUSY_REASON, on_error_reason=ON_ERROR_REASON,
-        on_invalid_reason=ON_INVALID_REASON, shadow=True, allow_native=True,
+        on_invalid_reason=ON_INVALID_REASON, shadow=True, allow_native=True, plan_sections=("chain",),
     )
 
 
@@ -315,6 +316,8 @@ class AbsentIntentEngine:
                 placement=DecisionPlacement(
                     target_platform=proposal.target_location, presence_intent="request_move" if is_request else "none",
                 ),
+                # compound 為 None（proposer 不支援該題）時不輸出區段；目前只記錄與回傳，不影響決策結果
+                chain=DecisionChain(compound=proposal.compound) if proposal.compound is not None else None,
             ),
             confidence=float(proposal.confidence), reason_code=proposal.intent,  # 目標位置在 plan.placement.target_platform，日誌另存 target 欄
             engine=DecisionEngineInfo(tier="rule" if proposal.proposer_id.startswith("rules.") else "model",
@@ -342,6 +345,25 @@ def presence_request_from_result(result: DecisionResult) -> bool | None:
     if result.outcome == INTENT_MESSAGE:
         return False
     return None  # other／task
+
+
+def proposal_from_result(result: DecisionResult) -> AbsentIntentProposal | None:
+    """決策結果 -> 完整的 ``AbsentIntentProposal``（意圖、目標場域、信心、compound、engine 識別）。
+
+    fallback（逾時／busy／例外／無效）一律回 None：那不是模型或規則的判斷，下游不該據以行動。
+    舊的 ``presence_request`` 欄位（bool/None）仍由 ``presence_request_from_result`` 映射，兩者互相對得上。
+    """
+    if result.fallback:
+        return None
+    plan = result.plan
+    placement = plan.placement if plan is not None else None
+    chain = plan.chain if plan is not None else None
+    return AbsentIntentProposal(
+        intent=result.outcome, confidence=float(result.confidence),
+        target_location=placement.target_platform if placement is not None else None,
+        proposer_id=result.engine.id, proposer_version=result.engine.version,
+        compound=chain.compound if chain is not None else None,
+    )
 
 
 def judge_absent_intent(

@@ -37,16 +37,20 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from secrets import token_hex
+from typing import Any
 
 from uep.contracts.presence import AuthorizationTuple, PresenceLocation
 from uep.decision.contracts import DecisionRequest
 from uep.decision.hub import DecisionHub
 from uep.decision.presence_absent_intent import (
+    INTENT_MESSAGE,
+    INTENT_PRESENCE_REQUEST,
     AbsentIntentEngine,
     AbsentIntentInput,
+    AbsentIntentProposal,
     judge_absent_intent,
     presence_absent_intent_spec,
-    presence_request_from_result,
+    proposal_from_result,
 )
 from uep.decision.turn_interject import TurnInterjectEngine, turn_interject_spec
 from uep.decision.turn_reply import (
@@ -199,6 +203,8 @@ class TurnOrchestrator:
         host_location: str | None = None,
         require_source_location: bool = False,
         presence_request_hook: Callable[[UtteranceFact], bool | None] | None = None,
+        on_abandon_signal: Callable[[Any], None] | None = None,
+        on_presence_request: Callable[..., None] | None = None,
     ) -> None:
         self._publisher = publisher
         # V18：本機 Host 持有的 location（比對對象）；None = 未提供，不做來源比對（獨立測試用）
@@ -206,6 +212,11 @@ class TurnOrchestrator:
         self.require_source_location = require_source_location
         # None = 預設走核心決策點 presence.absent_intent（見 _presence_request）；傳入 callable 則完全取代
         self._presence_request_hook = presence_request_hook
+        # 仲裁用的選用 sink（預設 None＝完全不呼叫、行為不變）。sink 例外一律吞掉並計數，不影響回合。
+        # on_abandon_signal(signal)：放棄工作訊號（型別 AbandonWorkSignal，judge 模組接上前以 Any 表示）
+        # on_presence_request(proposal, *, request_id, actor_ref, actor_authenticated, is_owner, source_platform)
+        self._on_abandon_signal = on_abandon_signal
+        self._on_presence_request = on_presence_request
         # 此次宿主執行的識別：進冪等鍵，避免重啟後 session 內 seq 從頭來而撞鍵（外部傳入的 seq 也在同一命名空間）
         self.run_id = run_id or token_hex(4)
         self.metrics: Counter[str] = Counter()
@@ -553,27 +564,93 @@ class TurnOrchestrator:
 
     def _presence_request(
         self, ref: str, fact: UtteranceFact, actor_id: str, actor_authenticated: bool, is_owner: str,
-    ) -> bool | None:
-        """缺席端輸入是否為到場／移轉請求（只寫 shadow 紀錄，不觸發移轉、仲裁或回條）。
+    ) -> AbsentIntentProposal | None:
+        """缺席端輸入的意圖判斷結果（完整 ``AbsentIntentProposal``）；未判斷（逾時／busy／例外／fallback）為 None。
 
-        自訂 hook 完全取代預設；預設走核心決策點 ``presence.absent_intent``（文字只在記憶體，經 native 傳入）。
-        決策點逾時／busy／例外一律記 None（未判斷），不影響否決。意圖不是授權：授權只看已認證 actor 與規則。
+        走核心決策點 ``presence.absent_intent``（文字只在記憶體，經 native 傳入）。不觸發移轉、仲裁或回條；
+        意圖不是授權：授權只看已認證 actor 與規則。舊的 ``presence_request`` 欄位（bool/None）由
+        ``_presence_flag`` 從這個結果映射，語意與 ``presence_request_from_result`` 一致。自訂 hook 的路徑在呼叫端處理。
         """
-        hook = self._presence_request_hook
         try:
-            if hook is not None:
-                return hook(fact)
             authenticated = bool(actor_authenticated)
             inp = AbsentIntentInput(
                 text=fact.text, source_platform=str(fact.source_location) if fact.source_location is not None else None,
                 actor_ref=actor_id if _SAFE_ACTOR_REF.fullmatch(actor_id) else None,
                 actor_authenticated=authenticated, is_owner=is_owner == "true" and authenticated,
             )
-            result = judge_absent_intent(self.hub, inp, request_id=f"{self.run_id}:absent:{fact.seq}", ref=ref)
-            return presence_request_from_result(result)
+            result = judge_absent_intent(self.hub, inp, request_id=self._absent_request_id(fact), ref=ref)
+            return proposal_from_result(result)
         except Exception:
             logger.exception("presence_request 判斷失敗，記為未判斷")
             return None
+
+    def _absent_request_id(self, fact: UtteranceFact) -> str:
+        """缺席端判斷的 request_id：由 run_id 與 utterance seq 推導，同一句永遠相同（決策日誌與 sink 共用）。"""
+        return f"{self.run_id}:absent:{fact.seq}"
+
+    @staticmethod
+    def _presence_flag(proposal: AbsentIntentProposal | None) -> bool | None:
+        """完整結果 -> 舊的 ``presence_request`` 欄位：presence_request 為 True、message 為 False，其餘（other／task／未判斷）為 None。"""
+        if proposal is None:
+            return None
+        if proposal.intent == INTENT_PRESENCE_REQUEST:
+            return True
+        if proposal.intent == INTENT_MESSAGE:
+            return False
+        return None
+
+    def _notify_presence_request(
+        self, proposal: AbsentIntentProposal | None, fact: UtteranceFact, actor_id: str, actor_authenticated: bool,
+        is_owner: str,
+    ) -> None:
+        """意圖為 presence_request 且不是 fallback（proposal 非 None）時通知 sink；sink 例外不影響回合。
+        actor 是未驗證占位或不安全字串時不呼叫（沒有可歸屬的 actor_ref）。"""
+        sink = self._on_presence_request
+        if sink is None or proposal is None or proposal.intent != INTENT_PRESENCE_REQUEST:
+            return
+        if actor_id == UNVERIFIED_ACTOR or not _SAFE_ACTOR_REF.fullmatch(actor_id):
+            self.metrics["intake.presence_request_sink_skipped_unverified"] += 1
+            return
+        try:
+            sink(
+                proposal, request_id=self._absent_request_id(fact), actor_ref=actor_id,
+                actor_authenticated=bool(actor_authenticated), is_owner=is_owner == "true",
+                source_platform=str(fact.source_location) if fact.source_location is not None else "missing",
+            )
+        except Exception:
+            self.metrics["intake.presence_request_sink_error"] += 1
+            logger.exception("on_presence_request sink 失敗（已吞掉，不影響回合）")
+
+    def _judge_abandon(
+        self, *, text: str, utterance_id: str, actor_ref: str, actor_authenticated: bool, source_platform: str, path: str,
+    ) -> Any | None:
+        """放棄工作判斷的接點：呼叫 ``uep.decision.abandon_work.judge_abandon``（該模組接上前一律回 None）。
+
+        接上時：``return judge_abandon(self.hub, text, utterance_id=utterance_id, actor_ref=actor_ref,
+        actor_authenticated=actor_authenticated, source_platform=source_platform, path=path, now=self._clock())``。
+        文字只在記憶體經參數傳入，不進 sink 以外的任何地方。
+        """
+        return None
+
+    def _emit_abandon(
+        self, text: str, utterance_id: str, actor_id: str, actor_authenticated: bool, source_platform: str, path: str,
+    ) -> None:
+        """判斷並通知 on_abandon_signal。sink 為 None 時完全不判斷；只處理已認證的 actor；任何失敗只計數。"""
+        sink = self._on_abandon_signal
+        if sink is None or not actor_authenticated:
+            return
+        if actor_id == UNVERIFIED_ACTOR or not _SAFE_ACTOR_REF.fullmatch(actor_id):
+            return
+        try:
+            signal = self._judge_abandon(
+                text=text, utterance_id=utterance_id, actor_ref=actor_id, actor_authenticated=True,
+                source_platform=source_platform, path=path,
+            )
+            if signal is not None:
+                sink(signal)
+        except Exception:
+            self.metrics["intake.abandon_signal_error"] += 1
+            logger.exception("放棄工作訊號判斷或 sink 失敗（已吞掉，不影響回合）")
 
     def _record_absent_input(self, ctx: SessionContext, fact: UtteranceFact, reason: str) -> None:
         """寫缺席端輸入的 shadow 紀錄（turn.skipped）：來源、說話者／actor、is_owner、長度；不保存原文。
@@ -589,7 +666,17 @@ class TurnOrchestrator:
         # actor_authenticated：只看平台認證 ID。身分映射命中且輸入帶有 ingress 以已驗證 endpoint 簽發的 source_endpoint_id 才算；
         # speaker_ref 在 ingress 簽發落地前是不受信字串，資訊不足一律 False，不比對顯示名稱
         actor_authenticated = bool(ident is not None and ident.actor_id is not None and fact.source_endpoint_id is not None)
-        presence_request = self._presence_request(ref, fact, actor_id, actor_authenticated, is_owner)
+        hook = self._presence_request_hook
+        proposal: AbsentIntentProposal | None = None
+        if hook is not None:  # 自訂 hook 完全取代預設判斷（只回 bool/None，沒有完整結果，也不通知 sink）
+            try:
+                presence_request = hook(fact)
+            except Exception:
+                logger.exception("presence_request 判斷失敗，記為未判斷")
+                presence_request = None
+        else:
+            proposal = self._presence_request(ref, fact, actor_id, actor_authenticated, is_owner)
+            presence_request = self._presence_flag(proposal)
         payload: dict[str, object] = {
             "reason_code": reason, "reply_mode": ReplyMode.PASS.value, "proposal_ref": ref, "utterance_ref": ref,
             "speaker_ref": fact.speaker_ref, "actor_id": actor_id, "is_owner": is_owner,
@@ -598,6 +685,10 @@ class TurnOrchestrator:
         }
         if fact.source_endpoint_id is not None:
             payload["source_endpoint_id"] = fact.source_endpoint_id
+        if proposal is not None:  # 只放列舉值，不含原文
+            payload["presence_intent"] = proposal.intent
+            if proposal.target_location is not None:
+                payload["target_location"] = proposal.target_location
         draft = EventDraft(
             event_type="turn.skipped", conversation_id=ctx.conversation_id, segment_id=ctx.segment_id,
             idempotency_key=f"turn_skipped:{self.run_id}:{ctx.session_ref}:{fact.seq}", payload=payload,
@@ -609,6 +700,9 @@ class TurnOrchestrator:
             self._publisher.publish(draft, trusted)
         except Exception:
             logger.exception("缺席端輸入 shadow 紀錄寫入失敗")
+        self._notify_presence_request(proposal, fact, actor_id, actor_authenticated, is_owner)
+        source = str(fact.source_location) if fact.source_location is not None else "missing"
+        self._emit_abandon(fact.text, ref, actor_id, actor_authenticated, source, "absent")
 
     def _decide_turn(self, ctx: SessionContext, turn: AggregatedTurn) -> IntakeResult:
         intake = turn.last.payload
@@ -625,6 +719,9 @@ class TurnOrchestrator:
         if vetoed is not None:
             self._skip(ctx, intake.trace_id, intake.event_id, fact, vetoed, ReplyMode.PASS)
             return IntakeResult(None, vetoed, None, utterance_event_id=intake.event_id, fact=fact)
+        if self._on_abandon_signal is not None:  # 通過否決（Presence ACTIVE 等）後、只處理已認證的 actor
+            authenticated = bool(ident.actor_id is not None and fact.source_endpoint_id is not None)
+            self._emit_abandon(fact.text, intake.event_id, actor_id, authenticated, ctx.platform, "turn")
         candidate = self._candidate(ctx, fact, turn.refs or (intake.event_id,), len(turn.segments), True)
         proposal = self._propose(candidate)
         degraded: Degraded | None = None

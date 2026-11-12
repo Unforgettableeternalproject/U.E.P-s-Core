@@ -9,14 +9,37 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from uep.agent.trigger import BudgetCap
 
 ExhaustedDimension = Literal["steps", "tool_calls", "tokens", "run_deadline"]
 NO_PROGRESS_REPEAT = "repeated_call"
 NO_PROGRESS_REJECTED = "repeated_rejection"
 STATUS_APPROVAL_PENDING = "approval_pending"  # park 中的待核准項：對連續被拒計數中性（不重置、不累加），由 resume 的結果決定
+
+
+@dataclass(frozen=True)
+class BudgetThresholds:
+    """三段門檻（相對預設值 D 的倍率）：warn 只記錄並提示模型收斂、notice 送一次固定系統訊息、abort 為中斷點（ADR-C4）。
+    預設 ``(1.0, 1.0, 1.0)`` ＝未啟用三段門檻，到上限直接 finalize／``FAILED(budget_exhausted)``（與今日行為相同）。"""
+
+    warn: float = 1.0
+    notice: float = 1.0
+    abort: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not 0 < self.warn <= self.notice <= self.abort:
+            raise ValueError("門檻必須滿足 0 < warn <= notice <= abort")
+
+    @property
+    def enabled(self) -> bool:
+        return self != BudgetThresholds()
 
 
 @dataclass(frozen=True)
@@ -38,8 +61,13 @@ class LoopBudget:
     consult_loop_end_margin: int | None = None
     finalize_on_exhausted: bool = True  # 耗盡時先以 tools=[] 要求收束；False 直接 FAILED(budget_exhausted)
     heartbeat_interval_s: float = 5.0
+    thresholds: BudgetThresholds = field(default_factory=BudgetThresholds)
+    max_cost: float | None = None  # 保留維度（尚無成本計量）
 
     def __post_init__(self) -> None:
+        if self.thresholds.enabled and self.max_tool_calls < math.ceil(self.max_steps * self.thresholds.abort):
+            # 工具次數是保險絲，不得早於輪數的中斷點，否則三段門檻來不及走完
+            raise ValueError("max_tool_calls 不可小於輪數中斷點（max_steps × abort）")
         for name in ("max_steps", "max_tool_calls", "max_batch", "max_parallel", "repeat_limit", "rejected_limit"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} 必須 >= 1")
@@ -141,3 +169,112 @@ def observe_resumed(budget: LoopBudget, counters: BudgetCounters, status: str) -
     達 ``rejected_limit`` 回 ``NO_PROGRESS_REJECTED``。"""
     counters.rejected_streak = counters.rejected_streak + 1 if status == "rejected" else 0
     return NO_PROGRESS_REJECTED if counters.rejected_streak >= budget.rejected_limit else None
+
+
+# ───────────────────────── 三段門檻與預算解析（Chain 契約 §2.3；ADR-C4） ─────────────────────────
+
+def hard_budget(budget: LoopBudget) -> LoopBudget:
+    """中斷點（abort）當作硬上限的預算：``exhausted()`` 用它判斷。分段維度（steps／tokens）乘上 abort 倍率；
+    未啟用三段門檻時原樣回傳（行為與先前相同）。"""
+    th = budget.thresholds
+    if not th.enabled:
+        return budget
+    return replace(
+        budget, max_steps=math.ceil(budget.max_steps * th.abort),
+        max_tokens=None if budget.max_tokens is None else math.ceil(budget.max_tokens * th.abort),
+        thresholds=BudgetThresholds(),
+    )
+
+
+def budget_stage(budget: LoopBudget, counters: BudgetCounters) -> int:
+    """Step 邊界的階段判斷：0 未達、1 warn、2 notice、3 abort。進度 = max(steps／D, tokens／D)；未啟用三段門檻回 0。"""
+    th = budget.thresholds
+    if not th.enabled:
+        return 0
+    ratio = counters.steps / budget.max_steps
+    if budget.max_tokens is not None:
+        ratio = max(ratio, counters.tokens / budget.max_tokens)
+    if ratio >= th.abort:
+        return 3
+    if ratio >= th.notice:
+        return 2
+    return 1 if ratio >= th.warn else 0
+
+
+class BudgetPolicyTable:
+    """``(policy_ref, route, tier) -> LoopBudget`` 的政策表（目前沒有 Policy 服務，由組裝層注入）。查不到回 None。"""
+
+    def __init__(self, rows: Mapping[tuple[str, str, str], LoopBudget] | None = None) -> None:
+        self._rows = dict(rows or {})
+
+    def lookup(self, policy_ref: str, route: str, tier: str) -> LoopBudget | None:
+        return self._rows.get((policy_ref, route, tier))
+
+
+def _min_opt(a: float | None, b: float | None) -> float | None:
+    if a is None:
+        return b
+    return a if b is None else min(a, b)
+
+
+def resolve_budget(
+    table: BudgetPolicyTable | None, default: LoopBudget, *, policy_ref: str, route: str, tier: str | None,
+    cap: BudgetCap | None, metrics: Counter[str] | None = None,
+) -> LoopBudget:
+    """政策值（查不到退回 ``default``）∩ cap，只收窄（BG-1）。cap 綁在中斷點：分段維度的預設值 D 依
+    ``effective_abort / policy_abort`` 等比縮小（三段門檻等比縮小、順序不變），使實際用量不超過 cap。"""
+    policy = table.lookup(policy_ref, route, tier or "standard") if table is not None else None
+    if policy is None:
+        policy = default
+        if table is not None and metrics is not None:
+            metrics["budget.policy_unresolved"] += 1
+    if cap is None:
+        return policy
+    th = policy.thresholds
+    clamped = False
+
+    def staged(current: int | None, requested: int | None) -> int | None:
+        """分段維度：以中斷點比較，回新的 D（整數，至少 1）。"""
+        nonlocal clamped
+        if requested is None:
+            return current
+        abort_now = None if current is None else current * th.abort
+        if abort_now is not None and requested >= abort_now:
+            clamped = clamped or requested > abort_now
+            return current
+        return max(math.floor(requested / th.abort), 1)
+
+    max_steps = staged(policy.max_steps, cap.max_steps)
+    max_tokens = staged(policy.max_tokens, cap.max_tokens)
+    thresholds = th
+    if th.enabled and (max_steps * th.abort > (cap.max_steps or math.inf) or (
+        max_tokens is not None and cap.max_tokens is not None and max_tokens * th.abort > cap.max_tokens
+    )):
+        thresholds = BudgetThresholds()  # cap 小到 D 取整後仍超出中斷點：放棄分段，D 直接取 cap（仍不超過 cap）
+        max_steps = cap.max_steps if cap.max_steps is not None else policy.max_steps
+        max_tokens = cap.max_tokens if cap.max_tokens is not None else policy.max_tokens
+    clamped = clamped or (cap.max_tool_calls is not None and cap.max_tool_calls > policy.max_tool_calls)
+    if metrics is not None and clamped:
+        metrics["budget.cap_clamped"] += 1
+    tool_calls = int(min(policy.max_tool_calls, cap.max_tool_calls or policy.max_tool_calls))
+    if thresholds.enabled and tool_calls < math.ceil(max_steps * thresholds.abort):
+        # 工具次數的保險絲低於輪數中斷點：縮小 D 使中斷點落在保險絲內；縮到不能分段就放棄分段
+        shrunk = math.floor(tool_calls / thresholds.abort)
+        if shrunk >= 1:
+            max_steps = shrunk
+        else:
+            thresholds, max_steps = BudgetThresholds(), min(max_steps, tool_calls)
+    return replace(
+        policy, max_steps=max_steps, max_tokens=max_tokens, thresholds=thresholds, max_tool_calls=tool_calls,
+        run_deadline_s=_min_opt(policy.run_deadline_s, cap.run_deadline_s),
+        max_cost=_min_opt(policy.max_cost, cap.max_cost),
+    )
+
+
+def tighten(a: LoopBudget, b: LoopBudget) -> LoopBudget:
+    """兩份預算逐維度取較緊者（resume：凍結值與重新解析值取 min，只收窄）；門檻與其他欄位沿用 ``a``。"""
+    return replace(
+        a, max_steps=min(a.max_steps, b.max_steps), max_tool_calls=min(a.max_tool_calls, b.max_tool_calls),
+        max_tokens=_min_opt(a.max_tokens, b.max_tokens), run_deadline_s=_min_opt(a.run_deadline_s, b.run_deadline_s),
+        max_cost=_min_opt(a.max_cost, b.max_cost),
+    )

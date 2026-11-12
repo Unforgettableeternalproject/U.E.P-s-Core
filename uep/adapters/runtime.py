@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
 
 RuntimeMode = Literal["direct_chat", "agent_loop"]
+BUDGET_HINT_CONVERGE = "converge"  # RuntimeRequest.budget_hint：已過 warn 門檻，請收斂
 EventKind = Literal["text_delta", "tool_intent", "approval_request", "checkpoint", "result", "error"]
 CancelAck = Literal["stopped", "isolated"]
 ErrorCode = Literal[
@@ -33,6 +34,7 @@ class RuntimeRequest:
     mode: RuntimeMode
     fence: Mapping[str, Any] | None = None  # 互動回合必填；Runtime 只回帶、不解讀
     checkpoint_ref: str | None = None  # resume 必填
+    budget_hint: str | None = None  # 唯讀提示（例如 ``converge`` = 預算已過 warn 門檻，請收斂）；Runtime 只據此調整提示，不得據此放寬任何限制
 
     def __post_init__(self) -> None:
         if self.mode not in ("direct_chat", "agent_loop"):

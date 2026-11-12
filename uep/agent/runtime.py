@@ -24,7 +24,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from uep.adapters.runtime import CancelAck, RuntimeEvent, RuntimeRequest, RuntimeStatus
+from uep.adapters.runtime import (
+    BUDGET_HINT_CONVERGE,
+    CancelAck,
+    RuntimeEvent,
+    RuntimeRequest,
+    RuntimeStatus,
+)
 from uep.ids import new_id
 from uep.models.port import (
     CapabilityMissingError,
@@ -37,6 +43,7 @@ from uep.models.port import (
 
 logger = logging.getLogger(__name__)
 
+CONVERGE_NOTE = "預算已接近上限：請盡快收束，優先用已取得的資訊回覆，避免不必要的工具呼叫。"
 BACKEND_CLOSE_WAIT_S = 5.0  # 消費者取消後，等在途的 next() 收尾的上限
 MessagesFor = Callable[[RuntimeRequest], Sequence[ChatMessage]]
 
@@ -83,6 +90,8 @@ class ModelPortRuntime:
     # ---- Runtime 協定 ----
     def start(self, request: RuntimeRequest) -> str:
         attempt = _Attempt(request=request, messages=list(self._messages_for(request)))
+        if request.budget_hint == BUDGET_HINT_CONVERGE:
+            attempt.messages.append(ChatMessage("system", CONVERGE_NOTE))  # 只影響這個 attempt 的請求，不進 Core 的 history
         with self._lock:
             self._attempts[request.attempt_id] = attempt
         return request.attempt_id

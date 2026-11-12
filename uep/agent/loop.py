@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import threading
@@ -48,6 +49,7 @@ from uep.agent.core import (
     ScreenedIntent,
     stable_action_id,
 )
+from uep.agent.event_pump import TIMED_OUT, EventPump
 from uep.agent.loop_context import (
     ContextLost,
     LoopContextStore,
@@ -59,6 +61,12 @@ from uep.agent.loop_context import (
     persist_child,
 )
 from uep.agent.reasons import LoopReason, runtime_reason
+from uep.agent.retry import (
+    RETRYABLE_RUNTIME_CODES,
+    RETRYABLE_SIDE_EFFECTS,
+    TRANSIENT_TOOL_ERRORS,
+    RetryPolicy,
+)
 from uep.agent.runtime import result_text
 from uep.agent.scheduler import (
     DEFERRED_BATCH_LIMIT,
@@ -105,6 +113,9 @@ LoopState = Literal["completed", "failed", "awaiting_approval", "cancelled", "st
 Projector = Callable[[frozenset[str], frozenset[str] | None], Mapping[str, Any]]
 
 TOOL_NOT_IN_SNAPSHOT = "tool_not_in_snapshot"
+_MODEL_TIMEOUT = object()  # ``_next_event`` 的哨兵：模型事件等待逾時
+DEADLINE_FLAG_REASONS = {"run_deadline": LoopReason.RUN_DEADLINE, "task_deadline": LoopReason.TASK_DEADLINE}  # SV-2 旗標 -> 原因碼
+RETRY_SUB_INDEX = 1000  # 工具重試 action 的穩定 id 用的 sub_index（composite 子步驟序號遠小於此）
 CANCEL_ERROR_CODES = frozenset({"timeout", "cancelled"})  # executor 因 cancel 而失敗時簽回的 receipt error_code（§6.4 stopped）
 RESUME_REQUIRED_KEYS = (
     "child_context_ref", "history_hash", "frozen_tools", "frozen_tags", "visible_tools", "budget_counters", "step_id",
@@ -191,6 +202,9 @@ class _State:
     usage_seen: dict[str, int] = field(default_factory=dict)
     composite_cursor: dict[str, Any] | None = None  # 進行中的 composite（§5.7.4）：進 checkpoint，完成即清除
     batch: _BatchCtx | None = None  # 目前批次的呼叫／文字／已得結果（composite 逐步 checkpoint 重建 history 用）
+    deadline_flag: LoopReason | None = None  # 心跳讀到 Supervisor 的 deadline 取消旗標（F-4）：下一次 gate 自行收尾
+    pump: EventPump | None = None  # 目前 attempt 的事件拉取執行緒（有 step_timeout_s 時才建立）
+    model_retry_streak: int = 0  # 連續模型呼叫重試次數（不進 checkpoint；推進成功即歸零）
 
 
 @dataclass
@@ -217,6 +231,7 @@ class _End:
     cap: Mapping[str, Any] | None = None
     pending: tuple[str, ...] = ()
     info: Mapping[str, Any] | None = None  # escalate 時的 consult 結果
+    retryable: bool = False  # fail 時：暫時性的模型錯誤或 Step 逾時，可依 RetryPolicy 重開 attempt
 
 
 class _SnapshotSink(Protocol):
@@ -254,7 +269,12 @@ class AgentLoop:
         run_cleanup: Callable[[str], None] | None = None,
         executors: Mapping[str, Any] | None = None, cancel_timeout_s: float = 5.0, cancel_grace_s: float = 2.0,
         step_output: Callable[[str], Mapping[str, Any] | None] | None = None,
+        retry: RetryPolicy | None = None, sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        # 重試政策（預設全關）與退避用的 sleep（測試可注入）；見 ``uep.agent.retry``
+        self._retry = retry or RetryPolicy()
+        self._sleep = sleep
+        self._retry_lock = threading.Lock()
         # ``step_output``（sub action_id -> 結構化輸出欄位）：composite 的 ``$.steps[k].output.x`` 路徑來源（§5.7.4）。
         # 沒給時，輸出欄位取自回合範圍的結果來源（``content_lookup`` ⇒ ``text``）與 receipt 的 ``result_ref``
         self._step_output = step_output
@@ -717,6 +737,8 @@ class AgentLoop:
                 if end.kind == "restart":
                     st.cap = end.cap or {"tools": []}
                     continue
+                if end.kind == "fail" and end.retryable and self._backoff_model(st, end):
+                    continue
             return self._conclude(st, end)
 
     def _conclude(self, st: _State, end: _End) -> LoopOutcome:
@@ -821,24 +843,44 @@ class AgentLoop:
         self._checkpoint(st, "think")
         return None
 
-    def _gate(self, st: _State) -> None:
-        """heartbeat／取消／牆鐘／Step 逾時。舊 epoch 的 StaleWorkerEpoch 直接往外拋。"""
+    def _gate(self, st: _State, *, check_step: bool = True) -> None:
+        """heartbeat／取消／牆鐘／Step 逾時。舊 epoch 的 StaleWorkerEpoch 直接往外拋。
+
+        F-4：Supervisor 的 deadline 旗標（心跳回傳的 ``CancelSignal``）由迴圈自己讀、自己收尾（Run 轉 FAILED，
+        原因碼為旗標的短碼）；``step_timeout`` 旗標不使 Run 失敗，這裡不處理（Step 逾時由 ``step_timeout_s`` 自行強制）。
+        ``check_step=False``：等待模型事件時由呼叫端自己判斷 Step 逾時（可重試）。"""
+        if st.deadline_flag is not None:
+            raise _Stop(LoopOutcome("failed", st.run_id, st.deadline_flag))
         if self._cancelled():
+            self._beat(st)  # 取消可能源自 Supervisor 旗標：讀一次以取得正確的原因碼
+            if st.deadline_flag is not None:
+                raise _Stop(LoopOutcome("failed", st.run_id, st.deadline_flag))
             raise _Stop(LoopOutcome("cancelled", st.run_id, LoopReason.CANCELLED, steps=st.counters.steps))
         if self._budget.run_deadline_s is not None and self._elapsed(st) >= self._budget.run_deadline_s:
             raise _Stop(LoopOutcome("failed", st.run_id, LoopReason.RUN_DEADLINE))
         now = self._clock()
-        if self._budget.step_timeout_s is not None and st.open_step and now - st.step_started >= self._budget.step_timeout_s:
+        if (
+            check_step and self._budget.step_timeout_s is not None and st.open_step
+            and now - st.step_started >= self._budget.step_timeout_s
+        ):
             raise _Stop(LoopOutcome("failed", st.run_id, LoopReason.STEP_TIMEOUT))
         if now - st.last_hb >= self._budget.heartbeat_interval_s:
-            self._tasks.heartbeat(st.run_id, worker_epoch=self._epoch)
-            st.last_hb = now
+            self._beat(st)
+            if st.deadline_flag is not None:
+                raise _Stop(LoopOutcome("failed", st.run_id, st.deadline_flag))
+
+    def _beat(self, st: _State) -> None:
+        """心跳並讀取取消旗標；deadline 類旗標記到 ``st.deadline_flag``（下一次 gate 收尾）。"""
+        signal = self._tasks.heartbeat(st.run_id, worker_epoch=self._epoch)
+        st.last_hb = self._clock()
+        reason = getattr(signal, "reason", None)
+        if reason in DEADLINE_FLAG_REASONS and st.deadline_flag is None:
+            st.deadline_flag = DEADLINE_FLAG_REASONS[reason]
 
     def _begin_step(self, st: _State, label: str) -> None:
         step = self._tasks.begin_step(st.run_id, label, worker_epoch=self._epoch)
         st.step_id, st.open_step, st.step_started = step.step_id, step.step_id, self._clock()
-        self._tasks.heartbeat(st.run_id, worker_epoch=self._epoch)
-        st.last_hb = self._clock()
+        self._beat(st)
 
     def _end_step(self, st: _State, *, ok: bool) -> None:
         if st.open_step:
@@ -872,6 +914,49 @@ class AgentLoop:
 
     def _run_attempt(self, st: _State, cap: Mapping[str, Any], *, finalize: bool) -> _End:
         try:
+            return self._run_attempt_inner(st, cap, finalize=finalize)
+        finally:
+            if st.pump is not None:
+                st.pump.close()
+                st.pump = None
+
+    def _next_event(self, st: _State, attempt_id: str, events: Any) -> Any:
+        """下一個模型事件（串流結束回 None）。有 ``step_timeout_s`` 時在專用執行緒上拉取：等待期間仍檢查取消旗標、
+        牆鐘與 Step 逾時（F-4）；Step 逾時回 ``_MODEL_TIMEOUT``（模型卡住，由呼叫端取消 attempt，可重試）。"""
+        limit = self._budget.step_timeout_s
+        if limit is None:
+            return next(events, None)
+        if st.pump is None:
+            st.pump = EventPump(events)
+        while True:
+            remaining = limit - (self._clock() - st.step_started)
+            if remaining <= 0:
+                return _MODEL_TIMEOUT
+            item = st.pump.get(min(remaining, 1.0, max(self._budget.heartbeat_interval_s, 0.05)))
+            if item is not TIMED_OUT:
+                return item
+            self._gate(st, check_step=False)
+
+    def _backoff_model(self, st: _State, end: _End) -> bool:
+        """模型呼叫可重試的失敗：未超過連續重試上限就退避等待（期間照常檢查取消／牆鐘）後回 True（呼叫端重開 attempt）。"""
+        if st.model_retry_streak >= self._retry.model_max:
+            return False
+        st.model_retry_streak += 1
+        delay = RetryPolicy.backoff(self._retry.model_backoff_s, st.model_retry_streak)
+        logger.warning(
+            "模型呼叫失敗（%s），第 %d/%d 次重試，退避 %.1f 秒：run=%s", end.reason, st.model_retry_streak,
+            self._retry.model_max, delay, st.run_id,
+        )
+        until = self._clock() + delay
+        while True:
+            self._gate(st)
+            remaining = until - self._clock()
+            if remaining <= 0:
+                return True
+            self._sleep(min(remaining, 0.5))
+
+    def _run_attempt_inner(self, st: _State, cap: Mapping[str, Any], *, finalize: bool) -> _End:
+        try:
             attempt_id = self._start_attempt(st, cap, finalize)
         except KeyError:
             logger.error("attempt 的起始 history 遺失，不呼叫模型：run=%s", st.run_id)
@@ -893,7 +978,10 @@ class AgentLoop:
             except _Stop:
                 self._end_step(st, ok=False)
                 raise
-            event = next(events, None)
+            event = self._next_event(st, attempt_id, events)
+            if event is _MODEL_TIMEOUT:  # 模型卡住超過 step_timeout_s：取消 attempt，Step 記失敗（可重試）
+                logger.warning("模型呼叫逾時（step_timeout_s）：run=%s", st.run_id)
+                return stop(_End("fail", reason=LoopReason.STEP_TIMEOUT, retryable=True))
             if event is None:
                 return stop(_End("fail", reason=LoopReason.STREAM_ENDED))
             if event.kind == "text_delta":
@@ -909,6 +997,7 @@ class AgentLoop:
                 end = self._handle_batch(st, cap, attempt_id, intents, text)
                 if end is not None:
                     return end
+                st.model_retry_streak = 0  # 批次已提交（history 與 checkpoint 已寫）：重試的起點前進了
                 dim = exhausted(self._budget, st.counters, elapsed_s=self._elapsed(st))
                 if dim is not None:
                     self._runtime.cancel(attempt_id, "budget_exhausted")
@@ -930,13 +1019,16 @@ class AgentLoop:
             elif event.kind == "result":
                 self._account_usage(st, attempt_id)
                 self._end_step(st, ok=True)
+                st.model_retry_streak = 0
                 status = (event.result or {}).get("status", "ok")
                 if status == "max_rounds":
                     return _End("exhausted", dim="rounds")
                 return _End("result", text="".join(texts))
             elif event.kind == "error":
                 self._end_step(st, ok=False)
-                return _End("fail", reason=runtime_reason(str((event.error or {}).get("code", "PROVIDER_UNAVAILABLE"))))
+                err = event.error or {}
+                code = str(err.get("code", "PROVIDER_UNAVAILABLE"))
+                return _End("fail", reason=runtime_reason(code), retryable=bool(err.get("retryable")) and code in RETRYABLE_RUNTIME_CODES)
 
     # ───────────────────────── 內部：批次執行 ─────────────────────────
 
@@ -1098,7 +1190,7 @@ class AgentLoop:
             try:
                 entry = self._composite_entry(m.tool)
                 if entry is None:
-                    out[m.ordinal] = self._core.execute_screened(m)
+                    out[m.ordinal] = self._retry_transient(st, m, self._core.execute_screened(m))
                 else:  # composite 恆為 serial 單獨一波（scheduler）；全新執行沒有 cursor，不會有 _Halt
                     result = self._execute_composite(st, m, entry)
                     assert isinstance(result, IntentResult)
@@ -1120,6 +1212,38 @@ class AgentLoop:
         if stale:
             raise stale[0]
         return [(m, out[m.ordinal]) for m in members if m.ordinal in out]
+
+    def _retry_transient(self, st: _State, m: ScreenedIntent, res: IntentResult) -> IntentResult:
+        """工具暫時性失敗的重試：只限 ``internal_read``（external_effect／high_impact 不自動重試）、receipt 的 error_code 屬暫時性、
+        且政策允許。重試是新 action（``retry_of`` 指向失敗的那個；一個 action 至多被重試一次），計入 ``tool_calls``；
+        重試結果（不論成敗）取代原結果回饋模型。unknown／blocked／rejected／cancelled 一律不重試。"""
+        if self._retry.tool_max < 1 or res.view.get("status") != "failed" or res.approval_required:
+            return res
+        try:
+            if self._registry.entry(m.tool).spec.side_effect_class not in RETRYABLE_SIDE_EFFECTS:
+                return res
+            receipt = self._tasks.get_receipt(m.action_id)
+        except StaleWorkerEpoch:
+            raise
+        except Exception:  # noqa: BLE001  查不到就不重試（保守）
+            return res
+        if receipt is None or receipt.error_code not in TRANSIENT_TOOL_ERRORS or self._cancelled():
+            return res
+        with self._retry_lock:
+            if st.counters.tool_calls + 1 >= self._budget.max_tool_calls:
+                return res  # 重試也要吃工具次數預算：不留餘裕就不重試
+            st.counters.tool_calls += 1
+        self._sleep(RetryPolicy.backoff(self._retry.tool_backoff_s, 1))
+        retry_item = dataclasses.replace(
+            m, action_id=stable_action_id(st.run_id, m.step_id, m.ordinal, RETRY_SUB_INDEX),
+        )
+        logger.info("工具暫時性失敗（%s），重試為新 action：tool=%s retry_of=%s", receipt.error_code, m.tool, m.action_id)
+        early = self._core.create_screened(retry_item, retry_of=m.action_id)
+        if early is not None:
+            return res  # 重試 action 建不起來：保留原失敗結果
+        with self._retry_lock:
+            st.consumed.append(m.action_id)
+        return self._core.execute_screened(retry_item)
 
     # ───────────────────────── 內部：composite 的線性展開（§5.7.4） ─────────────────────────
 

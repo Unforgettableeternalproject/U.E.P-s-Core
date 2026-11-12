@@ -122,11 +122,13 @@ class FakeTasks:
         self.presence_retryable = True  # True：階段 1 被擋（action 維持 INTENDED、核准未消耗）；False：階段 1.5（核准已消耗、action FAILED）
         self.executing: dict[str, str] = {}  # 進行中的 action_id -> concurrency（TC-3 守衛用）
         self.executions: list[tuple[str, str]] = []  # (action_id, tool)：真正執行副作用的紀錄
+        self.fail_codes: dict[str, str] = {}  # fail_tools 的 receipt error_code（預設 FAKE_FAILURE）
         self.fail_tools: set[str] = set()  # 這些工具的 action 以 FAILED 收尾（receipt succeeded=False）
         self.marked_unknown: list[str] = []  # 逾時後經 mark_action_unknown 轉 UNKNOWN 的 action
         self.mark_reasons: dict[str, str] = {}
         self.late_receipts: dict[str, Any] = {}  # 測試預置：UNKNOWN 之後「查得到」的已驗證 receipt（resolve_unknown 用）
         self.resolved: list[str] = []
+        self.retries: dict[str, str] = {}  # 重試 action_id -> retry_of
 
     def mark_action_unknown(self, action_id: str, *, worker_epoch: int, reason: str) -> bool:
         """對照真實 ``TaskManager.mark_action_unknown``：仍在執行中、concurrency 符合 ``reason`` 的 action 轉 UNKNOWN；其餘不動作。"""
@@ -235,7 +237,7 @@ class FakeTasks:
                 logger.warning("忽略舊 worker_epoch 的 park")
             return SimpleNamespace(run_id=run_id, worker_epoch=self.epoch)
 
-    def create_action(self, *, run_id, step_id, tool, params, worker_epoch, presence_bound=None, action_id=None):
+    def create_action(self, *, run_id, step_id, tool, params, worker_epoch, presence_bound=None, action_id=None, retry_of=None):
         with self.lock:
             self._check(worker_epoch)
             assert action_id
@@ -243,6 +245,8 @@ class FakeTasks:
                 raise ActionBlocked("tool_version_changed", code="tool_version_changed")
             self.created_versions.setdefault(action_id, self._version(tool))
             self.actions.setdefault(action_id, {"run_id": run_id, "step_id": step_id, "tool": tool, "params": dict(params)})
+            if retry_of is not None:
+                self.retries[action_id] = retry_of
 
     def execute_action(
         self, action_id: str, params: Mapping[str, Any], *, worker_epoch: int, approval_id: str | None = None,
@@ -329,7 +333,7 @@ class FakeTasks:
             ok = tool not in self.fail_tools
             outcome = ActionOutcome(
                 action_id, ActionStatus.SUCCEEDED if ok else ActionStatus.FAILED, True,
-                SimpleNamespace(result_ref=f"ref:{action_id}", source_verified=True, error_code=None if ok else "FAKE_FAILURE"),
+                SimpleNamespace(result_ref=f"ref:{action_id}", source_verified=True, error_code=None if ok else self.fail_codes.get(tool, "FAKE_FAILURE")),
             )
             self.outcomes[action_id] = outcome
             return outcome
@@ -352,6 +356,7 @@ class Round:
     calls: tuple[tuple[str, Any], ...] = ()  # (tool, args)；args 為 None 表示參數不完整
     usage: int = 0
     error: str | None = None
+    retryable: bool = False  # error 事件的 retryable 旗標
 
 
 class ScriptedRuntime:
@@ -399,7 +404,7 @@ class ScriptedRuntime:
             self.round_caps.append(names)
             self._usage[attempt_id] += rnd.usage
             if rnd.error:
-                yield self._ev(attempt_id, "error", error={"code": rnd.error, "retryable": False, "detail": ""})
+                yield self._ev(attempt_id, "error", error={"code": rnd.error, "retryable": rnd.retryable, "detail": ""})
                 return
             if rnd.text:
                 yield self._ev(attempt_id, "text_delta", text_delta=rnd.text)

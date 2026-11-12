@@ -251,12 +251,14 @@ class AgentCore:
             )
         return ScreenedIntent(run_id, step_id, ordinal, tool, checked, action_id)
 
-    def create_screened(self, item: ScreenedIntent) -> IntentResult | None:
-        """建立 INTENDED 的 action（同 id 冪等）。成功回 None；被擋回對應狀態的 ``IntentResult``。"""
+    def create_screened(self, item: ScreenedIntent, *, retry_of: str | None = None) -> IntentResult | None:
+        """建立 INTENDED 的 action（同 id 冪等）。成功回 None；被擋回對應狀態的 ``IntentResult``。
+        ``retry_of``：重試來源（FAILED 的 action）；沒給時呼叫形式與先前完全相同。"""
+        extra = {} if retry_of is None else {"retry_of": retry_of}
         try:
             self._tasks.create_action(
                 run_id=item.run_id, step_id=item.step_id, tool=item.tool, params=item.args,
-                worker_epoch=self._worker_epoch, action_id=item.action_id,
+                worker_epoch=self._worker_epoch, action_id=item.action_id, **extra,
             )
         except StaleWorkerEpoch:
             raise

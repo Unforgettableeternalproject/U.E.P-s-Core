@@ -542,6 +542,21 @@ def _probe_payload_hash_key(strict: bool = False) -> None:
 
 
 
+def _loop_resilience_kwargs() -> dict[str, Any]:
+    """AgentLoop 的 Step 逾時與重試政策（``UEP_AGENT_*``）：``budget`` 沿用 LoopLauncher 的預設牆鐘，只加上 ``step_timeout_s``。"""
+    from uep.agent.budget import LoopBudget
+    from uep.agent.retry import RetryPolicy
+
+    s = get_settings()
+    return {
+        "budget": LoopBudget(run_deadline_s=300.0, step_timeout_s=s.agent_step_timeout_s),
+        "retry": RetryPolicy(
+            model_max=s.agent_model_retry_max, model_backoff_s=s.agent_model_retry_backoff_s,
+            tool_max=s.agent_tool_retry_max, tool_backoff_s=s.agent_tool_retry_backoff_s,
+        ),
+    }
+
+
 def _loop_context_store() -> Any | None:
     """agent loop 的持久 child context store（echo_thought_core SessionStore）；子系統不可用時回 None（啟動器退回行程內暫存）。"""
     try:
@@ -785,7 +800,7 @@ def assemble_core(
                 registry=loop_registry, model_port=model_port, cache=agent_cache,
                 text_store=getattr(echo, "loop_text", None), persona_id=persona_id, executors=executors,
                 platform_source=platform_source, store=loop_store, memory_store=getattr(echo, "store_turn_memory", None),
-                extra_capability_tags=extra_tags,
+                extra_capability_tags=extra_tags, **_loop_resilience_kwargs(),
             )
         if loop_entry is not None:
             echo.orchestrator.bind_loop_entry(loop_entry)

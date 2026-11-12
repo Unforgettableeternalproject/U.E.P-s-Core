@@ -15,6 +15,7 @@ class LoopReason(StrEnum):
     BUDGET_FINALIZED = "budget_finalized"
     NO_PROGRESS = "no_progress"
     RUN_DEADLINE = "run_deadline"
+    TASK_DEADLINE = "task_deadline"
     STEP_TIMEOUT = "step_timeout"
     CANCELLED = "cancelled"
     ESCALATED = "escalated"

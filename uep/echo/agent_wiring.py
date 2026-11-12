@@ -22,6 +22,7 @@ from uep.adapters.tool import CAPABILITY_CEILING
 from uep.agent.bridge import AgentToolTurns
 from uep.agent.budget import LoopBudget
 from uep.agent.loop_context import ParentSnapshot
+from uep.agent.retry import RetryPolicy
 from uep.agent.trigger import LoopTrigger
 from uep.decision.capability import (
     HINT_SOURCE_RULE,
@@ -268,8 +269,9 @@ class LoopLauncher:
         system_text: Callable[[Any], str] = lambda ticket: DEFAULT_LOOP_SYSTEM_TEXT,
         max_concurrent: int | None = None, close_timeout_s: float | None = None,
         executors: Mapping[str, Any] | None = None, platform_source: Callable[[], str | None] | None = None,
-        memory_store: Callable[[Any, TurnEndFacts], None] | None = None,
+        memory_store: Callable[[Any, TurnEndFacts], None] | None = None, retry: RetryPolicy | None = None,
     ) -> None:
+        self._retry = retry  # None = 不自動重試（組裝層依 UEP_AGENT_* 傳入）
         # 記憶寫入（與 direct_chat 同一條路徑：Host 的 ``store_turn_memory``）；None = 不寫（例如未接記憶的組裝）
         self._memory_store = memory_store
         # 當下 Presence 平台的來源（Host 持有的 Lease／location）；未注入或回 None = 不帶場域，fail-closed 只投 global 工具
@@ -361,8 +363,8 @@ class LoopLauncher:
             except Exception:
                 logger.exception("AgentLoop 背景心跳失敗：run=%s", ctx.run.run_id)
                 continue
-            if signal is not None:
-                ctx.cancel_requested = True
+            if signal is not None and getattr(signal, "reason", None) != "step_timeout":
+                ctx.cancel_requested = True  # step_timeout 旗標只取消卡住的 Step，不取消 Run
 
     def close(self, timeout: float | None = None) -> None:
         """關機：不再接新 Run、通知進行中的迴圈取消（Step 邊界生效），限時等待 worker 收尾；逾時的 daemon 執行緒不阻擋關機。"""
@@ -552,7 +554,7 @@ class LoopLauncher:
             ),
             content_lookup=self._cache.text if self._cache is not None else None,
             run_cleanup=self._cache.discard_about_refs_run if self._cache is not None else None,
-            executors=self._executors,
+            executors=self._executors, retry=self._retry,
         )
 
     # ---- 交付（只經 Output Gate） ----

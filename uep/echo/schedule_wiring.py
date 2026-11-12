@@ -174,18 +174,40 @@ _PRESENCE_EVENTS = ("presence.granted", "presence.activated", "presence.revoked"
                     "presence.recovered", "state.changed")
 
 
+def has_uninterruptible_work(tasks: Any) -> bool:
+    """Task 層是否有在途、不可中斷的工作：未終態 Task 中，``interrupt_policy == non_interruptible`` 且狀態是
+    RUNNING 或 WAITING_APPROVAL（執行中的 Run、等待核准）。
+
+    沿用既有的 ``TaskManager.list_live_tasks()``（未終態 Task，含 ``interrupt_policy`` 與 ``status``），不新增 Task 介面。
+    ``checkpoint_only`` 不算（它可在檢查點中斷）；回合用的 Task 是 interruptible，所以不會擋住行為切換。
+    ``tasks`` 為 None（沒有 Task 層）時回 False。查詢失敗讓例外外拋：driver 的 tick 會 fail-closed（本次不採取動作）。
+    """
+    if tasks is None:
+        return False
+    from uep.tasks.states import InterruptPolicy, RunStatus
+
+    busy = {RunStatus.RUNNING.value, RunStatus.WAITING_APPROVAL.value}
+    return any(task.interrupt_policy == InterruptPolicy.NON_INTERRUPTIBLE.value and task.status in busy
+               for task in tasks.list_live_tasks())
+
+
 def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, rest_policy: RestWindowPolicy | None,
-                           reader: Any | None = None, metrics_inc: Callable[[str], None] | None = None) -> Any | None:
+                           reader: Any | None = None, metrics_inc: Callable[[str], None] | None = None,
+                           boot_id: str | None = None) -> Any | None:
     """依 ``settings.schedule_behavior_driver``（``off|shadow|on``，預設 shadow）組裝並啟動 BehaviorDriver。
 
     ``off`` 回 None。輸入事實：State 軸（Presence／Interaction／Runtime／Behavior）、全域停止旗標、
     DreamLoop 的 ``dream_status()["in_flight"]``、``rest_policy.window_at``（與做夢迴圈用同一個 policy，N4）。
-    ``has_uninterruptible_work`` 第一版固定 False（Task 層尚無可查詢介面；``on`` 前必須接上）。shadow 只記 log／指標，
-    不提請求。指標預設寫進 ``core.echo.metrics``（沒有就只記 log）。
+    ``has_uninterruptible_work`` 取自 Task 層（``has_uninterruptible_work(core.tasks)``）。shadow 只記 log／指標，不提請求。
+    指標預設寫進 ``core.echo.metrics``（沒有就只記 log）。
+
+    ``boot_id``：每次開機各自的 namespace（預設 ``new_id("boot")``），放進 request_id，避免重啟後相同的
+    (from, to, version) 撞到上一輪留在 ``state_requests`` 的冪等紀錄（coordinator 對同 id 回放舊裁決）。
 
     ``in_rest_window``：fixed 模式用 ``FixedWindowPolicy`` 的純計算（無狀態，跨執行緒安全）；plan 模式給 None，由
     driver 依自己這次 resolve 的 slot 判斷，不呼叫與做夢迴圈共用的 policy。
     """
+    from uep.ids import new_id
     from uep.schedule.driver import BehaviorDriver, BehaviorFacts, parse_driver_mode
     from uep.state.coordinator import Axis, StateTransitionRequest
 
@@ -202,6 +224,8 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
         echo_metrics = getattr(getattr(core, "echo", None), "metrics", None)
         metrics_inc = getattr(echo_metrics, "inc", None)
     state, stop, memory, bus = core.state, core.stop, getattr(core, "memory", None), getattr(core, "bus", None)
+    tasks = getattr(core, "tasks", None)
+    boot = boot_id or new_id("boot")
 
     def facts(now: datetime) -> Any:
         presence = state.current(Axis.PRESENCE).state
@@ -213,6 +237,7 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
         return BehaviorFacts(
             presence_status=presence, current_behavior=behavior.state, behavior_version=behavior.version,
             interaction_idle=state.current(Axis.INTERACTION).state == "IDLE", global_stop=bool(stop.is_engaged()),
+            has_uninterruptible_work=has_uninterruptible_work(tasks),
             runtime_ready=runtime in ("READY", "DEGRADED"), dream_in_flight=in_flight,
             in_rest_window=None if fixed_window is None else fixed_window.window_at(now) is not None)
 
@@ -220,7 +245,7 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
         # coordinator 對同一個 request_id 回放舊裁決：被拒／延後後的重試要帶遞增的嘗試序號
         suffix = "" if attempt <= 1 else f":a{attempt}"
         decision = state.request_transition(StateTransitionRequest(
-            request_id=f"policy_behavior:{from_state}>{to_state}:v{version}{suffix}", axis=Axis.BEHAVIOR.value,
+            request_id=f"policy_behavior:{boot}:{from_state}>{to_state}:v{version}{suffix}", axis=Axis.BEHAVIOR.value,
             proposer="core.policy", expected_version=version, from_state=from_state, to_state=to_state,
             reason={"source": "behavior_driver", "reason_code": reason_code}))
         return decision.decision.value

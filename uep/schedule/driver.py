@@ -10,7 +10,8 @@
 - ``in_rest_window``：facts 給值（fixed 模式的純計算）就用它；為 None（plan 模式）時用 driver 自己這次 resolve 的 slot
   （``source == REST_WINDOW``），不呼叫與做夢迴圈共用的 policy（避免改動它的快取狀態與跨執行緒）。
 - 請求冪等：coordinator 對同一個 request_id 回放舊裁決（含 REJECTED／DEFERRED）。非 ACCEPTED 的結果會讓同一組
-  (from, to, version) 的下一次提交帶遞增的嘗試序號，並至少間隔 ``retry_backoff_s`` 才重試。
+  (from, to, version) 的下一次提交帶遞增的嘗試序號，並以指數退避（起始 ``retry_backoff_s``、每次加倍、上限
+  ``retry_backoff_max_s``、±``backoff_jitter`` 抖動）決定最早重試時間。
 
 已知限制（第一版；``on`` 之前必須處理）：
   * ``behavior_entered_at`` 只是「看到 Behavior 軸 version 變化的時間」的近似；第一次觀察為 None（不套用防抖）。
@@ -20,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable
@@ -40,7 +42,9 @@ logger = logging.getLogger(__name__)
 DriverMode = Literal["off", "shadow", "on"]
 DRIVER_MODES = ("off", "shadow", "on")
 DEFAULT_INTERVAL_S = 5.0
-DEFAULT_RETRY_BACKOFF_S = 30.0
+DEFAULT_RETRY_BACKOFF_S = 30.0  # 指數退避的起始值
+DEFAULT_RETRY_BACKOFF_MAX_S = 600.0  # 上限
+DEFAULT_BACKOFF_JITTER = 0.2  # ±20% 抖動
 _ERROR_LOG_INTERVAL_S = 60.0
 
 
@@ -79,6 +83,8 @@ class BehaviorDriver:
                  policy: RationalizePolicy | None = None, interval_s: float = DEFAULT_INTERVAL_S,
                  metrics_inc: Callable[[str], None] | None = None, autonomy_enabled: bool = False,
                  retry_backoff_s: float = DEFAULT_RETRY_BACKOFF_S,
+                 retry_backoff_max_s: float = DEFAULT_RETRY_BACKOFF_MAX_S,
+                 backoff_jitter: float = DEFAULT_BACKOFF_JITTER, rng: Callable[[], float] = random.random,
                  monotonic: Callable[[], float] = time.monotonic) -> None:
         if mode not in DRIVER_MODES:
             raise ValueError(f"未知的 driver 模式：{mode}")
@@ -92,6 +98,9 @@ class BehaviorDriver:
         self._metrics_inc = metrics_inc
         self._autonomy = autonomy_enabled
         self._retry_backoff_s = retry_backoff_s
+        self._retry_backoff_max_s = retry_backoff_max_s
+        self._backoff_jitter = backoff_jitter
+        self._rng = rng
         self._monotonic = monotonic
         self._tracked: tuple[str, int] | None = None
         self._entered_at: datetime | None = None
@@ -189,9 +198,14 @@ class BehaviorDriver:
             return
         if len(self._failed) >= 64:
             self._failed.clear()
-        self._failed[key] = (attempt, self._monotonic() + self._retry_backoff_s)
+        self._failed[key] = (attempt, self._monotonic() + self._backoff(attempt))
         logger.info("Behavior 轉換未被接受：%s→%s %s（第 %d 次）", facts.current_behavior, decision.target, result,
                     attempt)
+
+    def _backoff(self, attempt: int) -> float:
+        """第 ``attempt`` 次失敗後的等待秒數：起始值 × 2^(attempt-1)，封頂後套用 ±抖動（rng 為 [0,1)）。"""
+        base = min(self._retry_backoff_max_s, self._retry_backoff_s * (2 ** min(attempt - 1, 30)))
+        return base * (1.0 + self._backoff_jitter * (self._rng() * 2.0 - 1.0))
 
     def tick_safe(self) -> BehaviorDecision | None:
         """讀取事實或解析失敗時不採取任何動作（fail-closed：不提請求）；同類錯誤 60 秒才記一次（首次帶 traceback）。"""

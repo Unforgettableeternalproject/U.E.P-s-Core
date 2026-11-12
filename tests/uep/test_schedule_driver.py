@@ -230,7 +230,7 @@ def test_attach_off_returns_none_and_invalid_raises():
 def test_attach_on_submits_core_policy_request_and_subscribes_events():
     core = fake_core()
     driver = attach_behavior_driver(SimpleNamespace(schedule_behavior_driver="on"), core, session_factory=None,
-                                    rest_policy=None, reader=Reader([work_item(time(0), time(23, 59))]))
+                                    rest_policy=None, reader=Reader([work_item(time(0), time(23, 59))]), boot_id="boot_T1")
     try:
         assert {"presence.activated", "state.changed"} <= set(core.bus.subscribed)
         deadline = _time.time() + 2.0
@@ -239,7 +239,7 @@ def test_attach_on_submits_core_policy_request_and_subscribes_events():
         [req] = core.state.requests[:1]
         assert (req.axis, req.proposer, req.from_state, req.to_state, req.expected_version) == (
             "Behavior", "core.policy", "REST", "CHAT", 3)
-        assert req.request_id == "policy_behavior:REST>CHAT:v3" and req.reason["source"] == "behavior_driver"
+        assert req.request_id == "policy_behavior:boot_T1:REST>CHAT:v3" and req.reason["source"] == "behavior_driver"
     finally:
         driver.stop()
 
@@ -265,7 +265,8 @@ def test_rejected_submission_retries_with_increasing_attempt_after_backoff():  #
     rec = Recorder(result="DEFERRED")
     clock = [0.0]
     driver = BehaviorDriver(Reader([work_item()]), lambda now: facts(), rec.submit, mode="on", metrics_inc=rec.inc,
-                            clock=lambda: NOW, retry_backoff_s=30.0, monotonic=lambda: clock[0])
+                            clock=lambda: NOW, retry_backoff_s=30.0, rng=lambda: 0.5,  # 0.5＝無抖動
+                            monotonic=lambda: clock[0])
     driver.tick()
     driver.tick()  # backoff 內：不重送
     assert rec.attempts == [1]
@@ -275,7 +276,7 @@ def test_rejected_submission_retries_with_increasing_attempt_after_backoff():  #
     driver.tick()
     assert rec.attempts == [1, 2, 3]  # 同一組 (from,to,version) 的嘗試序號遞增
     rec.result = "ACCEPTED"
-    clock[0] = 200.0
+    clock[0] = 250.0  # 第 3 次失敗（t=100）後退避 120 秒
     driver.tick()
     assert rec.attempts[-1] == 4
     clock[0] = 300.0
@@ -348,7 +349,7 @@ def test_attach_unsubscribes_on_stop_uses_echo_metrics_and_attempt_suffix():  # 
     core.state.request_transition = lambda req: (core.state.requests.append(req) or SimpleNamespace(
         decision=SimpleNamespace(value="DEFERRED")))
     driver = attach_behavior_driver(SimpleNamespace(schedule_behavior_driver="on"), core, session_factory=None,
-                                    rest_policy=None, reader=Reader([work_item(time(0), time(23, 59))]))
+                                    rest_policy=None, reader=Reader([work_item(time(0), time(23, 59))]), boot_id="boot_T1")
     try:
         driver.stop()  # 停掉背景執行緒，測試只用手動 tick（確定性）
         ticks = iter(range(10**9, 10**9 + 10_000, 100))
@@ -356,7 +357,7 @@ def test_attach_unsubscribes_on_stop_uses_echo_metrics_and_attempt_suffix():  # 
         driver.tick()
         driver.tick()
         ids = [r.request_id for r in core.state.requests]
-        assert ids[0] == "policy_behavior:REST>CHAT:v3" and ids[1] == "policy_behavior:REST>CHAT:v3:a2"
+        assert ids[0] == "policy_behavior:boot_T1:REST>CHAT:v3" and ids[1] == "policy_behavior:boot_T1:REST>CHAT:v3:a2"
         assert core.echo.metrics.counts.get("schedule.behavior.submitted.deferred", 0) >= 2
     finally:
         driver.stop()

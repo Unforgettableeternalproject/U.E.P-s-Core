@@ -6,7 +6,7 @@
 語料只取訊息類欄位（message／text／text_en／context／recent_context）並逐行串流，不整檔載入。
 判定：正規化後完全相同為 exact；字元 3-gram Jaccard >= 門檻為 near。
 
-用法：python dedup_check.py smoke.jsonl --root ../.. --git-ref feature/decision-laya-data-r4
+用法：python dedup_check.py formal_a.jsonl --root ../.. --git-ref feature/decision-laya-data-r4 --extra smoke.jsonl
 結束碼：有重疊為 1。
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any, Iterator
 
 from split_schema import load_jsonl
 
-MSG_KEYS = {"message", "text", "text_en", "zh", "context", "context_en", "context_zh", "recent_context"}
+MSG_KEYS = {"message", "text", "text_en", "zh", "source", "context", "context_en", "context_zh", "recent_context"}
 NORM_RE = re.compile(r"[\W_]+", re.UNICODE)
 USER_RE = re.compile(r"^(user|assistant|another user)\s*:\s*", re.I)
 MIN_LEN = 5
@@ -73,11 +73,18 @@ def lines_of_git(ref: str, root: Path) -> Iterator[tuple[str, str]]:
             yield f"git:{ref}:{name}", line
 
 
-def build_corpus(root: Path, ref: str | None) -> tuple[dict[str, str], dict[str, set[str]], dict[str, list[str]]]:
+def lines_of_extra(paths: list[str]) -> Iterator[tuple[str, str]]:
+    for p in paths:
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                yield p, line
+
+
+def build_corpus(root: Path, ref: str | None, extra: list[str] | None = None) -> tuple[dict[str, str], dict[str, set[str]], dict[str, list[str]]]:
     """回傳 (正規化字串 -> 原句, 3-gram 倒排索引 key 清單, 來源計數)。語料只留去重後的短訊息。"""
     corpus: dict[str, str] = {}
     sources: dict[str, int] = defaultdict(int)
-    gens = [lines_of_files(root)] + ([lines_of_git(ref, root)] if ref else [])
+    gens = [lines_of_files(root)] + ([lines_of_git(ref, root)] if ref else []) + ([lines_of_extra(extra)] if extra else [])
     for gen in gens:
         for src, line in gen:
             try:
@@ -121,11 +128,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("gold")
     p.add_argument("--root", default="../..", help="train/decision 目錄")
     p.add_argument("--git-ref", help="補讀該分支已追蹤的 jsonl")
+    p.add_argument("--extra", nargs="*", default=[], help="額外納入語料的 jsonl（例如 smoke.jsonl）；比對對象本身不要放進來")
     p.add_argument("--threshold", type=float, default=0.6)
     args = p.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    corpus, index, sources = build_corpus(Path(args.root).resolve(), args.git_ref)
+    corpus, index, sources = build_corpus(Path(args.root).resolve(), args.git_ref, args.extra)
     print(f"語料：{len(corpus)} 句不重複訊息，來自 {len(sources)} 個檔案")
     bad = 0
     for row in load_jsonl(Path(args.gold)):

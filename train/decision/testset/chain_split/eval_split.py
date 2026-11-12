@@ -22,7 +22,7 @@ import statistics
 import sys
 import unicodedata
 from collections import defaultdict
-from difflib import SequenceMatcher
+from difflib import Match, SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable
 
@@ -126,10 +126,11 @@ def pred_cuts(text: str, segs: list[dict[str, Any]]) -> list[int | None]:
     cuts: list[int | None] = []
     prev_end = 0
     for i, seg in enumerate(segs):
-        sm = SequenceMatcher(None, text, seg["text"], autojunk=False)
+        # 只在前一段已對應範圍之後的原文上比對，避免補進來的先行詞與前面的段落配成單調鏈的一部分
+        sm = SequenceMatcher(None, text[prev_end:], seg["text"], autojunk=False)
         found = None
         for min_size in (3, 2):
-            blocks = [b for b in sm.get_matching_blocks() if b.size >= min_size and b.a >= prev_end]
+            blocks = [Match(m.a + prev_end, m.b, m.size) for m in sm.get_matching_blocks() if m.size >= min_size]
             if blocks:
                 found = blocks
                 break
@@ -139,7 +140,13 @@ def pred_cuts(text: str, segs: list[dict[str, Any]]) -> list[int | None]:
             continue
         if i:
             cuts.append(snap(text, max(prev_end, found[0].a - found[0].b)))
-        prev_end = max(prev_end, found[-1].a + found[-1].size)
+        # 段落終點：從第一個區塊往後串接，區塊之間相隔太遠（>15 字元）視為誤配到後面的段落
+        end = found[0].a + found[0].size
+        for blk in found[1:]:
+            if blk.a - end > 15:
+                break
+            end = blk.a + blk.size
+        prev_end = max(prev_end, end)
     return cuts
 
 
@@ -197,7 +204,8 @@ def pct(values: list[float], q: float) -> float:
 # ---------- 主評測 ----------
 
 def evaluate(gold: list[dict[str, Any]], preds: dict[str, dict[str, Any]],
-             laya: dict[str, dict[str, Any]] | None = None, judge=heuristic_pronoun_judge) -> dict[str, Any]:
+             laya: dict[str, dict[str, Any]] | None = None, judge=heuristic_pronoun_judge,
+             reviews: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     errors: dict[str, int] = defaultdict(int)
     missing = 0
     tp = fp = fn = 0
@@ -251,6 +259,10 @@ def evaluate(gold: list[dict[str, Any]], preds: dict[str, dict[str, Any]],
             seg_text = bp["text"] if bp else ""
             for pn in gs["pronouns"]:
                 ok = int(bool(bp) and judge(seg_text, pn))
+                if reviews is not None:
+                    reviews.append({"id": row["id"], "route": gs["route"], "dispatched": multi, "surface": pn["surface"],
+                                    "resolves_to": pn["resolves_to"], "accept": pn.get("accept", []),
+                                    "pred_segment": seg_text, "judge": bool(ok), "human_or_llm": None})
                 for d in (pron_ok,) + ((pron_disp,) if multi else ()):
                     d[gs["route"]][0] += ok
                     d[gs["route"]][1] += 1
@@ -288,16 +300,20 @@ def evaluate(gold: list[dict[str, Any]], preds: dict[str, dict[str, Any]],
     n = len(gold)
     prec, rec_ = ratio(tp, tp + fp), ratio(tp, tp + fn)
     f1 = round(2 * prec * rec_ / (prec + rec_), 4) if prec and rec_ else (0.0 if (tp + fp + fn) else None)
-    risky_ok = sum(pron_ok[r][0] for r in ("task_request", "agent_loop"))
-    risky_n = sum(pron_ok[r][1] for r in ("task_request", "agent_loop"))
+    risky_ok = sum(pron_disp[r][0] for r in ("task_request", "agent_loop"))
+    risky_n = sum(pron_disp[r][1] for r in ("task_request", "agent_loop"))
+    risky_ok_all = sum(pron_ok[r][0] for r in ("task_request", "agent_loop"))
+    risky_n_all = sum(pron_ok[r][1] for r in ("task_request", "agent_loop"))
     m: dict[str, Any] = {
         "n_rows": n, "missing_pred": missing,
         "m1_cut_f1": {"f1": f1, "precision": prec, "recall": rec_, "tp": tp, "fp": fp, "fn": fn},
         "m2_segment_count_acc": {"value": ratio(ind_count_ok, ind_total), "n": ind_total},
-        "m3_pronoun_by_route": {r: {"value": ratio(v[0], v[1]), "n": v[1],
-                                    "dispatched_only": ratio(pron_disp[r][0], pron_disp[r][1]), "n_dispatched": pron_disp[r][1]}
+        # 主要分母（裁決 11/13）：只算拆成多段、真的會派發的輸出；all 是含退回單段的分母，並列回報
+        "m3_pronoun_by_route": {r: {"value": ratio(pron_disp[r][0], pron_disp[r][1]), "n": pron_disp[r][1],
+                                    "all": ratio(v[0], v[1]), "n_all": v[1]}
                                 for r, v in sorted(pron_ok.items())},
-        "m3_pronoun_side_effect_routes": {"value": ratio(risky_ok, risky_n), "n": risky_n},
+        "m3_pronoun_side_effect_routes": {"value": ratio(risky_ok, risky_n), "n": risky_n,
+                                          "all": ratio(risky_ok_all, risky_n_all), "n_all": risky_n_all},
         "m4_single_recall": {"value": ratio(es_one, es_total), "n": es_total},
         "m5_miss_split_rate": {"value": ratio(ind_single, ind_total), "n": ind_total},
         "m6_vocative_retention": {"value": ratio(voc_ok, voc_total), "n": voc_total,
@@ -347,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--laya", help="指標 7：Laya 對段落的結果 JSONL（id, segments:[{route, addressed}]，與預測段落同序）")
     p.add_argument("--dump-pred", help="把內建拆分器輸出寫成 JSONL")
     p.add_argument("--out", help="寫出完整指標 JSON")
+    p.add_argument("--review-out", help="指標 3 的人工／LLM 複核抽樣檔（JSONL，human_or_llm 欄位待填）")
+    p.add_argument("--review-rate", type=float, default=0.2, help="複核抽樣比例（契約要求至少 20%%）")
     args = p.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -358,7 +376,13 @@ def main(argv: list[str] | None = None) -> int:
         preds = {r["id"]: r for r in recs}
     else:
         preds = load_by_id(args.pred) or {}
-    m = evaluate(gold, preds, load_by_id(args.laya))
+    reviews: list[dict[str, Any]] = []
+    m = evaluate(gold, preds, load_by_id(args.laya), reviews=reviews)
+    if args.review_out:
+        step = max(1, round(1 / args.review_rate))
+        sample = [r for i, r in enumerate(reviews) if i % step == 0]
+        Path(args.review_out).write_text("".join(json.dumps(r, ensure_ascii=False) + chr(10) for r in sample), encoding="utf-8")
+        print(f"複核抽樣：{len(sample)}/{len(reviews)} -> {args.review_out}")
     print(json.dumps(m, ensure_ascii=False, indent=1))
     print("---- 門檻對照（暫定值；n 小於 20 不具統計意義） ----")
     for line in verdicts(m):

@@ -8,8 +8,11 @@
   加入房間由 executor 依白名單**自動**處理（首次使用某房間時 ``POST /api/rooms/{id}/join``，kind=other、role=agent），不另提供
   ``chatroom.join``：不在白名單的房間一律拒絕，不會有模型指定房間去加入的路徑。身分失效（閒置移出等）自動重新 join 一次；
   被踢（``participant_kicked``）不自動加回。
-- 游標：每個房間一個，保存在 executor 記憶體（模型不管 seq）。新行程第一次 join 時從房內目前最新的 seq 起算（不重讀歷史、不對舊訊息起反應）。
-  ``wait`` 被取消時不推進游標（取到的訊息丟棄，下次還會收到）。游標不持久化：行程重啟後同樣從當下最新的 seq 起算。
+- 游標：每個房間一個（模型不管 seq）。記憶體為準，同時依「本端 session key＋房間」持久化成 JSON 檔（目錄 ``UEP_CHATROOM_CURSOR_DIR``，
+  未設 = ``~/.uep/chatroom_cursors``；檔名用 session key 的雜湊，不落明文；原子寫入）。新行程 join 時有游標檔就沿用（重啟不漏訊息、不重讀；
+  閒置移出後重新 join 會換 participant_id，但房內 seq 不變，照用）；沒有檔、檔毀損，或游標超過房內最新值（Hub 重建）則從房內目前最新的
+  ``max(seq, update_seq)`` 起算（不重讀歷史、不對舊訊息起反應）。游標只往前；``wait`` 被取消時不推進（取到的訊息丟棄，下次還會收到）。
+  寫檔失敗只記 warning、不影響工具結果。游標不放進 AgentLoop checkpoint。
 - 房內訊息是外部內容：結果一律帶 ``untrusted=true`` 與固定提示，內容經清理（去控制字元）、單則與總量截斷，再放進回合結果暫存，
   由 Gateway 的 ``outcome_view`` 過濾後交給模型。
 - ``wait`` 以短切片 long-poll（每片不超過 ``slice_s``），片與片之間檢查取消旗標與期限；``cancel`` 先於 ``execute`` 到達也會記下。
@@ -19,8 +22,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -39,6 +44,7 @@ from uep.adapters.tool import (
     ToolReceipt,
     ToolResponseLost,
 )
+from uep.config import get_settings
 from uep.ids import new_id
 from uep.tools.catalog.chatroom import (
     MENTION_MAX,
@@ -205,9 +211,10 @@ class ChatroomToolExecutor:
     def __init__(
         self, config: ChatroomConfig | None, *, cache: TurnOutcomeCache | None = None,
         transport: httpx.BaseTransport | None = None, slice_s: float = DEFAULT_SLICE_S,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.monotonic, cursor_dir: Path | None = None,
     ) -> None:
         self._config = config
+        self._cursor_dir = cursor_dir  # None = 用設定 ``chatroom_cursor_dir``（每次取用時解析）
         self._client = ChatroomClient(config, transport=transport) if config is not None else None
         self.cache = cache if cache is not None else TurnOutcomeCache()
         self._slice_s = slice_s
@@ -323,11 +330,21 @@ class ChatroomToolExecutor:
             raise ChatroomError("bad_response")
         with self._lock:
             cursor = self._cursors.pop(room_id, None)  # 身分失效後重新 join：沿用原游標
-        if cursor is None:  # 新行程第一次 join：從房內目前最新的 seq 起算，不重讀歷史（持久化游標留待之後）
+        if cursor is None:  # 新行程第一次 join：先看持久化游標，否則從房內目前最新的 seq 起算
+            cursor = self._load_cursor(room_id)
+            if cursor is not None:
+                # 閒置移出後重新 join 會換 participant_id，但房內 seq 不變，游標照用；
+                # 只有游標超過房內最新值（Hub 重建、seq 空間重來）才視為失效
+                latest = self._latest_seq(room_id, pid)
+                if cursor > latest:
+                    logger.warning("chatroom 游標超過房內最新 seq，改從最新起算：room=%s", room_id)
+                    cursor = None
+        if cursor is None:
             cursor = self._latest_seq(room_id, pid)
             joined = data.get("joined_seq")
             if not data.get("rejoined") and isinstance(joined, int) and not isinstance(joined, bool):
                 cursor = max(cursor, joined)  # 全新加入：joined_seq 就是房內最後一則
+            self._save_cursor(room_id, pid, cursor)
         room = _Room(pid, cursor, str(data.get("display_name") or ""))
         with self._lock:
             kept = self._rooms.get(room_id)
@@ -335,6 +352,40 @@ class ChatroomToolExecutor:
                 room.cursor = max(room.cursor, kept.cursor)
             self._rooms[room_id] = room
         return room
+
+    def _cursor_path(self, room_id: str) -> Path:
+        """游標檔：``<目錄>/<session key 雜湊>_<房間 id>.json``（房間 id 清掉路徑字元）。"""
+        assert self._config is not None
+        base = self._cursor_dir or get_settings().chatroom_cursor_dir or Path.home() / ".uep" / "chatroom_cursors"
+        ident = hashlib.sha256(self._config.session_key.encode("utf-8")).hexdigest()[:16]
+        return Path(base) / f"{ident}_{re.sub(r'[^A-Za-z0-9_.-]', '_', room_id)[:CODE_MAX]}.json"
+
+    def _load_cursor(self, room_id: str) -> int | None:
+        """讀持久化游標；檔不存在、毀損或格式不對一律回 None（視為沒有游標）。檔內 participant_id 只供除錯，不作判斷。"""
+        try:
+            data = json.loads(self._cursor_path(room_id).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            logger.warning("chatroom 游標檔無法讀取，改從房內最新起算：room=%s", room_id)
+            return None
+        cursor = data.get("cursor") if isinstance(data, dict) else None
+        if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0:
+            return None
+        return cursor
+
+    def _save_cursor(self, room_id: str, participant_id: str, cursor: int) -> None:
+        """原子寫入（暫存檔再 replace）；失敗只記 warning。呼叫端持有 ``self._lock`` 或尚未發布 room，寫入不會交錯。"""
+        try:
+            path = self._cursor_path(room_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            tmp.write_text(
+                json.dumps({"participant_id": participant_id, "cursor": cursor}, ensure_ascii=False), encoding="utf-8",
+            )
+            os.replace(tmp, path)
+        except Exception as exc:  # noqa: BLE001 - 持久化失敗不影響工具結果
+            logger.warning("chatroom 游標寫檔失敗：room=%s %s", room_id, type(exc).__name__)
 
     def _latest_seq(self, room_id: str, participant_id: str) -> int:
         """房內目前最新的游標值（空房 0）：取最新一批訊息的 ``max(seq, update_seq)``，
@@ -376,6 +427,7 @@ class ChatroomToolExecutor:
             room = self._rooms.get(room_id)
             if room is not None and position > room.cursor:
                 room.cursor = position
+                self._save_cursor(room_id, room.participant_id, position)
 
     def _cursor(self, room_id: str, fallback: int) -> int:
         with self._lock:

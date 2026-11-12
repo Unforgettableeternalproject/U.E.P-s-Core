@@ -48,6 +48,14 @@ def agent_loop_dir(monkeypatch, tmp_path) -> Path:
     return path
 
 
+@pytest.fixture(autouse=True)
+def chatroom_cursor_dir(monkeypatch, tmp_path) -> Path:
+    """chatroom 工具的游標檔一律落在 tmp_path，測試不寫入使用者家目錄（~/.uep/chatroom_cursors）。"""
+    path = tmp_path / "chatroom_cursors"
+    monkeypatch.setattr(get_settings(), "chatroom_cursor_dir", path)
+    return path
+
+
 @pytest.fixture(scope="session")
 def test_db_url() -> str:
     settings = get_settings()

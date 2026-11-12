@@ -484,6 +484,90 @@ def test_first_cursor_uses_update_seq_of_recent_messages():
     assert next(r for r in hub.requests if r.url.path.endswith("/updates")).url.params["after_seq"] == "40"
 
 
+# ───────── 游標持久化 ─────────
+
+def _cursor_file(tmp_path):
+    files = list((tmp_path / "chatroom_cursors").glob("*.json"))
+    assert len(files) == 1
+    return files[0]
+
+
+def test_cursor_persists_across_executor_rebuild(tmp_path):
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))  # join：從 joined_seq=10 起算
+    hub.messages = [msg(11, "one"), msg(12, "two")]
+    assert [m["seq"] for m in body(ex, ex.execute(call(TOOL_READ)))["messages"]] == [11, 12]
+    assert json.loads(_cursor_file(tmp_path).read_text(encoding="utf-8"))["cursor"] == 12
+    assert "uep-test" not in _cursor_file(tmp_path).name  # 檔名不落明文 session key
+    hub.messages.append(msg(13, "while down"))
+    ex2 = make(hub)  # 新行程：沿用游標，不從最新起算（否則 13 會漏掉）
+    assert [m["seq"] for m in body(ex2, ex2.execute(call(TOOL_READ)))["messages"]] == [13]
+
+
+def test_corrupt_cursor_file_falls_back_to_latest(tmp_path):
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    _cursor_file(tmp_path).write_text("{not json", encoding="utf-8")
+    hub.messages = [msg(11, "old")]
+    ex2 = make(hub)
+    assert body(ex2, ex2.execute(call(TOOL_READ)))["messages"] == []  # 回到現行規則：從房內最新起算
+    assert json.loads(_cursor_file(tmp_path).read_text(encoding="utf-8"))["cursor"] == 11  # 並重新寫成有效檔
+
+
+def test_cursor_kept_when_participant_changes(tmp_path):
+    """閒置移出後重新 join 會換 participant_id，房內 seq 不變：游標照用，不漏訊息。"""
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    path = _cursor_file(tmp_path)
+    path.write_text(json.dumps({"participant_id": "p-old", "cursor": 10}), encoding="utf-8")
+    hub.messages = [msg(11, "missed while away")]
+    ex2 = make(hub)
+    assert [m["seq"] for m in body(ex2, ex2.execute(call(TOOL_READ)))["messages"]] == [11]
+
+
+def test_cursor_beyond_latest_is_reset(tmp_path):
+    """游標超過房內最新 seq（Hub 重建）：視為失效，從最新起算。"""
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    _cursor_file(tmp_path).write_text(json.dumps({"participant_id": "p-me", "cursor": 999}), encoding="utf-8")
+    hub.messages = [msg(11, "old")]
+    ex2 = make(hub)
+    assert body(ex2, ex2.execute(call(TOOL_READ)))["messages"] == []
+    assert json.loads(_cursor_file(tmp_path).read_text(encoding="utf-8"))["cursor"] == 11
+
+
+def test_cursor_write_failure_only_warns(tmp_path, monkeypatch, caplog):
+    hub = FakeHub()
+    ex = make(hub)
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("uep.tools.executors.chatroom.os.replace", boom)
+    ex.execute(call(TOOL_READ))  # join（起算游標寫檔也失敗）
+    hub.messages = [msg(11, "one")]
+    with caplog.at_level(logging.WARNING, logger="uep.tools.executors.chatroom"):
+        receipt = ex.execute(call(TOOL_READ))
+    assert receipt.succeeded
+    assert [m["seq"] for m in body(ex, receipt)["messages"]] == [11]
+    assert any("游標寫檔失敗" in r.message for r in caplog.records)
+
+
+def test_persisted_cursor_never_moves_backwards(tmp_path):
+    hub = FakeHub()
+    ex = make(hub)
+    ex.execute(call(TOOL_READ))
+    hub.messages = [msg(11, "one"), msg(12, "two")]
+    ex.execute(call(TOOL_READ))
+    ex._advance(ROOM, 5)  # 較舊的位置不得倒退，也不得覆寫檔案
+    assert json.loads(_cursor_file(tmp_path).read_text(encoding="utf-8"))["cursor"] == 12
+    assert ex._cursor(ROOM, 0) == 12
+
+
 # ───────── 並行排程 ─────────
 
 def test_conflict_keys_serialize_same_room_and_fall_back_to_serial_without_room():

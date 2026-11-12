@@ -203,9 +203,11 @@ class BehaviorDriver:
                     attempt)
 
     def _backoff(self, attempt: int) -> float:
-        """第 ``attempt`` 次失敗後的等待秒數：起始值 × 2^(attempt-1)，封頂後套用 ±抖動（rng 為 [0,1)）。"""
-        base = min(self._retry_backoff_max_s, self._retry_backoff_s * (2 ** min(attempt - 1, 30)))
-        return base * (1.0 + self._backoff_jitter * (self._rng() * 2.0 - 1.0))
+        """第 ``attempt`` 次失敗後的等待秒數：起始值 × 2^(attempt-1) 先套用 ±抖動（rng 為 [0,1)），最後才封頂，
+        所以實際等待不會超過 ``retry_backoff_max_s``。"""
+        base = self._retry_backoff_s * (2 ** min(attempt - 1, 30))
+        jittered = base * (1.0 + self._backoff_jitter * (self._rng() * 2.0 - 1.0))
+        return min(self._retry_backoff_max_s, jittered)
 
     def tick_safe(self) -> BehaviorDecision | None:
         """讀取事實或解析失敗時不採取任何動作（fail-closed：不提請求）；同類錯誤 60 秒才記一次（首次帶 traceback）。"""

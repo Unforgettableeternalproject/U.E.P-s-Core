@@ -180,7 +180,7 @@ def has_uninterruptible_work(tasks: Any) -> bool:
 
     沿用既有的 ``TaskManager.list_live_tasks()``（未終態 Task，含 ``interrupt_policy`` 與 ``status``），不新增 Task 介面。
     ``checkpoint_only`` 不算（它可在檢查點中斷）；回合用的 Task 是 interruptible，所以不會擋住行為切換。
-    ``tasks`` 為 None（沒有 Task 層）時回 False。查詢失敗讓例外外拋：driver 的 tick 會 fail-closed（本次不採取動作）。
+    ``tasks`` 為 None（沒有 Task 層）時回 False。查詢失敗讓例外外拋（呼叫端決定怎麼降級）。
     """
     if tasks is None:
         return False
@@ -198,7 +198,8 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
 
     ``off`` 回 None。輸入事實：State 軸（Presence／Interaction／Runtime／Behavior）、全域停止旗標、
     DreamLoop 的 ``dream_status()["in_flight"]``、``rest_policy.window_at``（與做夢迴圈用同一個 policy，N4）。
-    ``has_uninterruptible_work`` 取自 Task 層（``has_uninterruptible_work(core.tasks)``）。shadow 只記 log／指標，不提請求。
+    ``has_uninterruptible_work`` 取自 Task 層（``has_uninterruptible_work(core.tasks)``，lazy：只有目前 Behavior 是 WORK
+    才查；查詢失敗視為 True）。shadow 只記 log／指標，不提請求。
     指標預設寫進 ``core.echo.metrics``（沒有就只記 log）。
 
     ``boot_id``：每次開機各自的 namespace（預設 ``new_id("boot")``），放進 request_id，避免重啟後相同的
@@ -227,6 +228,22 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
     tasks = getattr(core, "tasks", None)
     boot = boot_id or new_id("boot")
 
+    task_error_logged = [float("-inf")]
+
+    def uninterruptible(current_behavior: str) -> bool:
+        """lazy：只有目前 Behavior 是 WORK 才查 Task（rationalize 只在離開 WORK 時看這個欄位）。
+        查詢失敗只把它當作 True（只擋離開 WORK），不讓整個 tick 失敗；log 限頻（60 秒）。"""
+        if current_behavior != "WORK":
+            return False
+        try:
+            return has_uninterruptible_work(tasks)
+        except Exception:
+            now = time.monotonic()
+            if now - task_error_logged[0] >= 60.0:
+                task_error_logged[0] = now
+                logger.warning("查詢 Task 層的不可中斷工作失敗，視為有（只擋離開 WORK）", exc_info=True)
+            return True
+
     def facts(now: datetime) -> Any:
         presence = state.current(Axis.PRESENCE).state
         behavior = state.current(Axis.BEHAVIOR)
@@ -237,7 +254,7 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
         return BehaviorFacts(
             presence_status=presence, current_behavior=behavior.state, behavior_version=behavior.version,
             interaction_idle=state.current(Axis.INTERACTION).state == "IDLE", global_stop=bool(stop.is_engaged()),
-            has_uninterruptible_work=has_uninterruptible_work(tasks),
+            has_uninterruptible_work=uninterruptible(behavior.state),
             runtime_ready=runtime in ("READY", "DEGRADED"), dream_in_flight=in_flight,
             in_rest_window=None if fixed_window is None else fixed_window.window_at(now) is not None)
 

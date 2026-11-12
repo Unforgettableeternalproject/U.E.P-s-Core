@@ -48,7 +48,8 @@ def test_backoff_doubles_is_capped_and_jittered():
     low = BehaviorDriver(Reader(), lambda now: facts(), lambda *a: "ACCEPTED", rng=lambda: 0.0)
     high = BehaviorDriver(Reader(), lambda now: facts(), lambda *a: "ACCEPTED", rng=lambda: 0.999999)
     assert low._backoff(1) == pytest.approx(30.0 * 0.8) and high._backoff(1) == pytest.approx(30.0 * 1.2, rel=1e-3)
-    assert low._backoff(30) == pytest.approx(600.0 * 0.8)  # 上限本身也套用抖動
+    assert low._backoff(30) == 600.0 and high._backoff(30) == 600.0  # 抖動先於封頂：實際等待不超過 max
+    assert all(high._backoff(n) <= 600.0 for n in range(1, 50))
 
 
 def test_retries_follow_exponential_schedule():
@@ -72,11 +73,12 @@ def test_retries_follow_exponential_schedule():
 # ---- N1：boot namespace ----
 
 class FakeState:
-    def __init__(self):
-        self.requests = []
+    def __init__(self, behavior="REST"):
+        self.requests, self.behavior = [], behavior
 
     def current(self, axis):
-        values = {Axis.PRESENCE: "ACTIVE", Axis.BEHAVIOR: "REST", Axis.INTERACTION: "IDLE", Axis.RUNTIME: "READY"}
+        values = {Axis.PRESENCE: "ACTIVE", Axis.BEHAVIOR: self.behavior, Axis.INTERACTION: "IDLE",
+                  Axis.RUNTIME: "READY"}
         return SimpleNamespace(state=values[axis], version=7)
 
     def request_transition(self, req):
@@ -84,8 +86,8 @@ class FakeState:
         return SimpleNamespace(decision=SimpleNamespace(value="ACCEPTED"))
 
 
-def fake_core(tasks=None):
-    return SimpleNamespace(state=FakeState(), stop=SimpleNamespace(is_engaged=lambda: False), memory=None,
+def fake_core(tasks=None, behavior="REST"):
+    return SimpleNamespace(state=FakeState(behavior), stop=SimpleNamespace(is_engaged=lambda: False), memory=None,
                            bus=None, echo=None, tasks=tasks)
 
 
@@ -137,22 +139,35 @@ def test_has_uninterruptible_work_filters_policy_and_status():
                                                                                   "WAITING_APPROVAL"))) is True
 
 
-def test_attach_reads_uninterruptible_work_from_tasks_each_tick():
+def attach_shadow(core):
+    return attach_behavior_driver(SimpleNamespace(schedule_behavior_driver="shadow"), core, session_factory=None,
+                                  rest_policy=None, reader=Reader(), boot_id="boot_T")
+
+
+def test_task_layer_is_queried_lazily_only_while_in_work():
     tasks = Tasks(task("non_interruptible", "RUNNING"))
-    core = fake_core(tasks)
-    driver = attach_behavior_driver(SimpleNamespace(schedule_behavior_driver="shadow"), core, session_factory=None,
-                                    rest_policy=None, reader=Reader(), boot_id="boot_T")
+    core = fake_core(tasks, behavior="REST")
+    driver = attach_shadow(core)
     try:
+        assert driver._facts_fn(NOW).has_uninterruptible_work is False
+        assert tasks.calls == 0  # 不在 WORK：完全不查 Task 層
+        core.state.behavior = "WORK"
         assert driver._facts_fn(NOW).has_uninterruptible_work is True
+        assert tasks.calls == 1
         tasks.live = []
         assert driver._facts_fn(NOW).has_uninterruptible_work is False
     finally:
         driver.stop()
+
+
+def test_task_query_failure_counts_as_busy_without_failing_the_tick():
     broken = SimpleNamespace(list_live_tasks=lambda: (_ for _ in ()).throw(RuntimeError("db down")))
-    core2 = fake_core(broken)
-    d2 = attach_behavior_driver(SimpleNamespace(schedule_behavior_driver="shadow"), core2, session_factory=None,
-                                rest_policy=None, reader=Reader(), boot_id="boot_T")
+    core = fake_core(broken, behavior="WORK")
+    driver = attach_shadow(core)
     try:
-        assert d2.tick_safe() is None  # 查詢失敗：fail-closed，本次不採取動作
+        assert driver._facts_fn(NOW).has_uninterruptible_work is True  # 只擋離開 WORK
+        assert driver.tick_safe() is not None  # tick 沒有失敗
+        core.state.behavior = "REST"
+        assert driver._facts_fn(NOW).has_uninterruptible_work is False  # 不在 WORK 時不受影響
     finally:
-        d2.stop()
+        driver.stop()

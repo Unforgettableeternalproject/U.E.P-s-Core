@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -52,8 +53,9 @@ class ShadowJudgment:
     source: str  # directive｜request
     ref: str
     decision: ArbitrationDecision
-    executed: bool = False
+    executed: bool = False  # 整個判決都完成（mark 已寫且不需移轉）
     exec_reason: str = ""
+    mark_written: bool = False  # mark 已寫（可能只是部分完成：移轉還沒做）
 
 
 class PresenceArbiterShadow:
@@ -84,6 +86,8 @@ class PresenceArbiterShadow:
         self._queue: queue.Queue[tuple[str, tuple, dict]] = queue.Queue(maxsize=queue_max)
         self._thread: threading.Thread | None = None
         self._stop_flag = threading.Event()
+        self._closed = False
+        self._last_full_log = float("-inf")
 
     @property
     def mode(self) -> str:
@@ -99,34 +103,39 @@ class PresenceArbiterShadow:
     # ---- 判決記錄與（on）落地 ----
 
     def _record(self, source: str, ref: str, decision: ArbitrationDecision, slot: PlanSlot, now: datetime) -> None:
-        executed, exec_reason = False, ""
+        executed, exec_reason, mark_written = False, "", False
         if self._mode == "on":
-            executed, exec_reason = self._execute(ref, decision, slot, now)
+            executed, exec_reason, mark_written = self._execute(ref, decision, slot, now)
             self._events.arbitration_decided(source=source, ref=ref, decision=decision, executed=executed,
-                                             exec_reason=exec_reason)
-        self.judgments.append(ShadowJudgment(source, ref, decision, executed, exec_reason))
+                                             exec_reason=exec_reason, mark_written=mark_written)
+        self.judgments.append(ShadowJudgment(source, ref, decision, executed, exec_reason, mark_written))
         self._count(f"{_METRIC}.{source}.{decision.outcome.lower()}")
         self._count(f"{_METRIC}.{source}.reason.{decision.reason_code}")
         logger.info("仲裁判決：%s %s → %s/%s（override=%s target=%s executed=%s mode=%s）", source, ref,
                     decision.outcome, decision.reason_code, decision.override_action, decision.transfer_target,
                     executed, self._mode)
 
-    def _execute(self, ref: str, decision: ArbitrationDecision, slot: PlanSlot, now: datetime) -> tuple[bool, str]:
-        """on 模式的落地：只有 mark_abandon 會真的寫（abandon mark）；其餘一律不執行，也不碰 Presence。"""
+    def _execute(self, ref: str, decision: ArbitrationDecision, slot: PlanSlot, now: datetime
+                 ) -> tuple[bool, str, bool]:
+        """on 模式的落地，回 ``(executed, exec_reason, mark_written)``。
+
+        只有 mark_abandon 會真的寫（abandon mark）；其餘一律不執行，也不碰 Presence。``executed=True`` 只在整個判決都
+        完成時（mark 已寫、且 transfer_target 為 None）；mark 寫了但移轉沒做是部分完成：executed=False、mark_written=True。
+        """
         if decision.outcome != "ACCEPTED_TRANSFER":
-            return False, EXEC_NOT_ACCEPTED
+            return False, EXEC_NOT_ACCEPTED, False
         if decision.override_action != "mark_abandon":
-            return False, EXEC_TRANSFER_NOT_IMPLEMENTED  # begin／supersede／end／純移轉
+            return False, EXEC_TRANSFER_NOT_IMPLEMENTED, False  # begin／supersede／end／純移轉
         mark = arbiter.abandon_mark_for(slot, ref, now)
         if mark is None:
-            return False, EXEC_NO_MARKABLE_SLOT
+            return False, EXEC_NO_MARKABLE_SLOT, False
         try:
             mark_id = self._marks.begin_mark(kind="abandon", item_ref=mark.item_ref,
                                              planned_start_at=mark.planned_start_at, cause_request_id=ref)
         except Exception:
             logger.exception("仲裁 abandon mark 寫入失敗：%s", ref)
             self._count(f"{_METRIC}.mark_write_failed")
-            return False, EXEC_MARK_WRITE_FAILED
+            return False, EXEC_MARK_WRITE_FAILED, False
         self._events.slot_marked(mark_id, "abandon", mark.item_ref, ref)
         if self._poke is not None:
             try:
@@ -134,11 +143,16 @@ class PresenceArbiterShadow:
             except Exception:
                 logger.debug("poke Planner 失敗", exc_info=True)
         # 移轉到主機的那一半（Presence 位置移轉）尚未實作；人已在主機時 transfer_target 為 None
-        return True, EXEC_MARK_WRITTEN_NO_TRANSFER if decision.transfer_target else EXEC_MARK_WRITTEN
+        if decision.transfer_target:
+            return False, EXEC_MARK_WRITTEN_NO_TRANSFER, True  # 部分完成：mark 寫了，移轉沒做
+        return True, EXEC_MARK_WRITTEN, True
 
     # ---- 佇列 ----
 
     def _submit(self, kind: str, *args: Any, **kwargs: Any) -> None:
+        if self._closed:  # stop() 之後的呼叫一律丟棄（不再同步處理，避免關閉後還碰 DB／發事件）
+            self._count(f"{_METRIC}.closed_drop")
+            return
         if self._thread is None or not self._thread.is_alive():
             self._process(kind, args, kwargs)  # 背景執行緒未啟動（測試）：同步處理
             return
@@ -146,7 +160,10 @@ class PresenceArbiterShadow:
             self._queue.put_nowait((kind, args, kwargs))
         except queue.Full:
             self._count(f"{_METRIC}.queue_full")
-            logger.warning("仲裁佇列已滿，丟棄一筆 %s", kind)
+            now = time.monotonic()
+            if now - self._last_full_log >= 60.0:  # 限頻：佇列持續滿時不洗版
+                self._last_full_log = now
+                logger.warning("仲裁佇列已滿，丟棄 %s（之後 60 秒內不再重複記錄）", kind)
 
     def _process(self, kind: str, args: tuple, kwargs: dict) -> None:
         handler = {
@@ -167,15 +184,19 @@ class PresenceArbiterShadow:
         self._thread.start()
 
     def _run(self) -> None:
-        while not self._stop_flag.is_set():
-            try:
-                kind, args, kwargs = self._queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            try:
-                self._process(kind, args, kwargs)
-            finally:
-                self._queue.task_done()
+        try:
+            while not self._stop_flag.is_set():
+                try:
+                    kind, args, kwargs = self._queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                try:
+                    self._process(kind, args, kwargs)
+                finally:
+                    self._queue.task_done()
+        except BaseException:
+            logger.exception("仲裁背景執行緒異常結束")
+            raise
 
     def drain(self, timeout: float = 5.0) -> bool:
         """等佇列處理完（測試與關閉用）。"""
@@ -196,9 +217,13 @@ class PresenceArbiterShadow:
     def on_turn_skipped(self, event: Any) -> None:
         self._submit("turn_skipped", event)
 
-    def on_abandon_signal(self, signal: Any) -> None:
-        """決策層注入的 sink：只排佇列，由背景執行緒交給放棄消費端執行器。"""
-        self._submit("abandon", signal)
+    def on_abandon_signal(self, signal: Any, *, is_owner: bool | None = None) -> None:
+        """決策層注入的 sink：只排佇列，由背景執行緒交給放棄消費端執行器。
+
+        ``is_owner`` 為 True／False 時直接傳給執行器；None（決策層無法判定）且組裝時也沒有 ``is_owner_fn`` 時，
+        執行器回 ``IGNORED(owner_unverifiable)``（和 ``not_owner`` 是不同的原因）。
+        """
+        self._submit("abandon", signal, is_owner=is_owner)
 
     def on_presence_request(self, proposal: Any, *, request_id: str, actor_ref: str, actor_authenticated: bool,
                             is_owner: bool, source_platform: str) -> None:
@@ -282,11 +307,11 @@ class PresenceArbiterShadow:
             request_id=request_id, authority="owner", requester_ref=actor_ref, actor_authenticated=True,
             target=target, received_seq=self._seq))
 
-    def _handle_abandon(self, signal: Any) -> None:
+    def _handle_abandon(self, signal: Any, is_owner: bool | None = None) -> None:
         if self._abandon is None or self._mode != "on":
             self._count(f"{_METRIC}.abandon_signal_observed")  # shadow：只計數，不寫 mark、不發事件
             return
-        self._abandon.handle(signal)
+        self._abandon.handle(signal, is_owner=is_owner)
 
     # ---- 生命週期 ----
 
@@ -294,6 +319,7 @@ class PresenceArbiterShadow:
         self._cleanups.append(fn)
 
     def stop(self) -> None:
+        self._closed = True
         self._stop_flag.set()
         cleanups, self._cleanups = self._cleanups, []
         for fn in cleanups:
@@ -305,3 +331,13 @@ class PresenceArbiterShadow:
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(5.0)
         self._thread = None
+        dropped = 0
+        while True:  # 執行緒結束後還在佇列裡的項目不會再被處理：記下數量
+            try:
+                self._queue.get_nowait()
+                dropped += 1
+            except queue.Empty:
+                break
+        if dropped:
+            self._count(f"{_METRIC}.stop_dropped")
+            logger.warning("仲裁關閉時丟棄 %d 筆未處理的佇列項目", dropped)

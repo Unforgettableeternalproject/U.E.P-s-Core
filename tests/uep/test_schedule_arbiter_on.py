@@ -68,7 +68,7 @@ class FakeMarks:
 
 class Events:
     def __init__(self):
-        self.log, self.threads = [], set()
+        self.log, self.threads, self.mark_written = [], set(), []
 
     def _note(self, *entry):
         self.threads.add(threading.get_ident())
@@ -80,7 +80,8 @@ class Events:
     def slot_marked(self, mark_id, kind, item_ref, cause_request_id):
         self._note("slot_marked", mark_id, kind, item_ref, cause_request_id)
 
-    def arbitration_decided(self, *, source, ref, decision, executed, exec_reason):
+    def arbitration_decided(self, *, source, ref, decision, executed, exec_reason, mark_written=False):
+        self.mark_written.append(mark_written)
         self._note("arbitration_decided", source, ref, decision.outcome, decision.override_action, executed,
                    exec_reason)
 
@@ -116,7 +117,7 @@ def test_accepted_signal_writes_idempotent_mark_events_and_pokes_planner():
     # 同一 signal_id 重送：冪等，不重複寫、不重複發事件
     again = ex.handle(signal())
     assert (again.status, again.reason_code) == ("ACCEPTED", "duplicate") and again.mark.mark_id == "pmark_1"
-    assert len(marks.calls) == 1 and len(events.log) == 2 and poked == [1]
+    assert len(marks.marks) == 1 and len(events.log) == 2 and poked == [1]  # 沒有第二個 mark、沒有重複事件
 
 
 def test_mark_flows_into_projection_as_fallback_rest():
@@ -148,13 +149,13 @@ def test_stale_round_and_owner_failure_and_conflict():
     boom = AbandonExecutor(Reader([WORK], marks), marks, events, is_owner_fn=lambda s: 1 / 0, clock=lambda: tpe(9, 30))
     assert boom.handle(signal("abandon:u2")).reason_code == "not_owner"  # 判定失敗＝非 owner（fail-closed）
     default = AbandonExecutor(Reader([WORK], marks), marks, events, clock=lambda: tpe(9, 30))
-    assert default.handle(signal("abandon:u3")).reason_code == "not_owner"  # 沒給 owner 判定＝全部拒絕
+    assert default.handle(signal("abandon:u3")).reason_code == "owner_unverifiable"  # 沒有任何 owner 來源＝無法判定
     conflict_marks = FakeMarks()
     conflict_marks.marks.append(SlotMark("abandon", "other", tpe(1), tpe(1), "pmark_x", "abandon:u4"))
-    # active_marks 已有同 cause 的 mark → 視為重送（冪等）；不同參數的衝突由 begin_mark 的 ValueError 擋下
+    # 同 signal_id 以不同參數建立過 mark：由 begin_mark 的 ValueError 擋下（不靠預查）
     ex2 = AbandonExecutor(Reader([WORK], FakeMarks()), conflict_marks, Events(), is_owner_fn=lambda s: True,
                           clock=lambda: tpe(9, 30))
-    assert ex2.handle(signal("abandon:u4")).reason_code == "duplicate"
+    assert ex2.handle(signal("abandon:u4")).reason_code == "signal_id_conflict"
     hidden = FakeMarks()
     hidden.active_marks = lambda: ()  # 查不到但 begin_mark 發現衝突
     hidden.marks.append(SlotMark("abandon", "other", tpe(1), tpe(1), "pmark_y", "abandon:u5"))
@@ -195,11 +196,13 @@ def test_mark_abandon_decision_is_executed_in_on_mode():
     assert marks.calls == [("abandon", "social", "r-1")]
     assert events.log == [
         ("slot_marked", "pmark_1", "abandon", "social", "r-1"),
-        ("arbitration_decided", "request", "r-1", "ACCEPTED_TRANSFER", "mark_abandon", True,
-         "mark_written_transfer_not_implemented")]  # 移轉到主機的那一半尚未實作
+        ("arbitration_decided", "request", "r-1", "ACCEPTED_TRANSFER", "mark_abandon", False,
+         "mark_written_transfer_not_implemented")]  # 只寫了 mark、移轉沒做：部分完成，executed=False
+    assert events.mark_written == [True]
     at_host, marks2, events2 = arbiter((SOCIAL,), PresenceReading("NONE", None))
     request(at_host, proposal(target="host"))
-    assert events2.log[-1][-2:] == (True, "mark_written") and marks2.calls  # 人已在主機：只需要 mark
+    assert events2.log[-1][-2:] == (True, "mark_written") and marks2.calls  # 人已在主機：整個判決完成
+    assert events2.mark_written == [True]
 
 
 def test_other_accepted_decisions_are_never_executed():

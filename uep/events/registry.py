@@ -163,7 +163,7 @@ SCHEDULE_EVENT_KEYS: dict[str, frozenset[str]] = {
     # 仲裁判決落地（AR-3a）：只放 ID／列舉；executed＝這個判決的動作是否真的被執行
     "schedule.arbitration_decided": _keys(
         "source", "outcome", "band", "override_action", "transfer_target", "request_id", "directive_id", "executed",
-        "exec_reason"),
+        "exec_reason", "mark_written"),
 }
 for _t, _k in SCHEDULE_EVENT_KEYS.items():
     DEFAULT_EVENT_SPECS[_t] = EventSpec(_D, payload_keys=_k)

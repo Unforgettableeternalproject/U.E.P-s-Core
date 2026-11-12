@@ -20,6 +20,7 @@ from uep.events.envelope import EventDraft, TrustedContext
 logger = logging.getLogger(__name__)
 
 SOURCE = "core.schedule"
+ABANDON_RESULTS = frozenset({"accepted", "ignored", "error"})
 ACTOR = "uep:schedule"
 SCOPE = "scope_private_owner"  # location 等屬 owner 面（平台端點契約 V-3）
 
@@ -111,7 +112,9 @@ class ScheduleEvents:
     # ---- 放棄與仲裁（AR-3a）----
 
     def abandon_work(self, signal: Any, result: str, reason_code: str, item_ref: str | None) -> None:
-        """放棄訊號的受理／忽略紀錄；不含原文與 actor 顯示名稱。"""
+        """放棄訊號的受理／忽略／錯誤紀錄（result 閉集：accepted｜ignored｜error）；不含原文與 actor 顯示名稱。"""
+        if result not in ABANDON_RESULTS:
+            raise ValueError(f"未知的 abandon_work result：{result!r}")
         self._publish("schedule.abandon_work", {
             "signal_id": signal.signal_id, "item_ref": item_ref, "result": result, "reason_code": reason_code,
             "path": signal.path, "decider_id": signal.decider_id, "decider_version": signal.decider_version},
@@ -122,14 +125,18 @@ class ScheduleEvents:
             "mark_id": mark_id, "kind": kind, "item_ref": item_ref, "cause_request_id": cause_request_id},
             idempotency_key=f"slot_marked:{mark_id}")
 
-    def arbitration_decided(self, *, source: str, ref: str, decision: Any, executed: bool, exec_reason: str) -> None:
-        """仲裁判決落地。``executed`` 只代表判決的動作是否真的做了（目前只有 mark_abandon 會執行）。"""
+    def arbitration_decided(self, *, source: str, ref: str, decision: Any, executed: bool, exec_reason: str,
+                            mark_written: bool = False) -> None:
+        """仲裁判決落地。``executed=True`` 只用在整個判決都完成時（mark 已寫、且不需要移轉）；只寫了 mark、移轉沒做的
+        部分完成是 ``executed=False`` 加 ``mark_written=True``（exec_reason 說明原因）。"""
         payload = {
             "source": source, "outcome": decision.outcome, "reason_code": decision.reason_code,
             "band": decision.priority, "override_action": decision.override_action,
-            "transfer_target": decision.transfer_target, "executed": executed, "exec_reason": exec_reason}
+            "transfer_target": decision.transfer_target, "executed": executed, "exec_reason": exec_reason,
+            "mark_written": mark_written}
         payload["directive_id" if source == "directive" else "request_id"] = ref
-        digest = hashlib.sha1(f"{source}:{ref}".encode()).hexdigest()[:32]
+        # 同一個 ref 的不同判決（outcome／reason_code 不同）是不同的事實，不能被 idempotency 吃掉
+        digest = hashlib.sha1(f"{source}:{ref}:{decision.outcome}:{decision.reason_code}".encode()).hexdigest()[:32]
         self._publish("schedule.arbitration_decided", payload, idempotency_key=f"arbitration:{digest}")
 
     def divergence_observed(self, plan_location: str, actual_location: str, override_state: str | None,

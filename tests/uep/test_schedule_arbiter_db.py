@@ -135,8 +135,8 @@ def test_arbitration_on_writes_decision_events_and_only_executes_mark_abandon(se
     [decided] = rows(session_factory, "schedule.arbitration_decided")
     assert decided.payload == {
         "source": "request", "outcome": "ACCEPTED_TRANSFER", "reason_code": "accepted", "band": 200,
-        "override_action": "mark_abandon", "transfer_target": "host", "request_id": "req-1", "executed": True,
-        "exec_reason": "mark_written_transfer_not_implemented"}
+        "override_action": "mark_abandon", "transfer_target": "host", "request_id": "req-1", "executed": False,
+        "exec_reason": "mark_written_transfer_not_implemented", "mark_written": True}  # 部分完成：移轉沒做
     assert set(decided.payload) <= DEFAULT_REGISTRY.lookup("schedule.arbitration_decided").payload_keys
     # begin 判決不執行：沒有 override
     store.delete_item(OWNER, social_id, expected_revision=store.revision())
@@ -145,4 +145,5 @@ def test_arbitration_on_writes_decision_events_and_only_executes_mark_abandon(se
                                source_platform="discord")
     second = [r for r in rows(session_factory, "schedule.arbitration_decided") if r.payload["request_id"] == "req-2"]
     assert second[0].payload["executed"] is False and second[0].payload["exec_reason"] == "transfer_not_implemented"
+    assert second[0].payload["mark_written"] is False
     assert store.active_override() is None

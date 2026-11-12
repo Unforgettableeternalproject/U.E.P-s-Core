@@ -180,25 +180,32 @@ def hard_budget(budget: LoopBudget) -> LoopBudget:
     if not th.enabled:
         return budget
     return replace(
-        budget, max_steps=math.ceil(budget.max_steps * th.abort),
-        max_tokens=None if budget.max_tokens is None else math.ceil(budget.max_tokens * th.abort),
+        budget, max_steps=_point(budget.max_steps, th.abort),
+        max_tokens=None if budget.max_tokens is None else _point(budget.max_tokens, th.abort),
         thresholds=BudgetThresholds(),
     )
 
 
+def _point(base: int, ratio: float) -> int:
+    """門檻點（步數或 token 數）：``ceil(D × 倍率)``。階段判斷與中斷點（``hard_budget``）共用同一個算法。"""
+    return math.ceil(base * ratio)
+
+
 def budget_stage(budget: LoopBudget, counters: BudgetCounters) -> int:
-    """Step 邊界的階段判斷：0 未達、1 warn、2 notice、3 abort。進度 = max(steps／D, tokens／D)；未啟用三段門檻回 0。"""
+    """Step 邊界的階段判斷：0 未達、1 warn、2 notice、3 abort；未啟用三段門檻回 0。
+    各維度（steps、tokens）逐一與 ``ceil(D × 倍率)`` 比較，取最高階段；abort 點與 ``hard_budget`` 完全一致。"""
     th = budget.thresholds
     if not th.enabled:
         return 0
-    ratio = counters.steps / budget.max_steps
-    if budget.max_tokens is not None:
-        ratio = max(ratio, counters.tokens / budget.max_tokens)
-    if ratio >= th.abort:
-        return 3
-    if ratio >= th.notice:
-        return 2
-    return 1 if ratio >= th.warn else 0
+    stage = 0
+    for used, base in ((counters.steps, budget.max_steps), (counters.tokens, budget.max_tokens)):
+        if base is None:
+            continue
+        for level, ratio in ((3, th.abort), (2, th.notice), (1, th.warn)):
+            if used >= _point(base, ratio):
+                stage = max(stage, level)
+                break
+    return stage
 
 
 class BudgetPolicyTable:
@@ -206,6 +213,9 @@ class BudgetPolicyTable:
 
     def __init__(self, rows: Mapping[tuple[str, str, str], LoopBudget] | None = None) -> None:
         self._rows = dict(rows or {})
+
+    def __len__(self) -> int:
+        return len(self._rows)
 
     def lookup(self, policy_ref: str, route: str, tier: str) -> LoopBudget | None:
         return self._rows.get((policy_ref, route, tier))
@@ -217,64 +227,70 @@ def _min_opt(a: float | None, b: float | None) -> float | None:
     return a if b is None else min(a, b)
 
 
+def _with_hard_limits(policy: LoopBudget, hard_steps: int, hard_tokens: int | None, tool_calls: int) -> LoopBudget:
+    """把「中斷點硬上限」套回預算：D 與門檻由硬上限反推（``floor(硬上限 / abort)``）。D 推不出正整數就放棄分段
+    （門檻回預設、D 直接等於硬上限），使中斷點仍不超過給定的硬上限。工具次數保險絲低於輪數中斷點時同樣縮小 D。"""
+    th = policy.thresholds
+    base = hard_budget(policy)
+    steps_d, tokens_d = hard_steps, hard_tokens
+    if th.enabled:
+        steps_d = policy.max_steps if hard_steps == base.max_steps else math.floor(hard_steps / th.abort)
+        if hard_tokens is None:
+            tokens_d = None
+        elif base.max_tokens is not None and hard_tokens == base.max_tokens:
+            tokens_d = policy.max_tokens
+        else:
+            tokens_d = math.floor(hard_tokens / th.abort)
+        if tool_calls < _point(steps_d, th.abort):
+            steps_d = math.floor(tool_calls / th.abort)
+        if steps_d < 1 or (tokens_d is not None and tokens_d < 1):
+            th, steps_d, tokens_d = BudgetThresholds(), min(hard_steps, tool_calls), hard_tokens
+    else:
+        steps_d = hard_steps
+    return replace(policy, max_steps=steps_d, max_tokens=tokens_d, thresholds=th, max_tool_calls=tool_calls)
+
+
 def resolve_budget(
     table: BudgetPolicyTable | None, default: LoopBudget, *, policy_ref: str, route: str, tier: str | None,
     cap: BudgetCap | None, metrics: Counter[str] | None = None,
 ) -> LoopBudget:
-    """政策值（查不到退回 ``default``）∩ cap，只收窄（BG-1）。cap 綁在中斷點：分段維度的預設值 D 依
-    ``effective_abort / policy_abort`` 等比縮小（三段門檻等比縮小、順序不變），使實際用量不超過 cap。"""
+    """政策值（查不到退回 ``default``）∩ cap，只收窄（BG-1）。cap 綁在中斷點：逐維度取
+    ``min(政策的硬上限, cap)``，再反推 D 與門檻（三段門檻等比縮小、順序不變），使實際用量不超過 cap。
+    政策表是空的（尚未配置任何列）時不計 ``budget.policy_unresolved``。"""
     policy = table.lookup(policy_ref, route, tier or "standard") if table is not None else None
     if policy is None:
         policy = default
-        if table is not None and metrics is not None:
+        if table is not None and len(table) and metrics is not None:
             metrics["budget.policy_unresolved"] += 1
     if cap is None:
         return policy
-    th = policy.thresholds
-    clamped = False
-
-    def staged(current: int | None, requested: int | None) -> int | None:
-        """分段維度：以中斷點比較，回新的 D（整數，至少 1）。"""
-        nonlocal clamped
-        if requested is None:
-            return current
-        abort_now = None if current is None else current * th.abort
-        if abort_now is not None and requested >= abort_now:
-            clamped = clamped or requested > abort_now
-            return current
-        return max(math.floor(requested / th.abort), 1)
-
-    max_steps = staged(policy.max_steps, cap.max_steps)
-    max_tokens = staged(policy.max_tokens, cap.max_tokens)
-    thresholds = th
-    if th.enabled and (max_steps * th.abort > (cap.max_steps or math.inf) or (
-        max_tokens is not None and cap.max_tokens is not None and max_tokens * th.abort > cap.max_tokens
-    )):
-        thresholds = BudgetThresholds()  # cap 小到 D 取整後仍超出中斷點：放棄分段，D 直接取 cap（仍不超過 cap）
-        max_steps = cap.max_steps if cap.max_steps is not None else policy.max_steps
-        max_tokens = cap.max_tokens if cap.max_tokens is not None else policy.max_tokens
-    clamped = clamped or (cap.max_tool_calls is not None and cap.max_tool_calls > policy.max_tool_calls)
-    if metrics is not None and clamped:
-        metrics["budget.cap_clamped"] += 1
-    tool_calls = int(min(policy.max_tool_calls, cap.max_tool_calls or policy.max_tool_calls))
-    if thresholds.enabled and tool_calls < math.ceil(max_steps * thresholds.abort):
-        # 工具次數的保險絲低於輪數中斷點：縮小 D 使中斷點落在保險絲內；縮到不能分段就放棄分段
-        shrunk = math.floor(tool_calls / thresholds.abort)
-        if shrunk >= 1:
-            max_steps = shrunk
-        else:
-            thresholds, max_steps = BudgetThresholds(), min(max_steps, tool_calls)
+    hard = hard_budget(policy)
+    hard_steps = hard.max_steps if cap.max_steps is None else min(hard.max_steps, cap.max_steps)
+    hard_tokens = _min_opt(hard.max_tokens, cap.max_tokens)
+    tool_calls = hard.max_tool_calls if cap.max_tool_calls is None else min(hard.max_tool_calls, cap.max_tool_calls)
+    widened = (
+        (cap.max_steps is not None and cap.max_steps > hard.max_steps)
+        or (cap.max_tool_calls is not None and cap.max_tool_calls > hard.max_tool_calls)
+        or (cap.max_tokens is not None and hard.max_tokens is not None and cap.max_tokens > hard.max_tokens)
+        or (cap.run_deadline_s is not None and policy.run_deadline_s is not None and cap.run_deadline_s > policy.run_deadline_s)
+        or (cap.max_cost is not None and policy.max_cost is not None and cap.max_cost > policy.max_cost)
+    )
+    if widened and metrics is not None:
+        metrics["budget.cap_clamped"] += 1  # 試圖放寬的維度被忽略（逐維度取 min），不報錯
+    out = _with_hard_limits(policy, hard_steps, hard_tokens, tool_calls)
     return replace(
-        policy, max_steps=max_steps, max_tokens=max_tokens, thresholds=thresholds, max_tool_calls=tool_calls,
-        run_deadline_s=_min_opt(policy.run_deadline_s, cap.run_deadline_s),
+        out, run_deadline_s=_min_opt(policy.run_deadline_s, cap.run_deadline_s),
         max_cost=_min_opt(policy.max_cost, cap.max_cost),
     )
 
 
 def tighten(a: LoopBudget, b: LoopBudget) -> LoopBudget:
-    """兩份預算逐維度取較緊者（resume：凍結值與重新解析值取 min，只收窄）；門檻與其他欄位沿用 ``a``。"""
+    """兩份預算逐維度比較**中斷點硬上限**（不是 D）取較緊者（resume：凍結值與重新解析值，只收窄）；
+    D 與門檻由較緊的硬上限以 ``a`` 的門檻反推。"""
+    ha, hb = hard_budget(a), hard_budget(b)
+    out = _with_hard_limits(
+        a, min(ha.max_steps, hb.max_steps), _min_opt(ha.max_tokens, hb.max_tokens), min(ha.max_tool_calls, hb.max_tool_calls),
+    )
     return replace(
-        a, max_steps=min(a.max_steps, b.max_steps), max_tool_calls=min(a.max_tool_calls, b.max_tool_calls),
-        max_tokens=_min_opt(a.max_tokens, b.max_tokens), run_deadline_s=_min_opt(a.run_deadline_s, b.run_deadline_s),
-        max_cost=_min_opt(a.max_cost, b.max_cost),
+        out, run_deadline_s=_min_opt(a.run_deadline_s, b.run_deadline_s), max_cost=_min_opt(a.max_cost, b.max_cost),
     )

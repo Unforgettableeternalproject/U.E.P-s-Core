@@ -145,5 +145,5 @@ def test_create_loop_run_builds_task_and_run_from_trigger():
     kw = seen["task"]
     assert kw["goal"] == LOOP_GOAL_USER_TURN and kw["owner_actor_id"] == "o" and kw["scope_ref"] == "aud"
     assert kw["policy"].policy_ref == "pol" and kw["policy"].interrupt_policy is InterruptPolicy.INTERRUPTIBLE
-    assert kw["origin_ref"] == {"kind": "user_turn", "ref": "turn_abc"}
+    assert kw["origin_ref"] == {"kind": "user_turn", "ref": "turn_abc", "route": "agent_loop"}
     assert seen["run"] == ("task_1", {"persona_version": 2, "policy_version": 3})

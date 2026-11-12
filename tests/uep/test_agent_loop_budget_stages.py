@@ -57,8 +57,11 @@ def _policy(**over):
 def test_unresolved_policy_falls_back_to_launcher_budget_and_counts():
     default = LoopBudget(max_steps=7)
     metrics: Counter[str] = Counter()
-    out = resolve_budget(BudgetPolicyTable(), default, policy_ref="p", route="agent_loop", tier=None, cap=None, metrics=metrics)
+    other = BudgetPolicyTable({("p", "task_request", "lite"): _policy()})
+    out = resolve_budget(other, default, policy_ref="p", route="agent_loop", tier=None, cap=None, metrics=metrics)
     assert out == default and metrics["budget.policy_unresolved"] == 1
+    resolve_budget(BudgetPolicyTable(), default, policy_ref="p", route="agent_loop", tier=None, cap=None, metrics=metrics)
+    assert metrics["budget.policy_unresolved"] == 1  # 空表（尚未配置任何列）不計，避免每個 Run 都是噪音
 
 
 @pytest.mark.parametrize("cap_steps", [1, 3, 7, 20, 25, 100])
@@ -148,10 +151,11 @@ def test_abort_with_failed_finalize_step_aggregates_receipts_deterministically()
     rig = _staged_rig(_tool_rounds(4) + [Round(error="PROVIDER_UNAVAILABLE")], kinds=kinds, delivered=delivered)
     out = rig.run()
     assert (out.state, out.reason_code, out.partial) == ("failed", "budget_exhausted", True)
-    assert "read.lone:0" in out.text and delivered == [out.text]  # 不經模型，直接彙整已完成的工具結果
+    assert "read.lone：ok" in out.text and delivered == [out.text]  # 不經模型，確定性彙整
+    assert "read.lone:0" not in out.text  # 只放工具名與狀態，不放結果內容
 
 
-def test_abort_without_any_result_is_partial_with_empty_text_and_not_delivered():
+def test_abort_after_failed_tools_lists_status_only_and_still_delivers():
     kinds: list[str] = []
     delivered: list[str] = []
     budget = LoopBudget(max_steps=1, max_tool_calls=20, thresholds=STAGED, repeat_limit=99)
@@ -159,7 +163,8 @@ def test_abort_without_any_result_is_partial_with_empty_text_and_not_delivered()
               budget=budget, on_budget=kinds.append, deliver_result=lambda t: delivered.append(t) or True)
     rig.tasks.fail_tools.add("write.s")
     out = rig.run()
-    assert out.partial and out.state == "failed" and delivered == [] and kinds[-1] == "abort"
+    assert out.partial and out.state == "failed" and kinds[-1] == "abort"
+    assert "write.s：failed" in out.text and delivered == [out.text]
 
 
 def test_resume_does_not_resend_passed_stages():
@@ -254,3 +259,169 @@ def test_create_loop_run_records_route_in_origin_ref():
     )
     create_loop_run(tasks, trigger(), persona_id="uep", persona_version=1, policy_version=1)
     assert seen["origin_ref"]["route"] == "agent_loop"
+
+
+# ---- 審查修正：cap 混合維度、tighten、tokens 端到端、保險絲、取消 ----
+
+def test_mixed_dimension_cap_never_widens_any_dimension():
+    """steps 的 cap 很大、tokens 的 cap 很小：steps 不得因 tokens 觸發放棄分段而被放寬。"""
+    policy = _policy()  # steps D=10（硬上限 20）、tokens D=1000（硬上限 2000）、門檻 (1,1.5,2)
+    table = BudgetPolicyTable({("p", "agent_loop", "standard"): policy})
+    out = resolve_budget(table, LoopBudget(), policy_ref="p", route="agent_loop", tier=None, cap=BudgetCap(max_steps=100, max_tokens=1))
+    hard, orig = hard_budget(out), hard_budget(policy)
+    assert hard.max_steps <= orig.max_steps == 20 and hard.max_tokens is not None and hard.max_tokens <= 1
+
+
+def test_tighten_compares_hard_limits_not_d():
+    frozen = LoopBudget(max_steps=10, max_tool_calls=40, thresholds=STAGED)  # 硬上限 20
+    fresh = LoopBudget(max_steps=12, max_tool_calls=40)  # 不分段，硬上限 12
+    assert hard_budget(tighten(frozen, fresh)).max_steps == 12
+    assert hard_budget(tighten(fresh, frozen)).max_steps == 12  # 對稱
+    looser = LoopBudget(max_steps=30, max_tool_calls=60)
+    assert hard_budget(tighten(frozen, looser)).max_steps == 20  # 重新解析更寬：沿用凍結值
+
+
+def test_budget_stage_and_hard_limit_share_one_algorithm_for_fractional_ratios():
+    b = LoopBudget(max_steps=5, max_tool_calls=30, thresholds=BudgetThresholds(1.0, 1.2, 1.5))
+    assert hard_budget(b).max_steps == 8  # ceil(5 × 1.5)
+    assert [budget_stage(b, BudgetCounters(steps=s)) for s in (4, 5, 6, 7, 8)] == [0, 1, 2, 2, 3]
+
+
+def test_tokens_dimension_triggers_abort_end_to_end():
+    kinds: list[str] = []
+    budget = LoopBudget(max_steps=10, max_tool_calls=40, max_tokens=100, thresholds=STAGED, repeat_limit=99)
+    rounds = [Round("", (call("read.lone", str(i)),), usage=80) for i in range(4)] + [Round("收束")]
+    rig = Rig(rounds, budget=budget, on_budget=kinds.append)
+    out = rig.run()
+    assert kinds == ["warn", "notice", "abort"] and out.partial and out.reason_code == "budget_exhausted"
+
+
+def test_tool_calls_exhausted_first_keeps_todays_finalize_even_with_thresholds():
+    """tool_calls 與牆鐘是不分段的保險絲（Chain 契約 2.3.1）：先耗盡時沿用今天的 finalize，不標 partial。"""
+    kinds: list[str] = []
+    budget = LoopBudget(max_steps=3, max_tool_calls=6, thresholds=STAGED, repeat_limit=99)
+    first = tuple(call("read.lone", str(i)) for i in range(3))
+    second = tuple(call("read.lone", str(i + 3)) for i in range(3))
+    rig = Rig([Round("", first), Round("", second), Round("收束")], budget=budget, on_budget=kinds.append)
+    out = rig.run()
+    assert (out.state, out.reason_code, out.partial) == ("completed", "budget_finalized", False) and "abort" not in kinds
+
+
+def test_cancel_during_abort_step_ends_cancelled_without_partial():
+    flag = {"on": False}
+    kinds: list[str] = []
+
+    def on_budget(kind):
+        kinds.append(kind)
+        flag["on"] = kind == "abort"
+
+    rig = _staged_rig(_tool_rounds(4) + [Round("收束文字")], kinds=[])
+    rig.loop = rig.new_loop(on_budget=on_budget, cancelled=lambda: flag["on"], deliver_result=None)
+    out = rig.run()
+    assert out.state == "cancelled" and not out.partial and kinds[-1] == "abort"
+
+
+def test_stale_epoch_during_abort_step_stops_the_loop():
+    kinds: list[str] = []
+    rig = _staged_rig(_tool_rounds(4) + [Round("收束文字")], kinds=kinds)
+
+    def on_budget(kind):
+        kinds.append(kind)
+        if kind == "abort":
+            rig.tasks.stale_on_heartbeat = True
+
+    rig.loop = rig.new_loop(on_budget=on_budget)
+    assert rig.run().state == "stale"
+
+
+def test_budget_stage_log_carries_stable_event_key(caplog):
+    import logging
+
+    rig = _staged_rig(_tool_rounds(4) + [Round("收束")], kinds=[])
+    with caplog.at_level(logging.WARNING, logger="uep.agent.loop"):
+        rig.run()
+    events = [(r.event, r.stage) for r in caplog.records if getattr(r, "event", None) == "budget_stage"]
+    assert events == [("budget_stage", 1), ("budget_stage", 2)]
+
+
+def test_active_consult_uses_the_abort_point_as_baseline():
+    from tests.uep.test_agent_loop_consult import CRig
+    from uep.tools.catalog.decision import CONSULT_TOOL
+
+    budget = LoopBudget(max_steps=5, max_tool_calls=40, max_consults=3, thresholds=STAGED, consult_loop_end_margin=3)
+    rig = CRig([], budget=budget)
+    st = rig.loop._new_state(RUN, trigger(), "p", {"tools": []}, {}, frozenset({"decision.consult"}), [], "ref", BudgetCounters(steps=7))
+    cap = {"tools": [{"tool": CONSULT_TOOL, "version": 1}]}
+    assert rig.loop._active_consult_due(st, cap) is True  # 硬上限 10 - 7 = 3 <= margin（以 D=5 算會是負數而不觸發）
+
+
+# ---- launcher：_conclude 的 partial 分支、abort 通知失敗、續跑 ctx ----
+
+def _partial_launcher(status="SENT", memory=None):
+    delivery = _Delivery(status)
+    launcher = _stub_launcher(delivery=delivery, memory_store=memory)
+    launcher._tasks = SimpleNamespace(get_run=lambda run_id: (_ for _ in ()).throw(RuntimeError("no db")))
+    return launcher, delivery
+
+
+def _outcome():
+    return SimpleNamespace(state="failed", reason_code="budget_exhausted", partial=True, text="")
+
+
+@pytest.mark.parametrize(("delivered", "notice_ok", "expect_failure_text"), [
+    (True, True, False), (False, True, True), (True, False, True), (False, False, True),
+])
+def test_conclude_partial_never_records_completed_and_backfills_failure_text(delivered, notice_ok, expect_failure_text):
+    from uep.echo.agent_wiring import LOOP_FAILURE_TEXT, _RunCtx
+
+    launcher, delivery = _partial_launcher()
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1))
+    ctx.delivered, ctx.abort_notice_ok, ctx.text = delivered, notice_ok, "部分結果" if delivered else ""
+    facts = launcher._conclude(ctx, _outcome(), False)
+    assert facts.status == "failed" and facts.partial is True and facts.reason_code == "loop_budget_exhausted"
+    assert facts.generation_ok is False
+    texts = [launcher._texts.get(i.content_ref) for i in delivery.sent]
+    assert (LOOP_FAILURE_TEXT in texts) is expect_failure_text
+
+
+def test_partial_turn_is_not_written_to_memory():
+    from uep.echo.agent_wiring import _RunCtx
+    from uep.turn.models import TurnEndFacts
+
+    stored: list = []
+    launcher, _ = _partial_launcher(memory=lambda ticket, facts: stored.append(facts))
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1))
+    launcher._store_memory(ctx.ticket, TurnEndFacts(status="failed", partial=True, spoken_text="部分"))
+    assert stored == []
+    launcher._store_memory(ctx.ticket, TurnEndFacts(status="completed", generation_ok=True, spoken_text="完整"))
+    assert len(stored) == 1
+
+
+@pytest.mark.parametrize(("status", "ok"), [("SENT", True), ("UNKNOWN", True), ("REJECTED", False)])
+def test_abort_notice_failure_is_tracked_so_conclude_can_backfill(status, ok):
+    from uep.echo.agent_wiring import _RunCtx
+
+    launcher, _ = _partial_launcher(status)
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1))
+    launcher._on_budget(ctx, "abort")
+    assert ctx.abort_notice_ok is ok
+
+
+def test_resumed_ctx_only_records_metric_for_notice():
+    from uep.echo.agent_wiring import _RunCtx
+
+    launcher, delivery = _partial_launcher()
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_u", worker_epoch=1), resumed=True)
+    launcher._on_budget(ctx, "notice")
+    assert delivery.sent == [] and launcher._orchestrator.metrics["budget.notice"] == 1
+
+
+def test_merge_back_carries_the_delivered_partial_result():
+    from uep.agent.loop_context import merge_back
+    from uep.fakes.loop_context import InMemoryLoopContextStore
+
+    store = InMemoryLoopContextStore()
+    merge_back(store, run_id="r1", parent_id="p", scope_ref="s", state="failed", reason_code="budget_exhausted",
+               summary="部分", result="部分", delivered=True, partial=True)
+    entry = store.parent_entries["p"][0]
+    assert entry.payload.state == "failed" and entry.payload.result == "部分"

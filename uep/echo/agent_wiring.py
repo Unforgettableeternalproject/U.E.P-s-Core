@@ -171,7 +171,7 @@ LOOP_PARKED_REASON = "loop_parked_awaiting_approval"
 LOOP_FAILURE_TEXT = "這次處理失敗了，沒有產生回覆。"
 # 三段門檻的固定系統訊息（BG-7：程式常數、不經 LLM、origin=SYSTEM、不進 plan 與日誌）
 BUDGET_NOTICE_TEXT = "這件事花得比預期多，我還在處理，再多一點就會停下來。"
-BUDGET_ABORT_TEXT = "這件事花太多時間和資源，我先停下來了，下面是目前已經取得的部分結果。"
+BUDGET_ABORT_TEXT = "這件事超出了預算，我先停下來了。"
 DEFAULT_MAX_CONCURRENT_LOOPS = 4
 DEFAULT_CLOSE_TIMEOUT_S = 5.0
 FALLBACK_RUN_DEADLINE_S = 600.0  # 自訂預算沒有牆鐘上限時，Supervisor 收尾期限用的保底值
@@ -235,6 +235,7 @@ class _RunCtx:
     budget: Any = None  # 此 Run 的有效預算（建立時凍結；park／resume 沿用）
     activity_id: str | None = None  # Task 的 activity：續跑回覆以它綁定送出（D107）
     cause: ResumeCause = ResumeCause.APPROVED
+    abort_notice_ok: bool = False  # 預算中斷的固定訊息已送出（或結果不確定而不補發）；沒送出時 _conclude 補送失敗訊息
     text: str = ""
     resumed: bool = False  # 核准後續跑的 Run：原 turn 已結束，取消判定不看 turn 終結狀態，結果不再經 Output Gate
 
@@ -490,8 +491,8 @@ class LoopLauncher:
 
     def _store_memory(self, ticket: Any, facts: TurnEndFacts) -> None:
         """route=agent_loop 的 turn 收尾寫記憶：沿用 Host 的寫入路徑（要求 generation_ok 且有 spoken_text，冪等鍵 ``turn:<id>``）。"""
-        if self._memory_store is None:
-            return
+        if self._memory_store is None or facts.partial:
+            return  # 預算中斷的部分結果：記憶 store 沒有 partial 標記，這一輪先不寫（不當成完整回覆）
         try:
             self._memory_store(ticket, facts)
         except Exception:
@@ -509,6 +510,14 @@ class LoopLauncher:
             code = getattr(code, "value", code)
             reason = "loop_exception" if raised else f"loop_{code or getattr(outcome, 'state', 'failed')}"
             self._settle(ctx, ok=ctx.delivered, reason=reason)
+        if getattr(outcome, "partial", False):
+            # 預算中斷（FAILED＋partial）：不是完整回覆，Turn 不記成 completed，保留原因碼；部分結果沒送出（或中斷通知沒送出）時補固定失敗訊息
+            if not (ctx.delivered and ctx.abort_notice_ok) and not self._cancelled(ticket.turn_id):
+                self._notify_failure(ctx)
+            return TurnEndFacts(
+                status="failed", reason_code=reason, generated_len=len(ctx.text) if ctx.delivered else 0,
+                spoken_text=ctx.text if ctx.delivered else "", snapshot_version=ticket.snapshot_version, partial=True,
+            )
         if ctx.delivered:
             return TurnEndFacts(
                 status="completed", generation_ok=True, generated_len=len(ctx.text), spoken_text=ctx.text,
@@ -522,8 +531,7 @@ class LoopLauncher:
             return TurnEndFacts(status="failed", reason_code=LOOP_PARKED_REASON)
         if ctx.delivery_uncertain is not None:
             return TurnEndFacts(status="failed", reason_code=ctx.delivery_uncertain)  # 可能已送達：不再補發
-        if not getattr(outcome, "partial", False):  # 預算中斷已由 abort 通知送出固定訊息，不再補發一則
-            self._notify_failure(ctx)
+        self._notify_failure(ctx)
         return TurnEndFacts(status="failed", reason_code=reason)
 
     def _settle(self, ctx: _RunCtx, *, ok: bool, reason: str) -> None:
@@ -739,14 +747,18 @@ class LoopLauncher:
         metrics = getattr(self._orchestrator, "metrics", None)
         if metrics is not None:
             metrics[f"budget.{kind}"] += 1
-        if kind == "warn":
-            logger.info("預算 warn：run=%s", ctx.run.run_id)
+        if kind == "warn" or ctx.resumed:
+            # warn 只記錄；續跑中的 Run 原 turn 已結束，Gate 必拒，只記 metric 不送
+            logger.info("預算 %s：run=%s", kind, ctx.run.run_id)
             return
         text = BUDGET_NOTICE_TEXT if kind == "notice" else BUDGET_ABORT_TEXT
         try:
-            self._dispatch(ctx, text, kind=OutputKind.SYSTEM_NOTICE, origin=OutputOrigin.SYSTEM)
+            status = self._dispatch(ctx, text, kind=OutputKind.SYSTEM_NOTICE, origin=OutputOrigin.SYSTEM)
         except Exception:
             logger.exception("預算%s訊息交付失敗：turn=%s", kind, ctx.ticket.turn_id)
+            return
+        if kind == "abort" and status is not None and (status in _DELIVERED or status in _DELIVERY_UNCERTAIN):
+            ctx.abort_notice_ok = True  # 已送出或結果不確定（不補發）；被拒／送不出去則 _conclude 補送失敗訊息
 
     def _notify_failure(self, ctx: _RunCtx) -> None:
         """失敗時給使用者的固定系統訊息：經同一條 Output Gate；origin=system，不是角色發言，也不編造看似成功的回答。"""

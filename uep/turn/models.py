@@ -164,6 +164,7 @@ class TurnEndFacts:
     # True = 確定這一輪不在歷史中；False = 不保證。error 只供 log 與 metric，不進任何事件。
     history_retracted: bool | None = None
     history_retract_error: str | None = None
+    partial: bool = False  # 預算中斷（FAILED＋partial）：收到的是部分結果，不是完整回覆；記憶 store 不支援標記前不寫入
 
 
 @dataclass(frozen=True)

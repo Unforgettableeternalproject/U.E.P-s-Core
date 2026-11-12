@@ -59,8 +59,9 @@ def test_trace_excludes_consult_and_deferred_and_unknown_are_mapped():
 
 
 def _state(rig, messages=(), counters=None):
-    return rig.loop._new_state(RUN, _trigger(), "p", {"tools": []}, {},
-                               frozenset(), list(messages), "ref", counters or BudgetCounters())
+    st = rig.loop._new_state(RUN, _trigger(), "p", {"tools": []}, {}, frozenset(), list(messages), "ref", counters or BudgetCounters())
+    st.trail = rig.loop._trail_from_history(st.transcript)  # 與 resume 後的重建同一條路
+    return st
 
 
 def _trigger():
@@ -173,3 +174,37 @@ def test_executor_facts_use_only_sanitized_digest():
     assert d["trace"][0]["tool"] == "unknown" and d["budget"]["stage"] == 3 and d["last_model_text_en"] is None
     assert LOOP_DIGEST_KEY not in ConsultToolExecutor._facts({"sub_kind": "loop_end", LOOP_DIGEST_KEY: "bad"})
     assert LOOP_DIGEST_KEY not in ConsultToolExecutor._facts({"sub_kind": "loop_end"})
+
+
+# ---- 審查修正：重試去重、approval 狀態、結構化 trail ----
+
+def test_retry_is_one_entry_but_a_later_step_calling_the_same_tool_is_listed_separately():
+    from tests.uep.test_agent_loop_resilience import _fail_once, _no_sleep
+    from uep.agent.retry import RetryPolicy
+
+    rig = CRig(
+        [Round("", (call("read.lone", "1"),)), Round("", (call("read.lone", "2"),)), Round("", (consult(made_progress=True),)),
+         Round("完成")],
+        budget=LoopBudget(max_steps=10, max_tool_calls=30, max_consults=2, repeat_limit=99),
+        retry=RetryPolicy(tool_max=1, tool_backoff_s=0.0), sleep=_no_sleep([]),
+    )
+    _fail_once(rig, "read.lone", "timeout")  # 第一次呼叫暫時性失敗，重試後成功
+    rig.run()
+    (d,) = _digests(rig)
+    assert [t["status"] for t in d["trace"]] == ["ok", "ok"] and [t["tool"] for t in d["trace"]] == ["read.lone", "read.lone"]
+    assert d["tool_calls"] == 3  # 重試計入工具次數，但 trace 只有兩個呼叫（重試的結果取代原結果）
+
+
+def test_approval_pending_maps_to_awaiting_approval_and_other_statuses_stay_structured():
+    rig = CRig([])
+    loop = rig.loop
+    assert loop._digest_status("approval_pending", None) == "awaiting_approval"
+    assert loop._trail_item("post.ask", {"status": "approval_pending"})["status"] == "awaiting_approval"
+    # 成功輸出剛好以 "tool " 開頭：Run 內的結構化 trail 不受影響；只有 resume 重建（regex）才會誤判，這是已註明的限制
+    live = loop._trail_item("read.lone", {"status": "ok", "items": [{"content": "tool failed: 不是狀態"}]})
+    assert live["status"] == "ok"
+    rebuilt = loop._trail_from_history([
+        ChatMessage("assistant", "", tool_calls=({"id": "c", "name": "read.lone", "args": {}},)),
+        ChatMessage("tool", "tool failed: 內容", tool_call_id="c"),
+    ])
+    assert rebuilt[0]["status"] == "failed"

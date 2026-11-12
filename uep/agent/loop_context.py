@@ -153,11 +153,11 @@ def clip_summary(text: str) -> str:
 def merge_back(
     store: LoopContextStore, *, run_id: str, parent_id: str, scope_ref: str, state: str,
     reason_code: str | None = None, summary: str = "", result: str | None = None, delivered: bool = False,
-    trail_ref: str | None = None,
+    trail_ref: str | None = None, partial: bool = False,
 ) -> bool:
-    """Run 終態時回饋 parent：一次、冪等。``state=completed`` 才帶 summary／result／trail_ref，且 ``result``
-    只有 ``delivered`` 為真（已實際交付）才寫入；其餘狀態只寫狀態註記。回傳是否為第一次寫入。"""
-    if state == "completed":
+    """Run 終態時回饋 parent：一次、冪等。``state=completed``（或預算中斷的 ``partial``）才帶 summary／result／trail_ref，
+    且 ``result`` 只有 ``delivered`` 為真（已實際交付）才寫入；其餘狀態只寫狀態註記。回傳是否為第一次寫入。"""
+    if state == "completed" or partial:
         payload = MergeBack(
             run_id, scope_ref, state, reason_code, summary=f"loop:{run_id} {clip_summary(summary)}".strip(),
             result=result if delivered and result else None, trail_ref=trail_ref,

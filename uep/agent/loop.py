@@ -222,6 +222,7 @@ class _State:
     model_retry_streak: int = 0  # 連續模型呼叫重試次數（不進 checkpoint；推進成功即歸零）
     budget_stage: int = 0  # 已觸發的門檻階段（0..2）；不進 checkpoint，resume 由計數器推回，不重送
     budget_hint: str | None = None
+    trail: list[dict[str, Any]] = field(default_factory=list)  # 已處理的工具呼叫（結構化：tool／status／reason_code），digest 與部分結果彙整用
     rebuilt: bool = False  # resume 後：loop_digest 的 trace 由已提交 history 重建（trace_source="rebuilt"）
 
 
@@ -399,6 +400,7 @@ class AgentLoop:
         cap = self._narrow(projected, frozen, prior)
         st = self._new_state(run_id, trigger, parent_id, cap, frozen, tags, messages, str(checkpoint["child_context_ref"]), counters)
         st.rebuilt = True  # loop_digest 的 trace 由已提交 history 重建
+        st.trail = self._trail_from_history(st.transcript)
         st.step_id = str(checkpoint["step_id"])
         st.frozen_modalities = frozenset(str(m) for m in checkpoint["frozen_modalities"])
         st.frozen_platforms = frozenset(str(m) for m in checkpoint["frozen_platforms"])
@@ -654,24 +656,40 @@ class AgentLoop:
 
     @staticmethod
     def _digest_status(status: str, reason: str | None) -> str:
+        if status in ("approval_pending", "approval_required"):
+            return "awaiting_approval"
         if status == "blocked" and (reason or "").startswith("deferred"):
             return "deferred"
         return status if status in DIGEST_STATUSES else "unknown"  # 結果未明（unknown／cancelled 等）一律 unknown
 
-    def _digest_trace(self, st: _State, ordinal: int) -> list[dict[str, Any]]:
-        """已提交 history 的工具結果（依序）＋目前批次已得結果；排除 consult 本身。重試只留最後一次（結果已取代原結果）。"""
+    def _trail_item(self, tool: str, view: Mapping[str, Any]) -> dict[str, Any]:
+        reason = view.get("reason_code")
+        reason = reason if isinstance(reason, str) else None
+        return {"tool": tool, "status": self._digest_status(str(view.get("status", "unknown")), reason), "reason_code": reason}
+
+    def _trail_from_history(self, transcript: Sequence[ChatMessage]) -> list[dict[str, Any]]:
+        """resume 後從已提交 history 重建 trail。限制：history 裡只有給模型看的結果文字（``result_text``），沒有結構化狀態，
+        所以以 ``tool <status>[: <reason>]`` 開頭判斷；成功輸出剛好以「tool 」開頭時會被誤判，這只影響 resume 後的 trace
+        （``trace_source="rebuilt"`` 已標明可能不準）。Run 內新增的呼叫一律用結構化狀態。"""
         items: list[dict[str, Any]] = []
         names: dict[str, str] = {}
-        for m in st.transcript:
+        for m in transcript:
             if m.role == "assistant":
                 names.update({str(c["id"]): str(c["name"]) for c in m.tool_calls})
             elif m.role == "tool":
-                tool = names.get(str(m.tool_call_id), "unknown")
-                if tool == CONSULT_TOOL:
-                    continue
                 head = re.match(r"tool (\w+)(?:: (.+))?$", m.content)
                 status, reason = (head.group(1), head.group(2)) if head else ("ok", None)
-                items.append({"tool": tool, "status": self._digest_status(status, reason), "reason_code": reason})
+                items.append({
+                    "tool": names.get(str(m.tool_call_id), "unknown"), "reason_code": reason,
+                    "status": self._digest_status(status, reason),
+                })
+        return items
+
+    def _digest_trace(self, st: _State, ordinal: int) -> list[dict[str, Any]]:
+        """已提交 history 的工具結果（依序）＋目前批次已得結果；排除 consult 本身。重試只留最後一次（結果已取代原結果）。"""
+        # 每個呼叫各列一筆：重試已在同一個呼叫內以最後一次的結果取代原結果（retry_of 串起的 action 只留最後一次）；
+        # 不同 step 重新呼叫同一工具是不同的呼叫，分開列
+        items = [dict(item) for item in st.trail if item["tool"] != CONSULT_TOOL]
         batch = st.batch
         if batch is not None:
             for k in sorted(batch.views):
@@ -758,8 +776,9 @@ class AgentLoop:
 
     def _finish(
         self, st: _State, state: LoopState, reason: LoopReason | None, text: str = "", detail: str = "",
+        *, merge: bool = True,
     ) -> LoopOutcome:
-        """終態：Run 轉移、最後 checkpoint、merge-back。``completed`` 在最終文字為空、或 Run 內仍有結果未明（UNKNOWN／EXECUTING）
+        """終態：Run 轉移、最後 checkpoint、merge-back（``merge=False`` 由呼叫端在交付之後自己寫，內容才與實際交付一致）。``completed`` 在最終文字為空、或 Run 內仍有結果未明（UNKNOWN／EXECUTING）
         的 action 時改走 ``FAILED``（真實 TaskManager 的 ``_assert_no_inflight`` 也會拒絕轉 SUCCEEDED）。"""
         if state == "completed" and not text.strip():
             state, reason, detail = "failed", LoopReason.EMPTY_RESULT, ""
@@ -784,10 +803,11 @@ class AgentLoop:
         delivered = False
         if state == "completed" and self._deliver_result is not None:
             delivered = bool(self._deliver_result(text))
-        merge_back(
-            self._store, run_id=st.run_id, parent_id=st.parent_id, scope_ref=st.trigger.scope_ref, state=state,
-            reason_code=reason, summary=text, result=text, delivered=delivered, trail_ref=f"trail:{st.run_id}",
-        )
+        if merge:
+            merge_back(
+                self._store, run_id=st.run_id, parent_id=st.parent_id, scope_ref=st.trigger.scope_ref, state=state,
+                reason_code=reason, summary=text, result=text, delivered=delivered, trail_ref=f"trail:{st.run_id}",
+            )
         return LoopOutcome(
             state, st.run_id, reason, text, st.counters.steps, st.counters.tool_calls, delivered=delivered,
         )
@@ -861,6 +881,8 @@ class AgentLoop:
         if end.kind == "exhausted":
             if self._budget.thresholds.enabled and end.dim in ("steps", "tokens"):
                 return self._abort(st, end.dim)  # 三段門檻的中斷點：FAILED(budget_exhausted)＋partial
+            # 其餘維度（tool_calls、牆鐘、rounds）是不分段的保險絲：契約（Chain §2.3.1）明定沿用今天的處置，即使三段門檻已啟用，
+            # tool_calls 先耗盡也走下面的 finalize（BUDGET_FINALIZED）／FAILED(budget_exhausted)，不標 partial
             by_consult = end.dim == "consult"  # 中樞建議 finalize：不是預算耗盡
             if end.dim != "run_deadline" and self._budget.finalize_on_exhausted:
                 final = self._run_attempt(st, {"tools": []}, finalize=True)
@@ -893,7 +915,10 @@ class AgentLoop:
             kind = "warn" if st.budget_stage == 1 else "notice"
             if kind == "warn":
                 st.budget_hint = BUDGET_HINT_CONVERGE
-            logger.warning("預算門檻 %s：run=%s steps=%d tokens=%d", kind, st.run_id, st.counters.steps, st.counters.tokens)
+            logger.warning(
+                "預算門檻 %s：run=%s steps=%d tokens=%d", kind, st.run_id, st.counters.steps, st.counters.tokens,
+                extra={"event": "budget_stage", "stage": st.budget_stage},  # 穩定事件鍵：決策層的 decision_log 之後靠它對接
+            )
             self._notify_budget(kind)
             fired = True
         return fired
@@ -909,21 +934,20 @@ class AgentLoop:
             st.transcript.append(ChatMessage("assistant", text))
         else:
             text = self._partial_summary(st)
-        outcome = self._finish(st, "failed", LoopReason.BUDGET_EXHAUSTED, detail=dim)
+        outcome = self._finish(st, "failed", LoopReason.BUDGET_EXHAUSTED, detail=dim, merge=False)
         delivered = bool(text) and self._deliver_result is not None and bool(self._deliver_result(text))
+        merge_back(  # 交付之後才寫：summary／delivered 與實際交付的部分結果一致
+            self._store, run_id=st.run_id, parent_id=st.parent_id, scope_ref=st.trigger.scope_ref, state="failed",
+            reason_code=LoopReason.BUDGET_EXHAUSTED, summary=text, result=text, delivered=delivered,
+            trail_ref=f"trail:{st.run_id}", partial=True,
+        )
         return dataclasses.replace(outcome, text=text, partial=True, delivered=delivered)
 
     @staticmethod
     def _partial_summary(st: _State) -> str:
-        """已成功的工具結果的確定性彙整（只用 history 內已有的結果文字，不編造）。"""
-        names: dict[str, str] = {}
-        lines: list[str] = []
-        for m in st.transcript:
-            if m.role == "assistant":
-                names.update({str(c["id"]): str(c["name"]) for c in m.tool_calls})
-            elif m.role == "tool" and not m.content.startswith("tool "):
-                lines.append(f"- {names.get(str(m.tool_call_id), '工具')}：{m.content[:200]}")
-        return ("已取得的部分結果：\n" + "\n".join(lines))[:2000] if lines else ""
+        """已完成的工具呼叫的確定性彙整（不經模型）：只列工具名稱與結構化狀態，**不放任何結果內容**（可能含私密的記憶片段）。"""
+        lines = [f"- {item['tool']}：{item['status']}" for item in st.trail if item["tool"] != CONSULT_TOOL]
+        return ("已執行的步驟（僅列工具與狀態）：\n" + "\n".join(lines[-DIGEST_MAX_TRACE:]))[:2000] if lines else ""
 
     def _park(self, st: _State) -> None:
         """park 出口（checkpoint 已寫入之後）：``park_run`` 釋放 worker，再 mark_parked。回傳的 Run 若已不是本 epoch
@@ -967,8 +991,8 @@ class AgentLoop:
         margin = self._budget.consult_loop_end_margin
         if margin is None or CONSULT_TOOL not in visible_tools(cap) or not self._consult_allowed(st):
             return False
-        steps_left = self._budget.max_steps - st.counters.steps
-        calls_left = self._budget.max_tool_calls - st.counters.tool_calls
+        steps_left = self._hard.max_steps - st.counters.steps  # 以中斷點為基準（與 digest 一致）
+        calls_left = self._hard.max_tool_calls - st.counters.tool_calls
         return 2 <= steps_left <= margin and calls_left >= 2
 
     def _active_consult(self, st: _State, cap: Mapping[str, Any]) -> _End | None:
@@ -1312,6 +1336,9 @@ class AgentLoop:
             limit = min(limit, escalated[0])  # escalate 的結果與其後各項都不進 history（不回饋模型）
         for k in range(limit):
             st.transcript.append(ChatMessage("tool", result_text(views[k]), tool_call_id=calls[k]["id"]))
+            st.trail.append(self._trail_item(calls[k]["name"], views[k]))
+        if parked_at is not None:
+            st.trail.append(self._trail_item(calls[parked_at]["name"], {"status": "approval_pending"}))
         self._account_usage(st, attempt_id)
         self._end_step(st, ok=True)
 

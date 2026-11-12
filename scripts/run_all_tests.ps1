@@ -15,7 +15,7 @@
     也可用環境變數 UEP_GATE_LAYOUT 指定。
 
 .PARAMETER Only
-    只跑指定項目（es、em、stt、session、tts、core），預設全跑。
+    只跑指定項目（em、stt、session、tts、core），預設全跑。
 
 .PARAMETER SiblingRoot
     Sibling 佈局下兄弟 repo 的父目錄，預設為 Core 的上一層。
@@ -34,13 +34,13 @@
 
 .EXAMPLE
     pwsh -File scripts/run_all_tests.ps1
-    pwsh -File scripts/run_all_tests.ps1 -Layout Core -Only es,core
+    pwsh -File scripts/run_all_tests.ps1 -Layout Core -Only em,core
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Sibling', 'Core')]
     [string]$Layout = $(if ($env:UEP_GATE_LAYOUT) { $env:UEP_GATE_LAYOUT } else { 'Sibling' }),
-    [ValidateSet('es', 'em', 'stt', 'session', 'tts', 'core')]
+    [ValidateSet('em', 'stt', 'session', 'tts', 'core')]
     [string[]]$Only,
     [string]$SiblingRoot,
     [string]$Python = (Join-Path $env:USERPROFILE '.uep\venv-inference-312-t211\Scripts\python.exe'),
@@ -64,7 +64,6 @@ $migrated = @('session', 'em', 'stt', 'tts')
 # 子系統名稱 -> 兄弟 repo 目錄名（已遷入者為 $null，舊 repo 已 archive 並將自本機刪除）/ 遷入後 subsystems 下的目錄名 / 原本的 pytest 參數
 # Session 的 addopts 在遷入後已移除 --cov；此處仍以 -o addopts= 清掉並顯式保留 e2e 排除，與 M0 基線命令一致
 $items = @(
-    [pscustomobject]@{ Key = 'es';      Label = 'ES (echo_stream)';              Sibling = 'Echo-Stream';              Sub = 'echo_stream';       PytestArgs = '' }
     [pscustomobject]@{ Key = 'em';      Label = 'EM (echo_memory 三包)';         Sibling = $null;                      Sub = 'echo_memory';       PytestArgs = '' }
     [pscustomobject]@{ Key = 'stt';     Label = 'STT (echo_stt)';                Sibling = $null;                      Sub = 'echo_stt';          PytestArgs = '' }
     [pscustomobject]@{ Key = 'session'; Label = 'Session (echo_thought_core)';   Sibling = $null;                      Sub = 'echo_thought_core'; PytestArgs = '-o addopts= -m "not e2e"' }
@@ -115,7 +114,7 @@ foreach ($item in $items) {
     $dir = Resolve-WorkDir $item
     if (-not (Test-Path $dir)) {
         Write-Host "[$($item.Key)] 找不到目錄：$dir" -ForegroundColor Red
-        $results += [pscustomobject]@{ Key = $item.Key; Label = $item.Label; Commit = '-'; Status = 'MISSING'; Passed = 0; Skipped = 0; Failed = 0; Error = 0; Deselected = 0; Seconds = 0 }
+        $results += [pscustomobject]@{ Key = $item.Key; Label = $item.Label; Commit = '-'; Status = 'MISSING'; Passed = 0; Skipped = 0; Failed = 0; Error = 0; Deselected = 0; XFailed = 0; XPassed = 0; Seconds = 0 }
         continue
     }
     $commit = Get-GitHead $dir
@@ -143,24 +142,24 @@ foreach ($item in $items) {
     elseif ($null -eq $c) { $status = 'NOSUMMARY' }
     elseif ($proc.ExitCode -eq 0) { $status = 'OK' }
     else { $status = 'FAIL' }
-    if ($null -eq $c) { $c = @{ passed = 0; skipped = 0; failed = 0; error = 0; deselected = 0 } }
+    if ($null -eq $c) { $c = @{ passed = 0; skipped = 0; failed = 0; error = 0; deselected = 0; xfailed = 0; xpassed = 0 } }
 
     $results += [pscustomobject]@{
         Key = $item.Key; Label = $item.Label; Commit = $commit; Status = $status
-        Passed = $c.passed; Skipped = $c.skipped; Failed = $c.failed; Error = $c.error; Deselected = $c.deselected
+        Passed = $c.passed; Skipped = $c.skipped; Failed = $c.failed; Error = $c.error; Deselected = $c.deselected; XFailed = $c.xfailed; XPassed = $c.xpassed
         Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
     }
     $color = if ($status -eq 'OK') { 'Green' } else { 'Red' }
-    Write-Host ("      -> {0}  passed={1} skipped={2} failed={3} error={4}  {5}s" -f $status, $c.passed, $c.skipped, $c.failed, $c.error, $results[-1].Seconds) -ForegroundColor $color
+    Write-Host ("      -> {0}  passed={1} skipped={2} failed={3} error={4} xfailed={5} xpassed={6}  {7}s" -f $status, $c.passed, $c.skipped, $c.failed, $c.error, $c.xfailed, $c.xpassed, $results[-1].Seconds) -ForegroundColor $color
 }
 
 Write-Host ""
 Write-Host "== 彙總 (Layout=$Layout)"
-$results | Format-Table Key, Label, Status, Passed, Skipped, Failed, Error, Deselected, Seconds, Commit -AutoSize | Out-String | Write-Host
+$results | Format-Table Key, Label, Status, Passed, Skipped, Failed, Error, XFailed, XPassed, Deselected, Seconds, Commit -AutoSize | Out-String | Write-Host
 
 $summaryPath = Join-Path $LogDir 'summary.md'
-$md = @('| 項目 | 狀態 | passed | skipped | failed | error | deselected | 耗時(s) | commit |', '|---|---|---|---|---|---|---|---|---|')
-$md += $results | ForEach-Object { "| $($_.Label) | $($_.Status) | $($_.Passed) | $($_.Skipped) | $($_.Failed) | $($_.Error) | $($_.Deselected) | $($_.Seconds) | $($_.Commit) |" }
+$md = @('| 項目 | 狀態 | passed | skipped | failed | error | xfailed | xpassed | deselected | 耗時(s) | commit |', '|---|---|---|---|---|---|---|---|---|---|---|')
+$md += $results | ForEach-Object { "| $($_.Label) | $($_.Status) | $($_.Passed) | $($_.Skipped) | $($_.Failed) | $($_.Error) | $($_.XFailed) | $($_.XPassed) | $($_.Deselected) | $($_.Seconds) | $($_.Commit) |" }
 $md | Set-Content -Encoding utf8 $summaryPath
 Write-Host "Markdown 彙總：$summaryPath"
 

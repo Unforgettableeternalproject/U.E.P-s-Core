@@ -57,8 +57,9 @@
 
 | 子系統 | 角色 | 進度追蹤 |
 |---|---|---|
-| Echo-Stream | 語音管線 | T-05 |
-| echo_stt／echo_tts／echo_memory／echo_thought_core／Discord Bot | 外派 Test 子系統 | T-06 |
+| Discord Bot | 外派 Test 子系統（週期三 P4 改走 Core 介面） | T-06 |
+
+Echo-Stream 已併入 `uep/stream`；echo_stt／echo_tts／echo_memory／echo_thought_core 已遷入 `subsystems/`，不再是外部子系統。
 
 ## 2. 檔案索引
 

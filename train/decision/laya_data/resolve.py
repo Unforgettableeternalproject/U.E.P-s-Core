@@ -18,6 +18,10 @@
    - 混合句取第一個指示（先出現轉告動詞再出現提醒 → message，反之 task；連鎖指示之後另行處理）。
    與盲標一致才收，不一致進人工清單。
 4. ``route_follows_action``（defer_* 卡）：盲標 reply_mode 仍是 defer 且 addressed 才收，route 採盲標。
+5. ``ack_ruling``（ack_after_statement）：艾斯維爾裁決——她剛說完陳述、使用者回裸附和，這句是對她的回應，
+   addressed=True，但她不必回話（reply_mode=pass、route=ignore）。盲標當時依舊規則標 addressed=False，
+   以裁決為準：盲標 reply_mode=pass 且 route=ignore 即收（addressed 不比對）；否則進人工清單。
+   沒有前文的冷啟動附和（ack_cold_start）維持 addressed=False。
 """
 from __future__ import annotations
 
@@ -176,6 +180,10 @@ def resolve_row(row: Mapping[str, Any], blind: Mapping[str, Any] | None) -> tupl
         if blind.get("absent.intent") != label:
             return None, f"relay:rule_{label}_blind_{blind.get('absent.intent')}"
         return {**row, "expected": _expected_with(row, **{"absent.intent": label, "absent.target_location": "none"})}, f"relay_{label}"
+    if rule == "ack_ruling":
+        if blind.get("reply_mode") != "pass" or blind.get("route") != "ignore":
+            return None, "ack_ruling:blind_not_pass_ignore"
+        return {**row, "expected": _expected_with(row, reply_mode="pass", addressed=True, route="ignore")}, "ack_ruling"
     if rule == "route_follows_action":
         if blind.get("reply_mode") != "defer" or blind.get("addressed") is not True or blind.get("route") not in ROUTES:
             return None, "defer:blind_not_defer"

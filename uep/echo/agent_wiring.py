@@ -52,7 +52,7 @@ from uep.tools.outcomes import TurnOutcomeCache
 from uep.tools.projection import ProjectionContext
 from uep.tools.registry import ToolRegistry
 from uep.turn.models import TurnEndFacts
-from uep.turn.orchestrator import RETRACT_REASONS, attempt_label
+from uep.turn.orchestrator import REASON_SHUTDOWN, RETRACT_REASONS, attempt_label
 
 if TYPE_CHECKING:  # legacy 組裝不得載入 uep.agent.loop（test_loop_wiring 鎖定），所以執行期延後 import
     from uep.agent.loop import AgentLoop
@@ -95,6 +95,13 @@ TASK_REQUEST_CAPABILITIES: frozenset[str] = frozenset({"lore.write", "chatroom.p
 # task_request 的緊預算組：兩步（一次工具、一次收束）、一次工具呼叫、不平行、不 consult；政策表鍵 (policy_ref, "task_request", "lite")
 TASK_REQUEST_BUDGET = LoopBudget(max_steps=2, max_tool_calls=1, max_parallel=1, max_consults=0, run_deadline_s=300.0)
 TASK_REQUEST_TIER = "lite"
+
+# route -> turn 被取消／結束時 Run 的處置（Agent 提案 §4.5、Chain 契約 2.4）：barge-in 取消的是 turn 的「說」，不必然取消 Run。
+# ``cancel``＝Run 隨 turn 取消（現狀）；``continue``＝暫停語音、Run 繼續，結果延後經 Host 入口通知。這是 turn 層的政策，
+# 與 Task 的 ``InterruptPolicy``（in-flight action 對 stop 的可中斷程度）無關，後者不變。
+ROUTE_INTERRUPT_POLICY: dict[str, str] = {"agent_loop": "cancel", "task_request": "continue"}
+# 即使 route 是 continue，這些原因仍取消 Run：撤回歷史類（被拒、撤銷、停止）與 shutdown；其餘（插話讓位、結束）不取消
+HARD_CANCEL_REASONS: frozenset[str] = RETRACT_REASONS | {REASON_SHUTDOWN}
 
 
 def task_request_budget_table(policy_ref: str = DEFAULT_LOOP_POLICY_REF) -> BudgetPolicyTable:
@@ -495,9 +502,15 @@ class LoopLauncher:
             logger.warning("續跑取消檢查失敗，視為不取消", exc_info=True)
             return False
 
-    def _cancelled(self, turn_id: str) -> bool:
+    def _cancelled(self, turn_id: str, route: str = "agent_loop") -> bool:
+        """Run 是否該取消。``agent_loop``（cancel）：turn 結束或被取消即取消（現狀）。``task_request``（continue）：插話讓位等
+        軟性結束不取消，只有 closing 與撤回歷史類原因（global_stop／presence_lost／control_stop／被拒）及 shutdown 才取消。"""
+        if self._closing.is_set():
+            return True
         orch = self._orchestrator
-        return self._closing.is_set() or orch.is_ended(turn_id) or orch.cancel_reason_of(turn_id) is not None
+        if ROUTE_INTERRUPT_POLICY.get(route, "cancel") == "continue":
+            return orch.cancel_reason_of(turn_id) in HARD_CANCEL_REASONS
+        return orch.is_ended(turn_id) or orch.cancel_reason_of(turn_id) is not None
 
     def _cleanup(self, turn_id: str, run_id: str) -> None:
         """Run 終態：回合結果暫存、文字暫存與 child／parent 暫存一併清理，不得無限增長。"""
@@ -582,7 +595,7 @@ class LoopLauncher:
             # 預算中斷（FAILED＋partial）：不是完整回覆，Turn 不記成 completed，保留原因碼；部分結果沒送出（或中斷通知沒送出）時補固定失敗訊息
             # 交付狀態不確定（UNKNOWN／ENQUEUED）時可能已送達，不補送失敗訊息（避免使用者看到兩則）
             needs_notice = not (ctx.delivered and ctx.abort_notice_ok) and ctx.delivery_uncertain is None
-            if needs_notice and not self._cancelled(ticket.turn_id):
+            if needs_notice and not self._cancelled(ticket.turn_id, ctx.route):
                 self._notify_failure(ctx)
             return TurnEndFacts(
                 status="failed", reason_code=reason, generated_len=len(ctx.text) if ctx.delivered else 0,
@@ -593,7 +606,7 @@ class LoopLauncher:
                 status="completed", generation_ok=True, generated_len=len(ctx.text), spoken_text=ctx.text,
                 snapshot_version=ticket.snapshot_version,
             )
-        if self._cancelled(ticket.turn_id):
+        if self._cancelled(ticket.turn_id, ctx.route):
             return TurnEndFacts(
                 status="cancelled", reason_code=self._orchestrator.cancel_reason_of(ticket.turn_id) or "loop_cancelled",
             )
@@ -662,7 +675,7 @@ class LoopLauncher:
             injected={"actor_id": ticket.actor_id, "audience": ticket.audience_scope, "segment_id": ticket.segment_id},
             cancelled=(
                 (lambda: ctx.cancel_requested or self._closing.is_set() or self._resume_should_cancel()) if ctx.resumed
-                else (lambda: ctx.cancel_requested or self._cancelled(ticket.turn_id))
+                else (lambda: ctx.cancel_requested or self._cancelled(ticket.turn_id, ctx.route))
             ),
             deliver_result=(
                 (lambda text: self._capture(ctx, text)) if ctx.resumed else (lambda text: self._deliver(ctx, text))
@@ -676,13 +689,42 @@ class LoopLauncher:
 
     def _deliver(self, ctx: _RunCtx, text: str) -> bool:
         """Run 的最終文字 -> Output Gate。被拒、失敗、結果未明（UNKNOWN）都回 False（Run 結果不標已交付）。"""
-        if self._cancelled(ctx.ticket.turn_id):
+        turn_id = ctx.ticket.turn_id
+        if self._cancelled(turn_id, ctx.route):
             return False
+        if ROUTE_INTERRUPT_POLICY.get(ctx.route) == "continue" and self._orchestrator.is_ended(turn_id):
+            return self._deliver_after_turn_end(ctx, text)  # 回合已被插話結束、Run 繼續到完成：結果延後經 Host 入口通知
         status = self._dispatch(ctx, text, kind=OutputKind.TEXT, origin=OutputOrigin.PERSONA)
         if status in _DELIVERED:
             ctx.delivered, ctx.text = True, text
             return True
         ctx.delivery_uncertain = _DELIVERY_UNCERTAIN.get(status) if status is not None else None
+        return False
+
+    def _deliver_after_turn_end(self, ctx: _RunCtx, text: str) -> bool:
+        """原 turn 已結束，turn 世代作廢、Gate 必拒；改走續跑回覆的 Host 入口（activity 綁定、送出當下重取 Lease，可進 pending）。
+        沒有注入入口（``on_resumed`` 為 None）時無處可送，回 False。DELIVERED 才算已交付；UNCERTAIN／PENDING 標記為
+        不確定，避免 ``_conclude`` 再補一則失敗訊息。"""
+        if self._on_resumed is None:
+            return False
+        run = ctx.run
+        result = ResumedRunResult(
+            run_id=run.run_id, worker_epoch=run.worker_epoch, task_id=ctx.task_id, activity_id=ctx.activity_id,
+            ticket=ctx.ticket, outcome=ResumeOutcome.COMPLETED, cause=ResumeCause.APPROVED, text=text,
+        )
+        try:
+            disposition = self._on_resumed(result)
+        except Exception:
+            logger.exception("task_request 延後交付失敗：run=%s", run.run_id)
+            ctx.delivery_uncertain = "loop_delivery_unknown"
+            return False
+        if disposition is ResumeDisposition.DELIVERED:
+            ctx.delivered, ctx.text = True, text
+            return True
+        if disposition is ResumeDisposition.PENDING:
+            ctx.delivery_uncertain = "loop_delivery_pending"
+        elif disposition is ResumeDisposition.UNCERTAIN:
+            ctx.delivery_uncertain = "loop_delivery_unknown"
         return False
 
     @staticmethod

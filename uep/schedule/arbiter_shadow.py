@@ -107,10 +107,15 @@ class PresenceArbiterShadow:
                         else f"{_METRIC}.request.unauthenticated")
             logger.info("仲裁 shadow：觀察到在場請求但無法判決（target=%s authenticated=%s）", target, authenticated)
             return
+        if not is_owner:
+            # member 需要 platform_links 的「已登記」事實，目前拿不到：非 owner 一律不建請求，只計數
+            self._count(f"{_METRIC}.request.member_unverified")
+            return
         try:
+            # owner 只在 payload 明確 owner 且已認證時才建。AR-3 前要改成由 Core 依 platform_links 計算，不信 payload 字串
             self._seq += 1
             request = ArbiterRequest(
-                request_id=f"observed:{ref}", authority="owner" if is_owner else "member",
+                request_id=f"observed:{ref}", authority="owner",
                 requester_ref=str(payload.get("actor_id") or "unknown"), actor_authenticated=True, target=target,
                 received_seq=self._seq)
             now = self._clock()

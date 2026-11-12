@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -356,7 +355,7 @@ def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, r
                             metrics_inc: Callable[[str], None] | None = None) -> Any | None:
     """依旗標組裝在場請求仲裁的 shadow 觀察（只記 log／指標；不呼叫 Presence 寫入、不寫 override）。
 
-    旗標：``settings.presence_arbiter``，沒有該欄位時讀環境變數 ``UEP_PRESENCE_ARBITER``（預設 off）。
+    旗標：``settings.presence_arbiter``（``UEP_PRESENCE_ARBITER``，預設 off）。
     訂閱 ``schedule.directive_issued``（重算 directive 後仲裁）與 ``turn.skipped``（缺席端輸入的 presence_request 觀察）。
     Presence 用 ``peek()``（唯讀）；ACTIVE 但 Lease 已到期的視為不明（以 RECOVERING 表示）。
     """
@@ -365,7 +364,7 @@ def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, r
     from uep.schedule.planner import PresenceReading
     from uep.state.coordinator import Axis
 
-    mode = parse_arbiter_mode(getattr(settings, "presence_arbiter", None) or os.environ.get("UEP_PRESENCE_ARBITER"))
+    mode = parse_arbiter_mode(getattr(settings, "presence_arbiter", None))
     if mode == "off":
         return None
     if reader is None:

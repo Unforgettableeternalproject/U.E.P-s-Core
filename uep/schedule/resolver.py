@@ -251,6 +251,8 @@ def _apply_marks(occs: list[_Occ], marks: Sequence[SlotMark], tz: str) -> list[_
     """abandon／pause：該次出現自 mark.started_at 起轉 abandoned（host＋REST）或 paused（留原平台待命）。
 
     兩者效力上限一致：出現終點或 mark 所屬輪次結束（取先到）；輪次結束後依藍圖。先處理 abandon 再處理 pause。
+    abandon 適用於任何非 rest_window 的行程項（WORK、SOCIAL，或 location 非 host 的項；契約 §9.1 (c)：非工作格的
+    「回主機」也是放棄當前格）；pause 只適用於 WORK。放棄訊號路徑（``consume_abandon``）仍只收 WORK（PP-21）。
     """
     for kind, tag in (("abandon", "abandoned"), ("pause", "paused")):
         for mark in marks:
@@ -258,7 +260,8 @@ def _apply_marks(occs: list[_Occ], marks: Sequence[SlotMark], tz: str) -> list[_
                 continue
             at, planned = _utc(mark.started_at), _utc(mark.planned_start_at)
             target = next((o for o in occs if o.item.item_id == mark.item_ref and o.bp_start == planned
-                           and o.tag == "" and o.item.activity_kind == ActivityKind.WORK
+                           and o.tag == "" and o.item.role != "rest_window"
+                           and (kind == "abandon" or o.item.activity_kind == ActivityKind.WORK)
                            and o.start <= at < o.end), None)
             if target is None:
                 logger.debug("%s mark 沒有對應的工作出現，已忽略：item=%s", kind, mark.item_ref)

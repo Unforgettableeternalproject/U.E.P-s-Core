@@ -159,20 +159,23 @@ def test_parse_arbiter_mode():
         parse_arbiter_mode("on")
 
 
-def test_attach_is_off_by_default(monkeypatch):
-    monkeypatch.delenv("UEP_PRESENCE_ARBITER", raising=False)
+def test_attach_is_off_by_default():
+    from uep.config import UepSettings
+
+    assert UepSettings.model_fields["presence_arbiter"].default == "off"
     core = fake_core()
-    assert attach_presence_arbiter(SimpleNamespace(), core, session_factory=None, reader=Reader()) is None
+    for settings in (SimpleNamespace(), SimpleNamespace(presence_arbiter="off")):
+        assert attach_presence_arbiter(settings, core, session_factory=None, reader=Reader()) is None
     assert core.bus.handlers == {}
-    monkeypatch.setenv("UEP_PRESENCE_ARBITER", "bogus")
     with pytest.raises(ValueError):
-        attach_presence_arbiter(SimpleNamespace(), core, session_factory=None, reader=Reader())
+        attach_presence_arbiter(SimpleNamespace(presence_arbiter="bogus"), core, session_factory=None,
+                                reader=Reader())
 
 
-def test_attach_shadow_subscribes_judges_and_never_writes(monkeypatch):
-    monkeypatch.setenv("UEP_PRESENCE_ARBITER", "shadow")
+def test_attach_shadow_subscribes_judges_and_never_writes():
     core = fake_core()
-    shadow = attach_presence_arbiter(SimpleNamespace(), core, session_factory=None, reader=Reader())
+    shadow = attach_presence_arbiter(SimpleNamespace(presence_arbiter="shadow"), core, session_factory=None,
+                                     reader=Reader())
     assert set(core.bus.handlers) == {"schedule.directive_issued", "turn.skipped"}
     [handler] = core.bus.handlers["schedule.directive_issued"]
     handler(SimpleNamespace(payload={"directive_id": "unknown"}))  # 對不上的 directive：只驗證不丟例外、不寫入
@@ -182,3 +185,14 @@ def test_attach_shadow_subscribes_judges_and_never_writes(monkeypatch):
     assert core.echo.metrics.counts.get("schedule.arbiter.shadow.presence_request_observed") == 1
     shadow.stop()
     assert core.bus.handlers["schedule.directive_issued"] == [] and core.bus.handlers["turn.skipped"] == []
+
+
+def test_non_owner_requests_are_never_built_as_member_requests():  # m5：拿不到 platform_links 的已登記事實
+    shadow, metrics = make(items=(REST,), presence=PresenceReading("ACTIVE", "discord"))
+    shadow._clock = lambda: datetime(2026, 11, 12, 13, 30, tzinfo=TPE)
+    for owner_flag in ("false", "unknown", None, True):
+        shadow.on_turn_skipped(SimpleNamespace(event_id="e", payload={
+            "presence_request": True, "is_owner": owner_flag, "actor_authenticated": True,
+            "target_location": "desktop", "actor_id": "discord:2"}))
+    assert not shadow.judgments
+    assert metrics.counts["schedule.arbiter.shadow.request.member_unverified"] == 4

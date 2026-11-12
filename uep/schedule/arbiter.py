@@ -31,6 +31,7 @@ from uep.contracts.schedule import (
     PlanDirective,
     PlanSlot,
     PlanSource,
+    SlotMark,
 )
 from uep.schedule.planner import PresenceReading
 
@@ -48,6 +49,7 @@ R_OWNER_ONLY = "owner_only"
 R_LOWER_THAN_OVERRIDE = "lower_priority_than_override"
 R_SAME_PRIORITY_QUEUED = "same_priority_queued"
 R_NOT_OVERRIDE_OWNER = "not_override_owner"
+R_EMERGENCY_OVERRIDE_ACTIVE = "emergency_override_active"  # 緊急 override 只有 system 能結束（待 Bernie 確認）
 R_OVERRIDE_ENDED = "override_ended_return_to_plan"
 R_DREAM_IN_FLIGHT = "dream_in_flight"
 R_INTERACTION_ACTIVE = "interaction_active"
@@ -58,7 +60,7 @@ R_DIRECTIVE_EXPIRED = "directive_expired"
 REASON_CODES = frozenset({
     R_ACCEPTED, R_ALREADY_AT_TARGET, R_UNAUTHENTICATED, R_EMERGENCY_REQUIRES_SYSTEM, R_PRESENCE_RECOVERING,
     R_TRANSFER_IN_PROGRESS, R_WORK_IN_PROGRESS, R_ABANDON_REQUIRES_HOST, R_MEMBER_NOT_ACCEPTED, R_OWNER_ONLY,
-    R_LOWER_THAN_OVERRIDE, R_SAME_PRIORITY_QUEUED, R_NOT_OVERRIDE_OWNER, R_OVERRIDE_ENDED, R_DREAM_IN_FLIGHT,
+    R_LOWER_THAN_OVERRIDE, R_SAME_PRIORITY_QUEUED, R_NOT_OVERRIDE_OWNER, R_EMERGENCY_OVERRIDE_ACTIVE, R_OVERRIDE_ENDED, R_DREAM_IN_FLIGHT,
     R_INTERACTION_ACTIVE, R_UNINTERRUPTIBLE_WORK, R_OVERRIDE_ACTIVE, R_STALE_DIRECTIVE, R_DIRECTIVE_EXPIRED,
 })
 
@@ -133,13 +135,7 @@ def arbitrate_request(
     has_override = override is not None or slot.source == PlanSource.OVERRIDE
     emergency = request.emergency
 
-    if not emergency:
-        if actual is None:
-            return _defer(R_PRESENCE_RECOVERING, band)
-        if presence.transfer_active:
-            return ArbitrationDecision("QUEUED", R_TRANSFER_IN_PROGRESS, band)  # 進行中的移轉不中斷
-
-    # ---- 緊急：覆寫一切，只形成 override，不放棄工作項 ----
+    # ---- 緊急：覆寫一切（含不可中斷工作、移轉中），只形成 override，不放棄工作項 ----
     if emergency:
         if leave:
             return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "supersede" if has_override else "none",
@@ -147,17 +143,44 @@ def arbitrate_request(
         return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "supersede" if has_override else "begin",
                                    None if actual == request.target else request.target, request.target)
 
-    # ---- 她已被叫到行程外（有 override）：只比優先序 ----
+    # ---- 授權類判定先於 DEFERRED／QUEUED：沒有資格的請求不該被排隊或等待 ----
+    abandon = False
+    held_priority = PRIORITY_PLAN
+    if has_override:
+        held_priority = override.priority if override is not None and override.priority is not None else PRIORITY_OWNER
+        if leave:
+            if held_priority >= PRIORITY_EMERGENCY and request.authority != "system":
+                # 保守做法（待 Bernie 確認）：緊急 override 只有 system 能結束，owner 的「回主機」也不行
+                return _reject(R_EMERGENCY_OVERRIDE_ACTIVE, band)
+            if request.authority not in ("owner", "system"):
+                return _reject(R_NOT_OVERRIDE_OWNER, band)
+        elif band < held_priority:
+            return _reject(R_LOWER_THAN_OVERRIDE, band)
+    else:
+        if _is_work(slot):
+            if request.explicit_abandon and request.authority == "owner":
+                if not leave:
+                    return _reject(R_ABANDON_REQUIRES_HOST, band)
+                abandon = True
+            else:
+                return _reject(R_WORK_IN_PROGRESS, band)  # WORK（含 pause）只受理明示放棄（owner）與系統緊急
+        elif (slot.activity_kind == ActivityKind.SOCIAL or slot.source == PlanSource.REST_WINDOW) \
+                and request.authority == "member":
+            return _reject(R_MEMBER_NOT_ACCEPTED, band)  # SOCIAL／SLEEP 時段保守：只受理 owner 與系統
+        if slot.interrupt_policy == InterruptPolicy.OWNER_ONLY and request.authority != "owner":
+            return _reject(R_OWNER_ONLY, band)
+
+    # ---- 目前狀態類：Presence 不明、移轉中、同級排隊 ----
+    if actual is None:
+        return _defer(R_PRESENCE_RECOVERING, band)
+    if presence.transfer_active:
+        return ArbitrationDecision("QUEUED", R_TRANSFER_IN_PROGRESS, band)  # 進行中的移轉不中斷
+
     if has_override:
         if leave:  # 回主機＝owner 顯式結束該 override，之後走 return_to_plan 一般仲裁
-            if request.authority in ("owner", "system"):
-                return ArbitrationDecision("ACCEPTED_TRANSFER", R_OVERRIDE_ENDED, band, "end",
-                                           override_end_reason="owner_ended", return_to_plan=True)
-            return _reject(R_NOT_OVERRIDE_OWNER, band)
-        current_band = override.priority if override is not None and override.priority is not None else PRIORITY_OWNER
-        if band < current_band:
-            return _reject(R_LOWER_THAN_OVERRIDE, band)
-        if band == current_band and not (override is not None and same_band_policy(request, override)):
+            return ArbitrationDecision("ACCEPTED_TRANSFER", R_OVERRIDE_ENDED, band, "end",
+                                       override_end_reason="owner_ended", return_to_plan=True)
+        if band == held_priority and not (override is not None and same_band_policy(request, override)):
             return ArbitrationDecision("QUEUED", R_SAME_PRIORITY_QUEUED, band)
         blocked = _safe_point_block(slot, probe, actual, request.target)
         if blocked is not None:
@@ -165,33 +188,39 @@ def arbitrate_request(
         return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "supersede",
                                    None if actual == request.target else request.target, request.target)
 
-    # ---- 沒有 override：依當前行程格分流 ----
-    abandon = False
-    if _is_work(slot):
-        if request.explicit_abandon and request.authority == "owner":
-            if not leave:
-                return _reject(R_ABANDON_REQUIRES_HOST, band)
-            abandon = True
-        else:
-            return _reject(R_WORK_IN_PROGRESS, band)  # WORK（含 pause）只受理明示放棄（owner）與系統緊急
-    elif (slot.activity_kind == ActivityKind.SOCIAL or slot.source == PlanSource.REST_WINDOW)             and request.authority == "member":
-        return _reject(R_MEMBER_NOT_ACCEPTED, band)  # SOCIAL／SLEEP 時段保守：只受理 owner 與系統
-    if slot.interrupt_policy == InterruptPolicy.OWNER_ONLY and request.authority != "owner":
-        return _reject(R_OWNER_ONLY, band)
-
-    if leave and actual == PRESENCE_TARGET_HOST:
-        return _reject(R_ALREADY_AT_TARGET, band)
+    # ---- 沒有 override ----
+    if leave:
+        # 放棄工作（明示）或非工作格的「回主機」（外推 §9.1 (c)：視為放棄當前行程項）→ mark(abandon)。
+        # 先算 mark 再判斷 already_at_target：她已在主機、但行程格還在，仍要放棄該格（投影轉 REST）
+        mark = abandon or (slot.source == PlanSource.ITEM and slot.item_ref is not None
+                           and slot.slot_state != "abandoned")
+        if actual == PRESENCE_TARGET_HOST:
+            if mark:
+                return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "mark_abandon", None)
+            return _reject(R_ALREADY_AT_TARGET, band)
+        blocked = _safe_point_block(slot, probe, actual, request.target)
+        if blocked is not None:
+            return _defer(blocked, band)
+        return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "mark_abandon" if mark else "none",
+                                   PRESENCE_TARGET_HOST)
+    if actual == request.target and slot.location == request.target:
+        return _reject(R_ALREADY_AT_TARGET, band)  # 人已在目標、行程也在目標：不需要 override
     blocked = _safe_point_block(slot, probe, actual, request.target)
     if blocked is not None:
         return _defer(blocked, band)
-    if leave:
-        # 放棄工作（明示）或非工作格的「回主機」（外推：視為放棄當前行程項）→ mark(abandon) 加移轉
-        mark = abandon or (slot.source == PlanSource.ITEM and slot.item_ref is not None
-                           and slot.slot_state != "abandoned")
-        return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "mark_abandon" if mark else "none",
-                                   PRESENCE_TARGET_HOST)
     return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "begin",
                                None if actual == request.target else request.target, request.target)
+
+
+def abandon_mark_for(slot: PlanSlot, request_id: str, now: datetime) -> SlotMark | None:
+    """``override_action="mark_abandon"`` 的判決要交給 ``SlotMarkWriter.begin_mark`` 的內容（純函式）。
+
+    只有「行程項格」（source=ITEM，有藍圖起點）可標記；``cause_request_id`` 取請求 id（冪等）。
+    """
+    if slot.source != PlanSource.ITEM or slot.item_ref is None or slot.blueprint_start_at is None:
+        return None
+    return SlotMark(kind="abandon", item_ref=slot.item_ref, planned_start_at=slot.blueprint_start_at, started_at=now,
+                    cause_request_id=request_id)
 
 
 def arbitrate_directive(

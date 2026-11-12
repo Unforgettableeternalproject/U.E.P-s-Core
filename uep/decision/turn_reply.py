@@ -141,6 +141,9 @@ class TurnReplyEngine:
         self.guard = ProposerGuard("primary")
         self.shadows = [(sp, ProposerGuard(f"shadow{i}")) for i, sp in enumerate(shadow_proposers)]
         self.on_shadow = on_shadow
+        bind_metrics = getattr(proposer, "bind_metrics", None)
+        if callable(bind_metrics):
+            bind_metrics(metrics)  # 組合式 proposer 的來源計數併入 Orchestrator 的 metrics（laya_primary.*）
         self.shadow_log: deque[ShadowRecord] = deque(maxlen=256)
         self._shadow_pending: set[Future[object]] = set()
         self._lock = threading.Lock()

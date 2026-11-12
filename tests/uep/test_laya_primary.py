@@ -17,6 +17,7 @@ from uep.echo.inference_wiring import MODE_AWARE_PROPOSER_IDS, build_voice_aggre
 from uep.echo.laya_wiring import (
     LAYA_PRIMARY_ID,
     SOURCE_LAYA,
+    SOURCE_RULES_LOAD_FAILED,
     SOURCE_RULES_TIMEOUT,
     SOURCE_RULES_WARMING,
     LayaRulesProposer,
@@ -206,7 +207,7 @@ def test_laya_pass_gets_listening_only_when_idle():
     (FakeLaya(_lp(reason="translate_unavailable", version="warming")), SOURCE_RULES_TIMEOUT),
     (FakeLaya(exc=RuntimeError("boom")), SOURCE_RULES_TIMEOUT),
     (FakeLaya(_lp(reason="laya_warming_up", version="warming")), SOURCE_RULES_WARMING),
-    (FakeLaya(_lp(reason="laya_load_failed", version="warming")), SOURCE_RULES_WARMING),
+    (FakeLaya(_lp(reason="laya_load_failed", version="warming")), SOURCE_RULES_LOAD_FAILED),
 ])
 def test_fallback_returns_rules_proposal_with_source_label(laya, label):
     rules = RuleProposer(DecisionConfig())
@@ -262,6 +263,46 @@ def test_laya_pass_settles_rules_pending_topic_as_pass():
     outcome = [c[1] for c in rules.calls if c[0] == "outcome"][0]
     assert (outcome.status, outcome.end_reason, outcome.started) == ("skipped", "pass", True)
     assert outcome.candidate_id == "cand1"
+    assert outcome.speakers == ()  # 不碰說話者的生成中標記（他可能另有真正進行中的回合）
+
+
+def test_laya_defer_settles_rules_pending_topic_as_not_counted():
+    rules = FakeRules()
+    prop = _composite(FakeLaya(_lp("defer", "task_request", True)), rules)
+    prop.propose(_cand())
+    outcome = [c[1] for c in rules.calls if c[0] == "outcome"][0]
+    assert (outcome.status, outcome.started, outcome.speakers) == ("skipped", False, ())  # 不增不減
+    assert outcome.candidate_id == "cand1"
+
+
+def test_real_rules_pending_topic_is_settled_without_touching_responding_speakers():
+    control = RuleProposer(DecisionConfig())
+    control.set_mode_override(ChannelMode.ACTIVE)
+    control.propose(_cand(count=1))
+    assert control.pending_topics == 1  # 對照組：沒有合成結果時話題項會一直待結算
+    rules = RuleProposer(DecisionConfig())
+    rules.set_mode_override(ChannelMode.ACTIVE)
+    prop = _composite(FakeLaya(_lp("defer", "direct_chat", True)), rules)
+    rules._responding.add("discord:1")  # 這位說話者另有進行中的回合
+    prop.propose(_cand(count=1))
+    assert rules.pending_topics == 0 and "discord:1" in rules._responding
+    prop = _composite(FakeLaya(_lp("pass", "ignore", False)), rules)
+    prop.propose(_cand(count=1, cid="c2", ref="e2"))
+    assert rules.pending_topics == 0 and "discord:1" in rules._responding
+
+
+def test_composite_counts_are_visible_in_orchestrator_metrics():
+    laya = FakeLaya(_lp("respond", "task_request", True))
+    orch = _orch(_composite(laya))
+    try:
+        orch._propose(_cand(deadline=time.monotonic() + 0.4))
+        laya.exc = RuntimeError("x")
+        orch._propose(_cand(cid="c2", ref="e2", deadline=time.monotonic() + 0.4))
+        assert orch.metrics["laya_primary.laya_model"] == 1
+        assert orch.metrics["laya_primary.rules_fallback_timeout"] == 1
+        assert orch.metrics["laya_primary.shadow_diff"] == 1
+    finally:
+        orch.close()
 
 
 # ---- C：介面委派 ----
@@ -319,6 +360,15 @@ def test_interjection_dropped_when_laya_judged_last_utterance_pass_or_ignore():
     assert prop.metrics["interjection_dropped_by_laya"] == 1
     release = [c[1] for c in rules.calls if c[0] == "outcome" and c[1].candidate_id.startswith("tick:")][0]
     assert release.started is False  # 解除 in-flight 並套冷卻，不立刻重提同一批
+
+
+def test_defer_also_drops_the_interjection():
+    rules = FakeRules()
+    prop = _composite(FakeLaya(_lp("defer", "task_request", True)), rules)
+    prop.propose(_cand(ref="e7"))
+    rules.interjections = [_ij("e7")]
+    assert prop.tick() == []
+    assert prop.metrics["interjection_dropped_by_laya"] == 1
 
 
 def test_ignore_route_alone_also_drops_the_interjection():
@@ -451,11 +501,23 @@ def test_settings_override_laya_budget_only():
     assert cfg.laya_budget_ms == 650 and cfg.proposer_budget_ms == 300
 
 
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_non_positive_laya_budget_is_rejected_at_startup(value):
+    with pytest.raises(ValueError, match="UEP_LAYA_BUDGET_MS"):
+        decision_config_from_settings(UepSettings(_env_file=None, UEP_LAYA_BUDGET_MS=value))
+
+
 def test_translate_timeout_not_below_budget_warns(caplog):
     bad = UepSettings(_env_file=None, UEP_DECISION_PROPOSER="laya.primary", UEP_DECISION_TRANSLATE="true",
                       UEP_TRANSLATE_TIMEOUT_MS="500", UEP_LAYA_BUDGET_MS="500")
     with caplog.at_level(logging.WARNING, logger="uep.turn.decision_config"):
         decision_config_from_settings(bad)
+    assert any("UEP_TRANSLATE_TIMEOUT_MS" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    margin = UepSettings(_env_file=None, UEP_DECISION_PROPOSER="laya.primary", UEP_DECISION_TRANSLATE="true",
+                         UEP_TRANSLATE_TIMEOUT_MS="430", UEP_LAYA_BUDGET_MS="500")  # 430 + 80 >= 500
+    with caplog.at_level(logging.WARNING, logger="uep.turn.decision_config"):
+        decision_config_from_settings(margin)
     assert any("UEP_TRANSLATE_TIMEOUT_MS" in r.getMessage() for r in caplog.records)
     caplog.clear()
     ok = UepSettings(_env_file=None, UEP_DECISION_PROPOSER="laya.primary", UEP_DECISION_TRANSLATE="true",

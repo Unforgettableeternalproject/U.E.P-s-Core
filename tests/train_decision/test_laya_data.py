@@ -128,7 +128,7 @@ def test_turn_reply_definitions_are_shared_with_inference_schema() -> None:
         assistant_name="Yuki", message="ok", participant_count=3,
         recent_context=module.format_recent_context("Book it?", "Shall I book it?"),
     )
-    assert list(state) == ["assistant_name", "speaker", "other_people_present", "recent_context", "message"]
+    assert list(state) == ["assistant_name", "speaker", "other_people_present", "recent_context", "available_capabilities", "message"]
     assert state["assistant_name"] == "Yuki" and state["other_people_present"] == "2 other people present"
     assert state["recent_context"] == "User: Book it?\nAssistant: Shall I book it?"
 

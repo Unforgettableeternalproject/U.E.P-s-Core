@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("uep.turn.decision_config")
+INFERENCE_MARGIN_MS = 80  # 翻譯用滿之後，模型推論至少要留的時間
 
 
 @dataclass(frozen=True)
@@ -171,7 +172,10 @@ def decision_config_from_settings(settings: object | None = None, base: Decision
     shadows = tuple(pid for pid in dict.fromkeys(shadows) if pid != primary)
     cfg = replace(cfg, proposer_id=primary, shadow_proposer_ids=shadows)
     budget = getattr(st, "laya_budget_ms", None)
-    if budget:
+    if budget is not None:
+        if int(budget) <= 0:
+            # <= 0 在 ProposerGuard 代表不設預算（無限等待）；laya.primary 不允許靜默變成無限
+            raise ValueError(f"UEP_LAYA_BUDGET_MS 必須為正整數（收到 {budget}）")
         cfg = replace(cfg, laya_budget_ms=int(budget))
     _warn_translate_vs_budget(cfg, st)
     return cfg
@@ -185,8 +189,9 @@ def _warn_translate_vs_budget(cfg: DecisionConfig, st: object) -> None:
     from uep.echo.translate_wiring import DEFAULT_TRANSLATE_TIMEOUT_MS
 
     translate_ms = int(getattr(st, "translate_timeout_ms", None) or DEFAULT_TRANSLATE_TIMEOUT_MS)
-    if translate_ms >= cfg.laya_budget_ms:
+    if translate_ms + INFERENCE_MARGIN_MS >= cfg.laya_budget_ms:
         logger.warning(
-            "UEP_TRANSLATE_TIMEOUT_MS=%d 不小於 UEP_LAYA_BUDGET_MS=%d：翻譯逾時前整個決策已先逾時，"
-            "無法退回舊規則；請讓翻譯逾時小於 laya 預算（例如 400 < 500）", translate_ms, cfg.laya_budget_ms,
+            "UEP_TRANSLATE_TIMEOUT_MS=%d 加推論餘裕 %dms 不小於 UEP_LAYA_BUDGET_MS=%d：翻譯用滿時間後模型推論來不及，"
+            "整個決策會先逾時；請讓翻譯逾時加餘裕小於 laya 預算（例如 400 + 80 < 500）",
+            translate_ms, INFERENCE_MARGIN_MS, cfg.laya_budget_ms,
         )

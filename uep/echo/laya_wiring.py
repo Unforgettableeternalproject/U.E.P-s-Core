@@ -400,8 +400,8 @@ LAYA_PRIMARY_ID = "laya.primary"
 # fallback 的完整格式為 ``<label>:<規則原本的原因碼>``）
 SOURCE_LAYA = "laya_model"  # Laya 決定（沿用 LayaProposer 的 reason_code，不加後綴）
 SOURCE_RULES_TIMEOUT = "rules_fallback_timeout"  # 翻譯／預算逾時、翻譯不可用、推論例外或提案無效：舊規則
-SOURCE_RULES_WARMING = "rules_fallback_warming"  # Laya 尚未載入完成或載入失敗：舊規則
-_WARMING_REASONS = frozenset({"laya_warming_up", "laya_load_failed"})
+SOURCE_RULES_WARMING = "rules_fallback_warming"  # Laya 尚未載入完成：舊規則
+SOURCE_RULES_LOAD_FAILED = "rules_fallback_load_failed"  # Laya 載入失敗（之後一律退回，需要人處理）：舊規則
 _VERDICT_KEEP = 32  # 保留最近多少句的 Laya 判斷（供 tick 比對最後一句）
 _INNER_MARGIN_S = 0.03  # 內層等待 Laya 的期限比外層預算提早這麼多，讓外層還來得及收到舊規則的結果
 _LISTENING = "LISTENING"
@@ -430,6 +430,7 @@ class LayaRulesProposer:
         self._clock = clock
         self._guard = ProposerGuard("laya-primary-inner")
         self.metrics: Counter[str] = Counter()
+        self._sink: Counter[str] | None = None
         self._lock = threading.Lock()
         self._verdicts: OrderedDict[str, tuple[ReplyMode, str]] = OrderedDict()  # 最後一個 utterance ref -> (mode, route)
         self._diffs: OrderedDict[str, ShadowDiff] = OrderedDict()  # candidate_id -> 差異，等 engine 取走
@@ -500,6 +501,15 @@ class LayaRulesProposer:
     def close(self) -> None:
         self._guard.close()
 
+    def bind_metrics(self, sink: Counter[str]) -> None:
+        """把計數同步進 Orchestrator 的 metrics（鍵加 ``laya_primary.`` 前綴）；由 ``TurnReplyEngine`` 建構時呼叫。"""
+        self._sink = sink
+
+    def _bump(self, name: str) -> None:
+        self.metrics[name] += 1
+        if self._sink is not None:
+            self._sink[f"laya_primary.{name}"] += 1
+
     # ---- TurnProposer ----
 
     def propose(self, candidate: TurnCandidate) -> Proposal:
@@ -511,17 +521,17 @@ class LayaRulesProposer:
             rules_prop = self._rules.propose(candidate)
         except Exception as exc:
             rules_exc = exc
-            self.metrics["rules_error"] += 1
+            self._bump("rules_error")
             logger.exception("laya.primary：規則 proposer 失敗")
         laya_prop, fallback_source = self._ask_laya(candidate)
         if laya_prop is not None:
             merged = self._merge(candidate, laya_prop)
             self._remember(candidate, merged, rules_prop, int((self._clock() - started) * 1000))
-            self.metrics[SOURCE_LAYA] += 1
+            self._bump(SOURCE_LAYA)
             return merged
         if rules_prop is None:
             raise rules_exc if rules_exc is not None else RuntimeError("laya.primary：Laya 與規則都沒有結果")
-        self.metrics[fallback_source] += 1
+        self._bump(fallback_source)
         return replace(
             rules_prop, proposer_id=LAYA_PRIMARY_ID,
             reason_code=_safe_code(f"{fallback_source}:{rules_prop.reason_code}")[:64],
@@ -533,21 +543,25 @@ class LayaRulesProposer:
         if candidate.deadline is not None:
             remaining = candidate.deadline - self._clock() - _INNER_MARGIN_S
             if remaining <= 0:
-                self.metrics["laya_no_time"] += 1
+                self._bump("laya_no_time")
                 return None, SOURCE_RULES_TIMEOUT
         result, status = self._guard.call(self._laya.propose, candidate, remaining)
+        # 外層預算逾時（卡在規則或 guard 之外）時 engine 直接回 D80 預設，規則的待結算話題項不會被結算，
+        # 只會在 _PENDING_MAX 上限內自然被擠掉；這裡的內層期限已讓 Laya 逾時走不到這一步，故不另處理
         if status != "ok":
-            self.metrics[f"laya_{status}"] += 1  # timeout／busy／error
+            self._bump(f"laya_{status}")  # timeout／busy／error
             return None, SOURCE_RULES_TIMEOUT
         if not isinstance(result, Proposal):
-            self.metrics["laya_invalid"] += 1
+            self._bump("laya_invalid")
             return None, SOURCE_RULES_TIMEOUT
         if result.reason_code != SOURCE_LAYA:  # LayaProposer 的 shadow 預設：尚未載入、載入失敗或翻譯不可用
-            if result.reason_code in _WARMING_REASONS:
+            if result.reason_code == "laya_warming_up":
                 return None, SOURCE_RULES_WARMING
+            if result.reason_code == "laya_load_failed":
+                return None, SOURCE_RULES_LOAD_FAILED
             return None, SOURCE_RULES_TIMEOUT
         if validate_proposal(self._merge(candidate, result)) is not None:
-            self.metrics["laya_invalid"] += 1
+            self._bump("laya_invalid")
             return None, SOURCE_RULES_TIMEOUT
         return result, ""
 
@@ -573,7 +587,7 @@ class LayaRulesProposer:
             ) if differs
         )
         if fields:
-            self.metrics["shadow_diff"] += 1
+            self._bump("shadow_diff")
             diff = ShadowDiff(
                 shadow_id=getattr(self._rules, "proposer_id", "rules.default"), primary=merged, shadow=rules_prop,
                 fields=fields, elapsed_ms=elapsed_ms,
@@ -582,12 +596,16 @@ class LayaRulesProposer:
                 self._diffs[candidate.candidate_id] = diff
                 while len(self._diffs) > _VERDICT_KEEP:
                     self._diffs.popitem(last=False)
-        if merged.reply_mode is ReplyMode.PASS and rules_prop.reply_mode is not ReplyMode.PASS:
-            # 規則提議回應但 Laya 判 pass：回合不會開，規則等不到 outcome，主動模式下的話題項會一直待結算。
-            # 補一筆「LLM 判 PASS」的結果，讓耦合度照常下降
+        if merged.reply_mode in (ReplyMode.PASS, ReplyMode.DEFER) and rules_prop.reply_mode is not ReplyMode.PASS:
+            # 規則提議回應但 Laya 判 pass／defer：Orchestrator 不開回合，規則等不到 outcome，主動模式下的話題項會一直待結算。
+            # speakers 刻意留空：規則的 _passed／_failed 會清掉說話者的「生成中」標記與窗口，
+            # 而這位說話者可能另有真正進行中的回合，不能被合成的結果誤清（只結算話題項）。
+            # pass＝LLM 判 PASS，耦合度下降；defer＝沒有開始（started=False），不增不減
+            is_pass = merged.reply_mode is ReplyMode.PASS
             self._feed_rules_outcome(TurnOutcomeFacts(
-                turn_id="", candidate_id=candidate.candidate_id, speakers=candidate.speakers, reply_mode="pass",
-                reason_code=rules_prop.reason_code, status="skipped", end_reason="pass",
+                turn_id="", candidate_id=candidate.candidate_id, speakers=(),
+                reply_mode=merged.reply_mode.value, reason_code=rules_prop.reason_code, status="skipped",
+                end_reason="pass" if is_pass else "laya_defer", started=is_pass,
             ))
 
     def take_shadow_diff(self, candidate_id: str) -> ShadowDiff | None:
@@ -604,7 +622,7 @@ class LayaRulesProposer:
         kept: list[Interjection] = []
         for ij in interjections:
             if self._laya_vetoes(ij):
-                self.metrics["interjection_dropped_by_laya"] += 1
+                self._bump("interjection_dropped_by_laya")
                 self._release_dropped(ij)
             else:
                 kept.append(ij)
@@ -615,7 +633,8 @@ class LayaRulesProposer:
             return False
         with self._lock:
             verdict = self._verdicts.get(ij.utterance_refs[-1])
-        return verdict is not None and (verdict[0] is ReplyMode.PASS or verdict[1] == "ignore")
+        # pass／ignore：與她無關；defer：她在等使用者確認，不該自己插話
+        return verdict is not None and (verdict[0] in (ReplyMode.PASS, ReplyMode.DEFER) or verdict[1] == "ignore")
 
     def _release_dropped(self, ij: Interjection) -> None:
         """被丟棄的插話：解除規則的 in-flight 並套用冷卻（等同「沒能開始」），避免下個 tick 立刻重提同一批。"""

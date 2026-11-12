@@ -732,7 +732,14 @@ class TurnOrchestrator:
         self, ctx, fact, event_id, trace_id, candidate_id, proposal, auth, actor_id, turn_id, generation, speakers,
         degraded: Degraded | None = None,
     ) -> IntakeResult:
-        if degraded is None and proposal.route == "task_request" and self._loop_entry is None:
+        # 不出聲的回合（passive）一律當 direct_chat 靜默回合：不進 loop 入口、不啟動 Run、不跑工具，也不帶降級事實。
+        # 對 proposer 一視同仁（不只 Laya）：route 是 task_request／agent_loop 也一樣，只有 respond 會動工具
+        runs_tools = proposal.reply_mode is ReplyMode.RESPOND
+        if not runs_tools:
+            degraded = None
+            if proposal.route in ("agent_loop", "task_request"):
+                self.metrics["turn.silent_route_not_run"] += 1
+        if runs_tools and degraded is None and proposal.route == "task_request" and self._loop_entry is None:
             # 沒綁 loop 入口時 task_request 無從執行（標籤全是寫入類，direct_chat 的唯讀工具做不到）：
             # 帶降級事實，避免她假裝做了。agent_loop 沒入口則不標（direct_chat 的唯讀工具仍可能處理）
             degraded = "action_unavailable"
@@ -748,7 +755,7 @@ class TurnOrchestrator:
             self._live[turn_id] = _Live(ticket, trace_id, event_id, candidate_id, proposal.reason_code, speakers)
         self._emit(ticket, "turn.started", {"status": "started"})
         self._phase(InteractionState.THINKING, turn_id)
-        if degraded is None:  # defer 先查核已確定降級就不進 loop 入口
+        if runs_tools and degraded is None:  # defer 先查核已確定降級就不進 loop 入口；passive 不進
             self._enter_loop(ticket, proposal)
             with self._lock:
                 live = self._live.get(turn_id)

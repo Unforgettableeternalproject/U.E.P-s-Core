@@ -262,3 +262,76 @@ class AbandonResult:
     status: Literal["ACCEPTED", "IGNORED"]
     reason_code: str  # ACCEPTED＝accepted；IGNORED＝not_owner／stale_round／not_in_work
     mark: SlotMark | None = None  # ACCEPTED 時：交給 SlotMarkWriter.begin_mark 的內容（cause_request_id＝signal_id）
+
+
+# ---- 在場請求仲裁（AR-1；純資料，仲裁邏輯在 uep/schedule/arbiter.py）----
+
+# 一般請求者 ``member``（已認證＋已登記）只在仲裁器內使用；``PresenceRequest`` 的既有建構路徑（authority 只收 owner／system）
+# 不變。優先序帶由 Core 依 authority 計算，模型輸出不能影響（M-10）
+PRIORITY_BY_AUTHORITY: dict[str, int] = {
+    "member": PRIORITY_REQUESTER, "system": PRIORITY_SYSTEM, "owner": PRIORITY_OWNER}
+ARBITER_AUTHORITIES = frozenset(PRIORITY_BY_AUTHORITY)
+
+_REQUEST_ID_RE = re.compile(r"^\S{1,256}$")
+
+
+@dataclass(frozen=True)
+class ArbiterRequest:
+    """仲裁器看到的在場請求（由已驗證的 ``PresenceRequest`` 或放棄訊號衍生；本身不授權）。
+
+    ``emergency``＝系統緊急（只允許 authority=system）：優先序 EMERGENCY，可覆寫一切、只形成 override 不放棄工作項。
+    ``explicit_abandon``＝伴隨已驗證的 owner 放棄訊號（``AbandonResult`` ACCEPTED 之後才設）。
+    ``received_seq``＝Core 收到的順序（不信任端點時間戳；Q-PP-5 同級衝突用）。
+    """
+
+    request_id: str
+    authority: str
+    requester_ref: str
+    actor_authenticated: bool
+    target: PlanLocation
+    received_seq: int = 0
+    emergency: bool = False
+    explicit_abandon: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request_id, str) or _REQUEST_ID_RE.fullmatch(self.request_id) is None:
+            raise ValueError(f"request_id 不合法：{self.request_id!r}")
+        if self.authority not in ARBITER_AUTHORITIES:
+            raise ValueError(f"authority 只收 owner／system／member：{self.authority!r}")
+        if self.target not in PLAN_LOCATIONS:
+            raise ValueError(f"target 不合法：{self.target!r}")
+        if self.actor_authenticated not in (True, False):
+            raise ValueError("actor_authenticated 必須是布林")
+
+
+@dataclass(frozen=True)
+class InterruptFacts:
+    """``InterruptProbe`` 的執行期事實（行程只給 interrupt_policy 提示，事實由 probe 取得）。"""
+
+    dream_in_flight: bool = False
+    interaction_active: bool = False  # Interaction 不是 IDLE
+    has_uninterruptible_work: bool = False
+
+
+OverrideAction = Literal["none", "begin", "supersede", "end", "mark_abandon"]
+
+
+@dataclass(frozen=True)
+class ArbitrationDecision:
+    """仲裁判決（純資料；執行端依此呼叫 OverrideWriter／SlotMarkWriter／Presence Manager，AR-1 不執行）。
+
+    - ACCEPTED_TRANSFER：受理。``transfer_target`` 為要移轉的位置（None＝不需移轉）；``override_action`` 說明 overlay 動作：
+      begin（建立）／supersede（結束舊的 superseded 並建立）／end（owner_ended，之後走 return_to_plan）／
+      mark_abandon（先放棄當前行程項，再移轉到主機）／none。
+    - QUEUED：排隊（移轉進行中、同級非 owner FIFO）；DEFERRED：等安全點／做夢一輪／Presence 恢復；
+      REJECTED：拒絕（``reason_code`` 固定代碼）。
+    """
+
+    outcome: Literal["ACCEPTED_TRANSFER", "QUEUED", "DEFERRED", "REJECTED"]
+    reason_code: str
+    priority: int = PRIORITY_PLAN
+    override_action: OverrideAction = "none"
+    transfer_target: PlanLocation | None = None
+    override_location: PlanLocation | None = None
+    override_end_reason: str | None = None
+    return_to_plan: bool = False

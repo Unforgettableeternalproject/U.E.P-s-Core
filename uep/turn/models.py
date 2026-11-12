@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from uep.contracts.platform import normalize_platform
 from uep.contracts.presence import AuthorizationTuple, PresenceLocation
@@ -84,6 +85,9 @@ class TurnCandidate:
     deadline: float | None = None  # time.monotonic()；proposer 應在此之前回覆（Orchestrator 另以預算強制）
 
 
+Degraded = Literal["action_unavailable"]  # CoreTicket.degraded 的唯一值：這個動作目前沒有可用的工具
+
+
 @dataclass(frozen=True)
 class Proposal:
     """proposer 的提議（只是提議；Orchestrator 驗證並保留否決權）。"""
@@ -100,6 +104,8 @@ class Proposal:
     capability_hint: tuple[str, ...] | None = None
     # Chain 契約 §3.3：是否含兩個以上獨立指示（None = proposer 不支援）；目前只是欄位，不影響任何決策
     compound: bool | None = None
+    # defer 因能力不足被轉成 respond 時，保留 proposer 原本的原因碼（決策日誌與稽核可對照；一般提議為 None）
+    original_reason_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +126,9 @@ class CoreTicket:
     speaker_ref: str
     actor_id: str
     user_text: str = field(repr=False, default="")
+    # 降級事實（Chain 契約 Q-S）：agent_loop／task_request 因 capability_empty／capability_projection_empty
+    # 退回 direct_chat 時為 "action_unavailable"，意思是「這個動作目前沒有可用的工具」。是事實不是指令，不含使用者可見字串
+    degraded: Degraded | None = None
 
 
 @dataclass(frozen=True)

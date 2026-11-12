@@ -13,10 +13,10 @@ from tests.uep.test_agent_loop import Rig, call, trigger
 from tests.uep.test_agent_loop_entry import _stub_launcher, _ticket
 from uep.adapters.tool import CAPABILITY_CEILING
 from uep.agent.budget import LoopBudget
+from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
 from uep.echo.agent_wiring import (
     DEFAULT_LOOP_POLICY_REF,
     TASK_REQUEST_BUDGET,
-    TASK_REQUEST_CAPABILITIES,
     LoopEntry,
     make_capability_tags_for,
     task_request_budget_table,
@@ -25,6 +25,7 @@ from uep.echo.agent_wiring import (
 from uep.tools.registry import ToolRegistry
 from uep.turn.orchestrator import TurnOrchestrator
 
+TASK_REQUEST_CAPABILITIES = ROUTE_DEFAULT_CAPABILITIES["task_request"]  # 決策層 route 表是唯一來源
 TICKET = SimpleNamespace(turn_id="turn_t", audience_scope="scope_private_owner", snapshot_version=3)
 
 
@@ -212,7 +213,7 @@ def test_empty_task_request_tags_do_not_start_a_run_and_count_a_dedicated_metric
 def test_task_request_tags_equal_the_decision_layers_write_native_tags():
     from uep.decision.capability import WRITE_NATIVE_TAGS
 
-    assert TASK_REQUEST_CAPABILITIES == WRITE_NATIVE_TAGS  # 決策層改表時這裡會提醒同步
+    assert TASK_REQUEST_CAPABILITIES == WRITE_NATIVE_TAGS  # route 表的 task_request 只含寫入類原生標籤
 
 
 def test_same_step_overrun_on_a_user_turn_keeps_todays_finalize_behavior():

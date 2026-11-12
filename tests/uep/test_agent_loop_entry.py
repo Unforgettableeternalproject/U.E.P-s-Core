@@ -140,6 +140,7 @@ def test_orchestrator_claims_only_when_entry_returns_trigger():
     orch = TurnOrchestrator.__new__(TurnOrchestrator)
     orch._lock = threading.Lock()
     orch._loop_claims = __import__("collections").OrderedDict()
+    orch._live = {}  # 降級時會查 live ticket（PR-R）
     orch.metrics = Counter()
     ticket = SimpleNamespace(turn_id="t1")
     orch._loop_entry = lambda t, p: None

@@ -77,6 +77,7 @@ from uep.turn.decision_config import DecisionConfig
 from uep.turn.generations import TurnGenerations
 from uep.turn.models import (
     CoreTicket,
+    Degraded,
     IntakeResult,
     Proposal,
     ReplyMode,
@@ -591,12 +592,57 @@ class TurnOrchestrator:
             return IntakeResult(None, vetoed, None, utterance_event_id=intake.event_id, fact=fact)
         candidate = self._candidate(ctx, fact, turn.refs or (intake.event_id,), len(turn.segments), True)
         proposal = self._propose(candidate)
+        degraded: Degraded | None = None
+        if proposal.reply_mode == ReplyMode.DEFER:
+            # 能力查核在 interaction 請求之前：CC-7 與稽核記錄看到的是 respond，不是 defer
+            proposal, degraded = self._capability_before_defer(proposal)
         proposal = self._apply_interaction(candidate, proposal)
+        if degraded is not None and proposal.reason_code != "action_unavailable":
+            degraded = None  # CC-7 被拒而回 D80 預設：已不是降級提議
         if proposal.reply_mode in (ReplyMode.PASS, ReplyMode.DEFER):
             self._skip(ctx, intake.trace_id, intake.event_id, fact, proposal.reason_code, proposal.reply_mode)
             return IntakeResult(None, proposal.reason_code, proposal, utterance_event_id=intake.event_id, fact=fact)
         assert auth is not None
-        return self._start(ctx, fact, intake.event_id, intake.trace_id, candidate.candidate_id, proposal, auth, actor_id)
+        return self._start(
+            ctx, fact, intake.event_id, intake.trace_id, candidate.candidate_id, proposal, auth, actor_id,
+            degraded=degraded,
+        )
+
+    def _capability_before_defer(self, proposal: Proposal) -> tuple[Proposal, Degraded | None]:
+        """能力查核先於 defer 確認（Chain 契約 Q-S／艾斯維爾 11/12）：``defer`` 且 route 是 task_request／agent_loop，
+        工具層查不到對應能力時，不向使用者確認，直接開 turn 走降級路徑（``degraded="action_unavailable"``）。
+        能力存在、入口不提供查核時維持原 defer；沒有綁定入口時只有 task_request 轉換（標籤全是寫入類，direct_chat 做不到）。
+        沒被叫到（``addressed`` 為 False）的 defer 不開 turn，維持原略過。"""
+        if proposal.route not in ("agent_loop", "task_request") or proposal.addressed is False:
+            return proposal, None
+        if self._loop_entry is None:
+            if proposal.route != "task_request":
+                return proposal, None  # agent_loop 沒綁入口：direct_chat 的唯讀工具仍可能處理，維持 defer
+            return self._defer_to_unavailable(proposal)  # task_request 沒綁入口：標籤全是寫入類，direct_chat 做不到
+        probe = getattr(self._loop_entry, "has_capability", None)
+        if not callable(probe):
+            return proposal, None
+        try:
+            capable = bool(probe(proposal))
+        except Exception:
+            logger.exception("capability 查核失敗，維持 defer")
+            return proposal, None
+        if capable:
+            return proposal, None
+        return self._defer_to_unavailable(proposal)
+
+    def _defer_to_unavailable(self, proposal: Proposal) -> tuple[Proposal, Degraded | None]:
+        degraded_proposal = dataclasses.replace(
+            proposal, reply_mode=ReplyMode.RESPOND, reason_code="action_unavailable",
+            original_reason_code=proposal.reason_code,
+        )
+        bad = validate_proposal(degraded_proposal)
+        if bad is not None:
+            logger.error("defer 轉換後的 Proposal 驗證失敗（%s），維持 defer", bad)
+            self.metrics["turn.defer_conversion_invalid"] += 1
+            return proposal, None
+        self.metrics["turn.defer_action_unavailable"] += 1
+        return degraded_proposal, "action_unavailable"
 
     def _vetoed(self, ctx: SessionContext, auth: AuthorizationTuple | None) -> str | None:
         if auth is None:
@@ -658,14 +704,14 @@ class TurnOrchestrator:
     def _start(
         self, ctx: SessionContext, fact: UtteranceFact, event_id: str | None, trace_id: str | None,
         candidate_id: str, proposal: Proposal, auth: AuthorizationTuple, actor_id: str,
-        speakers: tuple[str, ...] = (),
+        speakers: tuple[str, ...] = (), degraded: Degraded | None = None,
     ) -> IntakeResult:
         turn_id = new_id("turn")
         generation = self.generations.begin(turn_id)
         try:
             result = self._issue(
                 ctx, fact, event_id, trace_id, candidate_id, proposal, auth, actor_id, turn_id, generation,
-                speakers or (fact.speaker_ref,),
+                speakers or (fact.speaker_ref,), degraded,
             )
         except BaseException:
             # turn.started 寫入失敗：回收 live 與 generation，不留下沒有 started 事件的孤兒 turn
@@ -677,20 +723,31 @@ class TurnOrchestrator:
         return result
 
     def _issue(
-        self, ctx, fact, event_id, trace_id, candidate_id, proposal, auth, actor_id, turn_id, generation, speakers
+        self, ctx, fact, event_id, trace_id, candidate_id, proposal, auth, actor_id, turn_id, generation, speakers,
+        degraded: Degraded | None = None,
     ) -> IntakeResult:
+        if degraded is None and proposal.route == "task_request" and self._loop_entry is None:
+            # 沒綁 loop 入口時 task_request 無從執行（標籤全是寫入類，direct_chat 的唯讀工具做不到）：
+            # 帶降級事實，避免她假裝做了。agent_loop 沒入口則不標（direct_chat 的唯讀工具仍可能處理）
+            degraded = "action_unavailable"
+            self.metrics["turn.action_unavailable"] += 1
         ticket = CoreTicket(
             turn_id=turn_id, turn_generation=generation, source_turn_ref=fact.legacy_ref,
             conversation_id=ctx.conversation_id, segment_id=ctx.segment_id, audience_scope=ctx.audience_scope,
             event_scope=ctx.event_scope, reply_mode=proposal.reply_mode.value, auth=auth,
             valid_until=self._clock() + self._ttl, snapshot_version=self._snapshot_version(),
-            speaker_ref=fact.speaker_ref, actor_id=actor_id, user_text=fact.text,
+            speaker_ref=fact.speaker_ref, actor_id=actor_id, user_text=fact.text, degraded=degraded,
         )
         with self._lock:
             self._live[turn_id] = _Live(ticket, trace_id, event_id, candidate_id, proposal.reason_code, speakers)
         self._emit(ticket, "turn.started", {"status": "started"})
         self._phase(InteractionState.THINKING, turn_id)
-        self._enter_loop(ticket, proposal)
+        if degraded is None:  # defer 先查核已確定降級就不進 loop 入口
+            self._enter_loop(ticket, proposal)
+            with self._lock:
+                live = self._live.get(turn_id)
+                if live is not None:
+                    ticket = live.ticket  # 入口降級時 ticket 已帶 degraded
         return IntakeResult(ticket, "issued", proposal, utterance_event_id=event_id, fact=fact)
 
     def _enter_loop(self, ticket: CoreTicket, proposal: Proposal) -> None:
@@ -703,21 +760,33 @@ class TurnOrchestrator:
             while len(self._loop_claims) > 1024:
                 self._loop_claims.popitem(last=False)
         claimed = False
+        unavailable = False  # 沒有可用工具（capability_empty／capability_projection_empty）：降級要帶事實，不能讓她假裝做了
         try:
             claimed = self._loop_entry(ticket, proposal) is not None
+            unavailable = not claimed  # 入口回 None = 標籤收窄後為空（capability_empty）
         except Exception as exc:  # Agent 層的失敗不得讓 turn 簽發失敗；未認領 -> 回合照 direct_chat 處理
             if getattr(exc, "loop_refused", False):
                 # 入口明確拒絕（並發上限、投影為空等）：不是故障，回合退回 direct_chat
                 self.metrics["turn.loop_entry_refused"] += 1
+                unavailable = bool(getattr(exc, "capability_unavailable", False))
                 logger.warning("agent_loop 入口拒絕，改走 direct_chat：turn=%s reason=%s", ticket.turn_id, exc)
             else:
                 self.metrics["turn.loop_entry_failed"] += 1
                 logger.exception("agent_loop 入口失敗：turn=%s", ticket.turn_id)
+        if not claimed and proposal.route == "task_request":
+            # task_request 沒變成 Run（額滿、關閉中、入口失敗、標籤空…）：direct_chat 沒有寫入工具，動作不會發生，
+            # 一律帶降級事實。agent_loop 只在 capability_empty／projection_empty 才標（direct_chat 的唯讀工具仍可能處理）
+            unavailable = True
         if claimed:
             self.metrics["turn.loop_claimed"] += 1
         else:
             with self._lock:
                 self._loop_claims.pop(ticket.turn_id, None)
+                live = self._live.get(ticket.turn_id)
+                if unavailable and live is not None:
+                    live.ticket = dataclasses.replace(live.ticket, degraded="action_unavailable")
+            if unavailable:
+                self.metrics["turn.action_unavailable"] += 1
 
     def is_ended(self, turn_id: str) -> bool:
         """turn 已結束（或根本不是 live）。AgentLoop worker 用它判斷要不要繼續（公開方法，不讀私有屬性）。"""

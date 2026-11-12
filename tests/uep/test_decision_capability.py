@@ -22,9 +22,9 @@ from uep.decision.capability import (
     COUNT_HINT_IGNORED_WIDER,
     COUNT_WIDEN_REJECTED,
     HINT_SOURCE_MODEL,
+    READ_ONLY_NATIVE_TAGS,
     REASON_CAPABILITY_EMPTY,
     REASON_SNAPSHOT_UNAVAILABLE,
-    READ_ONLY_NATIVE_TAGS,
     ROUTE_DEFAULT_CAPABILITIES,
     WRITE_NATIVE_TAGS,
     NarrowResult,
@@ -67,7 +67,7 @@ def test_route_table_initial_content_d4_4():
     assert dict(ROUTE_DEFAULT_CAPABILITIES) == {
         "direct_chat": frozenset({"memory.read", *_NATIVE_READ}),
         "agent_loop": frozenset({"memory.read", CONSULT_TAG, *_NATIVE_READ, *_NATIVE_WRITE}),
-        "task_request": frozenset(),
+        "task_request": frozenset({"lore.write", "chatroom.post"}),  # PR-R：提醒、轉告類，只給寫入類原生標籤
         "ignore": frozenset(),
     }
     assert all(isinstance(v, frozenset) for v in ROUTE_DEFAULT_CAPABILITIES.values())
@@ -99,7 +99,23 @@ def test_native_tags_direct_chat_read_only_agent_loop_all():
     assert not (direct & _NATIVE_WRITE) and _NATIVE_READ <= direct
     assert (_NATIVE_READ | _NATIVE_WRITE) <= loop
     assert READ_ONLY_NATIVE_TAGS == _NATIVE_READ and WRITE_NATIVE_TAGS == _NATIVE_WRITE
-    assert all(not (ROUTE_DEFAULT_CAPABILITIES[r] & (_NATIVE_READ | _NATIVE_WRITE)) for r in ("task_request", "ignore"))
+    assert not (ROUTE_DEFAULT_CAPABILITIES["ignore"] & (_NATIVE_READ | _NATIVE_WRITE))
+
+
+def test_task_request_labels_stay_within_write_native_ceiling():
+    """PR-R：task_request 只含寫入類原生標籤（與工具層標籤閉集同名），不含讀取類、memory.*、consult；
+    每個標籤的副作用上限不超過 external_effect（不含 high_impact 類）。"""
+    from uep.adapters.tool import (
+        CAPABILITY_CEILING,
+        NATIVE_EXEMPT_CAPABILITIES,
+        SIDE_EFFECT_ORDER,
+    )
+
+    labels = ROUTE_DEFAULT_CAPABILITIES["task_request"]
+    assert labels and labels <= _NATIVE_WRITE and labels <= CAPABILITY_CEILING.keys() and labels <= NATIVE_EXEMPT_CAPABILITIES
+    assert not (labels & _NATIVE_READ) and CONSULT_TAG not in labels and not any(t.startswith("memory.") for t in labels)
+    ceiling = SIDE_EFFECT_ORDER.index("external_effect")
+    assert all(SIDE_EFFECT_ORDER.index(CAPABILITY_CEILING[t]) <= ceiling for t in labels)
 
 
 def test_native_tags_still_intersected_with_snapshot_and_known():

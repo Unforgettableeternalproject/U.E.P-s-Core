@@ -88,10 +88,6 @@ LOOP_GOAL_USER_TURN = "user_turn_request"
 
 DEFAULT_LOOP_POLICY_REF = "pol_agent_loop"
 LOOP_GOAL_TASK_REQUEST = "task_request"
-# route=task_request 的能力標籤（Chain 契約 PR-R／E3：lore.write、chatroom.post，不含 memory.write）。決策層的 route 表
-# （``ROUTE_DEFAULT_CAPABILITIES["task_request"]``）目前仍是空集合，待決策層改表後這份常數即可移除，
-# 現在由工具層以自己的 base 呼叫 ``narrow_capability``（仍受註冊表快照與閉集約束，不放寬）
-TASK_REQUEST_CAPABILITIES: frozenset[str] = frozenset({"lore.write", "chatroom.post"})
 # task_request 的緊預算組：兩步（一次工具、一次收束）、一次工具呼叫、不平行、不 consult；政策表鍵 (policy_ref, "task_request", "lite")
 TASK_REQUEST_BUDGET = LoopBudget(max_steps=2, max_tool_calls=1, max_parallel=1, max_consults=0, run_deadline_s=300.0)
 TASK_REQUEST_TIER = "lite"
@@ -146,9 +142,19 @@ class LoopEntry:
         self._policy_ref = policy_ref
         self._owner_for = owner_for
 
+    # 入口會處理的 route；``__call__`` 與 ``has_capability`` 共用，查核與實際啟動的條件不會分岔
+    ROUTES = ("agent_loop", "task_request")
+
+    def has_capability(self, proposal: Any) -> bool:
+        """這個提議是否真的能啟動（Orchestrator 在 defer 確認之前查核；不啟動迴圈，ticket 尚未簽發）。
+        route 不是入口處理的 route 一律 False（``__call__`` 會直接回 None）；其餘看收窄後是否還有可用標籤。"""
+        if getattr(proposal, "route", None) not in self.ROUTES:
+            return False
+        return bool(self._tags_for(None, proposal))
+
     def __call__(self, ticket: Any, proposal: Any) -> LoopTrigger | None:
         route = getattr(proposal, "route", None)
-        if route not in ("agent_loop", "task_request"):
+        if route not in self.ROUTES:
             return None
         tags = frozenset(self._tags_for(ticket, proposal))
         if not tags:
@@ -227,7 +233,7 @@ def make_capability_tags_for(
 
     def tags_for(ticket: Any, proposal: Any) -> frozenset[str]:
         route = getattr(proposal, "route", None)
-        base = TASK_REQUEST_CAPABILITIES if route == "task_request" else route_base(route)
+        base = route_base(route)  # task_request 的標籤由決策層 route 表提供（lore.write、chatroom.post）
         result = narrow_capability(
             base, getattr(proposal, "capability_hint", None), registry.enabled_tags(),
             CAPABILITY_CEILING.keys(), route=route, hint_source=HINT_SOURCE_RULE,
@@ -259,6 +265,13 @@ class LoopLaunchRefused(RuntimeError):
     """入口明確拒絕啟動（並發上限、投影為空、關閉中）。orchestrator 看 ``loop_refused``：不算故障，回合退回 direct_chat。"""
 
     loop_refused = True
+    capability_unavailable = False  # True = 沒有可用工具（降級要帶 degraded 事實）；並發上限、關閉中不算
+
+
+class LoopCapabilityUnavailable(LoopLaunchRefused):
+    """投影後沒有任何可用工具（例如全部 warming）：回合退回 direct_chat，並讓 ticket 帶 ``degraded="action_unavailable"``。"""
+
+    capability_unavailable = True
 
 
 @dataclass
@@ -395,7 +408,7 @@ class LoopLauncher:
         try:
             capability_set = self._registry.project(trigger.capability_tags, self._projection_context(ticket))
             if not capability_set["tools"]:
-                raise LoopLaunchRefused("capability_projection_empty")  # 例如全部 warming：不啟動，回 direct_chat
+                raise LoopCapabilityUnavailable("capability_projection_empty")  # 例如全部 warming：不啟動，回 direct_chat
             effective = self._effective_budget(trigger)
             task, run = create_loop_run(
                 self._tasks, trigger, persona_id=self._persona_id, persona_version=self._persona_version,

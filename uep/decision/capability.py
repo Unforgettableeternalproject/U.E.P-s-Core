@@ -34,7 +34,8 @@ WRITE_NATIVE_TAGS: frozenset[str] = frozenset({"lore.write", "chatroom.post"})
 ROUTE_DEFAULT_CAPABILITIES: Mapping[str, frozenset[str]] = MappingProxyType({
     "direct_chat": frozenset({"memory.read"}) | READ_ONLY_NATIVE_TAGS,
     "agent_loop": frozenset({"memory.read", CONSULT_TAG}) | READ_ONLY_NATIVE_TAGS | WRITE_NATIVE_TAGS,
-    "task_request": frozenset(),
+    # task_request（PR-R，Q-S）：單一動作的提醒／轉告類，只給寫入類原生標籤；不含 memory.*、讀取類與 consult
+    "task_request": WRITE_NATIVE_TAGS,
     "ignore": frozenset(),
 })
 

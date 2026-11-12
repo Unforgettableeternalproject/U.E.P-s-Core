@@ -130,6 +130,14 @@ _DISPATCH_REFUSED = frozenset({DS.REJECTED, DS.CANCELLED, DS.FAILED})
 _REASON_CODE_MAX = 64  # ES cancel_turn 的 reason_code 上限
 HEALTH_SOURCE = "core.health"
 _INPUT_RESTARTS = 1
+# 降級事實 -> 本輪情境註記（附在本輪 user 訊息開頭、不進歷史）。這是給生成端的事實與限制，不是可直接輸出的回覆：
+# 回覆文字由角色以自己的語氣生成（Chain 契約 Q-S）
+DEGRADED_TURN_CONTEXT: dict[str, str] = {
+    "action_unavailable": (
+        "（系統事實：對方這句話需要執行一個動作，但目前沒有可用的工具能做到，這個動作並沒有被執行。"
+        "請用你的語氣明確說明做不到；不得說已經做了、已設定或已提醒，也不要提議由你代為確認或執行。）"
+    ),
+}
 
 
 def _tool_name(definition: Any) -> str:
@@ -768,12 +776,27 @@ class EchoPipelineHost:
             runtime.tool_context = tool_context
         # Core 令 ticket.turn_id、source_turn_id 與 Utterance.turn_id 相等（ES 不一致時只記 warning），
         # 輸入端原 id 放 meta["legacy_ref"]，避免 tracer 與記憶打點落到孤兒 trace
+        utterance_meta: dict[str, Any] = {
+            "memory_retrieve_kwargs": retrieve_kwargs, "legacy_ref": fact.legacy_ref, "tool_context": tool_context,
+        }
+        degraded = getattr(ticket, "degraded", None)  # 舊式替身 ticket 沒有此欄
+        if degraded is not None:
+            # 降級事實（Chain 契約 Q-S）：結構化旗標＋本輪情境註記（turn_context 只附在本輪 user 訊息、不進歷史）。
+            # 只陳述事實與生成限制，回覆文字仍由生成端以角色語氣產生，這裡不放任何可直接輸出的句子
+            utterance_meta["degraded"] = degraded
+            note = DEGRADED_TURN_CONTEXT.get(degraded)
+            if note:
+                utterance_meta["turn_context"] = note
+            if not getattr(getattr(self, "think", None), "supports_turn_context", False):
+                # 結構化旗標仍在 metadata，但這個 think stage 不會把註記送進 prompt：降級事實可能沒傳到生成端
+                logger.warning("降級輪的 think stage 不支援 turn_context，註記不會送進 prompt：turn=%s", ticket.turn_id)
+                metrics = getattr(self, "metrics", None)
+                if metrics is not None:
+                    metrics.inc("echo.degraded_context_unsupported")
         utterance = Utterance(
             text=ticket.user_text, turn_id=ticket.turn_id, speaker_id=ticket.speaker_ref,
             language=fact.language, confidence=fact.confidence if fact.confidence is not None else 1.0,
-            metadata={
-                "memory_retrieve_kwargs": retrieve_kwargs, "legacy_ref": fact.legacy_ref, "tool_context": tool_context,
-            },
+            metadata=utterance_meta,
         )
         es_ticket = TurnTicket(
             turn_id=ticket.turn_id, source_turn_id=ticket.turn_id, owner_id=ticket.speaker_ref,
@@ -782,6 +805,7 @@ class EchoPipelineHost:
                 "legacy_ref": fact.legacy_ref, "conversation_id": ticket.conversation_id,
                 "segment_id": ticket.segment_id, "turn_generation": ticket.turn_generation,
                 "audience_scope": ticket.audience_scope,
+                **({"degraded": degraded} if degraded is not None else {}),
             },
         )
         return TurnRequest(

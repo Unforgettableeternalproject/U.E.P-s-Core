@@ -15,6 +15,8 @@ from uep.assembly import (
     AssemblyError,
     CoreAssembly,
     assemble_core,
+    build_module_budget,
+    check_m_group_pinned,
     check_module_events_policy,
 )
 from uep.config import UepSettings
@@ -395,3 +397,79 @@ def test_assemble_core_wraps_registration_errors_in_assembly_error():
             MagicMock(), module_coordinator=True, tool_module_events=False,
             module_registrations=[(desc, FakeHandle()), (desc, FakeHandle())], **_bare_kwargs(),
         )
+
+
+# --- PR-3：預算設定、M 群 pinned 檢查（離線）---
+
+def test_budget_settings_default_off_and_budget_management_disabled_without_headroom():
+    fields = UepSettings.model_fields
+    assert fields["module_vram_headroom_mb"].default is None and fields["module_vram_budget_mb"].default is None
+    assert build_module_budget(UepSettings()) is None  # 未設定 = 不啟用預算管理（不建立 NVML probe）
+
+
+def test_budget_only_without_headroom_is_an_assembly_error_and_headroom_builds_budget():
+    with pytest.raises(AssemblyError, match="HEADROOM"):
+        build_module_budget(UepSettings(UEP_MODULE_VRAM_BUDGET_MB=8000))
+    probe = MagicMock()
+    budget = build_module_budget(UepSettings(UEP_MODULE_VRAM_HEADROOM_MB=2000, UEP_MODULE_VRAM_BUDGET_MB=8000), probe)
+    assert budget is not None and budget.config.headroom_mb == 2000 and budget.config.budget_mb == 8000
+    assert budget.config.recover_margin_mb == 256 and budget.config.evict_cooldown_s == 60.0
+    probe.read.assert_not_called()  # 建立預算不量測
+
+
+def test_m_group_descriptors_must_be_pinned():
+    check_m_group_pinned([(ModuleDescriptor("stt", kind="model", pinned=True), FakeHandle()), (ModuleDescriptor("lore"), FakeHandle())])
+    for kind in ("model", "stage"):
+        with pytest.raises(AssemblyError, match="M 群"):
+            check_m_group_pinned([(ModuleDescriptor("stt", kind=kind), FakeHandle())])
+
+
+def test_assemble_core_rejects_unpinned_m_group_and_probe_without_producer():
+    with pytest.raises(AssemblyError, match="M 群"):
+        assemble_core(
+            MagicMock(), module_coordinator=True, tool_module_events=False,
+            module_registrations=[(ModuleDescriptor("stt", kind="model"), FakeHandle())], **_bare_kwargs(),
+        )
+    with pytest.raises(AssemblyError, match="module_vram_probe"):
+        assemble_core(
+            MagicMock(), module_coordinator=False, tool_module_events=False, module_vram_probe=MagicMock(), **_bare_kwargs(),
+        )
+
+
+# --- PR-3：真 assemble_core 的預算接線（需 DB；PR 閘門才跑）---
+
+def test_db_budget_is_wired_into_coordinator_and_admits_gpu_load(session_factory, tmp_path, monkeypatch):
+    import uep.assembly as assembly_mod
+    from tests.uep.test_module_coordinator_resources import FakeProbe
+
+    probe = FakeProbe(free=20000)
+    desc = ModuleDescriptor("gpu_svc", uses_gpu=True, vram_mb=4000, autoload=True)
+    handle = FakeHandle()
+    monkeypatch.setattr(assembly_mod, "get_settings", lambda: UepSettings(UEP_MODULE_VRAM_HEADROOM_MB=2000))
+    core, _ = _db_core(
+        session_factory, tmp_path, module_coordinator=True, tool_module_events=True,
+        module_registrations=[(desc, handle)], module_sink=lambda t, p: None, module_vram_probe=probe,
+    )
+    try:
+        core.start()
+        assert core.module_coordinator.wait_settled(5)
+        assert core.module_coordinator.status("gpu_svc").state == "ready" and probe.reads >= 1
+    finally:
+        core.shutdown()
+
+
+def test_db_budget_not_configured_rejects_gpu_load_but_keeps_services(session_factory, tmp_path):
+    gpu_desc = ModuleDescriptor("gpu_svc", uses_gpu=True, vram_mb=4000, autoload=True)
+    svc_desc = ModuleDescriptor("lore", autoload=True)
+    core, _ = _db_core(
+        session_factory, tmp_path, module_coordinator=True, tool_module_events=True,
+        module_registrations=[(gpu_desc, FakeHandle()), (svc_desc, FakeHandle())], module_sink=lambda t, p: None,
+    )
+    try:
+        core.start()
+        assert core.module_coordinator.wait_settled(5)
+        assert core.module_coordinator.status("lore").state == "ready"
+        assert core.module_coordinator.status("gpu_svc").state == "unloaded"
+        assert core.module_coordinator.status("gpu_svc").admission_reason == "gpu_budget_unconfigured"
+    finally:
+        core.shutdown()

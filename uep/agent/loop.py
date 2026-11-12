@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import re
 import threading
 import time
@@ -95,7 +96,12 @@ from uep.tasks.manager import (
 )
 from uep.tasks.states import ActionStatus, CancelReason, RunStatus
 from uep.tools.cancel import cancel_executors
-from uep.tools.catalog.decision import CONSULT_TAG, CONSULT_TOOL, INJECTED_CONSULT
+from uep.tools.catalog.decision import (
+    CONSULT_TAG,
+    CONSULT_TOOL,
+    INJECTED_CONSULT,
+    LOOP_DIGEST_KEY,
+)
 from uep.tools.composite import (
     COMPOSITE_STEP_SKIPPED,
     CompositePathError,
@@ -114,6 +120,9 @@ logger = logging.getLogger(__name__)
 LoopState = Literal["completed", "failed", "awaiting_approval", "cancelled", "stale", "rejected"]
 Projector = Callable[[frozenset[str], frozenset[str] | None], Mapping[str, Any]]
 
+DIGEST_MAX_TRACE = 8  # loop_digest 的 trace／pending 條數上限（與決策層 schema 的上限一致，超出由 sanitize 再截）
+DIGEST_MAX_PENDING = 4
+DIGEST_STATUSES = frozenset({"ok", "failed", "rejected", "blocked", "deferred", "awaiting_approval", "unknown"})
 TOOL_NOT_IN_SNAPSHOT = "tool_not_in_snapshot"
 _MODEL_TIMEOUT = object()  # ``_next_event`` 的哨兵：模型事件等待逾時
 DEADLINE_FLAG_REASONS = {
@@ -213,6 +222,7 @@ class _State:
     model_retry_streak: int = 0  # 連續模型呼叫重試次數（不進 checkpoint；推進成功即歸零）
     budget_stage: int = 0  # 已觸發的門檻階段（0..2）；不進 checkpoint，resume 由計數器推回，不重送
     budget_hint: str | None = None
+    rebuilt: bool = False  # resume 後：loop_digest 的 trace 由已提交 history 重建（trace_source="rebuilt"）
 
 
 @dataclass
@@ -388,6 +398,7 @@ class AgentLoop:
         projected = self._projector(tags, prior)  # 保留原始投影（_narrow 之前）供版本預檢
         cap = self._narrow(projected, frozen, prior)
         st = self._new_state(run_id, trigger, parent_id, cap, frozen, tags, messages, str(checkpoint["child_context_ref"]), counters)
+        st.rebuilt = True  # loop_digest 的 trace 由已提交 history 重建
         st.step_id = str(checkpoint["step_id"])
         st.frozen_modalities = frozenset(str(m) for m in checkpoint["frozen_modalities"])
         st.frozen_platforms = frozenset(str(m) for m in checkpoint["frozen_platforms"])
@@ -606,10 +617,89 @@ class AgentLoop:
             "snapshot_capability_tags": sorted(self._snapshot_tags(st)), "snapshot_modalities": sorted(now["modalities"]),
             "snapshot_platforms": sorted(now["platforms"]),
             "consults_used": st.counters.consults, "no_progress_count": self._no_progress_count(st),
+            LOOP_DIGEST_KEY: self._loop_digest(st, ordinal),
         }
         if set(values) != set(INJECTED_CONSULT):  # 組裝錯誤：注入欄位與條目宣告不一致
             raise RuntimeError("consult 注入欄位與 decision.consult 條目的 injected_params 不一致")
         return {**self._base_injected, **values}
+
+    def _loop_digest(self, st: _State, ordinal: int) -> dict[str, Any]:
+        """組 ``loop_digest`` 原始資料（schema 與 sanitize 由決策層的 ``loop_digest`` 負責，executor 的 ``_facts`` 會再清理）。
+        只含計數、閉集狀態與短碼；自然語言欄位一律 None（第一版）。不進 checkpoint：resume 後由已提交 history 重建。"""
+        trace = self._digest_trace(st, ordinal)
+        limit = DIGEST_MAX_TRACE
+        hard, counters = self._hard, st.counters
+
+        def left(cap: int | None, used: int) -> int | None:
+            return None if cap is None else max(0, int(cap) - max(0, used))
+
+        deadline = None
+        if self._budget.run_deadline_s is not None:
+            deadline = max(0, math.floor(self._budget.run_deadline_s - self._elapsed(st)))
+        pending = self._digest_pending(st, ordinal)
+        return {
+            "v": 1, "steps": counters.steps, "tool_calls": counters.tool_calls,
+            "trace_source": "rebuilt" if st.rebuilt else "live",
+            "trace": trace[-limit:], "trace_truncated": len(trace) > limit,
+            "pending": pending[:DIGEST_MAX_PENDING], "pending_total": len(pending),
+            "budget": {
+                "stage": budget_stage(self._budget, counters),
+                "steps_left": left(hard.max_steps, counters.steps),
+                "tool_calls_left": left(hard.max_tool_calls, counters.tool_calls),
+                "tokens_left": left(hard.max_tokens, counters.tokens),
+                "deadline_left_s": deadline,
+            },
+            "last_model_text_en": None, "user_intent_en": None,
+        }
+
+    @staticmethod
+    def _digest_status(status: str, reason: str | None) -> str:
+        if status == "blocked" and (reason or "").startswith("deferred"):
+            return "deferred"
+        return status if status in DIGEST_STATUSES else "unknown"  # 結果未明（unknown／cancelled 等）一律 unknown
+
+    def _digest_trace(self, st: _State, ordinal: int) -> list[dict[str, Any]]:
+        """已提交 history 的工具結果（依序）＋目前批次已得結果；排除 consult 本身。重試只留最後一次（結果已取代原結果）。"""
+        items: list[dict[str, Any]] = []
+        names: dict[str, str] = {}
+        for m in st.transcript:
+            if m.role == "assistant":
+                names.update({str(c["id"]): str(c["name"]) for c in m.tool_calls})
+            elif m.role == "tool":
+                tool = names.get(str(m.tool_call_id), "unknown")
+                if tool == CONSULT_TOOL:
+                    continue
+                head = re.match(r"tool (\w+)(?:: (.+))?$", m.content)
+                status, reason = (head.group(1), head.group(2)) if head else ("ok", None)
+                items.append({"tool": tool, "status": self._digest_status(status, reason), "reason_code": reason})
+        batch = st.batch
+        if batch is not None:
+            for k in sorted(batch.views):
+                if k == ordinal or batch.calls[k]["name"] == CONSULT_TOOL:
+                    continue
+                view = batch.views[k]
+                reason = view.get("reason_code")
+                items.append({
+                    "tool": batch.calls[k]["name"], "reason_code": reason if isinstance(reason, str) else None,
+                    "status": self._digest_status(str(view.get("status", "unknown")), reason if isinstance(reason, str) else None),
+                })
+        return items
+
+    def _digest_pending(self, st: _State, ordinal: int) -> list[dict[str, str]]:
+        """待辦：目前批次被延後的呼叫（deferred_call），以及已提交 history 最後一則 assistant 訊息中還沒有結果的呼叫
+        （等核准；resume 後的耐久來源，TaskManager 沒有依 Run 列出待辦 action 的查詢）。"""
+        pending: list[dict[str, str]] = []
+        batch = st.batch
+        if batch is not None:
+            for k in sorted(batch.views):
+                reason = batch.views[k].get("reason_code")
+                if k != ordinal and batch.views[k].get("status") == "blocked" and isinstance(reason, str) and reason.startswith("deferred"):
+                    pending.append({"kind": "deferred_call", "tool": batch.calls[k]["name"]})
+        assistant = next((m for m in reversed(st.transcript) if m.role == "assistant" and m.tool_calls), None)
+        if assistant is not None:
+            done = {m.tool_call_id for m in st.transcript if m.role == "tool"}
+            pending += [{"kind": "approval", "tool": str(c["name"])} for c in assistant.tool_calls if c["id"] not in done]
+        return pending
 
     def _consult_info(self, st: _State, action_id: str | None) -> Mapping[str, Any] | None:
         if self._consults is None or not action_id:

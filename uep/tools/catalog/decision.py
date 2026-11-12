@@ -28,9 +28,9 @@ INJECTED_CONSULT = (
     "run_id", "step_id", "ordinal",
     "frozen_capability_tags", "frozen_modalities", "frozen_platforms",
     "snapshot_capability_tags", "snapshot_modalities", "snapshot_platforms",
-    "consults_used", "no_progress_count",
+    "consults_used", "no_progress_count", LOOP_DIGEST_KEY,
 )
-# LOOP_DIGEST_KEY 只由決策層／工具層注入，不得出現在 LLM 面 schema（尚未列入 INJECTED_CONSULT，先由這裡排除）
+# LOOP_DIGEST_KEY 由迴圈注入（INJECTED_CONSULT），不得出現在 LLM 面 schema；這裡明列排除，不依賴 registry 的 RA-7 檢查
 _COMMON_FACTS = frozenset({"sub_kind", "run_id", "step_id", "ordinal", "frozen", "capability_snapshot", "consults_used", "no_progress_count", LOOP_DIGEST_KEY})
 
 CONSULT_DESCRIPTION = (

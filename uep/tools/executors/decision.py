@@ -31,6 +31,7 @@ from uep.decision.loop_consult import (
     ON_INVALID_REASON,
     consult_decision_id,
 )
+from uep.decision.loop_digest import LOOP_DIGEST_KEY, sanitize_digest
 from uep.ids import new_id
 from uep.tools.catalog.decision import INJECTED_CONSULT
 
@@ -148,6 +149,9 @@ class ConsultToolExecutor:
     @staticmethod
     def _facts(params: Mapping[str, Any]) -> dict[str, Any]:
         facts: dict[str, Any] = {k: v for k, v in params.items() if k not in INJECTED_CONSULT}
+        digest = sanitize_digest(params.get(LOOP_DIGEST_KEY))  # 選填；一律經 sanitize，非法／缺漏視為沒有
+        if digest is not None:
+            facts[LOOP_DIGEST_KEY] = digest
         for name in ("sub_kind", "run_id", "step_id", "ordinal", "consults_used", "no_progress_count"):
             if name in params:
                 facts[name] = params[name]

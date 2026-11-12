@@ -186,7 +186,7 @@ def _restart_loop(rig, store):
     loop = AgentLoop(
         runtime=ScriptedRuntime([Round("完成")]), tasks=rig.tm, gateway=ToolGateway(rig.registry), registry=rig.registry,
         store=rig.store, projector=projector_for(rig.registry), budget=rig.budget, worker_epoch=plan.run.worker_epoch,
-        content_lookup=lambda _aid: None, composite_blobs=store,  # 重啟後回合範圍暫存是空的
+        composite_blobs=store,  # 不給 content_lookup：重啟後回合範圍暫存是空的（給一個回 None 的會讓成功的 action 被視為 unknown）
     )
     return loop, plan.checkpoint or {}
 

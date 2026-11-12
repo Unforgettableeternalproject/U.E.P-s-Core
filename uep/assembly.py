@@ -622,12 +622,27 @@ def _loop_resilience_kwargs() -> dict[str, Any]:
 
 
 def _composite_blob_kwargs(session_factory: sessionmaker[Session]) -> dict[str, Any]:
-    """composite 引用 ``text`` 的持久 blob（D110）：上限為 0 或沒有 ``UEP_PAYLOAD_HASH_KEY`` 時不注入（行為與先前相同）。"""
+    """composite 引用 ``text`` 的持久 blob（D110）：上限為 0、沒有 ``UEP_PAYLOAD_HASH_KEY``、或密鑰不合 ``PayloadHasher`` 的長度
+    規則（至少 ``MIN_KEY_BYTES``、非全空白）時不注入（行為與先前相同）；密鑰存在但不合規則時啟動記一次 warning。"""
     s = get_settings()
     key = s.payload_hash_key
-    if s.composite_blob_max_bytes <= 0 or key is None or not key.get_secret_value().strip():
+    if s.composite_blob_max_bytes <= 0 or key is None:
         return {}
     from uep.events.composite_blobs import DbCompositeBlobStore
+    from uep.events.payload_hash import (
+        MIN_KEY_BYTES,
+        PayloadHasher,
+        PayloadHashKeyMissing,
+    )
+
+    try:
+        PayloadHasher(key)  # 與寫入時同一套判斷：太短或全空白 -> put 一定會失敗，不如不注入
+    except PayloadHashKeyMissing:
+        logger.warning(
+            "UEP_PAYLOAD_HASH_KEY 不合規（至少 %d 位元組且非全空白），composite blob 持久化停用：跨重啟的待決子步驟會 fail-closed",
+            MIN_KEY_BYTES,
+        )
+        return {}
 
     return {
         "composite_blobs": DbCompositeBlobStore(session_factory, ttl_s=s.composite_blob_ttl_s),

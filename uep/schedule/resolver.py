@@ -9,10 +9,12 @@
 """
 from __future__ import annotations
 
+import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from uep.contracts.schedule import (
     MODE_CHAT,
@@ -30,12 +32,18 @@ from uep.contracts.schedule import (
     PlanItem,
     PlanSlot,
     PlanSource,
+    SlotMark,
+    SlotNotice,
+    SlotState,
 )
 
 _UTC = UTC
 _EPS = timedelta(microseconds=1)
 SCAN_HORIZON = timedelta(hours=48)  # §6.1：掃描視野 48 小時
 _MAX_UPCOMING = 500
+LOOKBACK = timedelta(days=8)  # 向後掃描：只用來找上一個邊界（starts_at／directive_id 錨）
+DEFAULT_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)  # 預設格找不到上一個邊界時的固定錨
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -111,8 +119,13 @@ def default_interrupt_policy(kind: ActivityKind) -> InterruptPolicy:
 
 
 def suggestions_for(kind: ActivityKind, source: PlanSource,
-                    explicit: tuple[str, ...] | None = None) -> tuple[BehaviorSuggestion, ...]:
-    """§8.3 預設對照；item 明確 suggested_behaviors 以其為準。"""
+                    explicit: tuple[str, ...] | None = None,
+                    slot_state: SlotState = "normal") -> tuple[BehaviorSuggestion, ...]:
+    """§8.3 預設對照；abandoned／paused 優先於其他列；item 明確 suggested_behaviors 以其為準。"""
+    if slot_state == "abandoned":
+        return (BehaviorSuggestion(MODE_REST, 0, "plan_abandoned"),)
+    if slot_state == "paused" and kind == ActivityKind.WORK:
+        return (BehaviorSuggestion(MODE_CHAT, 0, "work_paused"),)
     if explicit:
         return tuple(BehaviorSuggestion(mode=m, rank=i, reason_code="plan_explicit") for i, m in enumerate(explicit))
     if kind == ActivityKind.REST:
@@ -125,12 +138,13 @@ def suggestions_for(kind: ActivityKind, source: PlanSource,
     return (BehaviorSuggestion(MODE_CHAT, 0, "plan_social"),)
 
 
-def unavailable_slot(at: datetime, plan_revision: int = 0) -> PlanSlot:
-    """行程不可用（X1）：host、無建議、source=DEFAULT。"""
+def unavailable_slot(at: datetime, plan_revision: int = 0, reason_code: str | None = None) -> PlanSlot:
+    """行程不可用（X1）：host、無建議、source=DEFAULT；``reason_code`` 說明原因（如 tz_unavailable）。"""
     return PlanSlot(
         availability="unavailable", location=PRESENCE_TARGET_HOST, activity_kind=ActivityKind.REST,
         source=PlanSource.DEFAULT, item_ref=None, interrupt_policy=InterruptPolicy.SAFE_POINT,
-        suggestions=(), starts_at=_utc(at), ends_at=None, next_boundary_at=None, plan_revision=plan_revision)
+        suggestions=(), starts_at=_utc(at), ends_at=None, next_boundary_at=None, plan_revision=plan_revision,
+        standby=True, reason_code=reason_code)
 
 
 # ---- 藍圖 → 出現區間 → 投影 ----
@@ -143,19 +157,22 @@ class _Occ:
     start: datetime  # 投影起點
     end: datetime  # 投影終點
     delay_s: int = 0
+    tag: str = ""  # "abandoned"＝放棄後的 fallback REST 片段
 
     @property
-    def key(self) -> tuple[str, datetime]:
-        return (self.item.item_id, self.bp_start)
+    def key(self) -> tuple[str, datetime, str]:
+        return (self.item.item_id, self.bp_start, self.tag)
 
 
 def _item_occurrences(item: PlanItem, lo: datetime, hi: datetime) -> list[_Occ]:
+    if item.location is not None and item.location not in PLAN_LOCATIONS:
+        raise ValueError(f"未知地點：{item.location}（{item.item_id}）")
     spans: list[tuple[datetime, datetime]] = []
     if item.recurrence == "once":
         if item.once_start_at is None or item.once_end_at is None:
             raise ValueError(f"once 項缺少起迄：{item.item_id}")
         spans.append((_utc(item.once_start_at), _utc(item.once_end_at)))
-    else:
+    elif item.recurrence == "weekly":
         if item.tz is None or item.local_start is None or item.local_end is None:
             raise ValueError(f"weekly 項缺少 tz／local 起迄：{item.item_id}")
         zone = ZoneInfo(item.tz)
@@ -168,6 +185,8 @@ def _item_occurrences(item: PlanItem, lo: datetime, hi: datetime) -> list[_Occ]:
                 spans.append((_local_to_utc(day, item.local_start, zone),
                               _local_to_utc(end_day, item.local_end, zone)))
             day += timedelta(days=1)
+    else:
+        raise ValueError(f"未知 recurrence：{item.recurrence}（{item.item_id}）")
     out: list[_Occ] = []
     for start, end in spans:
         if item.valid_from is not None:
@@ -180,13 +199,24 @@ def _item_occurrences(item: PlanItem, lo: datetime, hi: datetime) -> list[_Occ]:
     return out
 
 
-def _apply_delay(occs: list[_Occ], delay: PlanDelay | None, tz: str) -> list[_Occ]:
-    """把藍圖出現區間投影成有效時間軸（delay 只在當前輪次內；順延後維持原結束＝壓縮）。"""
+def _apply_delay(occs: list[_Occ], delay: PlanDelay | None, tz: str,
+                 marked: frozenset[tuple[str, datetime]] = frozenset()) -> list[_Occ]:
+    """把藍圖出現區間投影成有效時間軸（delay 只在當前輪次內；順延後維持原結束＝壓縮）。
+
+    休息窗口固定不順延（PP-10）：rest_window 不能當 anchor，也不被順延或吃掉。
+    """
     if delay is None:
         return occs
     anchor_start = _utc(delay.planned_start_at)
     anchor = next((o for o in occs if o.item.item_id == delay.item_ref and o.bp_start == anchor_start), None)
     if anchor is None:
+        logger.warning("delay 的 anchor 不在藍圖中，已忽略：item=%s planned_start=%s", delay.item_ref, anchor_start)
+        return occs
+    if (delay.item_ref, anchor_start) in marked:  # 投影優先序 abandon > pause > delay：被標記的出現不延長
+        logger.debug("該次出現已被暫停／放棄，delay 失效：item=%s", delay.item_ref)
+        return occs
+    if anchor.item.role == "rest_window":
+        logger.warning("rest_window 不可被順延（PP-10），已忽略 delay：item=%s", delay.item_ref)
         return occs
     hold = min(_utc(delay.held_until), round_bounds(anchor.bp_start, tz)[1])  # 不跨輪次
     if hold <= anchor.bp_end:
@@ -195,13 +225,37 @@ def _apply_delay(occs: list[_Occ], delay: PlanDelay | None, tz: str) -> list[_Oc
     for o in occs:
         if o is anchor:
             out.append(_Occ(o.item, o.bp_start, o.bp_end, o.start, hold, int((hold - o.bp_end).total_seconds())))
-        elif anchor.bp_end <= o.bp_start < hold:  # 起點落在延長區間內：實際起點順延，結束不變
-            if o.bp_end > hold:  # 壓縮後時長 <= 0 → 投影中被吃掉
+        elif o.item.role != "rest_window" and anchor.bp_end <= o.bp_start < hold:
+            # 起點落在延長區間內：實際起點順延，結束不變；壓縮後時長 <= 0 → 投影中被吃掉
+            if o.bp_end > hold:
                 out.append(_Occ(o.item, o.bp_start, o.bp_end, hold, o.bp_end,
                                 int((hold - o.bp_start).total_seconds())))
         else:
             out.append(o)
     return out
+
+
+def _apply_abandon(occs: list[_Occ], marks: Sequence[SlotMark], tz: str) -> list[_Occ]:
+    """abandon：該次出現自 mark.started_at 起轉 fallback REST（host），到出現終點或 mark 所屬輪次結束；其後依藍圖。"""
+    for mark in marks:
+        if mark.kind != "abandon":
+            continue
+        at, planned = _utc(mark.started_at), _utc(mark.planned_start_at)
+        target = next((o for o in occs if o.item.item_id == mark.item_ref and o.bp_start == planned and o.tag == ""
+                       and o.item.activity_kind == ActivityKind.WORK and o.start <= at < o.end), None)
+        if target is None:
+            logger.debug("abandon mark 沒有對應的工作出現，已忽略：item=%s", mark.item_ref)
+            continue
+        rend = round_bounds(at, tz)[1]
+        pieces: list[_Occ] = []
+        if at > target.start:
+            pieces.append(_Occ(target.item, target.bp_start, target.bp_end, target.start, at, target.delay_s))
+        pieces.append(_Occ(target.item, target.bp_start, target.bp_end, at, min(target.end, rend),
+                           target.delay_s, "abandoned"))
+        if rend < target.end:
+            pieces.append(_Occ(target.item, target.bp_start, target.bp_end, rend, target.end, target.delay_s))
+        occs = [x for o in occs for x in (pieces if o is target else [o])]
+    return occs
 
 
 def _winner(occs: list[_Occ], t: datetime) -> _Occ | None:
@@ -224,22 +278,37 @@ def _override_effective(ov: OverrideView | None, t: datetime) -> bool:
 # ---- 對外 ----
 
 def resolve(items: list[PlanItem] | tuple[PlanItem, ...], override: OverrideView | None, now: datetime, tz: str,
-            *, plan_revision: int = 0, delay: PlanDelay | None = None) -> PlanSlot:
-    """此刻的 PlanSlot（投影）。恆回 PlanSlot：內部任何錯誤（含 tz 資料不可用）→ unavailable 狀態值。"""
+            *, plan_revision: int = 0, delay: PlanDelay | None = None,
+            marks: Sequence[SlotMark] = ()) -> PlanSlot:
+    """此刻的 PlanSlot（投影）。
+
+    - 行程不可用是狀態值：行程時區（``tz``）無法載入 → ``availability="unavailable"``、``reason_code="tz_unavailable"``。
+    - 單一壞項（資料驗證失敗：缺欄位、未知地點、項自身 tz 不可用）略過並 ``logger.warning``，override 與其他項照常解析。
+    - TypeError／AttributeError 等程式錯誤不攔截，往上拋。
+    - ``marks``：暫停／放棄標記。投影優先序 override > abandon > pause > delay > 藍圖：
+      abandon 令該次出現轉 host＋REST（``slot_state="abandoned"``）；pause 令工作格留在原平台待命、建議 [CHAT]
+      （``slot_state="paused"``）；被標記的出現其 delay 失效。藍圖不改寫。
+    - ``next_boundary_at`` 為 None 只表示「掃描窗（前方 48 小時）內沒有」，不保證永不改變；需要更遠請用 ``upcoming``。
+    """
     now = _utc(now)  # 無時區是呼叫端錯誤，照樣拋 ValueError
     try:
-        return _resolve(items, override, now, tz, plan_revision, delay)
-    except Exception:  # noqa: BLE001 - 行程不可用是狀態值，不是例外（PP-1）
-        return unavailable_slot(now, plan_revision)
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        logger.warning("行程時區不可用，行程標示為不可用：tz=%s error=%s", tz, exc)
+        return unavailable_slot(now, plan_revision, "tz_unavailable")
+    return _resolve(items, override, now, tz, plan_revision, delay, marks)
 
 
-def _resolve(items, override, now: datetime, tz: str, rev: int, delay) -> PlanSlot:
-    ZoneInfo(tz)  # tz 資料不可用 → 例外 → unavailable
-    lo, hi = now - SCAN_HORIZON, now + SCAN_HORIZON
+def _resolve(items, override, now: datetime, tz: str, rev: int, delay, marks) -> PlanSlot:
+    lo, hi = now - LOOKBACK, now + SCAN_HORIZON  # 向後多看只為了讓 starts_at（directive_id 錨）穩定
     occs: list[_Occ] = []
     for item in items:
-        occs.extend(_item_occurrences(item, lo, hi))
-    occs = _apply_delay(occs, delay, tz)
+        try:
+            occs.extend(_item_occurrences(item, lo, hi))
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            logger.warning("行程項資料無效，已略過：item=%s error=%s", getattr(item, "item_id", "?"), exc)
+    marked = frozenset((m.item_ref, _utc(m.planned_start_at)) for m in marks)
+    occs = _apply_abandon(_apply_delay(occs, delay, tz, marked), marks, tz)
     ov = override if override is not None and override.status in ("pending", "active") else None
 
     def key_at(t: datetime):
@@ -263,70 +332,175 @@ def _resolve(items, override, now: datetime, tz: str, rev: int, delay) -> PlanSl
             interrupt_policy=default_interrupt_policy(ov.activity_kind),
             suggestions=suggestions_for(ov.activity_kind, PlanSource.OVERRIDE),
             starts_at=_utc(ov.started_at), ends_at=_utc(ov.expires_at), next_boundary_at=_utc(ov.expires_at),
-            plan_revision=rev, override_state=ov.status)
+            plan_revision=rev, override_state=ov.status, standby=ov.activity_kind == ActivityKind.REST)
     win = _winner(occs, now)
     if win is None:
+        # 預設格的 starts_at 是 directive_id 的錨：向後看 8 天找上一個邊界，找不到用固定值（不隨時間改變）
         return PlanSlot(
             availability="available", location=PRESENCE_TARGET_HOST, activity_kind=ActivityKind.REST,
             source=PlanSource.DEFAULT, item_ref=None, interrupt_policy=InterruptPolicy.SAFE_POINT,
             suggestions=suggestions_for(ActivityKind.REST, PlanSource.DEFAULT),
-            starts_at=starts or round_bounds(now, tz)[0], ends_at=next_b, next_boundary_at=next_b,
-            plan_revision=rev)
+            starts_at=starts or DEFAULT_EPOCH, ends_at=next_b, next_boundary_at=next_b, plan_revision=rev,
+            standby=True)
     item = win.item
-    location = item.location if item.location is not None else PRESENCE_TARGET_HOST
-    if location not in PLAN_LOCATIONS:
-        raise ValueError(f"未知地點：{location}")
-    kind = ActivityKind.REST if item.location is None else item.activity_kind  # X3
     source = PlanSource.REST_WINDOW if item.role == "rest_window" else PlanSource.ITEM
-    return PlanSlot(
-        availability="available", location=location, activity_kind=kind, source=source, item_ref=item.item_id,
-        interrupt_policy=item.interrupt_policy or default_interrupt_policy(kind),
-        suggestions=suggestions_for(kind, source, item.suggested_behaviors),
-        starts_at=starts or win.start, ends_at=next_b, next_boundary_at=next_b, plan_revision=rev,
-        delay_s=win.delay_s)
+    common = {"availability": "available", "source": source, "item_ref": item.item_id,
+              "starts_at": starts or win.start, "ends_at": next_b, "next_boundary_at": next_b, "plan_revision": rev,
+              "blueprint_start_at": win.bp_start, "delay_s": win.delay_s}
+    if win.tag == "abandoned":  # fallback＝REST（主機），藍圖不改
+        return PlanSlot(location=PRESENCE_TARGET_HOST, activity_kind=ActivityKind.REST,
+                        interrupt_policy=InterruptPolicy.SAFE_POINT,
+                        suggestions=suggestions_for(ActivityKind.REST, source, slot_state="abandoned"),
+                        standby=True, slot_state="abandoned", **common)
+    location = item.location if item.location is not None else PRESENCE_TARGET_HOST
+    kind = ActivityKind.REST if item.location is None else item.activity_kind  # X3
+    interrupt = item.interrupt_policy or default_interrupt_policy(kind)
+    paused = kind == ActivityKind.WORK and any(
+        m.kind == "pause" and m.item_ref == item.item_id and _utc(m.planned_start_at) == win.bp_start
+        and _utc(m.started_at) <= now for m in marks)
+    if paused:  # 留在原平台待命：位置與 activity_kind 不變，建議 [CHAT]
+        return PlanSlot(location=location, activity_kind=kind, interrupt_policy=interrupt,
+                        suggestions=suggestions_for(kind, source, slot_state="paused"),
+                        standby=True, slot_state="paused", **common)
+    # 待命只有 REST（含預設、fallback）；SOCIAL、休息時段（SLEEP）、WORK 不是
+    return PlanSlot(location=location, activity_kind=kind, interrupt_policy=interrupt,
+                    suggestions=suggestions_for(kind, source, item.suggested_behaviors),
+                    standby=kind == ActivityKind.REST and source != PlanSource.REST_WINDOW, **common)
 
 
 def upcoming(items, override: OverrideView | None, start: datetime, horizon_s: int, tz: str,
-             *, plan_revision: int = 0, delay: PlanDelay | None = None) -> tuple[PlanSlot, ...]:
-    """[start, start+horizon) 內依序的投影格（含 start 當下那一格）。"""
+             *, plan_revision: int = 0, delay: PlanDelay | None = None,
+             marks: Sequence[SlotMark] = ()) -> tuple[PlanSlot, ...]:
+    """[start, start+horizon) 內依序的投影格（含 start 當下那一格）。
+
+    ``resolve`` 的 next_boundary_at 為 None 只代表掃描窗內沒有；這裡在 horizon 未到時往前推窗繼續找。
+    ``marks``／``delay`` 與 resolve 相同，對整段投影套用。
+    """
     end = _utc(start) + timedelta(seconds=horizon_s)
-    slot = resolve(items, override, start, tz, plan_revision=plan_revision, delay=delay)
+    kw = {"plan_revision": plan_revision, "delay": delay, "marks": marks}
+    cur_t = _utc(start)
+    slot = resolve(items, override, cur_t, tz, **kw)
     out = [slot]
-    while slot.next_boundary_at is not None and slot.next_boundary_at < end and len(out) < _MAX_UPCOMING:
-        slot = resolve(items, override, slot.next_boundary_at, tz, plan_revision=plan_revision, delay=delay)
+    while len(out) < _MAX_UPCOMING and slot.availability == "available":
+        if slot.next_boundary_at is None:
+            probe = cur_t + SCAN_HORIZON  # 掃描窗內沒有邊界：推窗
+            if probe >= end:
+                break
+            cur_t = probe
+            nxt = resolve(items, override, cur_t, tz, **kw)
+            same = (nxt.source, nxt.item_ref, nxt.blueprint_start_at, nxt.slot_state) == (
+                slot.source, slot.item_ref, slot.blueprint_start_at, slot.slot_state)
+            slot = nxt
+            if not same:
+                out.append(slot)
+            continue
+        if slot.next_boundary_at >= end:
+            break
+        cur_t = slot.next_boundary_at
+        slot = resolve(items, override, cur_t, tz, **kw)
         out.append(slot)
     return tuple(out)
 
 
-def make_delay(slot: PlanSlot, planned_start_at: datetime, now: datetime,
-               policy: DirectivePolicy | None = None) -> PlanDelay | None:
-    """目前格超時仍在進行時產生 delay 輸入：held_until = now + retry_s（投影延長一個評估步長）。
+def slot_transition(prev: PlanSlot | None, cur: PlanSlot) -> tuple[SlotNotice, ...]:
+    """相鄰投影格的差異 → 離開／進入通知（純函式；PP-0 不發事件、不渲染）。
 
-    ``planned_start_at`` 為該格藍圖起點。僅 ITEM／REST_WINDOW 格可延長；呼叫端每個評估點重新產生。
+    同一行程項僅因 delay 延長不算變化；回傳空 tuple 表示沒有進入／離開。
+    """
+    def ident(x: PlanSlot):
+        return (x.availability, x.source, x.item_ref, x.blueprint_start_at, x.slot_state)
+
+    if prev is not None and ident(prev) == ident(cur):
+        return ()
+    if cur.availability == "unavailable":
+        reason = "unavailable"
+    elif prev is not None and prev.availability == "unavailable":
+        reason = "available"
+    elif cur.slot_state == "abandoned":
+        reason = "abandoned"
+    elif cur.slot_state == "paused":
+        reason = "paused"
+    elif prev is not None and prev.slot_state == "paused" and prev.item_ref == cur.item_ref:
+        reason = "resumed"
+    elif cur.source == PlanSource.OVERRIDE:
+        reason = "override_started"
+    elif prev is not None and prev.source == PlanSource.OVERRIDE:
+        reason = "override_ended"
+    else:
+        reason = "boundary"
+    left = (SlotNotice("left", prev, reason),) if prev is not None else ()
+    return (*left, SlotNotice("entered", cur, reason))
+
+
+# ---- 延後（delay）與 directive ----
+
+@dataclass(frozen=True)
+class DelayStep:
+    """``make_delay`` 的結果。delay 為 None 時依 action 判讀：
+
+    - ``drop_attempt``：達延後上限，結束本次嘗試（投影不再順延），下一評估點為 ``next_eval_at``。
+    - ``drop_final``：目標格已結束，放棄。
+    - ``not_eligible``：此格不可延長（rest_window、override、預設層、不可用）。
+    """
+
+    delay: PlanDelay | None
+    action: Literal["wait", "drop_attempt", "drop_final", "not_eligible"]
+    reason_code: str
+    next_eval_at: datetime | None = None
+
+
+class DelayAnchorError(ValueError):
+    """行程項格缺少藍圖起點，無法建立 delay anchor（可辨識的錯誤，不靜默）。"""
+
+
+def make_delay(slot: PlanSlot, now: datetime, first_deferred_at: datetime, hard_end_at: datetime | None,
+               policy: DirectivePolicy | None = None) -> DelayStep:
+    """目前格超時仍在進行時，產生投影用的 delay（held_until = now + retry_s，不超過 hard_end_at）。
+
+    ``first_deferred_at``：本次延後嘗試的起點（不因 tick 重置）。``hard_end_at``：被延後的目標格的硬終點
+    （目標格自己的結束，與 delay 投影後的終點分開）。達 ``defer_max_s`` 回 delay=None 並給下一評估點。
+    anchor 取自 ``slot.blueprint_start_at``；rest_window 固定不順延，回 not_eligible。
     """
     policy = policy or DirectivePolicy()
-    if slot.availability != "available" or slot.item_ref is None or slot.source not in (
-            PlanSource.ITEM, PlanSource.REST_WINDOW):
-        return None
-    return PlanDelay(slot.item_ref, _utc(planned_start_at), _utc(now) + timedelta(seconds=policy.retry_s))
+    if slot.availability != "available" or slot.source not in (PlanSource.ITEM, PlanSource.REST_WINDOW):
+        return DelayStep(None, "not_eligible", "source_not_extendable")
+    if slot.source == PlanSource.REST_WINDOW:
+        return DelayStep(None, "not_eligible", "rest_window_fixed")
+    if slot.slot_state != "normal":  # 暫停或放棄的格不產生 delay（pause／abandon 優先於 delay）
+        return DelayStep(None, "not_eligible", f"slot_{slot.slot_state}")
+    if slot.item_ref is None or slot.blueprint_start_at is None:
+        logger.error("行程項格缺少 blueprint_start_at，無法建立 delay anchor：item=%s", slot.item_ref)
+        raise DelayAnchorError(f"slot 缺少 blueprint_start_at：{slot.item_ref}")
+    decision = defer_decision(first_deferred_at, now, hard_end_at, policy)
+    if decision.action != "wait":
+        return DelayStep(None, decision.action, decision.reason_code, decision.next_eval_at)
+    held = _utc(now) + timedelta(seconds=policy.retry_s)
+    if hard_end_at is not None:
+        held = min(held, _utc(hard_end_at))
+    return DelayStep(PlanDelay(slot.item_ref, _utc(slot.blueprint_start_at), held), "wait", "deferred")
 
 
-def defer_decision(first_deferred_at: datetime, now: datetime, slot_ends_at: datetime | None,
+def defer_decision(first_deferred_at: datetime, now: datetime, hard_end_at: datetime | None,
                    policy: DirectivePolicy | None = None) -> DeferDecision:
     """延後判定（PP-14）：計時由 first_deferred_at 起算，不因 tick 重置。
 
+    ``hard_end_at`` 是目標格自己的結束（不是 delay 投影後的終點）。
     - 格已結束 → drop_final（真正放棄）。
-    - 達 defer_max_s → drop_attempt（只結束本次嘗試），下次評估點 now+retry_s；若該點已不早於格結束則無下次。
+    - 達 defer_max_s → drop_attempt（只結束本次嘗試），下次評估點 now+retry_s；
+      若該點不早於格結束，改在格結束前 1 秒再評一次（格內最後 retry_s 內仍要再評一次）。
     - 其餘 wait。
     """
     policy = policy or DirectivePolicy()
     now, first = _utc(now), _utc(first_deferred_at)
-    if slot_ends_at is not None and _utc(slot_ends_at) <= now:
+    end = _utc(hard_end_at) if hard_end_at is not None else None
+    if end is not None and end <= now:
         return DeferDecision("drop_final", "slot_ended", None)
     if now - first >= timedelta(seconds=policy.defer_max_s):
-        nxt = now + timedelta(seconds=policy.retry_s)
-        if slot_ends_at is not None and nxt >= _utc(slot_ends_at):
-            nxt = None
+        nxt: datetime | None = now + timedelta(seconds=policy.retry_s)
+        if end is not None and nxt >= end:
+            nxt = end - timedelta(seconds=1)
+            if nxt <= now:
+                nxt = None
         return DeferDecision("drop_attempt", "defer_max", nxt)
     return DeferDecision("wait", "deferred", None)
 
@@ -338,6 +512,7 @@ def reconcile_directive(slot: PlanSlot, actual_location: str | None, now: dateti
     """行程格與實際 Presence 位置不一致時的 directive；過期格、不可用、overlay 格一律不發（不重播）。
 
     ``actual_location`` 為 None 或 "host" 皆視為在主機（Presence NONE）。
+    directive_id 的錨：預設格用穩定的 starts_at（見 ``_resolve``），不會因時間推移改變。
     """
     policy = policy or DirectivePolicy()
     now = _utc(now)

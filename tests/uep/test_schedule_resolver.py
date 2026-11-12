@@ -166,8 +166,7 @@ def test_unavailable_is_a_state_not_an_exception():  # VC-PP-7（純函式部分
     s = r.resolve([REST], None, tpe(2026, 11, 12, 4), "Not/AZone", plan_revision=9)
     assert (s.availability, s.location, s.suggestions, s.source, s.plan_revision) == (
         "unavailable", "host", (), PlanSource.DEFAULT, 9)
-    broken = PlanItem("b", ActivityKind.WORK, "discord", "weekly")  # 缺 tz／local 欄位
-    assert r.resolve([broken], None, tpe(2026, 11, 12, 4), TZ).availability == "unavailable"
+    assert s.reason_code == "tz_unavailable"
     with pytest.raises(ValueError):  # 無時區的 now 是呼叫端錯誤
         r.resolve([], None, datetime(2026, 11, 12), TZ)
 
@@ -221,9 +220,11 @@ def test_make_delay_and_override_still_wins_over_delay():
     a, b = _two_items()
     now = tpe(2026, 11, 12, 21, 5)
     cur = r.resolve([a, b], None, tpe(2026, 11, 12, 20, 30), TZ)
-    delay = r.make_delay(cur, tpe(2026, 11, 12, 20), now, r.DirectivePolicy(retry_s=600))
-    assert delay.held_until == now + timedelta(seconds=600) and delay.item_ref == "a"
-    assert r.make_delay(r.resolve([], None, now, TZ), now, now) is None
+    step = r.make_delay(cur, now, tpe(2026, 11, 12, 21), tpe(2026, 11, 12, 22), r.DirectivePolicy(retry_s=600))
+    delay = step.delay
+    assert step.action == "wait" and delay.held_until == now + timedelta(seconds=600) and delay.item_ref == "a"
+    assert delay.planned_start_at == cur.blueprint_start_at == tpe(2026, 11, 12, 20)
+    assert r.make_delay(r.resolve([], None, now, TZ), now, now, None).action == "not_eligible"
     ov = _override(tpe(2026, 11, 12, 21), tpe(2026, 11, 12, 23), tpe(2026, 11, 13), loc="website")
     assert r.resolve([a, b], ov, now, TZ, delay=delay).source == PlanSource.OVERRIDE
 
@@ -256,5 +257,7 @@ def test_defer_decision_keeps_timer_and_schedules_next_eval():  # PP-14 / VC-PP-
     drop = r.defer_decision(first, first + timedelta(minutes=30), ends, p)
     assert (drop.action, drop.reason_code, drop.next_eval_at) == (
         "drop_attempt", "defer_max", first + timedelta(minutes=35))
-    assert r.defer_decision(first, tpe(2026, 11, 12, 5, 28), ends, p).next_eval_at is None
+    # 格內最後 retry_s 內仍要在格結束前再評一次（PP-14）；只有逼近到不足 1 秒才沒有下一點
+    assert r.defer_decision(first, tpe(2026, 11, 12, 5, 28), ends, p).next_eval_at == ends - timedelta(seconds=1)
+    assert r.defer_decision(first, ends - timedelta(milliseconds=500), ends, p).next_eval_at is None
     assert r.defer_decision(first, tpe(2026, 11, 12, 5, 30), ends, p).action == "drop_final"

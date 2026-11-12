@@ -17,6 +17,7 @@ from uep.contracts.schedule import (
     MODE_SLEEP,
     MODE_WORK,
     PlanSlot,
+    PlanSource,
 )
 
 REST_FAMILY = frozenset({MODE_REST, MODE_SLEEP})
@@ -66,6 +67,7 @@ class RationalizeInput:
     global_stop: bool = False
     runtime_ready: bool = True
     autonomy_enabled: bool = False  # v1 恆 False
+    in_rest_window: bool = False  # 夜間休息時段是否仍有效（由 DreamLoop 視窗提供）；SLEEP 在時段內不被行程建議切出
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,11 @@ def plan_path(current: str, goal: str) -> tuple[str, ...]:
 
 
 def rationalize(inp: RationalizeInput, policy: RationalizePolicy | None = None) -> BehaviorDecision:
+    """行程建議 → 主機合理化 → 行為決定（純函式）。
+
+    全域停止只擋「進入」WORK／MISCHIEF（契約 §8.5 只說不得進入）：目前已在 WORK 時不強制離開，
+    由其他保持規則與行程邊界自然收斂。
+    """
     policy = policy or RationalizePolicy()
     now = inp.now
     recheck = now + timedelta(seconds=policy.recheck_s)
@@ -126,7 +133,7 @@ def rationalize(inp: RationalizeInput, policy: RationalizePolicy | None = None) 
         for s in pool:
             if s.mode == MODE_MISCHIEF and not inp.autonomy_enabled:
                 removed.append("autonomy_not_enabled")
-            elif inp.global_stop and s.mode in (MODE_WORK, MODE_MISCHIEF):
+            elif inp.global_stop and s.mode in (MODE_WORK, MODE_MISCHIEF) and s.mode != inp.current_behavior:
                 removed.append("substituted_stop")
             else:
                 kept.append(s)
@@ -151,11 +158,15 @@ def rationalize(inp: RationalizeInput, policy: RationalizePolicy | None = None) 
     # 5. 當下事實保持
     if current in (MODE_CHAT, MODE_WORK) and not inp.interaction_idle:
         return BehaviorDecision("HOLD", step, "interaction_active", path, chosen_rank, recheck)
+    if (current == MODE_SLEEP and rest_side and inp.in_rest_window and inp.slot.source != PlanSource.OVERRIDE
+            and pool_mode != MODE_SLEEP):
+        # 夜間休息時段內 SLEEP 不被行程建議切出；override（或時段已過且 dream 已結束）才放行
+        return BehaviorDecision("HOLD", step, "sleep_rest_window", path, chosen_rank, recheck)
     if current == MODE_SLEEP and inp.dream_in_flight:
         return BehaviorDecision("HOLD", step, "dream_in_flight", path, chosen_rank, recheck)
     if current == MODE_WORK and inp.has_uninterruptible_work:
         return BehaviorDecision("HOLD", step, "uninterruptible_work", path, chosen_rank, recheck)
-    hard = (current not in family) or (inp.global_stop and current in (MODE_WORK, MODE_MISCHIEF))
+    hard = current not in family
     if not hard and inp.behavior_entered_at is not None:
         stay_until = inp.behavior_entered_at + timedelta(seconds=policy.min_dwell_s)
         if now < stay_until:

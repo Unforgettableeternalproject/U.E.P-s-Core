@@ -80,8 +80,9 @@ def test_global_stop_substitutes_work_with_chat():  # VC-PP-10
     only_work = slot(suggestions=(BehaviorSuggestion("WORK", 0, "x"),))
     d = run(only_work, "ACTIVE", "CHAT", global_stop=True)
     assert d.outcome == "NOOP" and d.target == "CHAT"
-    d = run(only_work, "ACTIVE", "WORK", global_stop=True, behavior_entered_at=NOW - timedelta(seconds=5))
-    assert d.target == "CHAT" and d.outcome == "SUBSTITUTE"  # 全域停止拉出 WORK，不吃防抖
+    # 全域停止只擋「進入」：已在 WORK 時不強制離開（契約只說不得進入）
+    d = run(only_work, "ACTIVE", "WORK", global_stop=True)
+    assert d.outcome == "NOOP" and d.target == "WORK"
 
 
 def test_runtime_not_ready_holds():

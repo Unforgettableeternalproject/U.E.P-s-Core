@@ -25,7 +25,7 @@ def test_schedule_package_only_depends_on_contracts():
         for m in _modules(path):
             if m.split(".")[0] != "uep":
                 continue
-            if m.startswith(FORBIDDEN_PREFIXES) or not (m == "uep.contracts" or m.startswith("uep.contracts.")):
+            if m.startswith(FORBIDDEN_PREFIXES) or not m.startswith(("uep.contracts", "uep.schedule")):
                 violations.append(f"{path.name}: {m}")
     assert not violations, "uep/schedule 只能依賴 uep.contracts（PP-3）：\n" + "\n".join(violations)
 

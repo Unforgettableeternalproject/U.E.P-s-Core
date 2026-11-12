@@ -255,6 +255,10 @@ class PlanStore:
         self._delay: PlanDelay | None = None
         self._last_unavailable_log = float("-inf")
 
+    def set_on_change(self, callback: Callable[[int, str, str | None], None] | None) -> None:
+        """設定提交後的變更通知（例如發布 ``schedule.plan_changed``）；寫入端的 store 實例需要設定。"""
+        self._on_change = callback
+
     # ---- Planner 注入（delay 不持久化；只活在記憶體）----
 
     def set_delay(self, delay: PlanDelay | None) -> None:

@@ -141,6 +141,28 @@ DEFAULT_EVENT_SPECS["module.provision_resolved"] = EventSpec(
     payload_keys=_keys("module_id", "decision_id", "plan_version", "action", "outcome", "reason_code"),
 )
 
+# 行程事件（PresencePlan 契約 §10；durable，source ``core.schedule``，不得用 ``presence.*``）。payload 只放 ID／列舉／數字，
+# 不含自由文字與備註。override_*、slot_marked／unmarked、abandon_work 先只登記（等仲裁器接上才發布）
+SCHEDULE_EVENT_KEYS: dict[str, frozenset[str]] = {
+    "schedule.plan_changed": _keys("revision", "change_kind", "ref_id"),
+    "schedule.slot_changed": _keys("slot_ref", "activity_kind", "source", "location", "plan_revision"),
+    "schedule.slot_entered": _keys(
+        "slot_ref", "activity_kind", "source", "location", "slot_state", "reason", "plan_revision"),
+    "schedule.slot_left": _keys(
+        "slot_ref", "activity_kind", "source", "location", "slot_state", "reason", "plan_revision"),
+    "schedule.directive_issued": _keys("directive_id", "reason", "drop_reason", "next_eval_at"),
+    "schedule.directive_dropped": _keys("directive_id", "reason", "drop_reason", "next_eval_at"),
+    "schedule.divergence_observed": _keys("plan_location", "actual_location", "override_state", "override_id"),
+    "schedule.override_started": _keys("override_id", "cause_request_id", "end_reason"),
+    "schedule.override_ended": _keys("override_id", "cause_request_id", "end_reason"),
+    "schedule.slot_marked": _keys("mark_id", "kind", "item_ref", "cause_request_id", "end_reason"),
+    "schedule.slot_unmarked": _keys("mark_id", "kind", "item_ref", "cause_request_id", "end_reason"),
+    "schedule.abandon_work": _keys(
+        "signal_id", "item_ref", "result", "reason_code", "path", "decider_id", "decider_version"),
+}
+for _t, _k in SCHEDULE_EVENT_KEYS.items():
+    DEFAULT_EVENT_SPECS[_t] = EventSpec(_D, payload_keys=_k)
+
 
 class EventRegistry:
     """event_type -> EventSpec；可在測試或後續契約擴充。"""

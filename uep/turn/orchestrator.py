@@ -405,7 +405,11 @@ class TurnOrchestrator:
             # 連 input.utterance_final（含原文 blob）都不寫，只留不含原文的 shadow 紀錄
             self._record_absent_input(ctx, fact, absent)
             return IntakeResult(None, absent, None, fact=dataclasses.replace(fact, text=""))
-        self._prefetch(fact.text)  # 句子一進來就先翻（缺席端輸入已在上面丟棄，不會走到這裡）
+        # 句子一進來就先翻。缺席端輸入已在上面丟棄；否決（Presence 非 ACTIVE、全域停止、audience 不允許）時不預翻，
+        # 否則被否決的文字會進翻譯器與快取。proposer 不支援預翻譯時完全不做事（也不多呼叫 veto）
+        can_prefetch = isinstance(self._proposer, PrefetchProposer) and self._vetoed(ctx, self._auth_provider()) is None
+        if can_prefetch:
+            self._prefetch(fact.text)
         ident = self._identity.resolve_platform(fact.speaker_ref) if self._identity is not None else GUEST
         actor_id = ident.actor_id or UNVERIFIED_ACTOR
         payload: dict[str, object] = {"speaker_ref": fact.speaker_ref, "len": len(fact.text)}
@@ -441,13 +445,18 @@ class TurnOrchestrator:
             logger.exception("TurnAggregator 失敗，退回逐句處理")
             self.metrics["aggregator.error"] += 1
             completed = [AggregatedTurn(fact.speaker_ref, fact.text, (segment,))]
-        if not completed:
-            # 語音緩衝還在等後續：合併後的全文也先翻（交出 turn 時的 candidate.text 就是這段全文）
-            hook = getattr(self._aggregator, "buffered_text", None)
-            if callable(hook):
-                merged = hook(fact.speaker_ref)
+        if can_prefetch:
+            if not completed:
+                # 語音緩衝還在等後續：合併後的全文也先翻（交出 turn 時的 candidate.text 就是這段全文）
+                hook = getattr(self._aggregator, "buffered_text", None)
+                merged = hook(fact.speaker_ref) if callable(hook) else None
                 if merged and merged != fact.text:
                     self._prefetch(merged)
+            else:
+                # 這一句和 turn 在同一次 feed 交出（如叫到名字立即交出）：合併全文與單句不同時也先翻
+                for turn in completed:
+                    if turn.text and turn.text != fact.text:
+                        self._prefetch(turn.text)
         results = [self._decide_turn(ctx, turn) for turn in completed]
         if not results:
             return IntakeResult(None, "buffered", utterance_event_id=event.event_id, yield_for=yield_for)

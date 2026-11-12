@@ -232,3 +232,141 @@ def test_laya_proposer_prefetch_then_propose_translates_once(monkeypatch):
     proposer.propose(_cand(text=LONG))
     assert mt.calls == [LONG] and agent.calls[-1][0]["message"] == f"en {LONG}"
     assert translator.metrics["prefetch_started"] == 1
+
+
+# ---- 審查修正：取代舊工作、否決後才預翻、競態 ----
+
+BASE = "我想請你幫我整理上週開會的重點"
+
+
+def test_growing_voice_prefetches_drop_stale_pending_jobs_and_final_text_finishes():
+    mt = SlowMT(delay=0.15)
+    tr = _tr(mt, timeout_ms=1000)
+    texts = [BASE, BASE + "然後列成清單", BASE + "然後列成清單再提醒我", BASE + "然後列成清單再提醒我明天交報告"]
+    tr.prefetch(texts[0])
+    time.sleep(0.05)  # 第一個已拿到模型開始推論（無法放棄）
+    for t in texts[1:]:
+        tr.prefetch(t)
+    result = tr.translate(texts[-1])
+    assert result.status == "ok"
+    assert mt.calls == [texts[0], texts[-1]]  # 中間兩個在開始前就被較新的取代
+    assert tr.metrics["prefetch_superseded"] == 2
+
+
+def test_pending_prefetch_cap_drops_the_oldest_unstarted_one():
+    mt = SlowMT(delay=0.15)
+    tr = _tr(mt, timeout_ms=1000)
+    a, b, c, d = (f"{i}號，請幫我查一下今天的天氣怎麼樣" for i in "甲乙丙丁")
+    tr.prefetch(a)
+    time.sleep(0.05)
+    for t in (b, c, d):
+        tr.prefetch(t)  # 彼此不是前綴；未開始的上限 2，丟掉最舊的 b
+    assert tr.translate(d).status == "ok"
+    time.sleep(0.3)
+    assert b not in mt.calls and a in mt.calls and c in mt.calls and d in mt.calls
+
+
+def test_background_translation_is_not_starved_by_current_sentence_work():
+    tr = _tr(SlowMT(), timeout_ms=1000)
+    tr._BACKGROUND_MAX_YIELD_S = 0.1  # type: ignore[misc]
+    tr._urgent_enter()  # 模擬一直有當句翻譯在等
+    try:
+        start = time.monotonic()
+        result = tr.translate_background("上一輪的使用者脈絡內容", timeout_ms=1500)
+        assert result.status == "ok" and time.monotonic() - start < 1.0
+    finally:
+        tr._urgent_exit()
+
+
+def test_creator_timeout_does_not_abandon_job_while_another_waiter_remains():
+    mt = SlowMT(delay=0.3)
+    tr = _tr(mt, timeout_ms=1000)
+    first = threading.Thread(target=lambda: tr.translate(LONG, timeout_ms=50), daemon=True)
+    second_result = []
+    first.start()
+    time.sleep(0.02)
+    second = threading.Thread(target=lambda: second_result.append(tr.translate(LONG, timeout_ms=1500)), daemon=True)
+    second.start()
+    first.join(2)
+    second.join(3)
+    assert second_result and second_result[0].status == "ok" and mt.calls == [LONG]
+
+
+def test_submit_rechecks_cache_and_thread_start_failure_does_not_raise(monkeypatch):
+    mt = SlowMT()
+    tr = _tr(mt)
+    prepared = tr.replace_aliases(LONG)
+    tr._cache[prepared] = "cached en"
+    job, created = tr._submit(prepared, urgent=True, abandonable=True, waiter=True)
+    assert not created and job.out == "cached en" and mt.calls == []
+
+    def boom(*a, **k):
+        raise RuntimeError("can't start new thread")
+
+    other = "請幫我查一下明天台北的天氣預報然後告訴我要不要帶傘"
+    monkeypatch.setattr(threading.Thread, "start", boom)
+    result = tr.translate(other)  # 不拋
+    monkeypatch.undo()
+    assert result.status == "unavailable" and not tr._inflight and tr._urgent == 0
+    assert tr.translate(other).status == "ok"  # 回滾乾淨，之後可以正常翻
+
+
+class _Gate:
+    """假 veto／auth：計算被呼叫次數。"""
+
+    def __init__(self, reason):
+        self.reason, self.calls = reason, 0
+
+    def __call__(self, ctx):
+        self.calls += 1
+        return self.reason
+
+
+def _orch_v(proposer, veto, aggregator=None) -> TurnOrchestrator:
+    return TurnOrchestrator(
+        _Publisher(), TurnGenerations(), auth_provider=lambda: AUTH,  # type: ignore[arg-type]
+        proposer=proposer, aggregator=aggregator, veto=veto, decision=DecisionConfig(),
+    )
+
+
+def test_no_prefetch_when_vetoed_including_voice_merge():
+    laya = FakeLayaWithPrefetch()
+    agg = VoiceRoutedAggregator(BufferedAggregator(AggregatorConfig(merge_gap_ms=5000, max_wait_ms=5000)))
+    orch = _orch_v(_comp(laya), _Gate("presence_inactive"), agg)
+    for seq, text in enumerate((BASE, "然後把待辦事項列成清單"), 1):
+        orch.on_utterance(CTX, UtteranceFact(speaker_ref="discord:1", text=text, seq=seq, from_voice=True))
+    assert laya.prefetched == []
+    ok = FakeLayaWithPrefetch()
+    _orch_v(_comp(ok), _Gate(None)).on_utterance(CTX, UtteranceFact(speaker_ref="discord:1", text=LONG, seq=1))
+    assert ok.prefetched == [LONG]
+
+
+def test_non_prefetch_proposer_does_not_even_call_veto_for_prefetch():
+    class Plain:
+        proposer_id = "plain"
+
+        def propose(self, candidate):
+            return Proposal(reply_mode=ReplyMode.PASS, reason_code="x", proposer_id="plain", proposer_version="1")
+
+    gate = _Gate(None)
+    _orch_v(Plain(), gate).on_utterance(CTX, UtteranceFact(speaker_ref="discord:1", text=LONG, seq=1))
+    assert gate.calls == 1  # 只有 _decide_turn 的那一次
+
+
+def test_turn_handed_off_in_the_same_feed_prefetches_its_merged_text():
+    from uep.turn.aggregator import AggregatedTurn
+
+    class Handoff:
+        def feed(self, segment):
+            return [AggregatedTurn(segment.speaker_ref, "前一段 " + segment.text, (segment,))]
+
+        def tick(self):
+            return []
+
+        def flush_all(self):
+            return []
+
+    laya = FakeLayaWithPrefetch()
+    orch = _orch_v(_comp(laya), _Gate(None), Handoff())
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref="discord:1", text="小U 你好嗎", seq=1))
+    assert laya.prefetched == ["小U 你好嗎", "前一段 小U 你好嗎"]

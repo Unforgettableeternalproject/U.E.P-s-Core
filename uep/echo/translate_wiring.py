@@ -111,11 +111,14 @@ def _is_oom(exc: BaseException) -> bool:
 class _Job:
     """一次翻譯工作：``done`` 設起代表結束；成功時 ``out`` 有值，失敗時 ``reason`` 有值，被放棄則兩者皆空。"""
 
-    __slots__ = ("abandonable", "abandoned", "done", "out", "reason", "urgent")
+    __slots__ = ("abandonable", "abandoned", "done", "out", "prefetch", "reason", "started", "urgent", "waiters")
 
-    def __init__(self, urgent: bool, abandonable: bool) -> None:
+    def __init__(self, urgent: bool, abandonable: bool, prefetch: bool = False) -> None:
         self.urgent = urgent
-        self.abandonable = abandonable
+        self.abandonable = abandonable  # 由 translate 建立：所有等待者都放棄後才可放棄
+        self.prefetch = prefetch  # 預翻譯工作：尚未開始前可被較新的預翻譯取代
+        self.started = False  # 已拿到模型開始推論（無法再放棄）
+        self.waiters = 0  # 正在等這個工作結果的 translate 呼叫數
         self.abandoned = False
         self.done = threading.Event()
         self.out: str | None = None
@@ -250,10 +253,14 @@ class BoundaryTranslator:
 
         budget = (timeout_ms if timeout_ms is not None else self._timeout_ms) / 1000.0
         # 同一句已有進行中的翻譯（預翻譯或背景脈絡）就等它，不重複翻；等的時間仍受原本的逾時限制
-        job, created = self._submit(prepared, urgent=not background, abandonable=True)
-        if not job.done.wait(budget):
-            if created and job.abandonable:
-                job.abandoned = True  # 還沒開始跑就不佔用模型（已開始的無法中止，結果仍會寫進快取）
+        job, created = self._submit(prepared, urgent=not background, abandonable=True, waiter=True)
+        finished = job.done.wait(budget)
+        with self._cache_lock:
+            job.waiters -= 1
+            last_waiter = job.waiters <= 0
+        if not finished:
+            if job.abandonable and last_waiter and not job.started:
+                job.abandoned = True  # 沒有人在等了且還沒開始跑：不佔用模型（已開始的無法中止，結果仍會寫進快取）
             return done(None, STATUS_UNAVAILABLE, "timeout")
         if job.reason:
             return done(None, STATUS_UNAVAILABLE, job.reason)
@@ -263,18 +270,63 @@ class BoundaryTranslator:
 
     # ---- 翻譯工作（預翻譯、當句、背景脈絡共用）----
 
-    def _submit(self, prepared: str, *, urgent: bool, abandonable: bool) -> tuple[_Job, bool]:
-        """取得（或建立）這句的翻譯工作；回傳 ``(job, 是否由本次呼叫建立)``。同一句同時只會有一個工作。"""
+    _MAX_PENDING_PREFETCH = 2  # 尚未開始的預翻譯最多幾個；超過就放棄最舊的
+    _BACKGROUND_MAX_YIELD_S = 0.5  # 背景脈絡翻譯最多讓路這麼久，之後不論有沒有當句翻譯都會排進去（避免餓死）
+
+    def _submit(
+        self, prepared: str, *, urgent: bool, abandonable: bool, prefetch: bool = False, waiter: bool = False,
+    ) -> tuple[_Job, bool]:
+        """取得（或建立）這句的翻譯工作；回傳 ``(job, 是否由本次呼叫建立)``。同一句同時只會有一個工作。
+        ``waiter=True`` 的呼叫端會等結果（登記在 ``job.waiters``，由呼叫端離開時扣掉）。"""
         with self._cache_lock:
+            cached = self._cache.get(prepared)
+            if cached is not None:  # 與呼叫端先前的快取檢查之間可能已有別的工作完成：直接回結果，不再開工作
+                job = _Job(urgent, abandonable)
+                job.out = cached
+                job.done.set()
+                job.waiters = 1 if waiter else 0
+                return job, False
             job = self._inflight.get(prepared)
             if job is not None:
+                if waiter:
+                    job.waiters += 1
                 return job, False
-            job = _Job(urgent, abandonable)
+            job = _Job(urgent, abandonable, prefetch)
+            if waiter:
+                job.waiters = 1
+            if prefetch:
+                self._supersede_prefetch_locked(prepared)
             self._inflight[prepared] = job
         if urgent:
             self._urgent_enter()
-        threading.Thread(target=self._work, args=(prepared, job), name="uep-mt-run", daemon=True).start()
+        try:
+            threading.Thread(target=self._work, args=(prepared, job), name="uep-mt-run", daemon=True).start()
+        except BaseException:  # 無法建立執行緒（資源不足）：回滾登記，這次當作不可用，不往外拋
+            logger.exception("MT 執行緒建立失敗")
+            with self._cache_lock:
+                if self._inflight.get(prepared) is job:
+                    del self._inflight[prepared]
+            if urgent:
+                self._urgent_exit()
+            job.reason = "error"
+            job.done.set()
         return job, True
+
+    def _supersede_prefetch_locked(self, prepared: str) -> None:
+        """新預翻譯進來時，放棄還沒開始、沒人在等的舊預翻譯：文字是新文字前綴者（語音合併越來越長）與超過上限的最舊者。
+        持有 ``_cache_lock`` 時呼叫。被放棄的工作不會佔用模型，也不再接受新的等待者（從 ``_inflight`` 移除）。"""
+        pending = [
+            (key, j) for key, j in self._inflight.items()
+            if j.prefetch and not j.started and not j.abandoned and j.waiters <= 0
+        ]
+        drop = [key for key, _ in pending if prepared.startswith(key)]
+        rest = [key for key, _ in pending if key not in drop]
+        while len(rest) >= self._MAX_PENDING_PREFETCH:
+            drop.append(rest.pop(0))
+        for key in drop:
+            job = self._inflight.pop(key)
+            job.abandoned = True
+            self.metrics["prefetch_superseded"] += 1
 
     def _urgent_enter(self) -> None:
         with self._urgent_lock:
@@ -292,12 +344,18 @@ class BoundaryTranslator:
         try:
             if not job.urgent:
                 # 背景脈絡翻譯讓路：有當句翻譯在等（含預翻譯）時先不搶模型；已在推論中的無法中止
-                while not job.abandoned and not self._urgent_idle.wait(0.02):
+                give_up_at = time.monotonic() + self._BACKGROUND_MAX_YIELD_S
+                while not job.abandoned and time.monotonic() < give_up_at and not self._urgent_idle.wait(0.02):
                     pass
-            with self._run_lock:
+            # 等模型時定期看有沒有被取代／放棄，被放棄的工作不必排到輪到才退出（也讓背景工作不被它擋住）
+            while not self._run_lock.acquire(timeout=0.02):
+                if job.abandoned:
+                    return
+            try:
                 backend = self._backend
                 if job.abandoned or backend is None:
                     return
+                job.started = True
                 try:
                     out = str(backend.translate(prepared)).strip()
                 except BaseException as exc:  # noqa: BLE001 - 後端錯誤不可往外洩
@@ -315,11 +373,14 @@ class BoundaryTranslator:
                             while len(self._cache) > _CACHE_SIZE:
                                 self._cache.popitem(last=False)
                         job.out = out
+            finally:
+                self._run_lock.release()
             if job.reason == "oom":
                 self._on_oom()
         finally:
             with self._cache_lock:
-                self._inflight.pop(prepared, None)
+                if self._inflight.get(prepared) is job:  # 被取代的舊工作已不在表內；不能誤刪同鍵的新工作
+                    del self._inflight[prepared]
             job.done.set()
             if job.urgent:
                 self._urgent_exit()
@@ -343,7 +404,7 @@ class BoundaryTranslator:
             if self._load_error or self._backend is None:
                 self.metrics["prefetch_skip_unready"] += 1
                 return
-            _job, created = self._submit(prepared, urgent=True, abandonable=False)
+            _job, created = self._submit(prepared, urgent=True, abandonable=False, prefetch=True)
             self.metrics["prefetch_started" if created else "prefetch_skip_inflight"] += 1
         except Exception:
             self.metrics["prefetch_error"] += 1

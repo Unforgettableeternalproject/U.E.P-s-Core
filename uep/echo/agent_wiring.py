@@ -44,7 +44,7 @@ from uep.tools.outcomes import TurnOutcomeCache
 from uep.tools.projection import ProjectionContext
 from uep.tools.registry import ToolRegistry
 from uep.turn.models import TurnEndFacts
-from uep.turn.orchestrator import attempt_label
+from uep.turn.orchestrator import RETRACT_REASONS, attempt_label
 
 if TYPE_CHECKING:  # legacy 組裝不得載入 uep.agent.loop（test_loop_wiring 鎖定），所以執行期延後 import
     from uep.agent.loop import AgentLoop
@@ -268,7 +268,10 @@ class LoopLauncher:
         system_text: Callable[[Any], str] = lambda ticket: DEFAULT_LOOP_SYSTEM_TEXT,
         max_concurrent: int | None = None, close_timeout_s: float | None = None,
         executors: Mapping[str, Any] | None = None, platform_source: Callable[[], str | None] | None = None,
+        memory_store: Callable[[Any, TurnEndFacts], None] | None = None,
     ) -> None:
+        # 記憶寫入（與 direct_chat 同一條路徑：Host 的 ``store_turn_memory``）；None = 不寫（例如未接記憶的組裝）
+        self._memory_store = memory_store
         # 當下 Presence 平台的來源（Host 持有的 Lease／location）；未注入或回 None = 不帶場域，fail-closed 只投 global 工具
         self._platform_source = platform_source
         # executor 名稱 -> ToolExecutor：``AgentLoop`` 對 parallel_one_shot 逾時／取消呼叫 ``executor.cancel`` 用（組裝層已檢查齊備）
@@ -435,6 +438,8 @@ class LoopLauncher:
             hb_stop.set()
             if not parked:
                 self._cleanup(turn_id, run.run_id)
+            # 與 direct_chat 一致：被拒／撤銷的輪不寫記憶；須在 on_turn_ended 之前取原因（終結後可能查不到）
+            rejected = self._orchestrator.cancel_reason_of(turn_id) in RETRACT_REASONS
             # 名額先釋放、再終結 turn：turn 終結（使用者看到完成）之後立刻到來的新 turn 不該被舊 Run 的名額誤擋；
             # 執行緒追蹤留到最後，shutdown 仍會等 on_turn_ended 完成
             self._release()
@@ -442,7 +447,18 @@ class LoopLauncher:
                 self._orchestrator.on_turn_ended(turn_id, facts)
             except Exception:
                 logger.exception("AgentLoop 結束 turn 失敗：turn=%s", turn_id)
+            if not rejected:
+                self._store_memory(ticket, facts)
             self._forget(threading.current_thread())
+
+    def _store_memory(self, ticket: Any, facts: TurnEndFacts) -> None:
+        """route=agent_loop 的 turn 收尾寫記憶：沿用 Host 的寫入路徑（要求 generation_ok 且有 spoken_text，冪等鍵 ``turn:<id>``）。"""
+        if self._memory_store is None:
+            return
+        try:
+            self._memory_store(ticket, facts)
+        except Exception:
+            logger.exception("AgentLoop 記憶 store 失敗：turn=%s", ticket.turn_id)
 
     def _conclude(self, ctx: _RunCtx, outcome: Any, raised: bool) -> TurnEndFacts:
         """Run 收尾（Run／Task 狀態、使用者端的最後一則訊息）-> turn 終結事實。"""

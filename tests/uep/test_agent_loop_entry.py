@@ -418,3 +418,52 @@ def test_assembly_rejects_one_shot_registry_without_cancellable_executor():
         _check_loop_one_shot_executors(registry, {"fake": object()})  # 沒有 cancel
     _check_loop_one_shot_executors(registry, {"fake": FakeToolExecutor()})
     _check_loop_one_shot_executors(memory_registry(), {})  # production 目錄沒有 one_shot：不要求
+
+
+# ---- 卡：agent_loop turn 收尾寫記憶（與 direct_chat 同一條路徑）----
+
+def _run_work(launcher, facts, cancel_reason=None):
+    from uep.echo.agent_wiring import _RunCtx
+
+    launcher._tasks.heartbeat = lambda *a, **k: None
+    launcher._orchestrator.cancel_reason_of = lambda t: cancel_reason
+    launcher._build_loop = lambda ctx: SimpleNamespace(run=lambda *a, **k: None)
+    launcher._conclude = lambda ctx, outcome, raised: facts
+    ctx = _RunCtx(_ticket(), "task", SimpleNamespace(run_id="run_m", worker_epoch=1))
+    launcher._work(_trigger(), ctx)
+
+
+def test_completed_agent_loop_turn_is_stored_to_memory():
+    from uep.turn.models import TurnEndFacts
+
+    stored: list = []
+    launcher = _stub_launcher(memory_store=lambda ticket, facts: stored.append((ticket.turn_id, facts.spoken_text)))
+    _run_work(launcher, TurnEndFacts(status="completed", generation_ok=True, spoken_text="答案"))
+    assert stored == [("turn_u", "答案")]
+
+
+def test_rejected_agent_loop_turn_is_not_stored_and_store_failure_is_tolerated():
+    from uep.turn.models import TurnEndFacts
+    from uep.turn.orchestrator import RETRACT_REASONS
+
+    stored: list = []
+    launcher = _stub_launcher(memory_store=lambda ticket, facts: stored.append(1))
+    _run_work(launcher, TurnEndFacts(status="completed", generation_ok=True, spoken_text="答案"), next(iter(RETRACT_REASONS)))
+    assert stored == []  # 被拒／撤銷的輪不寫記憶（與 direct_chat 一致）
+
+    def boom(ticket, facts):
+        raise RuntimeError("store down")
+
+    launcher = _stub_launcher(memory_store=boom)
+    _run_work(launcher, TurnEndFacts(status="completed", generation_ok=True, spoken_text="答案"))  # 不得外洩例外
+
+
+def test_host_store_turn_memory_uses_direct_chat_store_path():
+    from uep.echo.host import EchoPipelineHost
+    from uep.turn.models import TurnEndFacts
+
+    calls: list = []
+    host = EchoPipelineHost.__new__(EchoPipelineHost)
+    host._store_memory = lambda ticket, facts, ctx: calls.append((ticket.turn_id, facts.spoken_text, ctx))
+    host.store_turn_memory(_ticket(), TurnEndFacts(status="completed", generation_ok=True, spoken_text="x"))
+    assert calls == [("turn_u", "x", {})]

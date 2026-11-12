@@ -1306,6 +1306,11 @@ class EchoPipelineHost:
             except Exception:
                 logger.debug("證據回報被拒（%s）", delivery_id, exc_info=True)
 
+    def store_turn_memory(self, ticket: CoreTicket, facts: TurnEndFacts) -> None:
+        """route=agent_loop 的 turn 收尾（由 LoopLauncher 呼叫）寫記憶：與 direct_chat 同一條 ``_store_memory``，
+        agent_loop 沒有 member_recall 的工具脈絡所以不帶額外欄位。"""
+        self._store_memory(ticket, facts, {})
+
     def _store_memory(self, ticket: CoreTicket, facts: TurnEndFacts, tool_context: dict[str, Any]) -> None:
         """Q8：記憶寫入由 Core 依 outcome 自行 store（ES 的 think.memory 不寫入）；冪等鍵由 turn_id 衍生。
         ``member_recall`` 讀回的投影 id 併入 ``shared_context_ids``（ES #18 的約定）。"""

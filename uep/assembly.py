@@ -732,7 +732,7 @@ def assemble_core(
                 tool_path=tool_path, tasks=tasks, delivery=delivery, orchestrator=echo.orchestrator,
                 registry=loop_registry, model_port=model_port, cache=agent_cache,
                 text_store=getattr(echo, "loop_text", None), persona_id=persona_id, executors=executors,
-                platform_source=platform_source,
+                platform_source=platform_source, memory_store=getattr(echo, "store_turn_memory", None),
                 extra_capability_tags=extra_tags,
             )
         if loop_entry is not None:

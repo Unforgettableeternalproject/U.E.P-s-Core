@@ -12,7 +12,8 @@ handle 的 load／warm／unload／probe 都在受限 worker（daemon 執行緒�
 - 失敗重試有限退避（R12）；顯式 ``request_load`` 不重設重試上限、不繞過冷卻。
 - 觀測模式（``mode="observe"``）不呼叫任何 load／unload（R10：不得 provisioning／驅逐），狀態只由 probe 推導。
 
-PR-3 增加（皆可關閉；旗標全關時行為與 PR-2 相同）：
+PR-3 增加。只有 ``UEP_MODULE_COORDINATOR`` 關閉（不建立 coordinator）時行為才完全不變；coordinator 開、預算未設時，
+新的保護、停機反序、依賴 failed 處置與 hung 閘仍會生效，僅「需要 GPU 的載入」多了 fail-closed 拒絕：
 - pin／lease（R1）：描述子 ``pinned``、運維 ``pin()``、有 TTL 的 lease；pinned／resident／有效 lease／仍有作用中依賴者的模組
   不可驅逐、不接受 ``request_unload``（停機與內部清理例外）。lease 有效性在檢查當下比時鐘，不依賴 tick。
 - 預算（R6）：``ResourceBudget``（宣告成本＋實測空閒取較保守者）；只套在 coordinator 會呼叫 ``handle.load`` 且 ``uses_gpu`` 的模組。
@@ -490,7 +491,7 @@ class ModuleCoordinator:
                 return RequestResult(False, "unknown_module")
             rec.op_pinned = False
             if rec.desc.pinned:
-                return RequestResult(False, "descriptor_pinned")
+                return RequestResult(True, "descriptor_pinned")  # 運維 pin 已解除，但設定層 pinned 仍在，模組仍受保護
             return RequestResult(True, "unpinned")
 
     def acquire_lease(self, module_id: str, owner: str, ttl_s: float | None = None) -> LeaseResult:

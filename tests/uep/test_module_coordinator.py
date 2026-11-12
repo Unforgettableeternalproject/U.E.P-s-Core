@@ -499,6 +499,7 @@ def test_published_revisions_are_ordered_under_concurrent_requests(rig):
         for prev, cur, ev in zip(states, states[1:], r.rec.of(name)[1:], strict=False):
             assert is_legal_publish(prev, cur, ev["cause"]), (prev, cur)
         assert r.handles[name].max_running <= 1  # PR-3：排隊中就被取消的工作不再呼叫 handle，可能一次都沒跑；但絕不並行
+        assert len(states) > 1  # 至少有狀態推進（不只是啟動快照）
 
 
 # --- 設定閘（probe 成功不得覆蓋）---

@@ -415,6 +415,8 @@ def build_module_budget(settings: Any, probe: VramProbe | None = None) -> Resour
     只設 budget 沒設 headroom => ``AssemblyError``。沒給 probe 時才建 NVML probe（延遲載入 pynvml，建立本身不碰 GPU）。"""
     headroom = settings.module_vram_headroom_mb
     if headroom is None:
+        if probe is not None:
+            raise AssemblyError("給了 module_vram_probe 但 UEP_MODULE_VRAM_HEADROOM_MB 未設（預算管理未啟用，probe 不會被使用）")
         if settings.module_vram_budget_mb is not None:
             raise AssemblyError("UEP_MODULE_VRAM_BUDGET_MB 必須同時設定 UEP_MODULE_VRAM_HEADROOM_MB（保留水位需依機器量測，不猜預設）")
         return None
@@ -422,6 +424,7 @@ def build_module_budget(settings: Any, probe: VramProbe | None = None) -> Resour
         config = BudgetConfig(
             headroom_mb=headroom, budget_mb=settings.module_vram_budget_mb, reading_max_age_s=settings.module_vram_reading_max_age_s,
             recover_margin_mb=settings.module_vram_recover_margin_mb, evict_cooldown_s=settings.module_evict_cooldown_s,
+            read_timeout_s=settings.module_vram_read_timeout_s,
         )
     except ValueError as exc:
         raise AssemblyError(f"模組預算設定不合法：{exc}") from exc

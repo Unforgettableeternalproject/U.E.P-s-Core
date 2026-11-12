@@ -5,8 +5,10 @@
 """
 from __future__ import annotations
 
+import logging
 import random
 import sys
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,8 +46,22 @@ class FakeProbe:
         return VramReading(self.total, self.free)
 
 
+class BlockingProbe(FakeProbe):
+    """read() 卡住直到 gate 放行（模擬驅動卡死）。"""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.gate = threading.Event()
+        self.entered = threading.Event()
+
+    def read(self) -> VramReading:
+        self.entered.set()
+        self.gate.wait(timeout=10)
+        return super().read()
+
+
 def make_budget(probe: FakeProbe, **over: Any) -> ResourceBudget:
-    cfg = {"headroom_mb": HEADROOM, "reading_max_age_s": 5.0, "recover_margin_mb": 256, "evict_cooldown_s": 60.0, **over}
+    cfg = {"headroom_mb": HEADROOM, "reading_max_age_s": 5.0, "recover_margin_mb": 256, "evict_cooldown_s": 60.0, "read_timeout_s": 0.2, **over}
     return ResourceBudget(BudgetConfig(**cfg), probe)
 
 
@@ -291,6 +307,106 @@ def test_timeout_keeps_reservation_until_handle_returns(rig):
     gate.set()
     wait_until(lambda: not r.mc.status("g1").in_flight)
     assert r.mc.status("g1").occupied  # 晚完成：資源其實被取走，仍保留
+
+
+def test_probe_read_has_a_timeout_and_never_blocks_start_tick_request_or_status(rig):
+    probe = BlockingProbe(free=20000)
+    r = rig(budget=make_budget(probe))
+    gpu(r, "g1", 1000, autoload=True)
+    r.add("svc")
+    try:
+        r.mc.start()  # probe 卡住：start 在 read_timeout 內返回
+        assert probe.entered.wait(2) and r.state("g1") == "unloaded"
+        assert r.mc.status("g1").admission_reason == "measurement_failed"
+        step(r, 1)  # 後續 tick 不再啟動新的讀取，也不被卡住
+        assert r.mc.request_load("svc").accepted  # 鎖外取樣：request_load／status 不被擋
+        r.until("svc", "ready")
+        assert r.mc.request_load("g1").reason == "rejected:measurement_failed"
+        assert probe.reads == 0
+    finally:
+        probe.gate.set()
+    wait_until(lambda: probe.reads == 1)  # 卡住的讀取回來，樣本恢復
+    step(r, 0)
+    assert r.mc.request_load("g1").accepted
+    r.until("g1", "ready")
+
+
+def test_probe_failure_at_start_rejects_autoload_gpu_then_loads_when_samples_recover(rig):
+    probe = FakeProbe(free=20000)
+    probe.error = RuntimeError("nvml down")
+    r = rig(budget=make_budget(probe))
+    gpu(r, "g1", 1000, autoload=True)
+    r.mc.start()
+    settle(r)  # 被拒但已穩定，不讓啟動空等
+    assert r.state("g1") == "unloaded" and r.mc.status("g1").admission_reason == "measurement_failed"
+    probe.error = None
+    step(r, 1)  # autoload 仍 wanted：樣本恢復後自動載入
+    r.until("g1", "ready")
+
+
+def test_measurement_failure_warns_only_on_transitions(rig, caplog):
+    probe = FakeProbe()
+    b = make_budget(probe)
+    with caplog.at_level(logging.DEBUG, logger="uep.lifecycle"):
+        probe.error = RuntimeError("x")
+        for t in range(5):
+            b.refresh(float(t))
+        probe.error = None
+        b.refresh(10.0)
+        probe.error = RuntimeError("y")
+        b.refresh(11.0)
+    warns = [rec for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert len(warns) == 2 and b.failures == 6  # 兩次成功->失敗轉換各一次；其餘為 debug
+
+
+def test_nvml_probe_reinitializes_after_a_read_failure():
+    calls = {"init": 0, "fail": True}
+
+    def info(h):
+        if calls["fail"]:
+            raise RuntimeError("driver reset")
+        return SimpleNamespace(total=1024 * 1024 * 100, free=1024 * 1024 * 50)
+
+    def init():
+        calls["init"] += 1
+
+    fake = SimpleNamespace(nvmlInit=init, nvmlDeviceGetHandleByIndex=lambda i: i, nvmlDeviceGetMemoryInfo=info)
+    probe = NvmlVramProbe(0, module_loader=lambda n: fake)
+    with pytest.raises(ProbeUnavailable):
+        probe.read()
+    calls["fail"] = False
+    assert probe.read() == VramReading(100, 50) and calls["init"] == 2  # 失敗後重新初始化
+
+
+def test_total_held_never_exceeds_the_budget_in_random_sequences(rig):
+    """預算不變式（固定種子）：任何載入／卸載／壓力序列下，持有中的宣告值總和不超過預算上限。"""
+    cap = 7000
+    for seed in range(6):
+        rnd = random.Random(seed)
+        probe = FakeProbe(free=20000)
+        r = rig(budget=make_budget(probe, budget_mb=cap, evict_cooldown_s=0))
+        costs = {f"g{i}": rnd.choice((1500, 2000, 3000)) for i in range(5)}
+        for m, c in costs.items():
+            gpu(r, m, c, priority=rnd.choice(("on_demand", "speculative", "background")))
+        r.mc.start()
+        for _ in range(60):
+            op = rnd.choice(("load", "unload", "pressure", "calm", "tick"))
+            target = rnd.choice(list(costs))
+            if op == "load":
+                r.mc.request_load(target)
+            elif op == "unload":
+                r.mc.request_unload(target)
+            elif op == "pressure":
+                probe.free = 100
+            elif op == "calm":
+                probe.free = 20000
+            step(r, rnd.choice((1, 6, 61)))
+            r.mc.wait_settled(5)
+            held = sum(
+                costs[m] for m in costs
+                if r.state(m) in ("loading", "warming", "ready", "degraded", "unloading") or r.mc.status(m).occupied
+            )
+            assert held <= cap, (seed, op, held)
 
 
 # --- 外部壓力與驅逐 ---
@@ -554,7 +670,9 @@ def test_pin_blocks_unload_unpin_restores_descriptor_pin_is_permanent(rig):
     assert r.mc.pin("m").accepted and r.mc.request_unload("m").reason == "protected:pinned"
     assert r.mc.unpin("m").accepted and r.mc.request_unload("m").accepted
     assert r.mc.request_unload("fixed").reason == "protected:pinned"
-    assert r.mc.unpin("fixed").reason == "descriptor_pinned" and r.mc.request_unload("fixed").reason == "protected:pinned"
+    unpinned = r.mc.unpin("fixed")  # 運維 pin 解除成功（accepted），但設定層 pinned 仍保護
+    assert unpinned.accepted and unpinned.reason == "descriptor_pinned"
+    assert r.mc.request_unload("fixed").reason == "protected:pinned"
     assert r.mc.request_unload("res").reason == "protected:resident"
     assert r.mc.pin("nope").reason == "unknown_module"
 

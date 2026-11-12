@@ -417,6 +417,11 @@ def test_budget_only_without_headroom_is_an_assembly_error_and_headroom_builds_b
     probe.read.assert_not_called()  # 建立預算不量測
 
 
+def test_probe_without_headroom_is_an_assembly_error_not_silently_dropped():
+    with pytest.raises(AssemblyError, match="module_vram_probe"):
+        build_module_budget(UepSettings(), MagicMock())
+
+
 def test_m_group_descriptors_must_be_pinned():
     check_m_group_pinned([(ModuleDescriptor("stt", kind="model", pinned=True), FakeHandle()), (ModuleDescriptor("lore"), FakeHandle())])
     for kind in ("model", "stage"):

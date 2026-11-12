@@ -80,6 +80,7 @@ class UepSettings(BaseSettings):
     module_vram_recover_margin_mb: int = Field(default=256, ge=0, validation_alias="UEP_MODULE_VRAM_RECOVER_MARGIN_MB")
     module_evict_cooldown_s: float = Field(default=60.0, ge=0, validation_alias="UEP_MODULE_EVICT_COOLDOWN_S")
     module_gpu_index: int = Field(default=0, ge=0, validation_alias="UEP_MODULE_GPU_INDEX")
+    module_vram_read_timeout_s: float = Field(default=1.0, gt=0, validation_alias="UEP_MODULE_VRAM_READ_TIMEOUT_S")
     # 測試用工具組（test_echo／test_clock／test_sleep／test_approval_echo）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效。
     # 開啟後組裝層才註冊這些工具與 executor，並把測試標籤併入 /loop（route=agent_loop）的 capability_tags；關閉時完全不存在
     tool_testkit: bool = Field(default=False, validation_alias="UEP_TOOL_TESTKIT")

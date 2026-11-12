@@ -53,7 +53,7 @@ class VramReading:
 
 @runtime_checkable
 class VramProbe(Protocol):
-    """VRAM 量測介面；``read`` 必須快速返回（在 coordinator 的排程執行緒上、鎖外呼叫）。失敗拋 ``ProbeUnavailable``。"""
+    """VRAM 量測介面；失敗拋 ``ProbeUnavailable``。``ResourceBudget`` 在專用 daemon 執行緒上呼叫並加逾時，驅動卡住不會拖住 coordinator。"""
 
     def read(self) -> VramReading: ...
 
@@ -90,6 +90,8 @@ class NvmlVramProbe:
             info = nvml.nvmlDeviceGetMemoryInfo(handle)  # type: ignore[attr-defined]
             return VramReading(total_mb=int(info.total) // (1024 * 1024), free_mb=int(info.free) // (1024 * 1024))
         except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self._nvml = None  # 驅動重置等情況：下次讀取重新初始化
             raise ProbeUnavailable(f"nvml_read:{type(exc).__name__}") from None
 
 
@@ -102,6 +104,8 @@ class BudgetConfig:
     - ``reading_max_age_s``：樣本超過此秒數視為過期。
     - ``recover_margin_mb``：壓力回復水位 = 保留水位 + 此值（遲滯，避免在水位線上反覆進出）。
     - ``evict_cooldown_s``：每次壓力收回之後，下一次收回／被收回模組重載的最短間隔。
+    - ``read_timeout_s``：單次 ``probe.read()`` 最多等待秒數；逾時視為量測失敗，卡住的讀取留在 daemon 執行緒上，
+      期間不再啟動新的讀取（不堆積執行緒）。
     """
 
     headroom_mb: int
@@ -109,6 +113,7 @@ class BudgetConfig:
     reading_max_age_s: float = 5.0
     recover_margin_mb: int = 256
     evict_cooldown_s: float = 60.0
+    read_timeout_s: float = 1.0
 
     def __post_init__(self) -> None:
         for key in ("headroom_mb", "recover_margin_mb"):
@@ -117,12 +122,12 @@ class BudgetConfig:
                 raise ValueError(f"{key} 必須是非負整數")
         if self.budget_mb is not None and (isinstance(self.budget_mb, bool) or not isinstance(self.budget_mb, int) or self.budget_mb <= 0):
             raise ValueError("budget_mb 必須是正整數或 None")
-        for key in ("reading_max_age_s", "evict_cooldown_s"):
+        for key in ("reading_max_age_s", "evict_cooldown_s", "read_timeout_s"):
             value = getattr(self, key)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
                 raise ValueError(f"{key} 必須是非負數")
-        if self.reading_max_age_s == 0:
-            raise ValueError("reading_max_age_s 必須大於 0")
+        if self.reading_max_age_s == 0 or self.read_timeout_s == 0:
+            raise ValueError("reading_max_age_s／read_timeout_s 必須大於 0")
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,7 @@ class ResourceBudget:
         self._taken_at: float | None = None
         self._failed = False
         self._pressure = False
+        self._reader: threading.Thread | None = None  # 仍在執行（可能卡住）的讀取執行緒
         self.failures = 0  # 累計量測失敗次數（觀測用）
 
     @property
@@ -152,20 +158,59 @@ class ResourceBudget:
     # --- 取樣（鎖外）---
 
     def refresh(self, now: float) -> bool:
-        """量測一次並以 ``now``（coordinator 的時鐘）標記時間戳、更新快取；失敗時保留舊樣本（會自然過期）並標記失敗。回傳是否成功。"""
-        try:
-            reading = self._probe.read()
-            if not isinstance(reading, VramReading):
-                raise ProbeUnavailable("bad_reading")
-        except Exception as exc:  # noqa: BLE001  任何量測例外都視為失敗，不外溢內容
-            with self._lock:
-                self._failed = True
-                self.failures += 1
-            logger.warning("VRAM 量測失敗：%s；新增 GPU 載入將被拒絕", type(exc).__name__)
-            return False
+        """量測一次並以 ``now``（coordinator 的時鐘）標記時間戳、更新快取；失敗時保留舊樣本（會自然過期）並標記失敗。回傳是否成功。
+
+        ``probe.read()`` 在 daemon 執行緒上執行，最多等 ``read_timeout_s``；逾時視為量測失敗並立刻返回。上一次讀取還沒回來時
+        不再啟動新的讀取（直接視為失敗，不堆積執行緒）；它之後若成功返回，樣本以啟動讀取當時的 ``now`` 為時間戳（較保守）。
+        警告只在成功／失敗狀態轉換時記錄，持續失敗期間記 debug。"""
         with self._lock:
-            self._reading, self._taken_at, self._failed = reading, now, False
-        return True
+            if self._reader is not None and self._reader.is_alive():
+                self._record_failure_locked("read_hung")
+                return False
+            outcome: dict[str, object] = {}
+
+            def run() -> None:
+                try:
+                    reading = self._probe.read()
+                    if not isinstance(reading, VramReading):
+                        raise ProbeUnavailable("bad_reading")
+                    outcome["ok"] = reading
+                except Exception as exc:  # noqa: BLE001  任何量測例外都視為失敗，不外溢內容
+                    outcome["err"] = type(exc).__name__
+                with self._lock:
+                    if "ok" in outcome:
+                        self._set_reading_locked(outcome["ok"], now)  # type: ignore[arg-type]
+                    elif outcome.get("late"):
+                        self._record_failure_locked(str(outcome["err"]))
+
+            thread = threading.Thread(target=run, name="UepVramProbe", daemon=True)
+            self._reader = thread
+            thread.start()
+        thread.join(self._config.read_timeout_s)
+        with self._lock:
+            if thread.is_alive():
+                outcome["late"] = True  # 逾時：之後的失敗結果由執行緒自己記錄，成功結果仍會更新樣本
+                self._record_failure_locked("read_timeout")
+                return False
+            if "ok" in outcome:
+                return True
+            self._record_failure_locked(str(outcome.get("err", "unknown")))
+            return False
+
+    def _set_reading_locked(self, reading: VramReading, now: float) -> None:
+        if self._failed:
+            logger.info("VRAM 量測恢復")
+        if self._taken_at is None or now >= self._taken_at:
+            self._reading, self._taken_at = reading, now
+        self._failed = False
+
+    def _record_failure_locked(self, what: str) -> None:
+        self.failures += 1
+        if not self._failed:
+            logger.warning("VRAM 量測失敗：%s；新增 GPU 載入將被拒絕（持續失敗期間不重複告警）", what)
+        else:
+            logger.debug("VRAM 量測仍失敗：%s", what)
+        self._failed = True
 
     # --- 判斷（讀快取）---
 

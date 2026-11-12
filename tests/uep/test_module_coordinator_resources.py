@@ -427,6 +427,39 @@ def test_observation_mode_never_evicts_or_admits(rig):
     assert r.state("sp") == "ready" and "unload" not in h.calls and r.mc.counters.get("evicted", 0) == 0
 
 
+def test_pressure_flag_follows_the_probe_even_while_an_eviction_is_stuck(rig):
+    r, probe = _pressure_rig(rig)
+    stuck = gpu(r, "sp", priority="speculative", autoload=True)
+    gpu(r, "late", priority="on_demand")
+    r.mc.start()
+    settle(r)
+    stuck.block("unload")
+    probe.free = 100
+    step(r, 1)
+    wait_until(stuck.entered["unload"].is_set)  # 收回的 unload 卡住（尚未結案）
+    assert r.mc.request_load("late").reason == "rejected:pressure"
+    probe.free = 20000  # 外部壓力解除
+    step(r, 1)
+    assert r.mc.request_load("late").accepted  # 旗標不因收回目標卡住而凍結
+    r.until("late", "ready")
+    stuck.release_all()
+
+
+def test_load_completed_after_the_sample_is_still_counted_as_pending(rig):
+    probe = FakeProbe(free=20000)
+    r = rig(budget=make_budget(probe))
+    g1 = gpu(r, "g1", 9500, autoload=True)
+    gpu(r, "g2", 9500)
+    gate = g1.block("load")
+    r.mc.start()
+    wait_until(g1.entered["load"].is_set)
+    step(r, 1)  # 載入中取了新樣本（探針未反映 g1，fake 不會自己扣）
+    gate.set()
+    r.until("g1", "ready")
+    # 沒有新樣本：g1 是樣本之後才完成的占用，實測側仍要扣它 => g2 放不下
+    assert r.mc.request_load("g2").reason == "rejected:insufficient_resource"
+
+
 # --- R8：優先序只看描述子 ---
 
 def test_urgency_and_deadline_hints_do_not_change_priority_or_protection(rig):
@@ -717,8 +750,24 @@ def test_job_that_timed_out_in_queue_never_calls_the_handle(rig):
     h1.release_all()
     wait_until(lambda: not r.mc.status("m2").in_flight and not r.mc.status("m1").in_flight)
     assert h2.calls == []  # 工作開始前就被丟棄：不會事後才真的 load
+    assert r.mc.status("m1").occupied and not r.mc.status("m2").occupied  # handle 從沒被呼叫的不佔資源
     assert r.mc.counters["stale_before_start"] == 1
     assert r.mc.pool_status()["hung"] == 0
+
+
+def test_queued_timeout_does_not_hold_budget(rig):
+    probe = FakeProbe(free=20000)
+    r = rig(workers=1, max_hung_calls=5, budget=make_budget(probe, budget_mb=10000))
+    blocker = r.add("blocker", autoload=True)
+    gpu(r, "g2", 8000, autoload=True)
+    gpu(r, "g3", 8000)
+    blocker.block("load")
+    r.mc.start()
+    wait_until(blocker.entered["load"].is_set)
+    step(r, 31)  # blocker 卡在 worker；g2 在佇列就逾時：handle 從沒被呼叫
+    assert r.state("g2") == "failed" and not r.mc.status("g2").occupied
+    assert r.mc.request_load("g3").accepted  # g2 的預留沒有被記成占用
+    blocker.release_all()
 
 
 def test_probes_pause_while_the_pool_is_saturated(rig):

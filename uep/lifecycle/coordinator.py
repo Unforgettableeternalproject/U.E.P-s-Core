@@ -713,6 +713,7 @@ class ModuleCoordinator:
         """外部壓力（R7）：擋新增 GPU 載入已由放行閘處理；這裡負責收回。一次一個，且需有更新的樣本與冷卻。"""
         if self._budget is None or self._mode != "manage" or self._stopping:
             return
+        pressure = self._budget.update_pressure(now)  # 旗標先更新：收回目標卡住時也要能隨外部壓力解除而放行新載入
         if self._evict_target is not None:  # 上一次收回尚未結案：先等它完成（未確認釋放不算數）
             target = self._recs[self._evict_target]
             if target.state in ("unloading", "ready", "degraded") or target.in_flight:
@@ -720,7 +721,7 @@ class ModuleCoordinator:
             self._evict_target = None
             self._evict_settled_at = now
             self._evict_next_at = now + self._budget.config.evict_cooldown_s
-        if not self._budget.update_pressure(now) or now < self._evict_next_at:
+        if not pressure or now < self._evict_next_at:
             return
         reading, taken_at = self._budget.fresh_reading(now)
         if reading is None or taken_at is None or taken_at <= self._evict_settled_at:
@@ -813,6 +814,8 @@ class ModuleCoordinator:
             rec.reserved_at = self._clock()
         elif state == "ready":
             rec.last_used = self._clock()
+            if payload["prev_state"] in ("loading", "warming"):
+                rec.reserved_at = rec.last_used  # 載入完成才成立的占用：下一個樣本之前仍算「樣本尚未反映」
         elif state in ("unloaded", "failed"):
             self._revoke_leases_locked(rec.desc.module_id)  # 模組已失效：lease 不再有意義，持有者 renew 時會得知
         self._pub.enqueue(MODULE_STATE_CHANGED, payload)
@@ -967,7 +970,7 @@ class ModuleCoordinator:
                 self._count("hung_call")
             else:
                 self._count("queued_timeout")  # 還在佇列：開始前會被丟棄，不占 worker
-            self._fail_locked(rec, reason, "health", now, occupied=True)
+            self._fail_locked(rec, reason, "health", now, occupied=rec.job_started)  # 沒開始的工作 handle 從沒被呼叫，不佔資源
             self._hung_check_locked()
 
     def _probes_locked(self, now: float) -> None:

@@ -158,6 +158,7 @@ class PlanSlot:
     standby: bool = False  # 待命：REST 格（含 fallback REST）與工作暫停中為 True；SOCIAL、休息時段（SLEEP）為 False
     slot_state: SlotState = "normal"  # paused＝工作暫停（留在原平台待命）；abandoned＝fallback REST（藍圖未改）
     reason_code: str | None = None  # unavailable 時的固定原因碼（如 tz_unavailable）
+    tz: str | None = None  # 行程項自己的時區（weekly 項）；once 項、預設層、override 為 None
 
 
 @dataclass(frozen=True)

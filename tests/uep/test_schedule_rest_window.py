@@ -96,7 +96,7 @@ def test_unavailable_plan_falls_back_to_fixed_and_logs_once(caplog):  # VC-PP-7
         policy.window_at(tpe(2026, 11, 12, 4, 5))
     assert a == fixed.window_at(tpe(2026, 11, 12, 4))  # 保住夜間做夢
     assert policy.window_at(tpe(2026, 11, 12, 12)) is None
-    assert sum("退回固定時窗" in r.message for r in caplog.records) == 1  # 進入降級只記一次
+    assert sum("行程不可用" in r.message for r in caplog.records) == 1  # 進入降級只記一次
 
 
 def test_reader_exception_falls_back_and_recovers(caplog):
@@ -175,3 +175,86 @@ def test_plan_mode_seed_failure_or_no_db_keeps_fixed(caplog):
     fixed = FixedWindowPolicy(start=time(9), end=time(18))
     assert build_rest_window_policy(Settings("plan"), fixed, None, store=FakeStore(fail=True)) is fixed
     assert build_rest_window_policy(Settings("plan"), fixed, None) is fixed  # 沒有 DB
+
+
+# ---- PP-2 補修：遲滯、窗口自己的 tz、缺項降級 ----
+
+class Controllable(FakeReader):
+    def __init__(self, items, tz=TZ, exists=True):
+        super().__init__(items, tz)
+        self.broken, self.exists, self.checks = False, exists, 0
+
+    def resolve(self, at=None):
+        if self.broken:
+            raise RuntimeError("db down")
+        return super().resolve(at)
+
+    def has_rest_window(self):
+        self.checks += 1
+        return self.exists
+
+
+def test_cached_window_is_kept_until_it_ends_when_reader_fails():  # m1 遲滯
+    reader = Controllable([window_item(time(1), time(2))])  # 行程窗口 01–02；fixed 預設 03:00–05:30
+    policy = PlanBackedRestWindowPolicy(reader)
+    inside = policy.window_at(tpe(2026, 11, 12, 1, 10))
+    assert inside is not None
+    reader.broken = True
+    assert policy.window_at(tpe(2026, 11, 12, 1, 30)) == inside  # 故障中沿用到窗口結束
+    assert policy.window_at(tpe(2026, 11, 12, 2, 0)) is None  # 快取窗口已結束 → 退回 fixed（此時不在 03:00 窗口）
+    fixed_hit = policy.window_at(tpe(2026, 11, 12, 4))
+    assert fixed_hit is not None and fixed_hit.start == tpe(2026, 11, 12, 3)  # 之後走 fixed
+    reader.broken = False
+    assert policy.window_at(tpe(2026, 11, 12, 1, 10)) is not None  # 恢復
+
+
+def test_window_tz_comes_from_the_item_then_default():  # m2
+    ny = "America/New_York"
+    policy = PlanBackedRestWindowPolicy(FakeReader([window_item(time(3), time(5, 30), tz=ny)], tz=ny), tz="UTC")
+    at = datetime(2026, 11, 12, 4, tzinfo=ZoneInfo(ny))
+    assert policy.window_at(at).tz == ny
+    once = PlanItem("rw", ActivityKind.REST, None, "once", role="rest_window", once_start_at=tpe(2026, 11, 12, 3),
+                    once_end_at=tpe(2026, 11, 12, 5))
+    # once 項沒有自己的 tz → 用固定字串（不呼叫任何綁定方法）
+    assert PlanBackedRestWindowPolicy(FakeReader([once]), tz="Asia/Taipei").window_at(tpe(2026, 11, 12, 4)).tz == TZ
+
+
+def test_missing_rest_window_item_degrades_to_fixed_with_one_warning(caplog):  # m3
+    now = [0.0]
+    reader = Controllable([], exists=False)
+    policy = PlanBackedRestWindowPolicy(reader, recheck_s=60.0, monotonic=lambda: now[0])
+    with caplog.at_level(logging.WARNING, logger="uep.echo.schedule_wiring"):
+        assert policy.window_at(tpe(2026, 11, 12, 4)) is not None  # fixed 03:00–05:30
+        assert policy.window_at(tpe(2026, 11, 12, 6)) is None
+        policy.window_at(tpe(2026, 11, 12, 4))
+    assert sum("沒有 rest_window 項" in r.message for r in caplog.records) == 1
+    assert reader.checks == 1  # 60 秒內不重複查 DB
+    now[0] = 61.0
+    policy.window_at(tpe(2026, 11, 12, 4))
+    assert reader.checks == 2
+    reader.exists = True
+    reader.items = [window_item(time(1), time(2))]
+    now[0] = 130.0
+    assert policy.window_at(tpe(2026, 11, 12, 4)) is None  # 項已出現：改由行程判定
+    assert policy.window_at(tpe(2026, 11, 12, 1, 30)) is not None
+
+
+def test_recovery_rechecks_item_existence():  # m3：每次恢復時檢查
+    reader = Controllable([window_item(time(1), time(2))])
+    policy = PlanBackedRestWindowPolicy(reader)
+    policy.window_at(tpe(2026, 11, 12, 6))
+    assert reader.checks == 1
+    reader.broken = True
+    policy.window_at(tpe(2026, 11, 12, 6))
+    reader.broken = False
+    policy.window_at(tpe(2026, 11, 12, 6))
+    assert reader.checks == 2
+
+
+def test_build_plan_policy_verifies_on_start(caplog):
+    store = FakeStore()
+    store.has_rest_window = lambda: False
+    with caplog.at_level(logging.WARNING, logger="uep.echo.schedule_wiring"):
+        policy = build_rest_window_policy(Settings("plan"), None, None, store=store)
+    assert isinstance(policy, PlanBackedRestWindowPolicy)
+    assert any("沒有 rest_window 項" in r.message for r in caplog.records)

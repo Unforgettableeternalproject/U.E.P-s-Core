@@ -662,6 +662,13 @@ class PlanStore:
 
         return self._write(expected_revision, "rest_window", body)
 
+    def has_rest_window(self) -> bool:
+        """是否存在未刪除的 rest_window 項（供休息時段轉接器偵測缺項）。"""
+        with self._sf() as s:
+            return s.execute(text(
+                "SELECT 1 FROM presence_plan_items WHERE persona_id = :p AND role = 'rest_window' "
+                "AND deleted_at IS NULL"), {"p": self._persona}).first() is not None
+
     def seed_rest_window(self, local_start: time, local_end: time, tz: str, *,
                          overwrite: bool = False) -> Literal["created", "updated", "kept"]:
         """系統種子（非 owner 寫入，PP-2）：沒有休息窗口項時建立；已存在時只有 ``overwrite=True`` 且值不同才改寫。
@@ -684,6 +691,8 @@ class PlanStore:
             params = {"p": self._persona, "ls": local_start, "le": local_end, "tz": tz, "by": "system:seed",
                       "now": now}
             if row is not None:
+                logger.warning("休息窗口被系統種子覆寫：%s-%s %s → %s-%s %s", row.local_start, row.local_end, row.tz,
+                               local_start, local_end, tz)
                 s.execute(text(
                     "UPDATE presence_plan_items SET local_start = :ls, local_end = :le, tz = :tz, "
                     "version = version + 1, updated_by = :by, updated_at = :now WHERE item_id = :id"),

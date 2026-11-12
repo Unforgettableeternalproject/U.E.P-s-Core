@@ -366,7 +366,7 @@ def _resolve(items, override, now: datetime, tz: str, rev: int, delay, marks) ->
     source = PlanSource.REST_WINDOW if item.role == "rest_window" else PlanSource.ITEM
     common = {"availability": "available", "source": source, "item_ref": item.item_id,
               "starts_at": starts or win.start, "ends_at": next_b, "next_boundary_at": next_b, "plan_revision": rev,
-              "blueprint_start_at": win.bp_start, "delay_s": win.delay_s}
+              "blueprint_start_at": win.bp_start, "delay_s": win.delay_s, "tz": item.tz}
     if win.tag == "abandoned":  # fallback＝REST（主機），藍圖不改
         return PlanSlot(location=PRESENCE_TARGET_HOST, activity_kind=ActivityKind.REST,
                         interrupt_policy=InterruptPolicy.SAFE_POINT,

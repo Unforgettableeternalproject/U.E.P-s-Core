@@ -30,5 +30,13 @@ def test_schedule_package_only_depends_on_contracts():
     assert not violations, "uep/schedule 只能依賴 uep.contracts（PP-3）：\n" + "\n".join(violations)
 
 
+def test_schedule_does_not_import_memory():
+    """PP-2：行程模組與行程契約不得 import uep.memory（休息時段轉接在 uep/echo/schedule_wiring.py）。"""
+    files = [*sorted((UEP_ROOT / "schedule").rglob("*.py")), UEP_ROOT / "contracts" / "schedule.py"]
+    hits = [f"{path.name}: {m}" for path in files for m in sorted(_modules(path))
+            if m == "uep.memory" or m.startswith("uep.memory.")]
+    assert not hits, "uep/schedule 與 contracts/schedule 不得 import uep.memory：\n" + "\n".join(hits)
+
+
 def test_schedule_contract_is_zero_dependency():
     assert not [m for m in _modules(UEP_ROOT / "contracts" / "schedule.py") if m.split(".")[0] == "uep"]

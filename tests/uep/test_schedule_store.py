@@ -497,3 +497,14 @@ def test_plan_backed_policy_with_real_store(sf, clock):
 
     down = PlanBackedRestWindowPolicy(PlanStore(broken, clock=clock))  # 儲存不可用 → 退回固定時窗
     assert down.window_at(tpe(2026, 11, 12, 4)) is not None
+
+
+def test_has_rest_window_and_seed_overwrite_logs_old_value(store, caplog):
+    import logging
+
+    assert store.has_rest_window() is False
+    store.seed_rest_window(time(3), time(5, 30), TZ)
+    assert store.has_rest_window() is True
+    with caplog.at_level(logging.WARNING, logger="uep.schedule.store"):
+        store.seed_rest_window(time(9), time(18), TZ, overwrite=True)
+    assert any("03:00:00-05:30:00" in r.message and "09:00:00-18:00:00" in r.message for r in caplog.records)

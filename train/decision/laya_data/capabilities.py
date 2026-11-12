@@ -147,6 +147,10 @@ def apply_capabilities(rows: list[dict[str, Any]], seed: int = 0) -> tuple[list[
         if r["kind"] != "turn.reply":
             base.append(r)
             continue
+        if (r.get("meta") or {}).get("pair_family") == "capreq":  # r4c 的能力成對題自帶清單，不改
+            base.append(r)
+            stats["capreq_pairs"] = stats.get("capreq_pairs", 0) + 1
+            continue
         sid = r["sample_id"]
         dev_lines = assistant_device_lines(r)
         if sid in DEVICE_REQUEST_IDS:
@@ -202,7 +206,8 @@ def apply_capabilities(rows: list[dict[str, Any]], seed: int = 0) -> tuple[list[
     # 隨機清單：只做不影響標籤的變動（加上無關的 device_control，或抽掉句子用不到的類別）
     out: list[dict[str, Any]] = []
     for r in base:
-        if r["kind"] != "turn.reply" or r["sample_id"] in picked or r["meta"].get("label_rule") == "capability_pair":
+        if (r["kind"] != "turn.reply" or r["sample_id"] in picked or r["meta"].get("label_rule") == "capability_pair"
+                or r["meta"].get("pair_family") == "capreq"):
             out.append(r)
             continue
         if caps_of(r) != set(DEFAULT):

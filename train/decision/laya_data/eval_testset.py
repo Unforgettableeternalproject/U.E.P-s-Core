@@ -39,17 +39,18 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 # ---------------------------------------------------------------- predict (Laya)
 
-def refresh_row(row: dict[str, Any]) -> dict[str, Any]:
+def refresh_row(row: dict[str, Any], schema_mod: Any = None) -> dict[str, Any]:
     """題目說明取目前的 schema 定義；turn.reply 的 state 沒有能力欄位時補上現行預設清單（測試集在正式環境的樣子）。"""
     from .kinds import get_spec, laya_schema
 
     spec = get_spec(row["kind"])
-    out = {**row, "questions": {q: dict(spec.questions[q]) for q in row["questions"]}}
+    questions = schema_mod.QUESTIONS if (schema_mod is not None and row["kind"] == "turn.reply") else spec.questions
+    out = {**row, "questions": {q: dict(questions[q]) for q in row["questions"]}}
     if row["kind"] == "turn.reply" and "available_capabilities" not in row["state"]:
         state: dict[str, Any] = {}
         for k, v in row["state"].items():
             if k == "message":
-                state["available_capabilities"] = laya_schema.format_capabilities()
+                state["available_capabilities"] = (schema_mod or laya_schema).format_capabilities()
             state[k] = v
         out["state"] = state
     return out
@@ -60,8 +61,17 @@ def cmd_predict(args: argparse.Namespace) -> int:
     import torch
 
     rows = read_jsonl(args.data)
+    if args.schema == "legacy":  # 舊模型沒看過能力欄位：測試檔若帶了就拿掉
+        rows = [{**r, "state": {k: v for k, v in r["state"].items() if k != "available_capabilities"}} for r in rows]
     if args.schema == "current":
-        rows = [refresh_row(r) for r in rows]
+        mod = None
+        if args.schema_file:
+            import importlib.util
+
+            spec_ = importlib.util.spec_from_file_location("_schema_snapshot", args.schema_file)
+            mod = importlib.util.module_from_spec(spec_)
+            spec_.loader.exec_module(mod)  # type: ignore[union-attr]
+        rows = [refresh_row(r, mod) for r in rows]
     t0 = time.perf_counter()
     agent = laya.load(args.model, device=args.device)
     load_s = time.perf_counter() - t0
@@ -591,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--out", type=Path, required=True)
     a.add_argument("--device", default="cuda")
     a.add_argument("--warmup", type=int, default=5)
+    a.add_argument("--schema-file", default=None, help="搭配 --schema current：改用這個 laya_schema.py 快照的題目說明（評估舊模型時用它訓練時的文字）")
     a.add_argument("--schema", choices=("legacy", "current"), default="legacy",
                    help="current＝題目說明取目前的定義，turn.reply 的 state 補上預設能力清單（ft-r3 以後）；legacy＝照測試檔原樣（ft-r1／r2）")
     b = sub.add_parser("rules")

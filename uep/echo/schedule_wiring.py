@@ -340,24 +340,32 @@ def attach_schedule_planner(settings: Any, core: Any, *, session_factory: Any, r
 
 # ---- 在場請求仲裁 shadow（AR-2）----
 
-ARBITER_MODES = ("off", "shadow")
+ARBITER_MODES = ("off", "shadow", "on")
 
 
 def parse_arbiter_mode(value: str | None) -> str:
-    """``UEP_PRESENCE_ARBITER``：off（預設）｜shadow；未知值 ``ValueError``（fail-fast）。"""
+    """``UEP_PRESENCE_ARBITER``：off（預設）｜shadow｜on；未知值 ``ValueError``（fail-fast）。"""
     mode = (value or "off").strip().lower()
     if mode not in ARBITER_MODES:
-        raise ValueError(f"UEP_PRESENCE_ARBITER 只接受 off 或 shadow：{value!r}")
+        raise ValueError(f"UEP_PRESENCE_ARBITER 只接受 off／shadow／on：{value!r}")
     return mode
 
 
 def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, reader: Any | None = None,
-                            metrics_inc: Callable[[str], None] | None = None) -> Any | None:
-    """依旗標組裝在場請求仲裁的 shadow 觀察（只記 log／指標；不呼叫 Presence 寫入、不寫 override）。
+                            metrics_inc: Callable[[str], None] | None = None, planner: Any | None = None,
+                            is_owner_fn: Callable[[Any], bool] | None = None, start: bool = True) -> Any | None:
+    """依旗標組裝在場請求仲裁（``off|shadow|on``，預設 off）。
 
-    旗標：``settings.presence_arbiter``（``UEP_PRESENCE_ARBITER``，預設 off）。
-    訂閱 ``schedule.directive_issued``（重算 directive 後仲裁）與 ``turn.skipped``（缺席端輸入的 presence_request 觀察）。
-    Presence 用 ``peek()``（唯讀）；ACTIVE 但 Lease 已到期的視為不明（以 RECOVERING 表示）。
+    - shadow：只記 log／指標，不發事件、不寫任何東西。
+    - on：另發 ``schedule.arbitration_decided``，並對 ``mark_abandon`` 判決寫 abandon mark、收放棄訊號
+      （``AbandonExecutor``）；其餘判決一律 ``executed=false``（``transfer_not_implemented``），不寫 override、不碰 Presence。
+    回傳物件提供決策層的兩個 sink：``on_abandon_signal(signal)``、``on_presence_request(proposal, *, request_id,
+    actor_ref, actor_authenticated, is_owner, source_platform)``，兩者都只排佇列，由物件自己的背景執行緒消化
+    （``start=False`` 時不啟動執行緒，改為同步處理，供測試）。
+    訂閱 ``schedule.directive_issued`` 與 ``turn.skipped``。Presence 用 ``peek()``（唯讀）；ACTIVE 但 Lease 已到期視為不明。
+
+    ``planner``：給放棄執行器 poke 用（寫完 mark 後讓 Planner 立即評估）。``is_owner_fn(signal)``：放棄訊號的 owner 判定
+    （須由 Core 依 platform_links 計算）；沒給就 fail-closed（全部視為非 owner，放棄訊號一律 IGNORED(not_owner)）。
     """
     from uep.contracts.schedule import InterruptFacts
     from uep.schedule.arbiter_shadow import PresenceArbiterShadow
@@ -394,13 +402,25 @@ def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, r
                               interaction_active=state.current(Axis.INTERACTION).state != "IDLE",
                               has_uninterruptible_work=busy)
 
+    events = executor = None
+    poke = getattr(planner, "poke", None)
+    if mode == "on":
+        from uep.schedule.abandon_executor import AbandonExecutor
+        from uep.schedule.events import ScheduleEvents
+
+        events = ScheduleEvents(core.publisher, persona_id=core.persona_id)
+        executor = AbandonExecutor(reader, reader, events, is_owner_fn=is_owner_fn,
+                                   tz_fn=getattr(reader, "tz", None), poke=poke, metrics_inc=metrics_inc)
     shadow = PresenceArbiterShadow(reader, presence, getattr(reader, "active_override", None), probe,
-                                   metrics_inc=metrics_inc)
+                                   metrics_inc=metrics_inc, mode=mode, events=events,
+                                   mark_writer=reader if mode == "on" else None, abandon_executor=executor, poke=poke)
     for event_type, handler in (("schedule.directive_issued", shadow.on_directive_event),
                                 ("turn.skipped", shadow.on_turn_skipped)):
         bus.subscribe(event_type, handler)
         shadow.add_cleanup(lambda et=event_type, h=handler: bus.unsubscribe(et, h))
-    logger.info("在場請求仲裁 shadow 已啟動（只記錄判決）")
+    if start:
+        shadow.start()
+    logger.info("在場請求仲裁已啟動：mode=%s", mode)
     return shadow
 
 

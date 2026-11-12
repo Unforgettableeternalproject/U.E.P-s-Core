@@ -156,7 +156,7 @@ def fake_core():
 def test_parse_arbiter_mode():
     assert parse_arbiter_mode(None) == "off" and parse_arbiter_mode(" Shadow ") == "shadow"
     with pytest.raises(ValueError):
-        parse_arbiter_mode("on")
+        parse_arbiter_mode("bogus")
 
 
 def test_attach_is_off_by_default():
@@ -174,7 +174,7 @@ def test_attach_is_off_by_default():
 
 def test_attach_shadow_subscribes_judges_and_never_writes():
     core = fake_core()
-    shadow = attach_presence_arbiter(SimpleNamespace(presence_arbiter="shadow"), core, session_factory=None,
+    shadow = attach_presence_arbiter(SimpleNamespace(presence_arbiter="shadow"), core, session_factory=None, start=False,
                                      reader=Reader())
     assert set(core.bus.handlers) == {"schedule.directive_issued", "turn.skipped"}
     [handler] = core.bus.handlers["schedule.directive_issued"]

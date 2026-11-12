@@ -108,6 +108,30 @@ class ScheduleEvents:
             "directive_id": directive_id, "drop_reason": drop_reason,
             "next_eval_at": None if next_eval_at is None else next_eval_at.astimezone(UTC).isoformat()})
 
+    # ---- 放棄與仲裁（AR-3a）----
+
+    def abandon_work(self, signal: Any, result: str, reason_code: str, item_ref: str | None) -> None:
+        """放棄訊號的受理／忽略紀錄；不含原文與 actor 顯示名稱。"""
+        self._publish("schedule.abandon_work", {
+            "signal_id": signal.signal_id, "item_ref": item_ref, "result": result, "reason_code": reason_code,
+            "path": signal.path, "decider_id": signal.decider_id, "decider_version": signal.decider_version},
+            idempotency_key=f"abandon_work:{signal.signal_id}:{result}")
+
+    def slot_marked(self, mark_id: str, kind: str, item_ref: str, cause_request_id: str) -> None:
+        self._publish("schedule.slot_marked", {
+            "mark_id": mark_id, "kind": kind, "item_ref": item_ref, "cause_request_id": cause_request_id},
+            idempotency_key=f"slot_marked:{mark_id}")
+
+    def arbitration_decided(self, *, source: str, ref: str, decision: Any, executed: bool, exec_reason: str) -> None:
+        """仲裁判決落地。``executed`` 只代表判決的動作是否真的做了（目前只有 mark_abandon 會執行）。"""
+        payload = {
+            "source": source, "outcome": decision.outcome, "reason_code": decision.reason_code,
+            "band": decision.priority, "override_action": decision.override_action,
+            "transfer_target": decision.transfer_target, "executed": executed, "exec_reason": exec_reason}
+        payload["directive_id" if source == "directive" else "request_id"] = ref
+        digest = hashlib.sha1(f"{source}:{ref}".encode()).hexdigest()[:32]
+        self._publish("schedule.arbitration_decided", payload, idempotency_key=f"arbitration:{digest}")
+
     def divergence_observed(self, plan_location: str, actual_location: str, override_state: str | None,
                             override_id: str | None) -> None:
         """``plan_location`` 是投影後的行程位置：override 生效時就是 override 的目標位置（不是藍圖位置）。

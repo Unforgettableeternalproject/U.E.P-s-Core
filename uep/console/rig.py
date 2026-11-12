@@ -260,7 +260,7 @@ def build_fake_runtime(
                 runtime.schedule_planner = attach_schedule_planner(
                     get_settings(), core, session_factory=session_factory)
                 runtime.presence_arbiter = attach_presence_arbiter(
-                    get_settings(), core, session_factory=session_factory)
+                    get_settings(), core, session_factory=session_factory, planner=runtime.schedule_planner)
         except BaseException:
             for component in (runtime.behavior_driver, runtime.schedule_planner, runtime.presence_arbiter):
                 if component is not None:

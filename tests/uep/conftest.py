@@ -23,6 +23,7 @@ CC1_TABLES = "inbox, outbox, events, payload_blobs, context_snapshots, output_in
 CC4_TABLES = "presence_leases, presence_transfers, presence_current"
 CC7_TABLES = "state_requests, state_projection, global_stop_flags"
 DECISION_TABLES = "decision_log"  # DL-3：console rig 會寫入決策日誌
+PLAN_TABLES = "presence_plan_slot_marks, presence_plan_overrides, presence_plan_items, presence_plan_meta"  # PP-1
 
 
 def alembic_config(url: str) -> Config:
@@ -91,4 +92,5 @@ def session_factory(engine):
         conn.execute(text("ALTER TABLE events DISABLE TRIGGER events_no_truncate"))
         conn.execute(text(f"TRUNCATE {CC1_TABLES}, {CC6_TABLES}, {CC4_TABLES}, {CC7_TABLES}, {DECISION_TABLES} RESTART IDENTITY CASCADE"))
         conn.execute(text("ALTER TABLE events ENABLE TRIGGER events_no_truncate"))
+        conn.execute(text(f"TRUNCATE {PLAN_TABLES} RESTART IDENTITY CASCADE"))
     return make_session_factory(engine)

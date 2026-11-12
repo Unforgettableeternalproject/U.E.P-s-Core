@@ -36,10 +36,7 @@ def clock():
 
 
 @pytest.fixture
-def sf(engine, session_factory):
-    with engine.begin() as conn:
-        conn.execute(text("TRUNCATE presence_plan_meta, presence_plan_items, presence_plan_overrides, "
-                          "presence_plan_slot_marks RESTART IDENTITY CASCADE"))
+def sf(session_factory):  # 四張行程表由 conftest 的 session_factory 一併清空
     return session_factory
 
 

@@ -48,6 +48,9 @@ class UepSettings(BaseSettings):
     agent_loop_dir: Path | None = Field(default=None, validation_alias="UEP_AGENT_LOOP_DIR")
     # chatroom.* 工具的讀取游標持久目錄（依 session key＋房間一檔）；未設 = ~/.uep/chatroom_cursors
     chatroom_cursor_dir: Path | None = Field(default=None, validation_alias="UEP_CHATROOM_CURSOR_DIR")
+    # 續跑回覆的 pending 佇列（D107 Q5／Q8，記憶體）：暫時不能送（無 Lease／muted／busy／聽眾比 Presence 寬）的結果等待多久、最多留幾筆
+    resume_pending_ttl_s: float = Field(default=1800.0, gt=0, validation_alias="UEP_RESUME_PENDING_TTL_S")
+    resume_pending_max: int = Field(default=8, ge=1, validation_alias="UEP_RESUME_PENDING_MAX")
     # AgentLoop 的 Step 逾時（秒，0 = 關閉）與重試政策（F-4）：Step 逾時 = 等待下一個模型事件的閒置上限（不含工具執行）；
     # 模型呼叫的暫時性錯誤（逾時／5xx／rate limit）退避重試至多 N 次；工具只對 internal_read 的暫時性失敗重試（至多 1 次）
     agent_step_timeout_s: float = Field(default=120.0, ge=0, validation_alias="UEP_AGENT_STEP_TIMEOUT_S")

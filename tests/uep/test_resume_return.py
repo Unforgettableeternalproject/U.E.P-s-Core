@@ -124,3 +124,53 @@ def test_console_does_not_print_text_the_endpoint_already_rendered():
     console2, lines2 = _console_with(launcher2)
     console2._resume("run_1", {})
     assert [line for line in lines2 if line.startswith("回應（續跑）")]  # 沒送出的才由 Console 補印
+
+
+# ---- R2：ResumePending 佇列（純記憶體，離線）----
+
+def _res(run_id, epoch=1):
+    return ResumedRunResult(
+        run_id=run_id, worker_epoch=epoch, task_id="t", activity_id="actv_1", ticket=object(),
+        outcome=ResumeOutcome.COMPLETED, cause=ResumeCause.APPROVED, text="x",
+    )
+
+
+def test_pending_queue_orders_oldest_first_dedupes_and_overflows_oldest():
+    from uep.echo.resume_return import ResumePending
+
+    q = ResumePending(ttl_s=60, max_items=2)
+    assert q.add(_res("a")) is None and q.add(_res("b")) is None
+    assert q.add(_res("b")) is None and len(q) == 2  # 同鍵不重複入列
+    evicted = q.add(_res("c"))
+    assert evicted is not None and evicted.run_id == "a" and [r.run_id for r in q.snapshot()] == ["b", "c"]
+    assert ("b", 1) in q and ("a", 1) not in q
+
+
+def test_pending_queue_expires_by_ttl_lazily():
+    from uep.echo.resume_return import ResumePending
+
+    now = {"t": 0.0}
+    q = ResumePending(ttl_s=30, max_items=8, clock=lambda: now["t"])
+    q.add(_res("a"))
+    now["t"] = 10
+    q.add(_res("b"))
+    now["t"] = 31
+    assert [r.run_id for r in q.expire()] == ["a"] and [r.run_id for r in q.snapshot()] == ["b"]
+    now["t"] = 45
+    assert [r.run_id for r in q.expire()] == ["b"] and len(q) == 0
+
+
+def test_pending_queue_rejects_invalid_limits():
+    from uep.echo.resume_return import ResumePending
+
+    with pytest.raises(ValueError):
+        ResumePending(ttl_s=0, max_items=1)
+    with pytest.raises(ValueError):
+        ResumePending(ttl_s=1, max_items=0)
+
+
+def test_settings_defaults_match_the_decision():
+    from uep.config import UepSettings
+
+    s = UepSettings()
+    assert (s.resume_pending_ttl_s, s.resume_pending_max) == (1800.0, 8)

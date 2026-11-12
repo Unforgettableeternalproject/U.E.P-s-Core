@@ -512,14 +512,14 @@ def test_failed_or_cancelled_resumed_result_sends_nothing_and_writes_nothing(ses
         rig.core.shutdown()
 
 
-def test_resumed_result_without_lease_is_dropped_with_metric(session_factory, tmp_path):
+def test_resumed_result_without_lease_goes_pending_with_metric(session_factory, tmp_path):
     from uep.echo.resume_return import ResumeDisposition
 
     rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
     try:
         rig.host.endpoint.lease_auth = lambda: None
-        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DROPPED
-        assert stores == [] and rig.host.metrics["echo.resume_dropped.no_lease"] == 1
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.PENDING
+        assert stores == [] and rig.host.metrics["echo.resume_pending.no_lease"] == 1
     finally:
         rig.core.shutdown()
 
@@ -544,7 +544,7 @@ def test_stale_lease_is_retried_once_with_fresh_authorization(session_factory, t
         rig.core.shutdown()
 
 
-def test_always_stale_lease_retries_only_once_then_drops(session_factory, tmp_path):
+def test_always_stale_lease_retries_only_once_then_goes_pending(session_factory, tmp_path):
     from uep.echo.resume_return import ResumeDisposition
 
     rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
@@ -558,7 +558,7 @@ def test_always_stale_lease_retries_only_once_then_drops(session_factory, tmp_pa
             return dataclasses.replace(auth, fencing_epoch=auth.fencing_epoch + 99)
 
         rig.host.endpoint.lease_auth = stale
-        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DROPPED
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.PENDING
         assert calls["n"] == 2 and stores == [] and _resume_texts(rig) == []
     finally:
         rig.core.shutdown()
@@ -608,7 +608,7 @@ def _patch_dispatch(rig, status, code=None):
     return calls, lambda: setattr(services.delivery, "dispatch", original)
 
 
-def test_resumed_result_is_dropped_when_muted_or_busy_before_lease_is_even_read(session_factory, tmp_path):
+def test_resumed_result_goes_pending_when_muted_or_busy_before_lease_is_even_read(session_factory, tmp_path):
     from types import SimpleNamespace
 
     from uep.echo.resume_return import ResumeDisposition
@@ -621,13 +621,13 @@ def test_resumed_result_is_dropped_when_muted_or_busy_before_lease_is_even_read(
         real_current = state.current
         state.current = lambda axis: SimpleNamespace(state=BehaviorState.SLEEP.value) if axis is Axis.BEHAVIOR else real_current(axis)
         try:
-            assert rig.host.accept_resumed_result(_resumed(ticket, activity, run_id="run_muted")) is ResumeDisposition.DROPPED
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity, run_id="run_muted")) is ResumeDisposition.PENDING
         finally:
             state.current = real_current
-        assert rig.host.metrics["echo.resume_dropped.muted"] == 1
+        assert rig.host.metrics["echo.resume_pending.muted"] == 1
         rig.host.orchestrator.live_tickets = lambda: [object()]
-        assert rig.host.accept_resumed_result(_resumed(ticket, activity, run_id="run_busy")) is ResumeDisposition.DROPPED
-        assert rig.host.metrics["echo.resume_dropped.busy"] == 1
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity, run_id="run_busy")) is ResumeDisposition.PENDING
+        assert rig.host.metrics["echo.resume_pending.busy"] == 1
         assert len(rig.deliveries()) == before and stores == []
     finally:
         rig.core.shutdown()
@@ -673,7 +673,7 @@ def test_enqueued_delivery_is_uncertain_and_never_resent(session_factory, tmp_pa
 
 
 @pytest.mark.parametrize("code", ["REJECT_AUDIENCE", "REJECT_REVOKED", "REJECT_EXPIRED", "REJECT_NO_PRESENCE"])
-def test_gate_rejections_drop_without_memory_and_without_retry(session_factory, tmp_path, code):
+def test_retryable_gate_rejections_go_pending_without_memory_and_without_retry(session_factory, tmp_path, code):
     from uep.echo.resume_return import ResumeDisposition
     from uep.output.delivery import DeliveryStatus
 
@@ -681,10 +681,10 @@ def test_gate_rejections_drop_without_memory_and_without_retry(session_factory, 
     try:
         calls, restore = _patch_dispatch(rig, DeliveryStatus.REJECTED, code)
         try:
-            assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DROPPED
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.PENDING
         finally:
             restore()
-        assert calls["n"] == 1 and stores == [] and rig.host.metrics[f"echo.resume_dropped.{code.lower()}"] == 1
+        assert calls["n"] == 1 and stores == [] and rig.host.metrics[f"echo.resume_pending.{code.lower()}"] == 1
     finally:
         rig.core.shutdown()
 
@@ -710,5 +710,127 @@ def test_resume_text_is_cleared_from_loop_text_after_sending(session_factory, tm
     try:
         rig.host.accept_resumed_result(_resumed(ticket, activity))
         assert len(rig.host.loop_text) == 0
+    finally:
+        rig.core.shutdown()
+
+
+# ---- R2：pending 佇列與 flush ----
+
+def _result_key(run_id="run_x", epoch=2):
+    return (run_id, epoch)
+
+
+def test_no_lease_goes_pending_then_flushes_once_when_lease_returns(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        real = rig.host.endpoint.lease_auth
+        rig.host.endpoint.lease_auth = lambda: None
+        before = len(rig.deliveries())
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.PENDING
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.PENDING  # 同鍵不重複入列
+        assert len(rig.host._resume_pending) == 1 and rig.host.flush_resume_pending(trigger="lease") == 0
+        rig.host.endpoint.lease_auth = real  # Lease 回來
+        assert rig.host.flush_resume_pending(trigger="lease") == 1
+        assert _resume_texts(rig) == [RESUMED_TEXT] and len(rig.deliveries()) == before + 1
+        assert len(stores) == 1 and stores[0]["idempotency_key"] == f"turn:{ticket.turn_id}"
+        assert rig.host.flush_resume_pending(trigger="lease") == 0  # 重複 flush 不重送
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DELIVERED  # 冪等紀錄已是終局
+        assert len(rig.deliveries()) == before + 1 and len(stores) == 1 and len(rig.host._resume_pending) == 0
+    finally:
+        rig.core.shutdown()
+
+
+def test_busy_waits_for_idle_without_stacking_on_the_live_turn(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        orchestrator = rig.host.orchestrator
+        real_live = orchestrator.live_tickets
+        orchestrator.live_tickets = lambda: [object()]
+        before = len(rig.deliveries())
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.PENDING
+        assert rig.host.flush_resume_pending(trigger="turn_finished") == 0
+        assert len(rig.deliveries()) == before and stores == []  # 進行中的回合期間一次都沒送
+        orchestrator.live_tickets = real_live  # 回合結束，Host 變 idle
+        assert rig.host.flush_resume_pending(trigger="turn_finished") == 1
+        assert len(rig.deliveries()) == before + 1 and len(stores) == 1
+    finally:
+        rig.core.shutdown()
+
+
+def test_audience_rejection_goes_pending_and_sends_after_it_narrows(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+    from uep.output.delivery import DeliveryStatus
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        calls, restore = _patch_dispatch(rig, DeliveryStatus.REJECTED, "REJECT_AUDIENCE")
+        try:
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.PENDING
+        finally:
+            restore()  # 聽眾收窄：Gate 放行
+        assert rig.host.metrics["echo.resume_pending.reject_audience"] == 1 and stores == []
+        assert rig.host.flush_resume_pending(trigger="tick") == 1 and len(stores) == 1 and calls["n"] == 1
+    finally:
+        rig.core.shutdown()
+
+
+def test_ttl_expiry_drops_without_sending_or_remembering(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        now = {"t": 1000.0}
+        pending = rig.host._resume_pending
+        pending._clock = lambda: now["t"]
+        real = rig.host.endpoint.lease_auth
+        rig.host.endpoint.lease_auth = lambda: None
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.PENDING
+        rig.host.endpoint.lease_auth = real
+        now["t"] += pending._ttl_s + 1
+        before = len(rig.deliveries())
+        assert rig.host.flush_resume_pending(trigger="tick") == 0
+        assert len(rig.deliveries()) == before and stores == [] and len(pending) == 0
+        assert rig.host.metrics["echo.resume_dropped.ttl"] == 1
+        assert rig.host._resume_settled[_result_key()] is ResumeDisposition.DROPPED
+        assert rig.host.accept_resumed_result(_resumed(ticket, activity)) is ResumeDisposition.DROPPED  # 不復活
+    finally:
+        rig.core.shutdown()
+
+
+def test_overflow_drops_the_oldest_and_never_sends_it(session_factory, tmp_path):
+    from uep.echo.resume_return import ResumeDisposition
+
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        rig.host._resume_pending._max = 2
+        real = rig.host.endpoint.lease_auth
+        rig.host.endpoint.lease_auth = lambda: None
+        for n in (1, 2, 3):
+            assert rig.host.accept_resumed_result(_resumed(ticket, activity, run_id=f"run_{n}")) is ResumeDisposition.PENDING
+        assert len(rig.host._resume_pending) == 2 and rig.host.metrics["echo.resume_dropped.overflow"] == 1
+        assert rig.host._resume_settled[("run_1", 2)] is ResumeDisposition.DROPPED
+        rig.host.endpoint.lease_auth = real
+        assert rig.host.flush_resume_pending(trigger="lease") == 2 and len(stores) == 2  # 最舊的那筆不送也不寫
+    finally:
+        rig.core.shutdown()
+
+
+def test_flush_trigger_runs_on_the_core_worker_thread(session_factory, tmp_path):
+    rig, ticket, activity, stores = _resume_rig(session_factory, tmp_path)
+    try:
+        real = rig.host.endpoint.lease_auth
+        rig.host.endpoint.lease_auth = lambda: None
+        rig.host.accept_resumed_result(_resumed(ticket, activity))
+        rig.host.endpoint.lease_auth = real
+        threads: list[str] = []
+        original = rig.host.flush_resume_pending
+        rig.host.flush_resume_pending = lambda **kw: threads.append(threading.current_thread().name) or original(**kw)
+        rig.host._request_resume_flush("tick")
+        assert rig.host._worker.drain(10)
+        assert threads and threads[0] == "uep-echo-worker" and len(stores) == 1
     finally:
         rig.core.shutdown()

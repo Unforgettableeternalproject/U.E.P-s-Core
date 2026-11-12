@@ -6,6 +6,9 @@
 """
 from __future__ import annotations
 
+import time
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -24,8 +27,9 @@ class ResumeOutcome(StrEnum):
 
 class ResumeDisposition(StrEnum):
     DELIVERED = "delivered"  # 已送達（視 cause）並寫記憶
+    PENDING = "pending"  # 暫時不能送（無 Lease／muted／busy／聽眾比 Presence 寬…），已進 pending 佇列，之後 flush
     UNCERTAIN = "uncertain"  # UNKNOWN／沒搶到送出權：不重送、不寫記憶
-    DROPPED = "dropped"  # 現在不能送（無 Lease、被 Gate 拒、無文字…），本階段不保留（pending 佇列屬後續 PR）
+    DROPPED = "dropped"  # 不會再送：TTL 到期、佇列溢出、確定失敗（SEND_FAILED 等）、無文字；不寫記憶
     NOT_APPLICABLE = "not_applicable"  # 無需回覆（FAILED／CANCELLED）
 
 
@@ -40,3 +44,51 @@ class ResumedRunResult:
     cause: ResumeCause
     text: str = ""  # outcome=COMPLETED 才有
     reason_code: str | None = None
+
+
+PendingKey = tuple[str, int]  # (run_id, worker_epoch)
+
+
+class ResumePending:
+    """暫時送不出去的續跑結果的記憶體佇列（D107 Q5：不持久化；Q8：預設 TTL 30 分鐘、上限 8 筆）。
+
+    不自己加鎖：由 Host 在 ``_resume_lock`` 內使用。溢出時丟最舊的一筆（回傳給呼叫端記 metric 與冪等紀錄）；
+    逾時項目在每次存取時惰性清理（不新增執行緒）。被丟掉的項目不寫記憶。"""
+
+    def __init__(self, *, ttl_s: float, max_items: int, clock: Callable[[], float] = time.monotonic) -> None:
+        if ttl_s <= 0 or max_items < 1:
+            raise ValueError("ttl_s 與 max_items 必須為正")
+        self._ttl_s = ttl_s
+        self._max = max_items
+        self._clock = clock
+        self._items: OrderedDict[PendingKey, tuple[float, ResumedRunResult]] = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._items
+
+    def add(self, result: ResumedRunResult) -> ResumedRunResult | None:
+        """加入（同鍵已在佇列則不動）；超出上限時回傳被丟掉的最舊一筆。"""
+        key = (result.run_id, result.worker_epoch)
+        if key in self._items:
+            return None
+        self._items[key] = (self._clock() + self._ttl_s, result)
+        if len(self._items) > self._max:
+            _, (_, oldest) = self._items.popitem(last=False)
+            return oldest
+        return None
+
+    def expire(self) -> list[ResumedRunResult]:
+        """移除並回傳已逾時的項目。"""
+        now = self._clock()
+        gone = [k for k, (deadline, _) in self._items.items() if deadline <= now]
+        return [self._items.pop(k)[1] for k in gone]
+
+    def snapshot(self) -> list[ResumedRunResult]:
+        """目前的項目（最舊的在前）。"""
+        return [result for _, result in self._items.values()]
+
+    def remove(self, key: PendingKey) -> None:
+        self._items.pop(key, None)

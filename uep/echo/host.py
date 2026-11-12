@@ -54,6 +54,7 @@ from uep.stream.coordinator import TurnCoordinator
 from uep.stream.tracer import LatencyTracer
 
 from uep.contracts.platform import platform_from_presence_location
+from uep.config import get_settings
 from uep.contracts.presence import AcquireResult, GateDecision
 from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES, ROUTE_DIRECT_CHAT
 from uep.decision.hub import DecisionHub
@@ -64,7 +65,13 @@ from uep.echo.memory import GuildRoster, make_memory_resolver
 from uep.echo.loop_text import LoopTextStore
 from uep.echo.metrics import Metrics
 from uep.echo.platform_context import PlatformShadow
-from uep.echo.resume_return import ResumeCause, ResumedRunResult, ResumeDisposition, ResumeOutcome
+from uep.echo.resume_return import (
+    ResumeCause,
+    ResumedRunResult,
+    ResumeDisposition,
+    ResumeOutcome,
+    ResumePending,
+)
 from uep.echo.outcomes import facts_from_outcome
 from uep.echo.policy import CAUSE_TTL_REFRESH, CoreYieldPolicy, HostPolicySource
 from uep.echo.services import EchoServices
@@ -178,6 +185,8 @@ class EchoPipelineHost:
         decision: DecisionConfig | None = None,
         decision_hub: DecisionHub | None = None,
         input_stage: Any = None,
+        resume_pending_ttl_s: float | None = None,
+        resume_pending_max: int | None = None,
         tracer: LatencyTracer | None = None,
         generations: TurnGenerations | None = None,
         policy_source: HostPolicySource | None = None,
@@ -219,6 +228,11 @@ class EchoPipelineHost:
             barge_in_channel_modes=frozenset(ChannelMode(m) for m in self._decision.barge_in_channel_modes),
         )
         self._resume_lock = threading.Lock()
+        settings = get_settings()
+        self._resume_pending = ResumePending(
+            ttl_s=settings.resume_pending_ttl_s if resume_pending_ttl_s is None else resume_pending_ttl_s,
+            max_items=settings.resume_pending_max if resume_pending_max is None else resume_pending_max,
+        )
         self._resume_settled: OrderedDict[tuple[str, int], ResumeDisposition] = OrderedDict()  # (run_id, worker_epoch) -> 處置（冪等）
         self._stopped_reason: str | None = None  # 全域停止成立（直到取得新 Lease）：propose 之前即否決
         self._yield_policy = CoreYieldPolicy(self.policy)
@@ -517,6 +531,7 @@ class EchoPipelineHost:
         if self.lease_result is AcquireResult.GRANTED:
             self._stopped_reason = None  # 新 Lease：先前的全域停止已解除
             self._sync_tools()  # 平台限定工具的曝光依 Lease 而定；建構時尚無 Lease，取得後重投影一次
+            self._request_resume_flush("lease")
         else:
             logger.warning("EchoPipelineHost 沒有取得 Lease：%s", self.lease_result.value)
         return self.lease_result
@@ -696,6 +711,8 @@ class EchoPipelineHost:
                     logger.exception("週期性決策失敗")
                     continue  # tick 失敗不刷新政策快照
             self._refresh_policy_if_due()
+            if len(self._resume_pending):
+                self._request_resume_flush("tick")  # 保底：逾時清理與 State 延遲轉 idle 時的補送
 
     def _start_turn(self, ticket: CoreTicket, fact: UtteranceFact) -> None:
         """ES loop 上：建 TurnRequest 並 submit（立即返回）。"""
@@ -1297,6 +1314,7 @@ class EchoPipelineHost:
             self._sync_tools()  # 該輪已從 orchestrator 移除；仍有其他輪時會再延後
         if not rejected:
             self._store_memory(ticket, facts, tool_context or {})  # 被拒的輪不寫記憶
+        self.flush_resume_pending(trigger="turn_finished")  # 已在 Core 工作緒上：Host 可能剛變 idle，補送等待中的續跑回覆
 
     def _report_evidence(self, wrapper: AdmittingSink, items: list[SentenceEvidence]) -> None:
         """D74：played_range 由 sink 包裝自算；只有宣告播放確認的 sink 才升級證據（否則停在 sent）。"""
@@ -1324,28 +1342,85 @@ class EchoPipelineHost:
     def accept_resumed_result(self, result: ResumedRunResult) -> ResumeDisposition:
         """park → 核准 → resume 的 Run 到達終態後，唯一回 Host 的入口（由 ``LoopLauncher`` 注入呼叫，不對外開放）。
 
-        以 ``(run_id, worker_epoch)`` 為冪等鍵：同鍵再呼叫回原處置，不重送、不重寫。COMPLETED 且有文字才送：activity 綁定的
-        ``OutputIntent``（turn_* 為 None），授權於送出當下重取 ``lease_auth()``，經 DeliveryManager／Output Gate。
-        送達後才寫記憶（key 掛回原 turn 的 ``turn:<orig>``），``cause=REJECTED`` 不寫。Gate 拒絕本階段一律 DROPPED
-        （STALE 先重取 Lease 重試一次）；UNKNOWN／ENQUEUED 不重送。
+        以 ``(run_id, worker_epoch)`` 為冪等鍵：同鍵再呼叫回原處置，不重送、不重寫（pending 中的同鍵回 PENDING，不重複入列）。
+        COMPLETED 且有文字才送：activity 綁定的 ``OutputIntent``（turn_* 為 None），授權於送出當下重取 ``lease_auth()``，
+        經 DeliveryManager／Output Gate。送達後才寫記憶（key 掛回原 turn 的 ``turn:<orig>``），``cause=REJECTED`` 不寫。
 
-        送出之前先判斷 muted（Behavior=SLEEP）與 busy（有進行中的回合、SPEAKING／WAITING_USER）：任一成立回 DROPPED 並記
-        ``echo.resume_dropped.muted``／``busy``。R2 會把這兩類（以及 Lease 暫時不可用）改成進 pending 佇列、之後 flush。"""
+        暫時不能送的情況進 pending 佇列（記憶體，TTL／上限走設定，``flush_resume_pending`` 補送）：無 Lease、muted（Behavior=SLEEP）、
+        busy（有進行中的回合、SPEAKING／WAITING_USER）、Gate 回 NO_PRESENCE／REVOKED／EXPIRED／AUDIENCE／NOT_INTERACTION、
+        STALE 重試一次後仍 STALE。UNKNOWN／ENQUEUED 不重送（UNCERTAIN）；SEND_FAILED 等確定失敗為 DROPPED。
+        TTL 到期、溢出被丟掉的項目是 DROPPED、不寫記憶。"""
         key = (result.run_id, result.worker_epoch)
         with self._resume_lock:
             settled = self._resume_settled.get(key)
             if settled is not None:
                 return settled
-            try:
-                disposition = self._deliver_resumed(result)
-            except Exception:
-                logger.exception("續跑結果送出失敗：run=%s", result.run_id)
-                self.metrics.inc("echo.resume_errors")
-                disposition = ResumeDisposition.UNCERTAIN  # 不知道送到哪一步：不重送、不寫記憶
-            self._resume_settled[key] = disposition
-            while len(self._resume_settled) > self.RESUME_SETTLED_MAX:
-                self._resume_settled.popitem(last=False)
+            if key in self._resume_pending:
+                return ResumeDisposition.PENDING
+            self._expire_resume_pending()
+            disposition, reason = self._attempt_resumed(result)
+            if disposition is ResumeDisposition.PENDING:
+                self.metrics.inc(f"echo.resume_pending.{reason}")
+                evicted = self._resume_pending.add(result)
+                if evicted is not None:
+                    self._settle_resumed((evicted.run_id, evicted.worker_epoch), ResumeDisposition.DROPPED, "overflow")
+                return ResumeDisposition.PENDING
+            if disposition is ResumeDisposition.DROPPED:
+                self.metrics.inc(f"echo.resume_dropped.{reason}")
+            self._settle_resumed(key, disposition)
             return disposition
+
+    def flush_resume_pending(self, *, trigger: str) -> int:
+        """補送 pending 的續跑回覆（走同一條 ``_attempt_resumed``：送達才寫記憶，冪等鍵不變，重複 flush 不重送）。
+        最舊的先送；遇到仍不能送（PENDING）就停止（其餘同樣送不出去，不重複碰）。回傳這次送達的筆數。
+
+        執行緒：``_finish_turn`` 與 ``_enqueue`` 的工作都在同一條 Core 工作緒上，flush 一律從那裡（或 ``accept_resumed_result``
+        所在的 resume 執行緒）進來，並以 ``_resume_lock`` 與入口互斥；進行中的回合以 ``_resume_blocked`` 判定，不疊送。"""
+        sent = 0
+        with self._resume_lock:
+            self._expire_resume_pending()
+            for result in self._resume_pending.snapshot():
+                key = (result.run_id, result.worker_epoch)
+                try:
+                    disposition, reason = self._attempt_resumed(result)
+                except Exception:
+                    logger.exception("續跑結果補送失敗：run=%s", result.run_id)
+                    self.metrics.inc("echo.resume_errors")
+                    disposition, reason = ResumeDisposition.UNCERTAIN, "error"  # 不知道送到哪一步：不重送、不寫
+                if disposition is ResumeDisposition.PENDING:
+                    break
+                self._resume_pending.remove(key)
+                if disposition is ResumeDisposition.DROPPED:
+                    self.metrics.inc(f"echo.resume_dropped.{reason}")
+                elif disposition is ResumeDisposition.DELIVERED:
+                    sent += 1
+                    self.metrics.inc(f"echo.resume_flushed.{trigger}")
+                self._settle_resumed(key, disposition)
+        return sent
+
+    def _request_resume_flush(self, trigger: str) -> None:
+        """任意執行緒觸發 flush：交給 Core 工作緒（與 ``_finish_turn`` 同一條，不與 turn 收尾競態）；工作緒未啟動就地執行。"""
+        if len(self._resume_pending):
+            self._enqueue(functools.partial(self.flush_resume_pending, trigger=trigger), "resume_flush")
+
+    def _expire_resume_pending(self) -> None:
+        for gone in self._resume_pending.expire():
+            self._settle_resumed((gone.run_id, gone.worker_epoch), ResumeDisposition.DROPPED, "ttl")
+
+    def _settle_resumed(self, key: tuple[str, int], disposition: ResumeDisposition, drop_reason: str | None = None) -> None:
+        if drop_reason is not None:
+            self.metrics.inc(f"echo.resume_dropped.{drop_reason}")
+        self._resume_settled[key] = disposition
+        while len(self._resume_settled) > self.RESUME_SETTLED_MAX:
+            self._resume_settled.popitem(last=False)
+
+    def _attempt_resumed(self, result: ResumedRunResult) -> tuple[ResumeDisposition, str]:
+        try:
+            return self._deliver_resumed(result)
+        except Exception:
+            logger.exception("續跑結果送出失敗：run=%s", result.run_id)
+            self.metrics.inc("echo.resume_errors")
+            return ResumeDisposition.UNCERTAIN, "error"  # 不知道送到哪一步：不重送、不寫記憶
 
     def _resume_blocked(self, services: Any) -> str | None:
         """現在不適合出聲的原因：``muted``（Behavior=SLEEP，讀不到 State 也視為 muted，fail-closed）或 ``busy``（有進行中的回合、
@@ -1362,23 +1437,27 @@ class EchoPipelineHost:
             return "busy"
         return None
 
-    def _deliver_resumed(self, result: ResumedRunResult) -> ResumeDisposition:
+    # Gate 拒絕中「之後可能可以送」的結果碼（Lease 回來、聽眾收窄…）；其餘拒絕或失敗視為確定失敗
+    _RESUME_RETRYABLE_GATE = frozenset({
+        GateDecision.REJECT_NO_PRESENCE.value, GateDecision.REJECT_REVOKED.value, GateDecision.REJECT_EXPIRED.value,
+        GateDecision.REJECT_AUDIENCE.value, GateDecision.REJECT_NOT_INTERACTION.value,
+    })
+
+    def _deliver_resumed(self, result: ResumedRunResult) -> tuple[ResumeDisposition, str]:
+        """單次送出嘗試。回傳 ``(處置, 原因)``：PENDING＝暫時不能送（呼叫端入列或保留）；DROPPED＝確定不送；其餘為終局。"""
         if result.outcome is not ResumeOutcome.COMPLETED:
-            return ResumeDisposition.NOT_APPLICABLE  # FAILED／CANCELLED：不送、不寫（失敗訊息屬後續 PR）
+            return ResumeDisposition.NOT_APPLICABLE, "outcome"  # FAILED／CANCELLED：不送、不寫（失敗訊息屬後續 PR）
         services = self._services
         if services is None or result.activity_id is None or not result.text.strip():
-            self.metrics.inc("echo.resume_dropped.unavailable")
-            return ResumeDisposition.DROPPED
+            return ResumeDisposition.DROPPED, "unavailable"
         blocked = self._resume_blocked(services)
-        if blocked is not None:  # 先於 Lease 檢查：muted／正在進行的回合都不插嘴（R2 會改成進 pending）
-            self.metrics.inc(f"echo.resume_dropped.{blocked}")
-            return ResumeDisposition.DROPPED
+        if blocked is not None:  # 先於 Lease 檢查：muted／正在進行的回合都不插嘴，等 flush
+            return ResumeDisposition.PENDING, blocked
         ticket = result.ticket
         for attempt in (1, 2):  # STALE 時重取 Lease 重試一次
             auth = self.endpoint.lease_auth()  # 送出當下重取；不使用 ticket.auth（原 turn 的授權已作廢）
             if auth is None:
-                self.metrics.inc("echo.resume_dropped.no_lease")
-                return ResumeDisposition.DROPPED
+                return ResumeDisposition.PENDING, "no_lease"
             output_id = new_id("out")
             ref = f"resume:{result.run_id}:{result.worker_epoch}:{attempt}"
             self.loop_text.put(ref, ticket.turn_id, result.text)
@@ -1401,16 +1480,19 @@ class EchoPipelineHost:
                         status="completed", generation_ok=True, generated_len=len(result.text), spoken_text=result.text,
                         snapshot_version=ticket.snapshot_version,
                     ))
-                return ResumeDisposition.DELIVERED
+                return ResumeDisposition.DELIVERED, "delivered"
             if status in (DS.UNKNOWN, DS.ENQUEUED):
-                return ResumeDisposition.UNCERTAIN  # 可能已送出：不重送、不寫
+                return ResumeDisposition.UNCERTAIN, "uncertain"  # 可能已送出：不重送、不寫
             code = str((record.failure or {}).get("code", status.value))
-            if code == GateDecision.REJECT_STALE.value and attempt == 1:
-                self.metrics.inc("echo.resume_stale_retry")
-                continue
-            self.metrics.inc(f"echo.resume_dropped.{code.lower()}")
-            return ResumeDisposition.DROPPED
-        return ResumeDisposition.DROPPED
+            if code == GateDecision.REJECT_STALE.value:
+                if attempt == 1:
+                    self.metrics.inc("echo.resume_stale_retry")
+                    continue
+                return ResumeDisposition.PENDING, code.lower()
+            if code in self._RESUME_RETRYABLE_GATE:
+                return ResumeDisposition.PENDING, code.lower()
+            return ResumeDisposition.DROPPED, code.lower()
+        return ResumeDisposition.DROPPED, "exhausted"
 
     def _store_memory(self, ticket: CoreTicket, facts: TurnEndFacts, tool_context: dict[str, Any]) -> None:
         """Q8：記憶寫入由 Core 依 outcome 自行 store（ES 的 think.memory 不寫入）；冪等鍵由 turn_id 衍生。

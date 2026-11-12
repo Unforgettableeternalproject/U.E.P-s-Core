@@ -109,3 +109,18 @@ def test_profiles_separate_muted_and_dream_policy():  # BH-6
 def test_rationalize_is_deterministic():
     s = slot(ActivityKind.WORK)
     assert run(s, "ACTIVE", "CHAT") == run(s, "ACTIVE", "CHAT")
+
+
+def test_behavior_table_matches_state_coordinator():  # PP-3：driver 的預期轉換表與 coordinator 一致
+    from uep.state.coordinator import BEHAVIOR_TRANSITIONS, BehaviorState
+
+    assert {m.value for m in BehaviorState} == set(b.BEHAVIOR_TRANSITIONS) == {"REST", "SLEEP", "CHAT", "WORK", "MISCHIEF"}
+    for src, dsts in BEHAVIOR_TRANSITIONS.items():
+        assert set(dsts) == set(b.BEHAVIOR_TRANSITIONS[src]), src
+
+
+def test_muted_mode_groups():  # 房內 #304：Proactive 靜音含 REST；回應靜音只有 SLEEP
+    from uep.contracts.schedule import PROACTIVE_MUTED_MODES, RESPONSE_MUTED_MODES
+
+    assert PROACTIVE_MUTED_MODES == {"REST", "SLEEP"} and RESPONSE_MUTED_MODES == {"SLEEP"}
+    assert all(b.BEHAVIOR_PROFILES[m].muted for m in PROACTIVE_MUTED_MODES)

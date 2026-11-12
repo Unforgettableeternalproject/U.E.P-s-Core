@@ -16,7 +16,7 @@ shadow-only 保證：不建立 Run／Task、不產生 output intent、不投遞�
 - ``audience_scope``：provider 缺席、ALLOW_ALL 或回 None 時視為最寬的 ``scope_public``。
 - ``private_locations``：空（沒有可移轉的私人位置）。
 - ``muted``／``activity_interruptible``／``in_committed_interaction``（State 軸欄位尚待確認）：
-  Behavior=SLEEP 視為 muted；Interaction 非 IDLE 視為不可中斷；SPEAKING／WAITING_USER 視為承諾中的互動；
+  Behavior 在休息族（REST／SLEEP，``PROACTIVE_MUTED_MODES``）視為 muted；Interaction 非 IDLE 視為不可中斷；SPEAKING／WAITING_USER 視為承諾中的互動；
   ``activity_cost`` 固定 0.0。讀取失敗時 muted=True、不可中斷。
 - ``ledger``／``budget_used``：由呼叫端傳入，預設空與 0。
 - Presence／Stop 讀取失敗：Presence 視為 RECOVERING、global_stop=True（fail-closed）。
@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from uep.contracts.presence import PresenceLocation, PresenceStatus
+from uep.contracts.schedule import PROACTIVE_MUTED_MODES
 from uep.decision.contracts import DecisionResult
 from uep.decision.hub import DecisionHub
 from uep.decision.proactive import (
@@ -49,7 +50,7 @@ from uep.decision.proactive import (
     loop_trigger_decision,
     register_proactive,
 )
-from uep.state.coordinator import Axis, BehaviorState, InteractionState
+from uep.state.coordinator import Axis, InteractionState
 
 logger = logging.getLogger("uep.echo.proactive_wiring")
 
@@ -172,7 +173,7 @@ class ProactiveShadow:
             logger.warning("proactive shadow 讀取 State 失敗：%s", type(exc).__name__)
             return True, False, False
         committed = interaction in (InteractionState.SPEAKING.value, InteractionState.WAITING_USER.value)
-        return behavior == BehaviorState.SLEEP.value, interaction == InteractionState.IDLE.value, committed
+        return behavior in PROACTIVE_MUTED_MODES, interaction == InteractionState.IDLE.value, committed
 
     def _audience_scope(self) -> str:
         provider = self._audience

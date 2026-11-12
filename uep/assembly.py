@@ -155,7 +155,7 @@ DEFAULT_PROPOSERS: dict[Axis, frozenset[str]] = {
     Axis.INTERACTION: frozenset({
         "core.nlp", "core.proactive", "core.workflow", "core.turn", "core.decision",
     }),
-    Axis.BEHAVIOR: frozenset({"core.policy", "core.proactive"}),
+    Axis.BEHAVIOR: frozenset({"core.policy"}),  # BH-2：Behavior 只由 BehaviorDriver（core.policy）寫入；盤點無 core.proactive 的 Behavior 請求
 }
 
 

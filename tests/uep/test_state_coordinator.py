@@ -165,6 +165,17 @@ def test_behavior_axis_table(session_factory):
     assert state.request_transition(req("Behavior", "SLEEP", "CHAT", version=1)).decision is Decision.ACCEPTED
 
 
+def test_behavior_rest_transitions(session_factory):  # PresencePlan §8.4：REST 邊
+    state = make_state(session_factory)
+    assert state.current("Behavior").state == "CHAT"  # DEFAULT_STATES 維持 CHAT（等 driver 切 on 再改）
+    assert state.request_transition(req("Behavior", "CHAT", "REST")).decision is Decision.ACCEPTED
+    illegal = state.request_transition(req("Behavior", "REST", "WORK", version=1))
+    assert illegal.decision is Decision.REJECTED_ILLEGAL  # 休息需先回 CHAT 才能進工作
+    assert state.request_transition(req("Behavior", "REST", "SLEEP", version=1)).decision is Decision.ACCEPTED
+    assert state.request_transition(req("Behavior", "SLEEP", "REST", version=2)).decision is Decision.ACCEPTED
+    assert state.request_transition(req("Behavior", "REST", "CHAT", version=3)).decision is Decision.ACCEPTED
+
+
 def test_global_stop_flag_blocks_active_behaviors_only(session_factory, tmp_path):
     stack = make_stack(session_factory, tmp_path)
     stack.state.set_runtime(RuntimeState.READY)

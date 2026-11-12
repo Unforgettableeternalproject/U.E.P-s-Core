@@ -174,6 +174,7 @@ def test_stuck_proposer_costs_the_budget_once_and_later_turns_resolve_immediatel
     ({"route": "shell"}, "route"),
     ({"interaction_to": "WORK"}, "Behavior 軸的值"),
     ({"interaction_to": "MISCHIEF"}, "Behavior 軸的值"),
+    ({"interaction_to": "REST"}, "Behavior 軸的值"),
     ({"interaction_to": "THINKING"}, "只允許 LISTENING"),
     ({"interaction_to": "SPEAKING"}, "只允許 LISTENING"),
     ({"confidence": 7.0}, "confidence"),

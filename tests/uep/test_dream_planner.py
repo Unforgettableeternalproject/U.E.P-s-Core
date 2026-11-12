@@ -119,6 +119,11 @@ def test_sleep_behavior_relaxes_idle_quiet_to_rest_quiet():
     assert (d.action, d.trigger) == ("run", TRIGGER_IDLE)
 
 
+def test_rest_behavior_does_not_relax_idle_quiet():  # BH-6：REST 不套用夜間 SLEEP 的放寬
+    d = decide(CFG, ns("a", pending=5), foreground=fg(quiet_for_s=300.0, behavior_state="REST"))
+    assert d.action == "wait"
+
+
 def test_lease_held_by_other_and_dreaming_namespace_are_skipped():
     assert decide(CFG, ns("a", pending=50, held=True)).reason == "lease_held_by_other"
     assert decide(CFG, ns("a", pending=50, dreaming=True)).reason == "namespace_dreaming"

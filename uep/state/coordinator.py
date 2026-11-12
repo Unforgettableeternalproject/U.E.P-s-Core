@@ -76,6 +76,7 @@ class InteractionState(StrEnum):
 
 
 class BehaviorState(StrEnum):
+    REST = "REST"  # 休息族：Presence NONE（在主機）待命，不主動動作（PP-3；預設狀態仍是 CHAT，等 driver 切 on 再改）
     CHAT = "CHAT"
     WORK = "WORK"
     MISCHIEF = "MISCHIEF"
@@ -116,10 +117,11 @@ INTERACTION_TRANSITIONS: dict[str, frozenset[str]] = {
     _I.WAITING_USER: frozenset({_I.LISTENING, _I.THINKING, _I.IDLE}),
 }
 BEHAVIOR_TRANSITIONS: dict[str, frozenset[str]] = {
-    _B.CHAT: frozenset({_B.WORK, _B.MISCHIEF, _B.SLEEP}),
-    _B.WORK: frozenset({_B.CHAT, _B.MISCHIEF, _B.SLEEP}),
-    _B.MISCHIEF: frozenset({_B.CHAT, _B.WORK, _B.SLEEP}),
-    _B.SLEEP: frozenset({_B.CHAT}),  # 睡眠需先喚醒，不能直接進入工作／搗蛋
+    _B.CHAT: frozenset({_B.WORK, _B.MISCHIEF, _B.SLEEP, _B.REST}),
+    _B.WORK: frozenset({_B.CHAT, _B.MISCHIEF, _B.SLEEP, _B.REST}),
+    _B.MISCHIEF: frozenset({_B.CHAT, _B.WORK, _B.SLEEP, _B.REST}),
+    _B.SLEEP: frozenset({_B.CHAT, _B.REST}),  # 睡眠需先喚醒，不能直接進入工作／搗蛋；可回到 REST（休息族內）
+    _B.REST: frozenset({_B.SLEEP, _B.CHAT}),  # 休息需先回 CHAT 才能進工作／搗蛋（PresencePlan 契約 §8.4）
 }
 RUNTIME_TRANSITIONS: dict[str, frozenset[str]] = {
     _R.STARTING: frozenset({_R.READY, _R.DEGRADED, _R.STOPPING}),

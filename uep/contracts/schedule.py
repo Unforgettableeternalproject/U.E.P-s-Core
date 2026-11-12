@@ -31,6 +31,10 @@ MODE_CHAT = "CHAT"
 MODE_WORK = "WORK"
 MODE_MISCHIEF = "MISCHIEF"
 
+# muted 拆兩組（房內 #304）：主動行為（Proactive）在休息族都靜音；回應（續跑回覆等）只在 SLEEP 靜音
+PROACTIVE_MUTED_MODES = frozenset({MODE_REST, MODE_SLEEP})
+RESPONSE_MUTED_MODES = frozenset({MODE_SLEEP})
+
 
 class ActivityKind(StrEnum):
     REST = "rest"  # 休息（含夜間休息時段與非工作時間的主機待命；不綁日夜）

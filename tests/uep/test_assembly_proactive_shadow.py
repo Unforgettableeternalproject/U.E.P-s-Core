@@ -206,6 +206,7 @@ def test_non_assignment_candidate_has_no_authorization_without_grant_service(bui
     ({"presence": _Presence(transfer_id="tr_1")}, "presence_transferring"),
     ({"state": _State(interaction="THINKING")}, "activity_not_interruptible"),
     ({"state": _State(behavior="SLEEP")}, "muted"),
+    ({"state": _State(behavior="REST")}, "muted"),
     ({"audience": lambda: "scope_public"}, "audience_too_wide_wait"),
 ])
 def test_context_driven_reasons_reach_decision(built, sinks, kw, reason):  # noqa: F811

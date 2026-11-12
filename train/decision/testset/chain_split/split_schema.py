@@ -134,11 +134,15 @@ def validate_row(row: dict[str, Any]) -> tuple[list[str], list[str]]:
                     need(contains_name(src, s), f"{q}.surface 必須出現在該段 source")
                 if isinstance(r, str) and isinstance(st, str):
                     need(contains_name(st, r), f"{q}: 補完後 text 必須含 resolves_to")
+                if isinstance(r, str) and isinstance(acc, list) and any(isinstance(x, str) and len(x) > len(r) for x in acc):
+                    warn.append(f"{q}: accept 有比 resolves_to 更長的說法；resolves_to 應為完整先行詞片語（§10.4）")
                 if isinstance(s, str) and isinstance(st, str) and isinstance(r, str) and s not in r:
                     need(not contains_name(st, s), f"{q}: 補完後 text 不應再含代名詞 surface")
 
     if single is True and len(segs) == 1 and isinstance(segs[0], dict):
         s0 = segs[0]
+        if s0.get("vocative") is None and contains_name(text, "Yuki"):
+            warn.append("單段列的 text 含 Yuki 但 vocative 為 null；單段列也要填 vocative（§10.5）")
         need(s0.get("text") == text, "expect_single 時 segments[0].text 必須等於整句 text")
         need(s0.get("source") == text, "expect_single 時 segments[0].source 必須等於整句 text")
         need(s0.get("pronouns") == [], "expect_single 時 pronouns 必須為空")

@@ -10,7 +10,7 @@ split_single_segment／split_over_limit）；有錯誤、缺列或輸出驗證�
 naive_punct（照標點硬切）、fault（oracle 注入固定錯誤，用來確認各指標會動）。
 
 指標 3（代名詞補完）在此是啟發式判定，不是契約的 LLM 輔助判定：補完後的段落必須含 resolves_to
-（或 accept 之一），且不能再含代名詞本身。指標 10 在此是 proxy（用標註的 addressed 加稱呼保留與否推算），
+（完整先行詞片語）或 accept 之一（中心詞等較短說法，兩種粒度都算對），且不能再含代名詞本身。指標 10 在此是 proxy（用標註的 addressed 加稱呼保留與否推算），
 真值需 Laya 對段落的重判。
 用法：python eval_split.py --gold smoke.jsonl --splitter identity [--out report.json]
 """

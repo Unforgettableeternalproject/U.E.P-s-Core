@@ -13,6 +13,7 @@ from typing import Any
 
 from uep.adapters.tool import ToolDescriptor, ToolEntry, ToolScope, ToolSpec
 from uep.decision.loop_consult import SUB_KINDS, input_schema, output_schema
+from uep.decision.loop_digest import LOOP_DIGEST_KEY
 
 DECISION_EXECUTOR = "decision_consult"
 CONSULT_TOOL = "decision.consult"
@@ -29,7 +30,8 @@ INJECTED_CONSULT = (
     "snapshot_capability_tags", "snapshot_modalities", "snapshot_platforms",
     "consults_used", "no_progress_count",
 )
-_COMMON_FACTS = frozenset({"sub_kind", "run_id", "step_id", "ordinal", "frozen", "capability_snapshot", "consults_used", "no_progress_count"})
+# LOOP_DIGEST_KEY 只由決策層／工具層注入，不得出現在 LLM 面 schema（尚未列入 INJECTED_CONSULT，先由這裡排除）
+_COMMON_FACTS = frozenset({"sub_kind", "run_id", "step_id", "ordinal", "frozen", "capability_snapshot", "consults_used", "no_progress_count", LOOP_DIGEST_KEY})
 
 CONSULT_DESCRIPTION = (
     "Ask the decision hub for advice on a local decision (speak, output_modality, ask_user, loop_end, followup). "

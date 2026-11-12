@@ -52,6 +52,7 @@ class PresenceReading:
     status: str  # NONE｜ACTIVE｜RECOVERING
     location: str | None
     transfer_active: bool = False
+    expires_at: datetime | None = None  # ACTIVE 的 Lease 到期時間；已到期（peek 不處理過期）視同不明
 
 
 class PresencePlanner:
@@ -73,6 +74,7 @@ class PresencePlanner:
         self._open: dict[str, PlanDirective] = {}
         self._last_divergence: tuple | None = None
         self._unavailable = False
+        self._startup_done = False
         self._error_log: dict[str, float] = {}
         self.next_wake_s: float = poll_s
         self._thread: threading.Thread | None = None
@@ -90,8 +92,10 @@ class PresencePlanner:
                 logger.debug("指標寫入失敗：%s", name, exc_info=True)
 
     @staticmethod
-    def _actual_location(reading: PresenceReading) -> str | None:
+    def _actual_location(reading: PresenceReading, now: datetime) -> str | None:
         if reading.status == "ACTIVE":
+            if reading.expires_at is not None and reading.expires_at <= now:
+                return None  # peek 不處理過期：ACTIVE 但 Lease 已到期＝不明，不發 directive
             return reading.location
         if reading.status == "NONE":
             return PRESENCE_TARGET_HOST
@@ -112,7 +116,8 @@ class PresencePlanner:
         """directive 過期、已達成、被 override 蓋過時發 directive_dropped（留好接口；不做延後狀態機）。"""
         for directive_id, directive in list(self._open.items()):
             if now >= directive.expires_at:
-                self._drop(directive_id, "slot_ended")
+                # 開放格（預設層，沒有終點）靠 open_slot_ttl_s 到期，不是格結束
+                self._drop(directive_id, "ttl_expired" if directive.slot.ends_at is None else "slot_ended")
             elif override_active:
                 self._drop(directive_id, "overridden")
             elif actual is not None and actual == directive.target:
@@ -131,7 +136,7 @@ class PresencePlanner:
             self._unavailable = False
             logger.info("行程恢復可用，Planner 繼續評估")
         first = self._prev is None
-        reason = "startup_reconcile" if first else "plan_boundary"
+        reason = "plan_boundary"
         if not first:
             notices = slot_transition(self._prev, slot)
             if notices:
@@ -140,8 +145,11 @@ class PresencePlanner:
                 for notice in notices:
                     emit = self._events.slot_left if notice.kind == "left" else self._events.slot_entered
                     emit(notice.slot, _NOTICE_REASONS.get(notice.reason, "boundary"))
-            elif slot.plan_revision != self._prev.plan_revision:
+            if slot.plan_revision != self._prev.plan_revision:
                 reason = "plan_changed"
+                # 看到 revision 變動：補發 plan_changed（同一 revision 的 idempotency key 讓重複發布無害）；
+                # 寫入端的 store 須掛 set_on_change，這裡只是保險
+                self._events.plan_changed(slot.plan_revision, "observed", None)
         self._prev = slot
         self._reconcile_presence(slot, now, reason)
         self.next_wake_s = self._wait_for(slot, now)
@@ -150,14 +158,20 @@ class PresencePlanner:
     def _reconcile_presence(self, slot: PlanSlot, now: datetime, reason: str) -> None:
         reading = self._presence_fn()
         override = self._override_fn() if self._override_fn is not None else None
+        if override is not None and getattr(override, "expires_at", None) is not None and override.expires_at <= now:
+            override = None  # 資料列還沒被 reconcile 結束，但已過期：不算生效
         override_active = override is not None or slot.source == PlanSource.OVERRIDE
-        actual = self._actual_location(reading)
+        actual = self._actual_location(reading, now)
         self._reap(now, actual, override_active)
-        if actual is None:  # RECOVERING：不明，不發 directive 也不記 divergence
+        if actual is None:  # RECOVERING／Lease 已到期：不明，不發 directive 也不記 divergence；startup 標記保留
             return
+        if not self._startup_done:  # startup_reconcile 留到第一次拿到明確的 Presence 讀值才消耗
+            reason = "startup_reconcile"
+            self._startup_done = True
         if override_active or reading.transfer_active:
             # 移轉中（或 override 生效中）行程目標與實際位置的差異：只記錄，狀態改變才發
             if slot.location != actual:
+                # plan_location 是投影後的位置：override 生效時為 override 目標；NONE 的 actual 寫 "none"
                 key = (slot.location, reading.status, actual, getattr(override, "status", None),
                        getattr(override, "override_id", None))
                 if key != self._last_divergence:

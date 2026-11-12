@@ -50,12 +50,15 @@ class ScheduleEvents:
         self._persona = persona_id
         self._clock = clock
 
-    def _publish(self, event_type: str, payload: dict[str, Any], *, aggregate_version: int | None = None,
-                 idempotency_key: str | None = None) -> None:
+    def _publish(self, event_type: str, payload: dict[str, Any], *, aggregate_id: str | None = None,
+                 aggregate_version: int | None = None, idempotency_key: str | None = None) -> None:
+        """events 的 ``(aggregate_id, aggregate_version)`` 唯一鍵是共用命名空間（Presence、State 都用 persona_id）：
+        除了 plan_changed 以外的事件一律不設 aggregate，避免佔用別人的版本序號。"""
         try:
             draft = EventDraft(
-                event_type=event_type, occurred_at=self._clock(), aggregate_type="schedule",
-                aggregate_id=self._persona, aggregate_version=aggregate_version, idempotency_key=idempotency_key,
+                event_type=event_type, occurred_at=self._clock(),
+                aggregate_type="schedule" if aggregate_id else None, aggregate_id=aggregate_id,
+                aggregate_version=aggregate_version if aggregate_id else None, idempotency_key=idempotency_key,
                 payload={k: v for k, v in payload.items() if v is not None})
             trusted = TrustedContext(source=SOURCE, actor_id=ACTOR, scope_ref=SCOPE, persona_id=self._persona)
             self._publisher.publish(draft, trusted)
@@ -65,8 +68,11 @@ class ScheduleEvents:
     # ---- store ----
 
     def plan_changed(self, revision: int, change_kind: str, ref_id: str | None = None) -> None:
+        # 獨立的 aggregate 命名空間 ``<persona>:schedule``；同一 revision 只會有一筆（idempotency key 去重，
+        # Planner 觀察到 revision 變動時會補發同一個 key 的事件）
         self._publish("schedule.plan_changed", {"revision": revision, "change_kind": change_kind, "ref_id": ref_id},
-                      aggregate_version=revision)
+                      aggregate_id=f"{self._persona}:schedule", aggregate_version=revision,
+                      idempotency_key=f"plan_changed:{revision}")
 
     def on_store_change(self, revision: int, store_kind: str, ref_id: str | None) -> None:
         """接到 ``PlanStore`` 的 ``on_change``（提交後）：只有行程本體的變更才發 plan_changed。"""
@@ -82,7 +88,7 @@ class ScheduleEvents:
                 "location": slot.location, "plan_revision": slot.plan_revision}
 
     def slot_changed(self, slot: PlanSlot) -> None:
-        self._publish("schedule.slot_changed", self._slot_payload(slot), aggregate_version=slot.plan_revision)
+        self._publish("schedule.slot_changed", self._slot_payload(slot))
 
     def slot_entered(self, slot: PlanSlot, reason: str) -> None:
         self._publish("schedule.slot_entered",
@@ -104,6 +110,11 @@ class ScheduleEvents:
 
     def divergence_observed(self, plan_location: str, actual_location: str, override_state: str | None,
                             override_id: str | None) -> None:
+        """``plan_location`` 是投影後的行程位置：override 生效時就是 override 的目標位置（不是藍圖位置）。
+
+        ``actual_location`` 的寫法：Presence ACTIVE 為其平台位置；Presence NONE（她在主機）寫 ``"none"``（契約 §10
+        的「含 none」）。注意 directive 的 target 用 ``"host"`` 表示主機，兩者是不同的詞彙，不要互相比對。
+        """
         self._publish("schedule.divergence_observed", {
             "plan_location": plan_location, "actual_location": actual_location, "override_state": override_state,
             "override_id": override_id})

@@ -147,6 +147,7 @@ class UepSettings(BaseSettings):
     schedule_rest_window: str = Field(default="fixed", validation_alias="UEP_SCHEDULE_REST_WINDOW")
     # Behavior driver（PP-3b）：off｜shadow｜on，預設 shadow（只記 log／指標，不提 CC-7 請求）
     schedule_behavior_driver: str = Field(default="shadow", validation_alias="UEP_BEHAVIOR_DRIVER")
+    schedule_planner: str = Field(default="off", validation_alias="UEP_SCHEDULE_PLANNER")
 
     # 系統日誌（uep/log.py，只在進入點 configure_logging 讀取）：UEP_LOG_LEVEL 優先於 UEP_LOG_DEPTH（1..4＝KEY／INFO／DEBUG／TRACE）；
     # log_levels 為 "uep.decision=DEBUG,echo_tts=WARNING" 的命名空間覆寫；console 輸出到 stderr；檔案每行程一組，JSONL 供查核

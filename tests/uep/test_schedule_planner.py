@@ -58,6 +58,9 @@ class Events:
     def slot_entered(self, slot, reason):
         self.log.append(("slot_entered", slot.item_ref, reason))
 
+    def plan_changed(self, revision, change_kind, ref_id=None):
+        self.log.append(("plan_changed", revision, change_kind))
+
     def directive_issued(self, directive):
         self.log.append(("directive_issued", directive.target, directive.reason))
 
@@ -175,7 +178,8 @@ def test_plan_revision_change_issues_plan_changed_directive_and_supersedes():
     planner.tick(tpe(9, 30))
     reader.revision_value = 2
     planner.tick(tpe(9, 31))
-    assert events.log[-2:] == [("directive_dropped", "superseded"), ("directive_issued", "discord", "plan_changed")]
+    assert events.log[-3:] == [("plan_changed", 2, "observed"), ("directive_dropped", "superseded"),
+                               ("directive_issued", "discord", "plan_changed")]
 
 
 def test_next_wake_is_min_of_boundary_and_poll_with_floor():
@@ -256,24 +260,30 @@ class FakePublisher:
 
 
 def fake_core():
-    view = SimpleNamespace(status=SimpleNamespace(value="NONE"), location=None, transfer_id=None)
+    view = SimpleNamespace(status=SimpleNamespace(value="NONE"), location=None, transfer_id=None, expires_at=None)
+
+    def forbidden():
+        raise AssertionError("Planner 不得呼叫 current()（會做到期寫入），只能用 peek()")
+
     return SimpleNamespace(persona_id="uep", publisher=FakePublisher(), bus=FakeBus(),
-                           presence=SimpleNamespace(current=lambda: view),
+                           presence=SimpleNamespace(peek=lambda: view, current=forbidden),
                            echo=SimpleNamespace(metrics=SimpleNamespace(inc=lambda *_: None)))
 
 
-def test_attach_is_off_by_default_and_invalid_flag_raises(monkeypatch):
-    monkeypatch.delenv("UEP_SCHEDULE_PLANNER", raising=False)
+def test_attach_is_off_by_default_and_invalid_flag_raises():
+    from uep.config import UepSettings
+
+    assert UepSettings.model_fields["schedule_planner"].default == "off"
     core = fake_core()
-    assert attach_schedule_planner(SimpleNamespace(), core, session_factory=None, reader=Reader([A])) is None
+    for settings in (SimpleNamespace(), SimpleNamespace(schedule_planner="off")):
+        assert attach_schedule_planner(settings, core, session_factory=None, reader=Reader([A])) is None
     assert core.bus.handlers == {}
-    monkeypatch.setenv("UEP_SCHEDULE_PLANNER", "bogus")
     with pytest.raises(ValueError):
-        attach_schedule_planner(SimpleNamespace(), core, session_factory=None, reader=Reader([A]))
+        attach_schedule_planner(SimpleNamespace(schedule_planner="bogus"), core, session_factory=None,
+                                reader=Reader([A]))
 
 
-def test_attach_shadow_publishes_schedule_events_and_unsubscribes(monkeypatch):
-    monkeypatch.setenv("UEP_SCHEDULE_PLANNER", "shadow")
+def test_attach_shadow_publishes_schedule_events_and_unsubscribes():
     core = fake_core()
 
     class Store(Reader):
@@ -285,7 +295,8 @@ def test_attach_shadow_publishes_schedule_events_and_unsubscribes(monkeypatch):
             self.on_change = cb
 
     store = Store()
-    planner = attach_schedule_planner(SimpleNamespace(), core, session_factory=None, reader=store)
+    planner = attach_schedule_planner(SimpleNamespace(schedule_planner="shadow"), core, session_factory=None,
+                                      reader=store)
     try:
         deadline = _time.time() + 3.0
         while not core.publisher.sent and _time.time() < deadline:

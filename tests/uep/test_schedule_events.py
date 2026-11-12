@@ -60,7 +60,7 @@ def test_published_events_use_core_schedule_source_and_whitelisted_keys():
     for draft, trusted in pub.sent:
         assert trusted.source == SOURCE == "core.schedule" and not trusted.source.startswith("presence.")
         assert set(draft.payload) <= DEFAULT_REGISTRY.lookup(draft.event_type).payload_keys, draft.event_type
-        assert draft.aggregate_type == "schedule"
+        assert draft.aggregate_type in (None, "schedule")
     by_type = {d.event_type: d for d, _ in pub.sent}
     assert by_type["schedule.plan_changed"].payload == {"revision": 4, "change_kind": "item_created", "ref_id": "plan_x"}
     assert by_type["schedule.slot_changed"].payload["slot_ref"] == slot_ref(slot)

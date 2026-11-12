@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -256,14 +255,15 @@ def attach_schedule_planner(settings: Any, core: Any, *, session_factory: Any, r
                             metrics_inc: Callable[[str], None] | None = None) -> Any | None:
     """依旗標組裝並啟動 PresencePlanner（只發 ``schedule.*`` 事件；目前沒有仲裁器，directive 不被消費）。
 
-    旗標優先取 ``settings.schedule_planner``，沒有該欄位時讀環境變數 ``UEP_SCHEDULE_PLANNER``（預設 off）。
-    讀 Presence 用 ``core.presence.current()``（唯讀）；``reader`` 是 PlanStore 時順便掛上
-    ``schedule.plan_changed`` 的發布（寫入端的 store 實例也需要 ``set_on_change``）。
+    旗標 ``settings.schedule_planner``（``UEP_SCHEDULE_PLANNER``，預設 off）。讀 Presence 用 ``core.presence.peek()``
+    （純唯讀，不做到期寫入；ACTIVE 但 ``expires_at`` 已過的視同不明）。``reader`` 是 PlanStore 時順便掛上
+    ``schedule.plan_changed`` 的發布。**寫入端的 store 實例須自己呼叫 ``set_on_change``**（Planner 自建的 store 只負責讀）；
+    沒掛時 Planner 在看到 revision 變動後會補發同一個 idempotency key 的 plan_changed。
     """
     from uep.schedule.events import ScheduleEvents
     from uep.schedule.planner import PresencePlanner, PresenceReading
 
-    mode = parse_planner_mode(getattr(settings, "schedule_planner", None) or os.environ.get("UEP_SCHEDULE_PLANNER"))
+    mode = parse_planner_mode(getattr(settings, "schedule_planner", None))
     if mode == "off":
         return None
     if reader is None:
@@ -278,9 +278,9 @@ def attach_schedule_planner(settings: Any, core: Any, *, session_factory: Any, r
         reader.set_on_change(events.on_store_change)
 
     def presence() -> Any:
-        view = core.presence.current()
+        view = core.presence.peek()
         return PresenceReading(status=view.status.value, location=view.location,
-                               transfer_active=view.transfer_id is not None)
+                               transfer_active=view.transfer_id is not None, expires_at=view.expires_at)
 
     planner = PresencePlanner(reader, presence, events, override_fn=getattr(reader, "active_override", None),
                               metrics_inc=metrics_inc)

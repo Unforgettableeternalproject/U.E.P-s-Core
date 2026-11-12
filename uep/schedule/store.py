@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time as _clock_time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
@@ -252,6 +253,7 @@ class PlanStore:
         self._allowed_sources = allowed_sources
         self._on_change = on_change
         self._delay: PlanDelay | None = None
+        self._last_unavailable_log = float("-inf")
 
     # ---- Planner 注入（delay 不持久化；只活在記憶體）----
 
@@ -278,6 +280,13 @@ class PlanStore:
             "UPDATE presence_plan_meta SET revision = revision + 1, updated_at = :now WHERE persona_id = :p "
             "RETURNING revision"), {"p": self._persona, "now": now}).one()
         return int(row.revision)
+
+    def _log_unavailable(self, exc: Exception) -> None:
+        """讀取失敗的 log 限頻（60 秒一次，不印 traceback）：resolve 會被 tick 頻繁呼叫，不能每次都洗版。"""
+        now = _clock_time.monotonic()
+        if now - self._last_unavailable_log >= 60.0:
+            self._last_unavailable_log = now
+            logger.warning("行程儲存讀取失敗，行程標示為不可用：%s", type(exc).__name__)
 
     def _notify(self, revision: int, kind: str, ref_id: str | None) -> None:
         if self._on_change is not None:
@@ -326,7 +335,7 @@ class PlanStore:
         try:
             items, override, marks, revision, tz = self._load(now)
         except SQLAlchemyError as exc:  # 儲存讀取失敗 → 行程不可用（不誤刪任何資料）
-            logger.warning("行程儲存讀取失敗，行程標示為不可用：%s", exc)
+            self._log_unavailable(exc)
             return resolver.unavailable_slot(now, 0, "store_unavailable")
         return resolver.resolve(items, override, now, tz, plan_revision=revision, delay=self._delay, marks=marks)
 
@@ -335,7 +344,7 @@ class PlanStore:
         try:
             items, override, marks, revision, tz = self._load(start)
         except SQLAlchemyError as exc:
-            logger.warning("行程儲存讀取失敗，行程標示為不可用：%s", exc)
+            self._log_unavailable(exc)
             return (resolver.unavailable_slot(start, 0, "store_unavailable"),)
         return resolver.upcoming(items, override, start, horizon_s, tz, plan_revision=revision, delay=self._delay,
                                  marks=marks)

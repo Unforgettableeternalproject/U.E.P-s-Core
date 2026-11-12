@@ -5,21 +5,29 @@
   （組裝在 ``uep/echo/schedule_wiring.py``），所以本模組不 import ``uep.state`` 或 ``uep.memory``。
 - 開關 ``off｜shadow｜on``（預設 shadow）：shadow 只記 log／指標（would_transition），不提請求；
   Behavior 不是安全閘門，但會改變 muted／做夢放寬等下游行為，所以先 shadow（先例：D100）。
-- 已知近似（第一版）：
-  * ``behavior_entered_at`` 以「看到 Behavior 軸 version 變化的時間」近似（StateView 沒有進入時間，不改 State 結構）；
-    第一次觀察到時為 None（不套用防抖）。
-  * ``has_uninterruptible_work`` 暫時固定 False（Task 層還沒有可查詢的介面）。
+- 行程不可用（``slot.availability == "unavailable"``）時直接 HOLD（``plan_unavailable``），不進 rationalize 的
+  Presence fallback：行程故障不應造成 Behavior 切換。
+- ``in_rest_window``：facts 給值（fixed 模式的純計算）就用它；為 None（plan 模式）時用 driver 自己這次 resolve 的 slot
+  （``source == REST_WINDOW``），不呼叫與做夢迴圈共用的 policy（避免改動它的快取狀態與跨執行緒）。
+- 請求冪等：coordinator 對同一個 request_id 回放舊裁決（含 REJECTED／DEFERRED）。非 ACCEPTED 的結果會讓同一組
+  (from, to, version) 的下一次提交帶遞增的嘗試序號，並至少間隔 ``retry_backoff_s`` 才重試。
+
+已知限制（第一版；``on`` 之前必須處理）：
+  * ``behavior_entered_at`` 只是「看到 Behavior 軸 version 變化的時間」的近似；第一次觀察為 None（不套用防抖）。
+  * ``has_uninterruptible_work`` 固定 False，Task 層沒有可查詢的介面前，``on`` 可能在有不可中斷工作時離開 WORK；
+    ``on`` 前必須接上 Task 層。
 """
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from uep.contracts.schedule import PlanReader
+from uep.contracts.schedule import PlanReader, PlanSource
 from uep.schedule.behavior import (
     BehaviorDecision,
     RationalizeInput,
@@ -32,6 +40,8 @@ logger = logging.getLogger(__name__)
 DriverMode = Literal["off", "shadow", "on"]
 DRIVER_MODES = ("off", "shadow", "on")
 DEFAULT_INTERVAL_S = 5.0
+DEFAULT_RETRY_BACKOFF_S = 30.0
+_ERROR_LOG_INTERVAL_S = 60.0
 
 
 def parse_driver_mode(value: str | None) -> DriverMode:
@@ -53,12 +63,12 @@ class BehaviorFacts:
     global_stop: bool
     runtime_ready: bool
     dream_in_flight: bool = False
-    in_rest_window: bool = False  # 由 RestWindowPolicy.window_at 判定（與 DreamLoop 用同一個 policy）
+    in_rest_window: bool | None = None  # None＝由 driver 依自己這次 resolve 的 slot 判斷（plan 模式）
     has_uninterruptible_work: bool = False  # 第一版固定 False
 
 
-# (from_state, to_state, expected_version, reason_code) -> 裁決名稱（如 "ACCEPTED"）
-SubmitFn = Callable[[str, str, int, str], str]
+# (from_state, to_state, expected_version, reason_code, attempt) -> 裁決名稱（如 "ACCEPTED"）
+SubmitFn = Callable[[str, str, int, str, int], str]
 
 
 class BehaviorDriver:
@@ -67,7 +77,9 @@ class BehaviorDriver:
     def __init__(self, reader: PlanReader, facts_fn: Callable[[datetime], BehaviorFacts], submit_fn: SubmitFn, *,
                  mode: DriverMode = "shadow", clock: Callable[[], datetime] = lambda: datetime.now(UTC),
                  policy: RationalizePolicy | None = None, interval_s: float = DEFAULT_INTERVAL_S,
-                 metrics_inc: Callable[[str], None] | None = None, autonomy_enabled: bool = False) -> None:
+                 metrics_inc: Callable[[str], None] | None = None, autonomy_enabled: bool = False,
+                 retry_backoff_s: float = DEFAULT_RETRY_BACKOFF_S,
+                 monotonic: Callable[[], float] = time.monotonic) -> None:
         if mode not in DRIVER_MODES:
             raise ValueError(f"未知的 driver 模式：{mode}")
         self._reader = reader
@@ -79,9 +91,14 @@ class BehaviorDriver:
         self._interval_s = interval_s
         self._metrics_inc = metrics_inc
         self._autonomy = autonomy_enabled
+        self._retry_backoff_s = retry_backoff_s
+        self._monotonic = monotonic
         self._tracked: tuple[str, int] | None = None
         self._entered_at: datetime | None = None
         self._last_key: tuple | None = None
+        self._failed: dict[tuple[str, str, int], tuple[int, float]] = {}  # key -> (嘗試次數, 下次可重試的 monotonic)
+        self._error_log: dict[str, float] = {}
+        self._cleanups: list[Callable[[], None]] = []
         self.last_decision: BehaviorDecision | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -90,6 +107,10 @@ class BehaviorDriver:
     @property
     def mode(self) -> DriverMode:
         return self._mode
+
+    def add_cleanup(self, fn: Callable[[], None]) -> None:
+        """``stop`` 時執行一次（例如退訂 bus handler）。"""
+        self._cleanups.append(fn)
 
     def _count(self, name: str) -> None:
         if self._metrics_inc is not None:
@@ -107,6 +128,13 @@ class BehaviorDriver:
             self._entered_at = now
         return self._entered_at
 
+    def _record(self, decision: BehaviorDecision, current: str) -> None:
+        key = (decision.outcome, decision.target, decision.reason_code, current)
+        if key != self._last_key:  # 只在決定改變時記 log，避免每個 tick 洗版
+            self._last_key = key
+            logger.info("Behavior 合理化：%s %s→%s reason=%s mode=%s", decision.outcome, current, decision.target,
+                        decision.reason_code, self._mode)
+
     def tick(self, now: datetime | None = None) -> BehaviorDecision | None:
         """評估一次。off 回 None；shadow 只記錄；on 且有轉換時提 CC-7 請求。"""
         if self._mode == "off":
@@ -114,19 +142,24 @@ class BehaviorDriver:
         now = now or self._clock()
         facts = self._facts_fn(now)
         slot = self._reader.resolve(now)
+        if slot.availability == "unavailable":  # 行程故障 → 保持現狀，不套用 Presence fallback
+            decision = BehaviorDecision("HOLD", None, "plan_unavailable",
+                                        recheck_at=now + timedelta(seconds=self._policy.recheck_s))
+            self.last_decision = decision
+            self._record(decision, facts.current_behavior)
+            self._count("schedule.behavior.hold")
+            return decision
+        in_rest_window = (facts.in_rest_window if facts.in_rest_window is not None
+                          else slot.source == PlanSource.REST_WINDOW)
         decision = rationalize(RationalizeInput(
             slot=slot, presence_status=facts.presence_status, current_behavior=facts.current_behavior, now=now,
             behavior_entered_at=self._track(facts, now), interaction_idle=facts.interaction_idle,
             has_uninterruptible_work=facts.has_uninterruptible_work, dream_in_flight=facts.dream_in_flight,
             global_stop=facts.global_stop, runtime_ready=facts.runtime_ready, autonomy_enabled=self._autonomy,
-            in_rest_window=facts.in_rest_window), self._policy)
+            in_rest_window=in_rest_window), self._policy)
         self.last_decision = decision
+        self._record(decision, facts.current_behavior)
         transition = decision.outcome in ("ACCEPT_SUGGESTION", "SUBSTITUTE") and decision.target is not None
-        key = (decision.outcome, decision.target, decision.reason_code, facts.current_behavior)
-        if key != self._last_key:  # 只在決定改變時記 log，避免每個 tick 洗版
-            self._last_key = key
-            logger.info("Behavior 合理化：%s %s→%s reason=%s mode=%s", decision.outcome, facts.current_behavior,
-                        decision.target, decision.reason_code, self._mode)
         if not transition:
             if decision.outcome == "HOLD":
                 self._count("schedule.behavior.hold")
@@ -134,25 +167,47 @@ class BehaviorDriver:
         if self._mode == "shadow":
             self._count("schedule.behavior.would_transition")
             return decision
+        self._submit_transition(facts, decision)
+        return decision
+
+    def _submit_transition(self, facts: BehaviorFacts, decision: BehaviorDecision) -> None:
+        key = (facts.current_behavior, decision.target, facts.behavior_version)
+        attempts, not_before = self._failed.get(key, (0, 0.0))
+        if attempts and self._monotonic() < not_before:
+            return  # 上次被拒／延後：等 backoff 後再試，避免每個 tick 都寫一筆 state_requests
+        attempt = attempts + 1
         try:
             result = self._submit(facts.current_behavior, decision.target, facts.behavior_version,
-                                  decision.reason_code)
+                                  decision.reason_code, attempt)
         except Exception:
             logger.exception("Behavior 轉換請求失敗：%s→%s", facts.current_behavior, decision.target)
             self._count("schedule.behavior.submit_error")
-            return decision
+            return
         self._count(f"schedule.behavior.submitted.{result.lower()}")
-        if result != "ACCEPTED":
-            logger.info("Behavior 轉換未被接受：%s→%s %s", facts.current_behavior, decision.target, result)
-        return decision
+        if result == "ACCEPTED":
+            self._failed.clear()  # 歸零；Behavior version 已變，舊 key 不會再出現
+            return
+        if len(self._failed) >= 64:
+            self._failed.clear()
+        self._failed[key] = (attempt, self._monotonic() + self._retry_backoff_s)
+        logger.info("Behavior 轉換未被接受：%s→%s %s（第 %d 次）", facts.current_behavior, decision.target, result,
+                    attempt)
 
     def tick_safe(self) -> BehaviorDecision | None:
-        """讀取事實或解析失敗時記 log 並不採取任何動作（fail-closed：不提請求）。"""
+        """讀取事實或解析失敗時不採取任何動作（fail-closed：不提請求）；同類錯誤 60 秒才記一次（首次帶 traceback）。"""
         try:
             return self.tick()
-        except Exception:
-            logger.exception("BehaviorDriver tick 失敗，本次不採取動作")
+        except Exception as exc:
             self._count("schedule.behavior.tick_error")
+            name = type(exc).__name__
+            now = self._monotonic()
+            last = self._error_log.get(name)
+            if last is None:
+                logger.exception("BehaviorDriver tick 失敗，本次不採取動作")
+                self._error_log[name] = now
+            elif now - last >= _ERROR_LOG_INTERVAL_S:
+                logger.warning("BehaviorDriver tick 持續失敗（%s：%s）", name, exc)
+                self._error_log[name] = now
             return None
 
     # ---- 背景迴圈 ----
@@ -171,6 +226,12 @@ class BehaviorDriver:
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
         self._wake.set()
+        cleanups, self._cleanups = self._cleanups, []
+        for fn in cleanups:
+            try:
+                fn()
+            except Exception:
+                logger.warning("BehaviorDriver 清理失敗", exc_info=True)
         thread = self._thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout)

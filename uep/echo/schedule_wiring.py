@@ -169,7 +169,11 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
 
     ``off`` 回 None。輸入事實：State 軸（Presence／Interaction／Runtime／Behavior）、全域停止旗標、
     DreamLoop 的 ``dream_status()["in_flight"]``、``rest_policy.window_at``（與做夢迴圈用同一個 policy，N4）。
-    ``has_uninterruptible_work`` 第一版固定 False（Task 層尚無可查詢介面）。shadow 只記 log／指標，不提請求。
+    ``has_uninterruptible_work`` 第一版固定 False（Task 層尚無可查詢介面；``on`` 前必須接上）。shadow 只記 log／指標，
+    不提請求。指標預設寫進 ``core.echo.metrics``（沒有就只記 log）。
+
+    ``in_rest_window``：fixed 模式用 ``FixedWindowPolicy`` 的純計算（無狀態，跨執行緒安全）；plan 模式給 None，由
+    driver 依自己這次 resolve 的 slot 判斷，不呼叫與做夢迴圈共用的 policy。
     """
     from uep.schedule.driver import BehaviorDriver, BehaviorFacts, parse_driver_mode
     from uep.state.coordinator import Axis, StateTransitionRequest
@@ -181,7 +185,11 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
         from uep.schedule.store import PlanStore
 
         reader = PlanStore(session_factory)
-    window_policy = rest_policy if rest_policy is not None else FixedWindowPolicy()
+    fixed_window = (rest_policy if isinstance(rest_policy, FixedWindowPolicy)
+                    else FixedWindowPolicy() if rest_policy is None else None)
+    if metrics_inc is None:
+        echo_metrics = getattr(getattr(core, "echo", None), "metrics", None)
+        metrics_inc = getattr(echo_metrics, "inc", None)
     state, stop, memory, bus = core.state, core.stop, getattr(core, "memory", None), getattr(core, "bus", None)
 
     def facts(now: datetime) -> Any:
@@ -195,19 +203,25 @@ def attach_behavior_driver(settings: Any, core: Any, *, session_factory: Any, re
             presence_status=presence, current_behavior=behavior.state, behavior_version=behavior.version,
             interaction_idle=state.current(Axis.INTERACTION).state == "IDLE", global_stop=bool(stop.is_engaged()),
             runtime_ready=runtime in ("READY", "DEGRADED"), dream_in_flight=in_flight,
-            in_rest_window=window_policy.window_at(now) is not None)
+            in_rest_window=None if fixed_window is None else fixed_window.window_at(now) is not None)
 
-    def submit(from_state: str, to_state: str, version: int, reason_code: str) -> str:
+    def submit(from_state: str, to_state: str, version: int, reason_code: str, attempt: int = 1) -> str:
+        # coordinator 對同一個 request_id 回放舊裁決：被拒／延後後的重試要帶遞增的嘗試序號
+        suffix = "" if attempt <= 1 else f":a{attempt}"
         decision = state.request_transition(StateTransitionRequest(
-            request_id=f"policy_behavior:{from_state}>{to_state}:v{version}", axis=Axis.BEHAVIOR.value,
+            request_id=f"policy_behavior:{from_state}>{to_state}:v{version}{suffix}", axis=Axis.BEHAVIOR.value,
             proposer="core.policy", expected_version=version, from_state=from_state, to_state=to_state,
             reason={"source": "behavior_driver", "reason_code": reason_code}))
         return decision.decision.value
 
     driver = BehaviorDriver(reader, facts, submit, mode=mode, metrics_inc=metrics_inc)
     if bus is not None:
+        def on_event(_event: Any) -> None:
+            driver.poke()
+
         for event_type in _PRESENCE_EVENTS:
-            bus.subscribe(event_type, lambda _event: driver.poke())
+            bus.subscribe(event_type, on_event)
+            driver.add_cleanup(lambda et=event_type: bus.unsubscribe(et, on_event))  # stop 時退訂
     driver.start()
     logger.info("BehaviorDriver 已啟動：mode=%s", mode)
     return driver

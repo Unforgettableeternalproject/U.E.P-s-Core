@@ -133,7 +133,10 @@ class ConsoleRuntime:
     def close(self) -> None:
         try:
             if self.behavior_driver is not None:
-                self.behavior_driver.stop()
+                try:
+                    self.behavior_driver.stop()
+                except Exception:
+                    logger.exception("BehaviorDriver 停止失敗")
             self.core.shutdown()  # 含決策日誌寫入器的關閉（排空佇列後才釋放連線）
         finally:
             engine = self.session_factory.kw.get("bind")
@@ -231,16 +234,21 @@ def build_fake_runtime(
     if start:
         try:
             core.start()
+            # PP-3b：只有 real_rig 組出的記憶 Host 才有 rest_window_policy 標記；fake 記憶不啟動 driver
+            if memory_host is not None and hasattr(memory_host, "rest_window_policy"):
+                from uep.config import get_settings
+                from uep.echo.schedule_wiring import attach_behavior_driver
+
+                runtime.behavior_driver = attach_behavior_driver(
+                    get_settings(), core, session_factory=session_factory, rest_policy=memory_host.rest_window_policy)
         except BaseException:
+            if runtime.behavior_driver is not None:
+                try:
+                    runtime.behavior_driver.stop()
+                except Exception:
+                    logger.exception("BehaviorDriver 停止失敗")
             core.shutdown()
             raise
-        # PP-3b：只有 real_rig 組出的記憶 Host 才有 rest_window_policy 標記；fake 記憶不啟動 driver
-        if memory_host is not None and hasattr(memory_host, "rest_window_policy"):
-            from uep.config import get_settings
-            from uep.echo.schedule_wiring import attach_behavior_driver
-
-            runtime.behavior_driver = attach_behavior_driver(
-                get_settings(), core, session_factory=session_factory, rest_policy=memory_host.rest_window_policy)
     return runtime
 
 

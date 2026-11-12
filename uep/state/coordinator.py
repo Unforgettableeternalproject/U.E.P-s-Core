@@ -37,7 +37,8 @@ logger = logging.getLogger("uep.state.coordinator")
 SOURCE = "core.state_coordinator"
 ACTOR = "uep:state_coordinator"
 SCOPE = "scope_private_owner"
-STATE_POLICY_VERSION = 1
+# v2＝Behavior 軸新增 REST 邊（PresencePlan 契約 §8.4）；v1＝原四態轉換表
+STATE_POLICY_VERSION = 2
 # project_event 只信任這些來源（Gateway 重建後的 source 欄位），其他來源的事件不得驅動投影
 DEFAULT_PRESENCE_SOURCES = frozenset({"core.presence"})
 DEFAULT_HEALTH_SOURCES = frozenset({"core.health", "core.health_registry"})

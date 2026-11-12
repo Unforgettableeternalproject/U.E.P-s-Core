@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -38,7 +39,7 @@ def _row_for(**request_kw) -> dict:
 
 
 def test_new_columns_are_appended_to_log_columns():
-    assert COLUMNS[-5:-1] == NEW_COLUMNS
+    assert COLUMNS[-6:-2] == NEW_COLUMNS
 
 
 def test_primary_row_fills_new_columns():
@@ -100,7 +101,7 @@ def test_shadow_row_new_columns_stay_none():
 def _legacy_rows() -> list[dict]:
     """沒有新四欄鍵的舊式列（舊 JSONL／舊 DB 版本輸出形狀）。"""
     now = datetime(2026, 11, 1, tzinfo=UTC)
-    base = dict.fromkeys(COLUMNS[:-5])
+    base = dict.fromkeys(COLUMNS[:-6])
     primary = {**base, "decision_id": "dec_p", "kind": KIND_TURN_REPLY, "created_at": now, "role": "primary",
                "outcome": "respond", "reason_code": "r", "status": "ok", "elapsed_ms": 4, "fallback": False}
     shadow = {**base, "decision_id": "dec_s", "kind": KIND_TURN_REPLY, "created_at": now + timedelta(seconds=1),
@@ -156,7 +157,7 @@ def test_migration_0014_revision_chain():
     assert rev is not None and rev.down_revision == "0013_run_supervisor_flags"
     assert callable(rev.module.upgrade) and callable(rev.module.downgrade)
     assert script.get_revision("0015_action_retry_of").down_revision == "0014_decision_log_columns"
-    assert script.get_heads() == ["0018_decision_log_platform_ctx"]
+    assert script.get_heads() == ["0019_decision_log_target"]
 
 
 def test_orm_model_has_new_columns_and_index():
@@ -230,7 +231,7 @@ def test_platform_context_version_is_last_nullable_column():
     import uep.db.models_registry  # noqa: F401
     from uep.db.base import Base
 
-    assert COLUMNS[-1] == "platform_context_version"
+    assert COLUMNS[-2] == "platform_context_version"
     col = Base.metadata.tables["decision_log"].columns["platform_context_version"]
     assert col.nullable and col.type.python_type is int
     assert not any("platform_context_version" in {c.name for c in ix.columns}
@@ -297,3 +298,102 @@ def test_db_migration_0018_roundtrip_and_sink(alembic_cfg, engine, session_facto
     finally:
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM decision_log"))
+
+
+# ---- migration 0019：target ----
+
+def test_target_is_last_nullable_column():
+    import uep.db.models_registry  # noqa: F401
+    from uep.db.base import Base
+
+    assert COLUMNS[-1] == "target"
+    col = Base.metadata.tables["decision_log"].columns["target"]
+    assert col.nullable and col.type.python_type is str
+    assert ScriptDirectory.from_config(alembic_config("postgresql://x/y_test")).get_revision(
+        "0019_decision_log_target").down_revision == "0018_decision_log_platform_ctx"
+
+
+def test_absent_intent_target_goes_to_target_column_not_reason_code():
+    from uep.decision import DecisionHub
+    from uep.decision.presence_absent_intent import (
+        AbsentIntentEngine,
+        AbsentIntentInput,
+        judge_absent_intent,
+    )
+
+    engine = AbsentIntentEngine()
+    hub = DecisionHub()
+    hub.register(engine.spec, engine)
+    inp = AbsentIntentInput(text="到 discord", source_platform="discord", actor_ref="discord:1", actor_authenticated=True)
+    result = judge_absent_intent(hub, inp, request_id="r1", ref="es:run:s:1")
+    request = DecisionRequest(request_id="r1", kind=result.kind, native=inp)
+    row = primary_row(request, result, engine.spec, 3)
+    assert row["reason_code"] == "presence_request" and row["target"] == "discord"
+    other = judge_absent_intent(hub, AbsentIntentInput(text="今天天氣不錯"), request_id="r2")
+    row2 = primary_row(request, other, engine.spec, 3)
+    assert row2["reason_code"] == "other" and row2["target"] is None
+
+
+def test_primary_row_target_null_without_placement_and_unsafe_value_dropped():
+    assert _row_for()["target"] is None
+    from uep.decision.contracts import DecisionPlacement, DecisionPlan
+
+    hub, engine, writer = _stack(_P(_mode(ReplyMode.RESPOND)))
+    try:
+        result = hub.decide(KIND_TURN_REPLY, DecisionRequest(request_id="req_t", kind=KIND_TURN_REPLY, native=_cand()))
+        spec = hub.registry.get(KIND_TURN_REPLY)
+        req = DecisionRequest(request_id="req_t", kind=KIND_TURN_REPLY, native=_cand())
+        for bad in ("Has Space", "含中文", ""):
+            r = dataclasses.replace(result, plan=DecisionPlan(placement=DecisionPlacement(target_platform=bad)))
+            assert primary_row(req, r, spec, 1)["target"] is None
+    finally:
+        engine.close()
+        writer.close()
+
+
+def test_db_migration_0019_backfill_and_roundtrip(alembic_cfg, engine, session_factory):
+    from alembic import command
+    from sqlalchemy import inspect, text
+
+    def columns():
+        return {c["name"] for c in inspect(engine).get_columns("decision_log")}
+
+    def insert(conn, did, kind, reason):
+        conn.execute(text(
+            "INSERT INTO decision_log (decision_id, kind, created_at, role, status, reason_code) "
+            "VALUES (:d, :k, now(), 'primary', 'ok', :r)"), {"d": did, "k": kind, "r": reason})
+
+    def state():
+        with engine.connect() as conn:
+            if "target" in columns():
+                q = "SELECT decision_id, reason_code, target FROM decision_log ORDER BY decision_id"
+            else:
+                q = "SELECT decision_id, reason_code, NULL FROM decision_log ORDER BY decision_id"
+            return [tuple(r) for r in conn.execute(text(q))]
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM decision_log"))
+    try:
+        command.downgrade(alembic_cfg, "0018_decision_log_platform_ctx")
+        assert "target" not in columns()
+        with engine.begin() as conn:
+            insert(conn, "dec_a", "presence.absent_intent", "presence_request.discord")
+            insert(conn, "dec_b", "presence.absent_intent", "presence_request")
+            insert(conn, "dec_c", "presence.absent_intent", "other")
+            insert(conn, "dec_d", "turn.reply", "presence_request.discord")  # 他種決策點不動
+            insert(conn, "dec_e", "presence.absent_intent", "presence_request.mars")  # 未知後綴不動
+        command.upgrade(alembic_cfg, "head")
+        assert state() == [
+            ("dec_a", "presence_request", "discord"), ("dec_b", "presence_request", None), ("dec_c", "other", None),
+            ("dec_d", "presence_request.discord", None), ("dec_e", "presence_request.mars", None),
+        ]
+        command.downgrade(alembic_cfg, "0018_decision_log_platform_ctx")
+        assert state() == [
+            ("dec_a", "presence_request.discord", None), ("dec_b", "presence_request", None), ("dec_c", "other", None),
+            ("dec_d", "presence_request.discord", None), ("dec_e", "presence_request.mars", None),
+        ]
+    finally:
+        command.upgrade(alembic_cfg, "head")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM decision_log"))
+    assert "target" in columns()

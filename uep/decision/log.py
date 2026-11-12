@@ -32,7 +32,7 @@ COLUMNS: tuple[str, ...] = (
     "decision_id", "request_id", "kind", "created_at", "role", "primary_decision_id",
     "engine", "proposer_id", "version", "outcome", "reason_code", "confidence", "elapsed_ms",
     "status", "agree", "fallback", "candidate_id", "participant_count", "addressed_hint", "utterance_refs",
-    "sub_kind", "trigger", "namespace", "snapshot_version", "platform_context_version",
+    "sub_kind", "trigger", "namespace", "snapshot_version", "platform_context_version", "target",
 )
 
 # 新增四欄只收 ID／列舉類的安全字元短字串，原文般的內容一律記 None（不存原文原則）
@@ -98,6 +98,8 @@ def primary_row(
         snapshot_version=_safe_version(request.snapshot_versions.get("policy")),
         # 選用：目前只有 loop.consult 的 placement 由注入點帶入（platform 第 5 步），其餘為 None
         platform_context_version=_safe_version(request.facts.get("platform_context_version")),
+        # 目標位置取自 plan.placement.target_platform（過安全字元檢查）；不再拼進 reason_code
+        target=_safe_token(result.plan.placement.target_platform) if result.plan.placement is not None else None,
     )
     return row
 

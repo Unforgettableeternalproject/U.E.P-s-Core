@@ -61,6 +61,7 @@ class DecisionLogRow(Base):
     namespace: Mapped[str | None] = mapped_column(String)  # 決策主體的 namespace ID
     snapshot_version: Mapped[int | None] = mapped_column(Integer)  # 決策依據的 policy 快照版本
     platform_context_version: Mapped[int | None] = mapped_column(Integer)  # 決策當下平台快照版本（migration 0018）
+    target: Mapped[str | None] = mapped_column(String)  # 決策指向的目標位置（placement.target_platform；migration 0019）
 
     __table_args__ = (
         CheckConstraint("role IN ('primary', 'shadow')", name="role"),

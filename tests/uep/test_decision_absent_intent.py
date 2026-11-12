@@ -108,7 +108,7 @@ _AUTH_WORDS = ("auth", "grant", "permit", "allow", "approv", "owner", "priority"
 def test_result_is_intent_only_and_has_no_authorization_fields():
     hub, _ = _hub()
     res = _decide(hub, "到 discord")
-    assert res.outcome == INTENT_PRESENCE_REQUEST and res.reason_code == "presence_request.discord"
+    assert res.outcome == INTENT_PRESENCE_REQUEST and res.reason_code == "presence_request"
     assert res.plan.route == "ignore" and res.plan.reply is None and res.plan.policy is None and res.plan.capability is None
     assert res.plan.placement.target_platform == "discord" and res.plan.placement.presence_intent == "request_move"
     names = {f.name for f in dataclasses.fields(AbsentIntentProposal)} | {f.name for f in dataclasses.fields(res)}

@@ -300,7 +300,6 @@ class AbsentIntentEngine:
         if validate_proposal(proposal) is not None:
             return self._fallback(request, spec.on_invalid_reason)
         is_request = proposal.intent == INTENT_PRESENCE_REQUEST
-        reason = proposal.intent if proposal.target_location is None else f"{proposal.intent}.{proposal.target_location}"
         return DecisionResult(
             decision_id=new_id("dec"), request_id=request.request_id, kind=request.kind, outcome=proposal.intent,
             plan=DecisionPlan(
@@ -309,7 +308,7 @@ class AbsentIntentEngine:
                     target_platform=proposal.target_location, presence_intent="request_move" if is_request else "none",
                 ),
             ),
-            confidence=float(proposal.confidence), reason_code=reason,
+            confidence=float(proposal.confidence), reason_code=proposal.intent,  # 目標位置在 plan.placement.target_platform，日誌另存 target 欄
             engine=DecisionEngineInfo(tier="rule" if proposal.proposer_id.startswith("rules.") else "model",
                                       id=proposal.proposer_id, version=proposal.proposer_version),
         )

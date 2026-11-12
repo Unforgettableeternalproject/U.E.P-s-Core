@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from uep.adapters.tool import CAPABILITY_CEILING
 from uep.agent.bridge import AgentToolTurns
-from uep.agent.budget import LoopBudget
+from uep.agent.budget import BudgetPolicyTable, LoopBudget, resolve_budget, tighten
 from uep.agent.loop_context import ParentSnapshot
 from uep.agent.retry import RetryPolicy
 from uep.agent.trigger import LoopTrigger
@@ -134,7 +134,7 @@ def create_loop_run(
     task = tasks.create_task(
         persona_id=persona_id, goal=trigger.goal_code, owner_actor_id=trigger.owner_actor_id, scope_ref=trigger.scope_ref,
         policy=TaskPolicy(presence_bound=False, interrupt_policy=interrupt_policy, policy_ref=trigger.policy_ref),
-        origin_ref={"kind": trigger.kind, "ref": trigger.origin_ref},
+        origin_ref={"kind": trigger.kind, "ref": trigger.origin_ref, "route": trigger.route},
     )
     try:
         extra = {} if run_deadline is None else {"run_deadline": run_deadline}  # 沒給期限就維持原呼叫形狀
@@ -163,6 +163,9 @@ _DELIVERY_UNCERTAIN = {
 LOOP_PARKED_REASON = "loop_parked_awaiting_approval"
 # loop 失敗時給使用者的固定系統訊息：不經 LLM、不以角色身分發出，只說這次處理失敗（不得編出看似成功的回答）
 LOOP_FAILURE_TEXT = "這次處理失敗了，沒有產生回覆。"
+# 三段門檻的固定系統訊息（BG-7：程式常數、不經 LLM、origin=SYSTEM、不進 plan 與日誌）
+BUDGET_NOTICE_TEXT = "這件事花得比預期多，我還在處理，再多一點就會停下來。"
+BUDGET_ABORT_TEXT = "這件事花太多時間和資源，我先停下來了，下面是目前已經取得的部分結果。"
 DEFAULT_MAX_CONCURRENT_LOOPS = 4
 DEFAULT_CLOSE_TIMEOUT_S = 5.0
 FALLBACK_RUN_DEADLINE_S = 600.0  # 自訂預算沒有牆鐘上限時，Supervisor 收尾期限用的保底值
@@ -223,6 +226,7 @@ class _RunCtx:
     delivered: bool = False  # 角色回覆已確實交付（Gate 放行且端點收下）
     delivery_uncertain: str | None = None  # 送出結果不確定時的 reason_code：不補發失敗訊息（避免使用者看到兩則）
     cancel_requested: bool = False  # 心跳讀到 Supervisor 的取消旗標（SV-2）
+    budget: Any = None  # 此 Run 的有效預算（建立時凍結；park／resume 沿用）
     text: str = ""
     resumed: bool = False  # 核准後續跑的 Run：原 turn 已結束，取消判定不看 turn 終結狀態，結果不再經 Output Gate
 
@@ -235,6 +239,7 @@ class ParkedLoop:
     task_id: str
     trigger: LoopTrigger
     parent_id: str
+    budget: Any = None  # 凍結的有效預算（resume 沿用；重新解析更緊時取 min）
 
 
 class LoopResumeRefused(RuntimeError):
@@ -271,7 +276,7 @@ class LoopLauncher:
         max_concurrent: int | None = None, close_timeout_s: float | None = None,
         executors: Mapping[str, Any] | None = None, platform_source: Callable[[], str | None] | None = None,
         memory_store: Callable[[Any, TurnEndFacts], None] | None = None, retry: RetryPolicy | None = None,
-        step_timeout_s: float | None = None,
+        step_timeout_s: float | None = None, budget_policies: BudgetPolicyTable | None = None,
     ) -> None:
         self._retry = retry  # None = 不自動重試（組裝層依 UEP_AGENT_* 傳入）
         # 記憶寫入（與 direct_chat 同一條路徑：Host 的 ``store_turn_memory``）；None = 不寫（例如未接記憶的組裝）
@@ -303,6 +308,7 @@ class LoopLauncher:
         self._budget = budget or LoopBudget(run_deadline_s=300.0)
         if step_timeout_s is not None:  # 組裝層依 UEP_AGENT_STEP_TIMEOUT_S 套進預算（其餘欄位沿用）
             self._budget = dataclasses.replace(self._budget, step_timeout_s=step_timeout_s)
+        self._budget_policies = budget_policies  # None = 不查政策表，所有 Run 用上面的預設預算（與先前相同）
         self._system_text = system_text
         self._max = max_concurrent
         self._close_timeout_s = DEFAULT_CLOSE_TIMEOUT_S if close_timeout_s is None else close_timeout_s
@@ -328,14 +334,15 @@ class LoopLauncher:
             capability_set = self._registry.project(trigger.capability_tags, self._projection_context(ticket))
             if not capability_set["tools"]:
                 raise LoopLaunchRefused("capability_projection_empty")  # 例如全部 warming：不啟動，回 direct_chat
+            effective = self._effective_budget(trigger)
             task, run = create_loop_run(
                 self._tasks, trigger, persona_id=self._persona_id, persona_version=self._persona_version,
-                policy_version=self._policy_version, run_deadline=self._run_deadline(),
+                policy_version=self._policy_version, run_deadline=self._run_deadline(effective),
             )
         except BaseException:
             self._release()
             raise
-        ctx = _RunCtx(ticket, task.task_id, run)
+        ctx = _RunCtx(ticket, task.task_id, run, budget=effective)
         thread = threading.Thread(
             target=self._work, args=(trigger, ctx), name=f"uep-agent-loop-{ticket.turn_id}", daemon=True,
         )
@@ -350,15 +357,25 @@ class LoopLauncher:
             raise
         return run
 
-    def _run_deadline(self) -> datetime:
-        seconds = self._budget.run_deadline_s if self._budget.run_deadline_s is not None else FALLBACK_RUN_DEADLINE_S
+    def _effective_budget(self, trigger: LoopTrigger) -> LoopBudget:
+        """Run 的有效預算：政策表（查不到退回預設）∩ trigger 的 cap，只收窄。Run 建立時凍結。"""
+        request = trigger.budget
+        return resolve_budget(
+            self._budget_policies, self._budget, policy_ref=trigger.policy_ref, route=trigger.route,
+            tier=request.tier if request is not None else None, cap=request.cap if request is not None else None,
+            metrics=getattr(self._orchestrator, "metrics", None),
+        )
+
+    def _run_deadline(self, budget: LoopBudget | None = None) -> datetime:
+        budget = budget or self._budget
+        seconds = budget.run_deadline_s if budget.run_deadline_s is not None else FALLBACK_RUN_DEADLINE_S
         return datetime.now(UTC) + timedelta(seconds=seconds) + self._deadline_grace
 
     def _heartbeat(self, ctx: _RunCtx, stop: threading.Event) -> None:
         """背景心跳：等模型回應期間迴圈不會送心跳，Supervisor 的 stale 判定（T-12）需要它。間隔取預算的心跳間隔與
         ``heartbeat_stale_after`` 的三分之一的較小者。worker 結束（或被 force、epoch 變了）就停；讀到取消旗標就通知迴圈。"""
         stale = getattr(self._tasks, "heartbeat_stale_after", timedelta(seconds=60))
-        interval = max(0.05, min(self._budget.heartbeat_interval_s, stale.total_seconds() / 3))
+        interval = max(0.05, min((ctx.budget or self._budget).heartbeat_interval_s, stale.total_seconds() / 3))
         while not stop.wait(interval) and not self._closing.is_set():
             try:
                 signal = self._tasks.heartbeat(ctx.run.run_id, worker_epoch=ctx.run.worker_epoch)
@@ -436,7 +453,7 @@ class LoopLauncher:
             parked = facts.reason_code == LOOP_PARKED_REASON and facts.status == "failed"
             if parked:  # park 不是終態：保留 child／parent 暫存與回合結果暫存，核准後由 ``resume`` 接手
                 self._parked[run.run_id] = ParkedLoop(
-                    ticket, ctx.task_id, trigger, ticket.conversation_id or ticket.segment_id,
+                    ticket, ctx.task_id, trigger, ticket.conversation_id or ticket.segment_id, ctx.budget,
                 )
         except Exception:
             logger.exception("AgentLoop 收尾失敗：turn=%s", turn_id)
@@ -491,7 +508,8 @@ class LoopLauncher:
             return TurnEndFacts(status="failed", reason_code=LOOP_PARKED_REASON)
         if ctx.delivery_uncertain is not None:
             return TurnEndFacts(status="failed", reason_code=ctx.delivery_uncertain)  # 可能已送達：不再補發
-        self._notify_failure(ctx)
+        if not getattr(outcome, "partial", False):  # 預算中斷已由 abort 通知送出固定訊息，不再補發一則
+            self._notify_failure(ctx)
         return TurnEndFacts(status="failed", reason_code=reason)
 
     def _settle(self, ctx: _RunCtx, *, ok: bool, reason: str) -> None:
@@ -547,7 +565,8 @@ class LoopLauncher:
         return AgentLoop(
             runtime=ModelPortRuntime(self._port, snapshots.take, continue_after_tools=True, max_rounds=50),
             tasks=self._tasks, gateway=ToolGateway(registry), registry=registry, store=self._store, projector=projector,
-            budget=self._budget, worker_epoch=run.worker_epoch, snapshots=snapshots,
+            budget=ctx.budget or self._budget, worker_epoch=run.worker_epoch, snapshots=snapshots,
+            on_budget=lambda kind: self._on_budget(ctx, kind),
             injected={"actor_id": ticket.actor_id, "audience": ticket.audience_scope, "segment_id": ticket.segment_id},
             cancelled=(
                 (lambda: ctx.cancel_requested or self._closing.is_set()) if ctx.resumed
@@ -610,7 +629,12 @@ class LoopLauncher:
         except Exception as exc:
             self._release()
             raise LoopResumeRefused(f"Manager 拒絕接手：{type(exc).__name__}：{exc}") from exc
-        ctx = _RunCtx(entry.ticket, entry.task_id, plan.run, resumed=True)
+        frozen = entry.budget or self._budget
+        try:
+            frozen = tighten(frozen, self._effective_budget(entry.trigger))  # 沿用凍結值；重新解析更緊時取 min（只收窄）
+        except ValueError:
+            logger.warning("resume 預算收窄失敗，沿用凍結值：run=%s", run_id)
+        ctx = _RunCtx(entry.ticket, entry.task_id, plan.run, resumed=True, budget=frozen)
         future: Future[LoopResumeResult] = Future()
         thread = threading.Thread(
             target=self._work_resume, args=(entry, ctx, dict(plan.checkpoint or {}), dict(approvals or {}), future),
@@ -656,6 +680,21 @@ class LoopLauncher:
                 self._release()
                 self._forget(threading.current_thread())
                 future.set_result(LoopResumeResult(run_id, state, ctx.text, None if code is None else str(code)))
+
+    def _on_budget(self, ctx: _RunCtx, kind: str) -> None:
+        """三段門檻的通知：warn 只記錄（metric＋log）；notice／abort 送一次固定的 SYSTEM_NOTICE（經 Output Gate，
+        不設 ``delivered``；送出結果不確定也不補發）。"""
+        metrics = getattr(self._orchestrator, "metrics", None)
+        if metrics is not None:
+            metrics[f"budget.{kind}"] += 1
+        if kind == "warn":
+            logger.info("預算 warn：run=%s", ctx.run.run_id)
+            return
+        text = BUDGET_NOTICE_TEXT if kind == "notice" else BUDGET_ABORT_TEXT
+        try:
+            self._dispatch(ctx, text, kind=OutputKind.SYSTEM_NOTICE, origin=OutputOrigin.SYSTEM)
+        except Exception:
+            logger.exception("預算%s訊息交付失敗：turn=%s", kind, ctx.ticket.turn_id)
 
     def _notify_failure(self, ctx: _RunCtx) -> None:
         """失敗時給使用者的固定系統訊息：經同一條 Output Gate；origin=system，不是角色發言，也不編造看似成功的回答。"""

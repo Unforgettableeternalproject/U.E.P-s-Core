@@ -33,12 +33,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 
-from uep.adapters.runtime import Runtime, RuntimeRequest
+from uep.adapters.runtime import BUDGET_HINT_CONVERGE, Runtime, RuntimeRequest
 from uep.agent.budget import (
     STATUS_APPROVAL_PENDING,
     BudgetCounters,
     LoopBudget,
+    budget_stage,
     exhausted,
+    hard_budget,
     observe_call,
     observe_resumed,
 )
@@ -139,6 +141,7 @@ class LoopOutcome:
     tool_calls: int = 0
     pending_action_ids: tuple[str, ...] = ()
     delivered: bool = False
+    partial: bool = False  # 三段門檻的中斷點收尾：Run 已 FAILED，``text`` 是部分結果（收束步驟的文字或確定性彙整）
 
     def __post_init__(self) -> None:
         if self.reason_code is not None:
@@ -208,6 +211,8 @@ class _State:
     deadline_flag: LoopReason | None = None  # 心跳讀到 Supervisor 的 deadline 取消旗標（F-4）：下一次 gate 自行收尾
     pump: EventPump | None = None  # 目前 attempt 的事件拉取執行緒（有 step_timeout_s 時才建立）
     model_retry_streak: int = 0  # 連續模型呼叫重試次數（不進 checkpoint；推進成功即歸零）
+    budget_stage: int = 0  # 已觸發的門檻階段（0..2）；不進 checkpoint，resume 由計數器推回，不重送
+    budget_hint: str | None = None
 
 
 @dataclass
@@ -273,7 +278,11 @@ class AgentLoop:
         executors: Mapping[str, Any] | None = None, cancel_timeout_s: float = 5.0, cancel_grace_s: float = 2.0,
         step_output: Callable[[str], Mapping[str, Any] | None] | None = None,
         retry: RetryPolicy | None = None, sleep: Callable[[float], None] = time.sleep,
+        on_budget: Callable[[str], None] | None = None,
     ) -> None:
+        # 三段門檻的通知回呼（``warn``／``notice``／``abort``）；由 launcher 負責固定訊息與 metric
+        self._on_budget = on_budget
+        self._hard = hard_budget(budget)  # 中斷點當硬上限（未啟用三段門檻時就是 budget 本身）
         # 重試政策（預設全關）與退避用的 sleep（測試可注入）；見 ``uep.agent.retry``
         self._retry = retry or RetryPolicy()
         self._sleep = sleep
@@ -517,10 +526,12 @@ class AgentLoop:
 
     def _new_state(self, run_id, trigger, parent_id, cap, frozen, tags, transcript, child_ref, counters) -> _State:
         now = self._clock()
+        stage = min(budget_stage(self._budget, counters), 2)  # resume：已經過的階段視為已觸發
         return _State(
             run_id=run_id, trigger=trigger, parent_id=parent_id, frozen_tools=dict(frozen), frozen_tags=frozenset(tags),
             cap=cap, transcript=list(transcript), child_ref=child_ref, counters=counters, seg_start=now,
-            base_elapsed=counters.elapsed_s, last_hb=now,
+            base_elapsed=counters.elapsed_s, last_hb=now, budget_stage=stage,
+            budget_hint=BUDGET_HINT_CONVERGE if stage >= 1 else None,
         )
 
     def _elapsed(self, st: _State) -> float:
@@ -732,7 +743,8 @@ class AgentLoop:
             if parked is not None:
                 return parked
         while True:
-            dim = exhausted(self._budget, st.counters, elapsed_s=self._elapsed(st))
+            self._check_stages(st)
+            dim = exhausted(self._hard, st.counters, elapsed_s=self._elapsed(st))
             if dim is not None:
                 end = _End("exhausted", dim=dim)
             else:
@@ -757,6 +769,8 @@ class AgentLoop:
         if end.kind == "escalate":
             return self._escalate(st, end)
         if end.kind == "exhausted":
+            if self._budget.thresholds.enabled and end.dim in ("steps", "tokens"):
+                return self._abort(st, end.dim)  # 三段門檻的中斷點：FAILED(budget_exhausted)＋partial
             by_consult = end.dim == "consult"  # 中樞建議 finalize：不是預算耗盡
             if end.dim != "run_deadline" and self._budget.finalize_on_exhausted:
                 final = self._run_attempt(st, {"tools": []}, finalize=True)
@@ -768,6 +782,58 @@ class AgentLoop:
                 return self._finish(st, "failed", LoopReason.FINALIZE_FAILED)
             return self._finish(st, "failed", LoopReason.BUDGET_EXHAUSTED, detail=end.dim)
         return self._finish(st, "failed", LoopReason(end.reason or LoopReason.NO_PROGRESS))
+
+    def _notify_budget(self, kind: str) -> None:
+        if self._on_budget is None:
+            return
+        try:
+            self._on_budget(kind)
+        except Exception:
+            logger.exception("預算門檻通知失敗：kind=%s", kind)
+
+    def _check_stages(self, st: _State) -> bool:
+        """Step 邊界的 warn／notice 階段：每階段每個 Run 至多觸發一次（abort 由 ``exhausted`` 與 ``_abort`` 處理）。
+        回傳這次是否有新階段觸發。"""
+        if not self._budget.thresholds.enabled:
+            return False
+        target = min(budget_stage(self._budget, st.counters), 2)
+        fired = False
+        while st.budget_stage < target:
+            st.budget_stage += 1
+            kind = "warn" if st.budget_stage == 1 else "notice"
+            if kind == "warn":
+                st.budget_hint = BUDGET_HINT_CONVERGE
+            logger.warning("預算門檻 %s：run=%s steps=%d tokens=%d", kind, st.run_id, st.counters.steps, st.counters.tokens)
+            self._notify_budget(kind)
+            fired = True
+        return fired
+
+    def _abort(self, st: _State, dim: str) -> LoopOutcome:
+        """中斷點（abort）：不再呼叫工具；允許一個 ``tools=[]`` 的收束 Step（受 ``step_timeout_s`` 約束，用量可超出一步）；
+        收束失敗則以已完成工具結果確定性彙整（不經模型）。Run 終態 ``FAILED(budget_exhausted)``，一律標 ``partial``；
+        部分結果在終態寫入之後才經 ``deliver_result`` 交付（``_finish`` 的 FAILED 路徑本身不送文字）。"""
+        self._notify_budget("abort")
+        final = self._run_attempt(st, {"tools": []}, finalize=True)
+        if final.kind == "result" and final.text.strip():
+            text = final.text
+            st.transcript.append(ChatMessage("assistant", text))
+        else:
+            text = self._partial_summary(st)
+        outcome = self._finish(st, "failed", LoopReason.BUDGET_EXHAUSTED, detail=dim)
+        delivered = bool(text) and self._deliver_result is not None and bool(self._deliver_result(text))
+        return dataclasses.replace(outcome, text=text, partial=True, delivered=delivered)
+
+    @staticmethod
+    def _partial_summary(st: _State) -> str:
+        """已成功的工具結果的確定性彙整（只用 history 內已有的結果文字，不編造）。"""
+        names: dict[str, str] = {}
+        lines: list[str] = []
+        for m in st.transcript:
+            if m.role == "assistant":
+                names.update({str(c["id"]): str(c["name"]) for c in m.tool_calls})
+            elif m.role == "tool" and not m.content.startswith("tool "):
+                lines.append(f"- {names.get(str(m.tool_call_id), '工具')}：{m.content[:200]}")
+        return ("已取得的部分結果：\n" + "\n".join(lines))[:2000] if lines else ""
 
     def _park(self, st: _State) -> None:
         """park 出口（checkpoint 已寫入之後）：``park_run`` 釋放 worker，再 mark_parked。回傳的 Run 若已不是本 epoch
@@ -795,6 +861,7 @@ class AgentLoop:
                     goal_code=origin.goal_code, capability_tags=origin.capability_tags,  # 只帶原本凍結的標籤，不擴大
                     scope_ref=origin.scope_ref, owner_actor_id=origin.owner_actor_id, policy_ref=origin.policy_ref,
                     snapshot_ref=origin.snapshot_ref, plan_ref=origin.plan_ref,
+                    route=origin.route, budget=origin.budget,  # 複製原預算請求，不得改回預設而變寬（BG-1）
                 ),
             )
             try:
@@ -904,6 +971,7 @@ class AgentLoop:
         request = RuntimeRequest(
             run_id=st.run_id, attempt_id=attempt_id, snapshot_ref=ref, capability_set=cap,
             cancel_scope={"task_run": st.run_id}, deadline=datetime.now(UTC) + timedelta(minutes=30), mode="agent_loop",
+            budget_hint=st.budget_hint,
         )
         self._runtime.start(request)
         st.attempt_id = attempt_id
@@ -997,16 +1065,20 @@ class AgentLoop:
                 if end is not None:
                     return end
                 st.model_retry_streak = 0  # 批次已提交（history 與 checkpoint 已寫）：重試的起點前進了
-                dim = exhausted(self._budget, st.counters, elapsed_s=self._elapsed(st))
+                fired = self._check_stages(st)
+                dim = exhausted(self._hard, st.counters, elapsed_s=self._elapsed(st))
                 if dim is not None:
                     self._runtime.cancel(attempt_id, "budget_exhausted")
                     return _End("exhausted", dim=dim)
+                if fired:  # 剛過 warn／notice：以帶 budget_hint 的新 attempt 繼續（hint 從下一個 Step 起生效）
+                    self._runtime.cancel(attempt_id, "budget_hint")
+                    return _End("restart", cap=cap)
                 if self._active_consult_due(st, cap):
                     active = self._active_consult(st, cap)
                     if active is not None:
                         self._runtime.cancel(attempt_id, active.reason or active.dim or active.kind)
                         return active
-                    dim = exhausted(self._budget, st.counters, elapsed_s=self._elapsed(st))  # consult 也消耗步數
+                    dim = exhausted(self._hard, st.counters, elapsed_s=self._elapsed(st))  # consult 也消耗步數
                     if dim is not None:
                         self._runtime.cancel(attempt_id, "budget_exhausted")
                         return _End("exhausted", dim=dim)

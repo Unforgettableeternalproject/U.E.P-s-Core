@@ -66,7 +66,7 @@ def test_assistant_offer_of_physical_action_adds_device_control() -> None:
 
 
 def test_random_capability_lists_never_drop_needed_or_query_and_keep_labels() -> None:
-    rows = [_row(f"synthetic-en-turn.reply-{i:05d}", f"Yuki, send Dana a text number {i}.") for i in range(300)]
+    rows = [_row(f"unit-{i:05d}", f"Yuki, send Dana a text number {i}.") for i in range(300)]
     out, stats = cap.apply_capabilities(rows)
     assert stats["random_device"] > 0 and stats["random_drop"] > 0
     for r in out:

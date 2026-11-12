@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+from collections import OrderedDict
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,7 @@ from uep.decision.log import DecisionLogWriter
 from uep.decision.policy_publish import KIND_POLICY_SNAPSHOT, register_policy_publish
 from uep.echo.host import EchoPipelineHost
 from uep.echo.policy import CAUSE_TTL_REFRESH, HostPolicySource
+from uep.echo.resume_return import ResumePending
 from uep.turn.aggregator import PassThroughAggregator
 from uep.turn.engagement import ChannelMode
 
@@ -57,6 +60,12 @@ def clock(monkeypatch):
 def make_host(clock, *, ttl=TTL, ticks=1, on_tick=None, on_sync=None, ticking=True):
     """不經 __init__ 的最小 Host：只放 _tick_loop／_refresh_policy_if_due 用到的欄位。"""
     host = object.__new__(EchoPipelineHost)
+    # 續跑回覆的 pending 佇列（R2）：_tick_loop 與 _finish_turn 會讀它，不經 __init__ 時要補上空的欄位
+    host._resume_lock = threading.Lock()
+    host._resume_flush_lock = threading.Lock()
+    host._resume_flush_queued = False
+    host._resume_settled = OrderedDict()
+    host._resume_pending = ResumePending(ttl_s=1800.0, max_items=8)
     host.policy = HostPolicySource("website", ttl_s=ttl)
     host._session = _Ctx()
     host._tick_stop = StopAfter(ticks)

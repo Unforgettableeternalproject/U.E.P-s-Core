@@ -232,7 +232,9 @@ def test_console_park_then_approve_resumes_and_executes_the_side_effect_once(ses
         out.lines.clear()
         console.execute(f"/approve {action.action_id}")
         assert out.lines[0].startswith("已記錄核准 appr_")
-        assert f"續跑結果：Run {action.run_id}：completed" in out.lines and "回應（續跑）：核准後完成。" in out.lines
+        assert f"續跑結果：Run {action.run_id}：completed" in out.lines
+        # 結果經 Host 入口與 Gate 送出（端點渲染），Console 只印處置、不再重印「回應（續跑）」
+        assert "回覆處置：delivered" in out.lines and "回應（續跑）：核准後完成。" not in out.lines
         assert any(
             line.startswith(f"Run {action.run_id}：SUCCEEDED") and f"{TOOL_APPROVAL_ECHO}[SUCCEEDED]" in line
             for line in out.lines
@@ -403,7 +405,8 @@ def test_console_composite_park_then_approve_resumes_the_sub_step_once(session_f
         out.lines.clear()
         console.execute(f"/approve {ask.action_id}")
         assert out.lines[0].startswith("已記錄核准 appr_")
-        assert f"續跑結果：Run {ask.run_id}：completed" in out.lines and "回應（續跑）：composite 核准後完成。" in out.lines
+        assert f"續跑結果：Run {ask.run_id}：completed" in out.lines
+        assert "回覆處置：delivered" in out.lines and "回應（續跑）：composite 核准後完成。" not in out.lines
         assert _kit(rt).executions == [echo.action_id, ask.action_id]  # echo 沒有重播
         with rt.session_factory() as s:
             assert s.get(RunRow, ask.run_id).status == RunStatus.SUCCEEDED.value

@@ -289,3 +289,20 @@ def test_abandon_sink_receives_is_owner_from_identity_mapping_on_both_paths():
     ]
     assert owners == [True, False, True, False]
     assert all(not hasattr(s, "is_owner") for s in got)
+
+
+def test_abandon_source_platform_uses_declared_source_on_both_paths():
+    """兩條路徑同一規則：以輸入宣告的 source_location 為準（Presence 詞彙）；turn 未宣告才退回 session 平台；未宣告來源回 None。"""
+    import dataclasses
+
+    judged: list = []
+    orch = _wired(_orch(Capture(), on_abandon_signal=_owner_sink([])), judged)
+    ctx = dataclasses.replace(CTX, platform="website")  # session 平台刻意與 Host（desktop）不同
+    orch.on_utterance(ctx, UtteranceFact(
+        speaker_ref=OWNER, text="放棄", seq=1, source_location=PresenceLocation.DESKTOP, source_endpoint_id="ep"))
+    orch.on_utterance(ctx, UtteranceFact(speaker_ref=OWNER, text="放棄", seq=2, source_endpoint_id="ep"))
+    _absent(orch)
+    assert [(j["path"], j["source_platform"]) for j in judged] == [
+        ("turn", "desktop"), ("turn", "website"), ("absent", "discord"),
+    ]
+    assert TurnOrchestrator._fact_platform(UtteranceFact(speaker_ref=OWNER, text="x", seq=1)) is None

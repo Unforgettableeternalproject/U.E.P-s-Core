@@ -630,6 +630,15 @@ class TurnOrchestrator:
             self.metrics["intake.presence_request_sink_error"] += 1
             logger.exception("on_presence_request sink 失敗（已吞掉，不影響回合）")
 
+    @staticmethod
+    def _fact_platform(fact: UtteranceFact) -> str | None:
+        """輸入宣告的來源平台（Presence location 詞彙，如 desktop／discord／website）；未宣告或不在閉集回 None。
+        放棄訊號的 ``source_platform`` 兩條路徑共用此規則。"""
+        source = fact.source_location
+        if isinstance(source, PresenceLocation):
+            return source.value
+        return None
+
     def _judge_abandon(
         self, *, text: str, utterance_id: str, actor_ref: str, actor_authenticated: bool, source_platform: str, path: str,
     ) -> Any | None:
@@ -714,7 +723,7 @@ class TurnOrchestrator:
         except Exception:
             logger.exception("缺席端輸入 shadow 紀錄寫入失敗")
         self._notify_presence_request(proposal, fact, actor_id, actor_authenticated, is_owner)
-        source = str(fact.source_location) if fact.source_location is not None else "missing"
+        source = self._fact_platform(fact) or "missing"  # 來源未宣告或無效：fail-closed，不退回 session 平台
         self._emit_abandon(fact.text, ref, actor_id, actor_authenticated, source, "absent", is_owner == "true")  # ref＝es:<run>:<session>:<seq>
 
     def _decide_turn(self, ctx: SessionContext, turn: AggregatedTurn) -> IntakeResult:
@@ -737,7 +746,9 @@ class TurnOrchestrator:
             # 桌面輸入若沒有 source_endpoint_id 就不會觸發，這是預期行為（fail-closed）
             authenticated = bool(ident.actor_id is not None and fact.source_endpoint_id is not None)
             uid = f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}"
-            self._emit_abandon(fact.text, uid, actor_id, authenticated, ctx.platform, "turn", not ident.guest)
+            # 與缺席路徑同一規則：以輸入宣告的來源為準；turn 路徑未宣告來源時才退回 session 平台
+            platform = self._fact_platform(fact) or ctx.platform
+            self._emit_abandon(fact.text, uid, actor_id, authenticated, platform, "turn", not ident.guest)
         candidate = self._candidate(ctx, fact, turn.refs or (intake.event_id,), len(turn.segments), True)
         proposal = self._propose(candidate)
         degraded: Degraded | None = None

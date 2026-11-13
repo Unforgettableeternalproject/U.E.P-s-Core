@@ -158,12 +158,15 @@ def arbitrate_request(
             return _reject(R_LOWER_THAN_OVERRIDE, band)
     else:
         if _is_work(slot):
+            # 工作格規則（§9.1）：「回主機」＝放棄工作，只受理 owner 的明示放棄；
+            # owner 叫她去別處是臨時指示（形成 override），不在此拒絕，交給後續安全點／狀態判定；
+            # member／system（非緊急）目前維持不受理（待裁決）；系統緊急在上方已處理。
             if request.explicit_abandon and request.authority == "owner":
                 if not leave:
                     return _reject(R_ABANDON_REQUIRES_HOST, band)
                 abandon = True
-            else:
-                return _reject(R_WORK_IN_PROGRESS, band)  # WORK（含 pause）只受理明示放棄（owner）與系統緊急
+            elif leave or request.authority != "owner":
+                return _reject(R_WORK_IN_PROGRESS, band)
         elif (slot.activity_kind == ActivityKind.SOCIAL or slot.source == PlanSource.REST_WINDOW) \
                 and request.authority == "member":
             return _reject(R_MEMBER_NOT_ACCEPTED, band)  # SOCIAL／SLEEP 時段保守：只受理 owner 與系統

@@ -120,7 +120,7 @@ def test_authorization_rejections_come_before_deferral_and_queueing():
     busy = PresenceReading("NONE", None, transfer_active=True)
     work = slot_at(9, 30)
     for presence in (recovering, busy):
-        assert decide(req("owner", "discord"), work, presence, now=tpe(9, 30)).reason_code == ar.R_WORK_IN_PROGRESS
+        assert decide(req("owner", "host"), work, presence, now=tpe(9, 30)).reason_code == ar.R_WORK_IN_PROGRESS
         assert decide(req("member", "desktop"), slot_at(11, 30), presence).reason_code == ar.R_MEMBER_NOT_ACCEPTED
     owner_ov = OverrideView("povr_1", "desktop", ActivityKind.WORK, tpe(8), tpe(23), tpe(0, d=13), "active", "r0",
                             "owner", 200)

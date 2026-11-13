@@ -105,10 +105,28 @@ def test_standby_slots_accept_by_priority_including_member():
             assert (d.override_action, d.transfer_target, d.override_location) == ("begin", "desktop", "desktop")
 
 
+def test_work_slot_owner_temporary_instruction_becomes_override():  # §9.1：owner 的臨時指示在工作格可受理
+    work = slot_at(9, 30)
+    for target in ("discord", "desktop", "website"):
+        d = decide(req("owner", target), work, at("desktop" if target != "desktop" else "discord"))
+        assert (d.outcome, d.reason_code, d.priority) == ("ACCEPTED_TRANSFER", ar.R_ACCEPTED, 200)
+        assert (d.override_action, d.transfer_target, d.override_location) == ("begin", target, target)
+    # 目標與目前位置相同但行程在別處：不需移轉，仍建立 override
+    d = decide(req("owner", "desktop"), work, at("desktop"))
+    assert (d.override_action, d.transfer_target, d.override_location) == ("begin", None, "desktop")
+    # 不可中斷工作仍要等；Presence 不明／移轉中沿用既有狀態類結果
+    blocked = decide(req("owner", "discord"), work, at("desktop"), probe=InterruptFacts(has_uninterruptible_work=True))
+    assert (blocked.outcome, blocked.reason_code) == ("DEFERRED", ar.R_UNINTERRUPTIBLE_WORK)
+    assert decide(req("owner", "discord"), work, PresenceReading("RECOVERING", None)).outcome == "DEFERRED"
+    assert decide(req("owner", "discord"), work, PresenceReading("NONE", None, transfer_active=True)).outcome == "QUEUED"
+    # 已在目標且行程也在目標：不需要 override
+    assert decide(req("owner", "discord"), work, at("discord")).reason_code == ar.R_ALREADY_AT_TARGET
+
+
 def test_work_accepts_only_explicit_abandon_and_emergency():  # PP-18／PP-20
     work = slot_at(9, 30)
+    # member／system 在工作格的臨時指示待裁決，這裡不鎖定
     for authority in ("owner", "system", "member"):
-        assert decide(req(authority, "discord"), work).reason_code == ar.R_WORK_IN_PROGRESS
         assert decide(req(authority, "host"), work).reason_code == ar.R_WORK_IN_PROGRESS  # 回主機不是臨時指示（PP-17）
     paused = slot_at(9, 30, marks=[SlotMark("pause", "work", tpe(9), tpe(9, 10))])
     assert paused.slot_state == "paused"

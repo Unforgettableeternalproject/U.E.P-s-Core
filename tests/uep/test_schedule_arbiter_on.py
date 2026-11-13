@@ -220,9 +220,14 @@ def test_other_accepted_decisions_are_never_executed():
     assert events.log == [("arbitration_decided", "request", "r-1", "ACCEPTED_TRANSFER", "begin", False,
                            "transfer_not_implemented")]
     rejected, m3, e3 = arbiter((WORK,), PresenceReading("ACTIVE", "discord"), now=tpe(9, 30))
-    request(rejected, proposal(target="desktop"))
+    request(rejected, proposal(target="host"))  # 工作格回主機未明示放棄 -> 拒絕
     assert e3.log == [("arbitration_decided", "request", "r-1", "REJECTED", "none", False, "not_accepted")]
     assert m3.calls == []
+    accepted, m4, e4 = arbiter((WORK,), PresenceReading("ACTIVE", "discord"), now=tpe(9, 30))
+    request(accepted, proposal(target="desktop"))  # 工作格 owner 臨時指示 -> 受理但不執行
+    assert e4.log == [("arbitration_decided", "request", "r-1", "ACCEPTED_TRANSFER", "begin", False,
+                       "transfer_not_implemented")]
+    assert m4.calls == []
 
 
 def test_mark_write_failure_is_reported_not_raised():

@@ -363,6 +363,11 @@ class PresenceArbiterShadow:
                     self._count(f"{_METRIC}.judge_now.skipped")
                     return None
             override = self._override_fn() if self._override_fn is not None else None
+            if override is None and arbiter._is_work(slot):
+                # judge_now 問的是「她是不是在工作」（回合忙碌註記），不是移轉請求：工作格以「回主機」探測
+                # （未明示放棄＝work_in_progress）。仲裁器對 owner 的臨時指示（去別處）改為受理，
+                # 若照發話平台／行程位置判，會變成 ACCEPTED／already_at_target 而丟失「她在工作中」
+                target = PRESENCE_TARGET_HOST
             decision = arbiter.arbitrate_request(
                 ArbiterRequest(request_id=f"judge_now:{self._seq}", authority="owner", requester_ref=actor_ref,
                                actor_authenticated=True, target=target, received_seq=self._seq),

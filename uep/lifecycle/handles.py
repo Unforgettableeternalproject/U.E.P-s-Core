@@ -8,7 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
-ProbeResult = Literal["ok", "degraded", "dead"]
+# "warming"（PR-4）：僅觀測型 handle 使用——持有者尚在載入中（要能和失敗區分）；coordinator 對觀測模組轉／維持 warming，
+# 不燒重試次數、不判 failed；對可載入的 handle 視同 "ok"。
+ProbeResult = Literal["ok", "degraded", "dead", "warming"]
 
 
 class ObservationOnlyError(RuntimeError):

@@ -149,6 +149,7 @@ class BoundaryTranslator:
         self.metrics: Counter[str] = Counter()
         self._backend: MtBackend | None = None
         self._load_error: str | None = None
+        self._cpu_fallback_used = False
         self._ready = threading.Event()
         self._start_lock = threading.Lock()
         self._started = False
@@ -200,6 +201,16 @@ class BoundaryTranslator:
     def available(self) -> bool:
         return self._backend is not None
 
+    @property
+    def load_error(self) -> str | None:
+        """載入失敗的例外類別名（None = 尚未失敗）；module coordinator 的觀測 handle 用它區分「載入中」與「失敗」。"""
+        return self._load_error
+
+    @property
+    def cpu_fallback_used(self) -> bool:
+        """GPU 載入失敗後已改用 cpu（觀測 handle 以 degraded 表達）。"""
+        return self._cpu_fallback_used
+
     def _build_and_warm(self, device: str) -> MtBackend:
         backend = self._factory(device)
         for sentence in self._warmup_sentences:  # 假推論讓 CUDA 冷啟動在 warmup 內發生
@@ -214,6 +225,7 @@ class BoundaryTranslator:
                 if self._cpu_fallback and self._device != "cpu" and isinstance(exc, (RuntimeError, MemoryError)):
                     logger.warning("MT 在 %s 載入失敗（%s），改用 cpu", self._device, type(exc).__name__)
                     self._device = "cpu"
+                    self._cpu_fallback_used = True
                     self._backend = self._build_and_warm("cpu")
                 else:
                     raise

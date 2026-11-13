@@ -274,6 +274,11 @@ class NlpLegacyProposer:
     def loaded(self) -> bool:
         return self._backend is not None
 
+    @property
+    def load_error(self) -> str | None:
+        """載入失敗的例外類別名（None = 尚未失敗）；module coordinator 的觀測 handle 用它區分「載入中」與「失敗」。"""
+        return self._load_error
+
     def _load(self) -> None:
         try:
             backend, version = load_backend(self._model_dir)

@@ -64,7 +64,8 @@ class PresenceArbiterShadow:
                  clock: Callable[[], datetime] = lambda: datetime.now(UTC),
                  metrics_inc: Callable[[str], None] | None = None, max_records: int = 100, mode: str = "shadow",
                  events: Any | None = None, mark_writer: Any | None = None, abandon_executor: Any | None = None,
-                 poke: Callable[[], None] | None = None, queue_max: int = 256) -> None:
+                 poke: Callable[[], None] | None = None, queue_max: int = 256,
+                 strict_probe_fn: Callable[[], InterruptFacts] | None = None) -> None:
         if mode not in MODES:
             raise ValueError(f"未知的仲裁模式：{mode}")
         if mode == "on" and (events is None or mark_writer is None):
@@ -73,6 +74,7 @@ class PresenceArbiterShadow:
         self._presence_fn = presence_fn
         self._override_fn = override_fn
         self._probe_fn = probe_fn
+        self._strict_probe_fn = strict_probe_fn or probe_fn  # judge_now 用：失敗即拋，不降級
         self._clock = clock
         self._metrics_inc = metrics_inc
         self._mode = mode
@@ -326,18 +328,21 @@ class PresenceArbiterShadow:
         """
         if self._closed:
             return None
-        target = getattr(target, "value", target)
-        if target not in PLAN_LOCATIONS or actor_authenticated is not True or is_owner is not True:
-            self._count(f"{_METRIC}.judge_now.skipped")
-            return None
         try:
+            target = getattr(target, "value", target)
+            if target not in PLAN_LOCATIONS or actor_authenticated is not True or is_owner is not True:
+                self._count(f"{_METRIC}.judge_now.skipped")
+                return None
             now = self._clock()
             slot = self._reader.resolve(now)
+            if slot.availability == "unavailable":  # 行程讀取失敗／時區不可用：不能拿預設格當事實
+                self._count(f"{_METRIC}.judge_now.unavailable")
+                return None
             override = self._override_fn() if self._override_fn is not None else None
             decision = arbiter.arbitrate_request(
                 ArbiterRequest(request_id=f"judge_now:{self._seq}", authority="owner", requester_ref=actor_ref,
                                actor_authenticated=True, target=target, received_seq=self._seq),
-                slot=slot, presence=self._presence_fn(), override=override, probe=self._probe_fn(), now=now)
+                slot=slot, presence=self._presence_fn(), override=override, probe=self._strict_probe_fn(), now=now)
         except Exception:
             logger.warning("judge_now 失敗", exc_info=True)
             self._count(f"{_METRIC}.judge_now.error")

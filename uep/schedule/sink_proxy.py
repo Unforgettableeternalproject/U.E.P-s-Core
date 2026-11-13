@@ -24,6 +24,7 @@ class PresenceSinkProxy:
         self._metrics_inc = metrics_inc
         self._lock = threading.Lock()
         self._target: Any | None = None
+        self._judge_gate = threading.Semaphore(1)  # judge_now 併發上限 1：逾時後殘留的查詢不累積
         self.dropped = 0
 
     def bind(self, target: Any) -> None:
@@ -72,6 +73,9 @@ class PresenceSinkProxy:
         if bound is None:
             self._count("presence_sink.judge_now.unbound")
             return None
+        if not self._judge_gate.acquire(blocking=False):  # 已有查詢在跑：不排隊，直接放棄
+            self._count("presence_sink.judge_now.busy")
+            return None
         try:
             return bound.judge_now(target=target, is_owner=is_owner, actor_ref=actor_ref,
                                    actor_authenticated=actor_authenticated)
@@ -79,6 +83,8 @@ class PresenceSinkProxy:
             logger.warning("轉發 judge_now 失敗", exc_info=True)
             self._count("presence_sink.error.judge_now")
             return None
+        finally:
+            self._judge_gate.release()
 
     def on_presence_request(self, proposal: Any, *, request_id: str, actor_ref: str, actor_authenticated: bool,
                             is_owner: bool, source_platform: str) -> None:

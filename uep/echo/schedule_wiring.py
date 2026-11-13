@@ -392,15 +392,22 @@ def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, r
         return PresenceReading(status=status, location=view.location, transfer_active=view.transfer_id is not None,
                                expires_at=view.expires_at)
 
+    def facts(busy: bool) -> Any:
+        in_flight = bool(memory is not None and (memory.dream_status() or {}).get("in_flight"))
+        return InterruptFacts(dream_in_flight=in_flight,
+                              interaction_active=state.current(Axis.INTERACTION).state != "IDLE",
+                              has_uninterruptible_work=busy)
+
     def probe() -> Any:
         try:
             busy = has_uninterruptible_work(tasks)
         except Exception:  # noqa: BLE001 - 查不到就保守地當作有不可中斷工作
             busy = True
-        in_flight = bool(memory is not None and (memory.dream_status() or {}).get("in_flight"))
-        return InterruptFacts(dream_in_flight=in_flight,
-                              interaction_active=state.current(Axis.INTERACTION).state != "IDLE",
-                              has_uninterruptible_work=busy)
+        return facts(busy)
+
+    def strict_probe() -> Any:
+        """judge_now 用：Task 查詢失敗直接拋出（不降級成假的 uninterruptible_work），由 judge_now 回 None。"""
+        return facts(has_uninterruptible_work(tasks))
 
     events = executor = None
     poke = getattr(planner, "poke", None)
@@ -413,7 +420,8 @@ def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, r
                                    tz_fn=getattr(reader, "tz", None), poke=poke, metrics_inc=metrics_inc)
     shadow = PresenceArbiterShadow(reader, presence, getattr(reader, "active_override", None), probe,
                                    metrics_inc=metrics_inc, mode=mode, events=events,
-                                   mark_writer=reader if mode == "on" else None, abandon_executor=executor, poke=poke)
+                                   mark_writer=reader if mode == "on" else None, abandon_executor=executor, poke=poke,
+                                   strict_probe_fn=strict_probe)
     for event_type, handler in (("schedule.directive_issued", shadow.on_directive_event),
                                 ("turn.skipped", shadow.on_turn_skipped)):
         bus.subscribe(event_type, handler)

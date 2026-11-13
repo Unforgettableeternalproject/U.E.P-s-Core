@@ -236,7 +236,7 @@ def test_default_writer_disabled_without_database(monkeypatch):
 
     monkeypatch.setattr(get_settings(), "database_url", None)
     assert not create_default_writer().enabled
-    monkeypatch.setenv("UEP_DECISION_LOG", "off")
+    monkeypatch.setattr(get_settings(), "decision_log", "off")
     assert not create_default_writer().enabled
 
 

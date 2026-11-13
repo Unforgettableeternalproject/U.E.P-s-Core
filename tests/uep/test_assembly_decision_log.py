@@ -12,6 +12,7 @@ from tests.uep import echo_support
 from tests.uep.echo_support import fast_think, make_identity, make_session
 from uep import assembly
 from uep.assembly import AssemblyError, assemble_core
+from uep.config import get_settings
 from uep.console.rig import build_fake_runtime
 from uep.control.channel import InProcessControlChannel
 from uep.decision.policy_publish import channel_mode_spec, policy_snapshot_spec
@@ -49,7 +50,7 @@ def sinks(monkeypatch):
         return sink
 
     monkeypatch.setattr(assembly, "DbSink", factory)
-    monkeypatch.delenv("UEP_DECISION_LOG", raising=False)
+    monkeypatch.setattr(get_settings(), "decision_log", "")
     return made
 
 
@@ -114,7 +115,7 @@ def test_default_env_unset_attaches_writer(build, sinks):
 
 def test_env_off_does_not_attach(build, sinks, monkeypatch):
     for value in ("0", "off", "False", "no"):
-        monkeypatch.setenv("UEP_DECISION_LOG", value)
+        monkeypatch.setattr(get_settings(), "decision_log", value)
         core, host = build()
         assert core.decision_log is None
         assert not _observed(host.decision_hub) and not _policy_registered(host.decision_hub)
@@ -127,7 +128,7 @@ def test_flag_false_does_not_attach(build, sinks):
 
 
 def test_flag_true_overrides_env_off(build, sinks, monkeypatch):
-    monkeypatch.setenv("UEP_DECISION_LOG", "off")
+    monkeypatch.setattr(get_settings(), "decision_log", "off")
     core, host = build(decision_log=True)
     assert core.decision_log is not None and _observed(host.decision_hub)
 

@@ -126,6 +126,10 @@ class UepSettings(BaseSettings):
     translate_placeholder: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_PLACEHOLDER")
     translate_cpu_fallback: bool = Field(default=True, validation_alias="UEP_TRANSLATE_CPU_FALLBACK")
     translate_on_unavailable: str | None = Field(default=None, validation_alias="UEP_TRANSLATE_ON_UNAVAILABLE")
+    # Laya 能力清單來源：static（預設）＝靜態清單；snapshot＝每次推論讀工具層快照。不認得的值由 ``resolve_capabilities_mode`` 視為 static 並警告
+    laya_capabilities: str = Field(default="static", validation_alias="UEP_LAYA_CAPABILITIES")
+    # 決策日誌開關：未設或空字串＝啟用；0／off／false／no（忽略大小寫與前後空白）＝停用，其餘值一律視為啟用
+    decision_log: str = Field(default="", validation_alias="UEP_DECISION_LOG")
     # nlp.legacy（現有英文 NLP shadow proposer）的模型目錄；未設＝repo 相對的 models/nlp。只有放進 shadow 清單才會用到
     nlp_model_dir: str | None = Field(default=None, validation_alias="UEP_NLP_MODEL_DIR")
     test_database_url: SecretStr | None = Field(default=None, validation_alias="UEP_TEST_DATABASE_URL")
@@ -326,6 +330,11 @@ class UepSettings(BaseSettings):
         from uep.persona import default_system_prompt
 
         return default_system_prompt()
+
+    @property
+    def decision_log_enabled(self) -> bool:
+        """決策日誌是否啟用（語意見 ``decision_log`` 欄位）。"""
+        return self.decision_log.strip().lower() not in {"0", "off", "false", "no"}
 
     def think_config(self) -> ThinkConfig:
         """解析成 Think adapter 的 ThinkConfig：``UEP_LLM_*`` → ``UEP_INFER_LLM_*`` → 舊名（警告一次）→ 預設。"""

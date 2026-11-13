@@ -33,7 +33,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -145,7 +144,7 @@ def _decision_log_enabled(flag: bool | None) -> bool:
     """決策日誌是否啟用：明示 True／False 優先；None 時依 ``UEP_DECISION_LOG``（0／off／false／no 停用，預設啟用）。"""
     if flag is not None:
         return flag
-    return os.environ.get("UEP_DECISION_LOG", "").strip().lower() not in {"0", "off", "false", "no"}
+    return get_settings().decision_log_enabled
 
 
 # Presence Manager 會發出、且帶 status 的事件（Presence 軸投影用）
@@ -931,7 +930,7 @@ def assemble_core(
             if laya_orchestrator is not None:
                 # UEP_LAYA_CAPABILITIES=snapshot 時 Laya 的 available_capabilities 每次推論讀工具層快照；預設 static 維持靜態清單
                 bind_laya_capabilities(
-                    laya_orchestrator, agent_registry, resolve_capabilities_mode(os.environ.get("UEP_LAYA_CAPABILITIES")),
+                    laya_orchestrator, agent_registry, resolve_capabilities_mode(get_settings().laya_capabilities),
                 )
         if loop_entry is None and loop_entry_on:
             # loop、TaskManager、Gateway、投影共用組裝層組出的同一份註冊表（含測試工具與原生工具）

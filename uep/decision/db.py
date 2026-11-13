@@ -6,7 +6,6 @@ shadow 列以 ``primary_decision_id`` 指向 primary。
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
@@ -120,9 +119,10 @@ def load_rows_from_url(url: str | None, **filters: Any) -> list[dict[str, Any]]:
 
 def create_default_sink() -> DecisionLogSink | None:
     """依環境建立 DB sink：``UEP_DECISION_LOG`` 為 0／off／false，或沒有 ``UEP_DATABASE_URL`` 時回 None（停用）。"""
-    if os.environ.get("UEP_DECISION_LOG", "").strip().lower() in {"0", "off", "false", "no"}:
+    settings = get_settings()
+    if not settings.decision_log_enabled:
         return None
-    if not get_settings().database_url:
+    if not settings.database_url:
         return None
     return DbSink(make_session_factory(make_engine()))
 

@@ -33,6 +33,17 @@ REJECT_MEASUREMENT_STALE = "measurement_stale"
 REJECT_PRESSURE = "pressure"
 REJECT_EVICT_HOLD = "evict_hold"
 REJECT_INSUFFICIENT = "insufficient_resource"
+REJECT_HEAVY_IN_FLIGHT = "heavy_load_in_flight"
+
+# 宣告值 vs 觀測值校正（§7.3）：偏差超過宣告值的 25% 記警告；之後放行以 max(宣告, 觀測) 為準。
+OBSERVED_DEVIATION_RATIO = 0.25
+# 卸載後釋放量驗證（§9.2）：實測釋放量低於「持有量」的此比例才判定 unload_incomplete。
+# 預設關閉（0）以維持既有行為；第一個非 pinned 的 GPU 模組上線前應啟用（UEP_MODULE_UNLOAD_RELEASE_RATIO=0.5）。
+# 取 0.5 的理由：NVML 空閒量含其他行程的同時變動與 CUDA allocator 快取，略少於宣告值是常態；
+# 只有「釋放不到一半」才足以說明權重實際沒還，避免誤判而把預算長期鎖住。
+RECOMMENDED_UNLOAD_RELEASE_RATIO = 0.5
+# 持有量低於此值（MB）的模組不判定：其釋放量與 NVML 的外部雜訊同量級，量不出差異。
+UNLOAD_VERIFY_MIN_MB = 256
 
 
 class ProbeUnavailable(RuntimeError):
@@ -106,6 +117,8 @@ class BudgetConfig:
     - ``evict_cooldown_s``：每次壓力收回之後，下一次收回／被收回模組重載的最短間隔。
     - ``read_timeout_s``：單次 ``probe.read()`` 最多等待秒數；逾時視為量測失敗，卡住的讀取留在 daemon 執行緒上，
       期間不再啟動新的讀取（不堆積執行緒）。
+    - ``unload_release_ratio``：卸載後驗證釋放量的門檻（釋放量 < 持有量 × 此值 => ``unload_incomplete``，未釋放量保守保留於預算）；
+      0 = 不驗證（預設，維持既有行為）；建議值見 ``RECOMMENDED_UNLOAD_RELEASE_RATIO``。
     """
 
     headroom_mb: int
@@ -114,6 +127,7 @@ class BudgetConfig:
     recover_margin_mb: int = 256
     evict_cooldown_s: float = 60.0
     read_timeout_s: float = 1.0
+    unload_release_ratio: float = 0.0
 
     def __post_init__(self) -> None:
         for key in ("headroom_mb", "recover_margin_mb"):
@@ -126,6 +140,9 @@ class BudgetConfig:
             value = getattr(self, key)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
                 raise ValueError(f"{key} 必須是非負數")
+        ratio = self.unload_release_ratio
+        if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 <= ratio <= 1:
+            raise ValueError("unload_release_ratio 必須介於 0 與 1 之間")
         if self.reading_max_age_s == 0 or self.read_timeout_s == 0:
             raise ValueError("reading_max_age_s／read_timeout_s 必須大於 0")
 
@@ -149,6 +166,7 @@ class ResourceBudget:
         self._failed = False
         self._pressure = False
         self._reader: threading.Thread | None = None  # 仍在執行（可能卡住）的讀取執行緒
+        self._sample_lock = threading.Lock()  # 取樣互斥：tick 與 worker（卸載前後取樣）不得同時啟動讀取，否則會互相誤判為卡住
         self.failures = 0  # 累計量測失敗次數（觀測用）
 
     @property
@@ -158,6 +176,17 @@ class ResourceBudget:
     # --- 取樣（鎖外）---
 
     def refresh(self, now: float) -> bool:
+        with self._sample_lock:
+            return self._refresh_impl(now)
+
+    def measure(self, now: float) -> VramReading | None:
+        """與 ``refresh`` 相同（更新快取），但回傳這次取得的樣本；失敗回 None。供 worker 在卸載前後取樣（鎖外呼叫）。"""
+        with self._sample_lock:
+            if not self._refresh_impl(now):
+                return None
+            return self.reading()[0]
+
+    def _refresh_impl(self, now: float) -> bool:
         """量測一次並以 ``now``（coordinator 的時鐘）標記時間戳、更新快取；失敗時保留舊樣本（會自然過期）並標記失敗。回傳是否成功。
 
         ``probe.read()`` 在 daemon 執行緒上執行，最多等 ``read_timeout_s``；逾時視為量測失敗並立刻返回。上一次讀取還沒回來時

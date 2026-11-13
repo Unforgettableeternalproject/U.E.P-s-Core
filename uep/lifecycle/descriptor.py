@@ -11,9 +11,11 @@ from typing import Literal, get_args
 
 ModuleKind = Literal["service", "model", "stage", "platform"]
 PriorityClass = Literal["resident", "on_demand", "speculative", "background"]
+LoadCost = Literal["none", "light", "heavy"]
 
 MODULE_KINDS: frozenset[str] = frozenset(get_args(ModuleKind))
 PRIORITY_CLASSES: frozenset[str] = frozenset(get_args(PriorityClass))
+LOAD_COSTS: frozenset[str] = frozenset(get_args(LoadCost))
 
 # R9：扁平舊 id（``lore``、``web_search``）與 ``kind:name`` 並存
 _ID_RE = re.compile(r"[a-z][a-z0-9_]*(?::[a-z][a-z0-9_]*)?")
@@ -36,6 +38,9 @@ class ModuleDescriptor:
       v1 的 M 群（kind=model／stage）描述子必須 pinned（§4），由組裝層檢查。
     - ``uses_gpu`` / ``vram_mb``（PR-3，R6）：會由 coordinator 載入、且需要 VRAM 的模組要宣告 ``uses_gpu=True``；``vram_mb`` 是
       載入峰值的宣告成本（MB），未量測請留 None（=> 拒絕載入，``unmeasured_cost``）。不需 GPU 的服務不受預算管理影響。
+    - ``load_cost``（PR-3 補，§7.3）：``heavy`` 的載入在啟用預算時全域一次一個（防載入峰值與磁碟 I/O 疊加）；``light`` 沿用並行上限。
+    - ``idle_ttl_s``（§5.1、§7.4 規則 6）：speculative／on_demand 模組在 ready、無 lease、無依賴者且閒置超過此秒數後，
+      於 tick 自動卸載（啟用預算時）；None = 不自動卸載。
     - ``blocked_reason``：設定層閘（未設定／禁止）。非 None 時模組恆為 unavailable，任何 probe 成功都不得覆蓋，
       也不自動重試（R12）。閉集短碼，會原樣放進事件的 ``reason_code``。
     """
@@ -52,6 +57,8 @@ class ModuleDescriptor:
     pinned: bool = False
     uses_gpu: bool = False
     vram_mb: int | None = None
+    load_cost: LoadCost = "light"
+    idle_ttl_s: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.module_id, str) or not _ID_RE.fullmatch(self.module_id):
@@ -78,6 +85,12 @@ class ModuleDescriptor:
                 raise ValueError("vram_mb 必須是非負整數或 None")
             if not self.uses_gpu:
                 raise ValueError("宣告 vram_mb 的模組必須 uses_gpu=True")
+        if self.load_cost not in LOAD_COSTS:
+            raise ValueError(f"不支援的 load_cost：{self.load_cost!r}")
+        if self.idle_ttl_s is not None and (
+            isinstance(self.idle_ttl_s, bool) or not isinstance(self.idle_ttl_s, (int, float)) or self.idle_ttl_s <= 0
+        ):
+            raise ValueError("idle_ttl_s 必須是正數或 None")
         if self.blocked_reason is not None and not _REASON_RE.fullmatch(self.blocked_reason):
             raise ValueError("blocked_reason 必須是閉集短碼（小寫英數與底線）")
 

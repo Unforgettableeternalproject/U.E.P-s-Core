@@ -423,11 +423,29 @@ def registry_capabilities_source(
     return read
 
 
-def bind_laya_capabilities(orchestrator: object, registry: object) -> int:
+CAPABILITIES_MODES = frozenset({"static", "snapshot"})
+
+
+def resolve_capabilities_mode(raw: str | None) -> str:
+    """解析 ``UEP_LAYA_CAPABILITIES``：忽略大小寫與前後空白；未設為 static，不認得的值視為 static 並記一次 warning。"""
+    value = (raw or "").strip().lower()
+    if not value:
+        return "static"
+    if value in CAPABILITIES_MODES:
+        return value
+    logger.warning("laya：UEP_LAYA_CAPABILITIES=%r 不認得（可用 static／snapshot），視為 static", raw)
+    return "static"
+
+
+def bind_laya_capabilities(orchestrator: object, registry: object, mode: str = "static") -> int:
     """組裝層：把註冊表接到 orchestrator 內所有可綁定的 proposer（primary 與 shadow；``laya.primary`` 取其內層 Laya）。回傳綁定數。
 
-    註冊表沒有 ``capability_snapshot`` 時不綁定（記一次 warning 與 metric），Laya 維持靜態能力清單，輸入分佈不變。
+    ``mode`` 為 ``resolve_capabilities_mode`` 的結果：static（預設）完全不綁也不讀快照，Laya 維持靜態能力清單；
+    snapshot 才綁定。snapshot 下註冊表沒有 ``capability_snapshot`` 時不綁定（記一次 warning 與 metric），輸入分佈不變。
     """
+    if mode != "snapshot":
+        logger.info("laya：Laya 能力清單維持靜態（UEP_LAYA_CAPABILITIES=static）")
+        return 0
     probe = registry_capabilities_source(registry)
     found: list[object] = [getattr(orchestrator, "proposer", None)]
     found.extend(sp for sp, _ in getattr(orchestrator, "_shadows", ()) or ())

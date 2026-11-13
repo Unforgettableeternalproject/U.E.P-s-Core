@@ -78,7 +78,7 @@ from uep.decision.loop_consult import (
 )
 from uep.decision.policy_publish import register_policy_publish
 from uep.echo.agent_wiring import attach_agent_tools, build_loop_entry
-from uep.echo.laya_wiring import bind_laya_capabilities
+from uep.echo.laya_wiring import bind_laya_capabilities, resolve_capabilities_mode
 from uep.echo.platform_context import (
     CoarseExecutorSource,
     PlatformContextProvider,
@@ -929,7 +929,10 @@ def assemble_core(
             bind_registry(agent_registry)  # direct_chat 投影與 TaskManager／Gateway／loop 看同一份註冊表
             laya_orchestrator = getattr(echo, "orchestrator", None)
             if laya_orchestrator is not None:
-                bind_laya_capabilities(laya_orchestrator, agent_registry)  # Laya 的 available_capabilities 每次推論讀工具層快照
+                # UEP_LAYA_CAPABILITIES=snapshot 時 Laya 的 available_capabilities 每次推論讀工具層快照；預設 static 維持靜態清單
+                bind_laya_capabilities(
+                    laya_orchestrator, agent_registry, resolve_capabilities_mode(os.environ.get("UEP_LAYA_CAPABILITIES")),
+                )
         if loop_entry is None and loop_entry_on:
             # loop、TaskManager、Gateway、投影共用組裝層組出的同一份註冊表（含測試工具與原生工具）
             loop_registry = agent_registry

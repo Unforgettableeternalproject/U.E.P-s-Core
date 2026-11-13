@@ -23,6 +23,7 @@ from uep.echo.laya_wiring import (
     bind_laya_capabilities,
     build_state,
     registry_capabilities_source,
+    resolve_capabilities_mode,
 )
 from uep.turn.decision_config import DecisionConfig
 from uep.turn.models import SessionContext, TurnCandidate
@@ -145,7 +146,7 @@ def test_bind_helper_reaches_primary_and_inner_laya(monkeypatch):
     p, agent = _proposer(monkeypatch)
     wrapper = SimpleNamespace(laya=p)
     orch = SimpleNamespace(proposer=wrapper, _shadows=[(SimpleNamespace(), None)])
-    assert bind_laya_capabilities(orch, _registry([("lore.read", "ready")])) == 1
+    assert bind_laya_capabilities(orch, _registry([("lore.read", "ready")]), "snapshot") == 1
     p.propose(_cand())
     assert agent.states[-1]["available_capabilities"] == "query"
 
@@ -154,7 +155,7 @@ def test_missing_snapshot_method_does_not_bind_and_keeps_default(monkeypatch, ca
     p, agent = _proposer(monkeypatch)
     orch = SimpleNamespace(proposer=SimpleNamespace(laya=p), _shadows=[])
     with caplog.at_level(logging.WARNING, logger=laya_wiring.logger.name):
-        assert bind_laya_capabilities(orch, object()) == 0
+        assert bind_laya_capabilities(orch, object(), "snapshot") == 0
     assert any("維持靜態能力清單" in r.getMessage() for r in caplog.records)
     assert p.metrics["capabilities_snapshot_unavailable"] == 1
     p.propose(_cand())
@@ -170,7 +171,7 @@ def test_snapshot_method_raising_gives_none_and_syncs_primary_metric(monkeypatch
     sink: Counter[str] = Counter()
     wrapper.bind_metrics(sink)
     orch = SimpleNamespace(proposer=wrapper, _shadows=[])
-    assert bind_laya_capabilities(orch, SimpleNamespace(capability_snapshot=boom)) == 1
+    assert bind_laya_capabilities(orch, SimpleNamespace(capability_snapshot=boom), "snapshot") == 1
     p.propose(_cand())
     assert agent.states[-1]["available_capabilities"] == "none"
     assert sink["laya_primary.capabilities_read_error"] == 1
@@ -225,6 +226,39 @@ def test_shadow_proposer_is_bound(monkeypatch):
     primary, _ = _proposer(monkeypatch)
     shadow, shadow_agent = _proposer(monkeypatch)
     orch = SimpleNamespace(proposer=SimpleNamespace(laya=primary), _shadows=[(shadow, None)])
-    assert bind_laya_capabilities(orch, _registry([("chatroom.post", "ready")])) == 2
+    assert bind_laya_capabilities(orch, _registry([("chatroom.post", "ready")]), "snapshot") == 2
     shadow.propose(_cand())
     assert shadow_agent.states[-1]["available_capabilities"] == "messaging"
+
+
+def test_flag_default_and_unknown_resolve_to_static(caplog):
+    assert resolve_capabilities_mode(None) == "static"
+    assert resolve_capabilities_mode("") == "static"
+    with caplog.at_level(logging.WARNING, logger=laya_wiring.logger.name):
+        assert resolve_capabilities_mode("bogus") == "static"
+    assert sum("不認得" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_flag_ignores_case_and_whitespace():
+    assert resolve_capabilities_mode("  SnapShot ") == "snapshot"
+    assert resolve_capabilities_mode(" STATIC	") == "static"
+
+
+def test_static_mode_does_not_bind_nor_read_snapshot(monkeypatch, caplog):
+    p, agent = _proposer(monkeypatch)
+    calls: list[int] = []
+
+    def snap():
+        calls.append(1)
+        return SimpleNamespace(tags=(SimpleNamespace(tag="lore.read", readiness="ready"),))
+
+    orch = SimpleNamespace(proposer=SimpleNamespace(laya=p), _shadows=[])
+    registry = SimpleNamespace(capability_snapshot=snap)
+    with caplog.at_level(logging.INFO, logger=laya_wiring.logger.name):
+        for mode in (resolve_capabilities_mode(raw) for raw in (None, "static", " STATIC ", "bogus")):
+            assert bind_laya_capabilities(orch, registry, mode) == 0
+        assert bind_laya_capabilities(orch, registry) == 0  # 省略 mode 等同 static
+    assert any("維持靜態" in r.getMessage() for r in caplog.records)
+    p.propose(_cand())
+    assert not calls
+    assert agent.states[-1]["available_capabilities"] == build_state(_cand(), "U.E.P")["available_capabilities"]

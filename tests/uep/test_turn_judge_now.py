@@ -123,6 +123,22 @@ def test_target_is_none_when_platform_not_plannable(monkeypatch):
             {"target": None, "is_owner": True, "actor_ref": "actor_owner", "actor_authenticated": True}]
 
 
+def test_console_target_is_none_with_real_plan_locations():
+    """不 monkeypatch：真實 PLAN_LOCATIONS 不含 console，judge_now 的 target 必為 None。"""
+    from uep.turn.orchestrator import PLAN_LOCATIONS
+
+    assert "console" not in PLAN_LOCATIONS
+    judge = _Judge()
+    orch = _orch(judge)
+    try:
+        orch.on_utterance(
+            dataclasses.replace(CTX, platform="console"),
+            UtteranceFact(speaker_ref=OWNER, text="嗨", seq=1, source_endpoint_id="ep"))
+    finally:
+        orch.close()
+    assert judge.calls[0]["target"] is None
+
+
 @pytest.mark.parametrize("location", [PresenceLocation.DISCORD, PresenceLocation.DESKTOP])
 def test_target_is_platform_itself_when_plannable(location):
     judge = _Judge()

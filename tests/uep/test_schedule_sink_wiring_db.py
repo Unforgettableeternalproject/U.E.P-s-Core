@@ -73,3 +73,42 @@ def test_owner_abandon_signal_flows_from_the_orchestrator_sink_to_a_mark_and_a_j
     finally:
         arbiter.stop()
     assert not host.presence_sinks.bound  # stop 之後 sink 解除，之後的呼叫被丟棄並計數
+
+
+def test_owner_utterance_in_work_slot_reaches_the_turn_context_through_judge_now(session_factory, tmp_path, monkeypatch):
+    """端到端：工作格中 owner 發話 → orchestrator 經 proxy 呼叫 judge_now → REJECTED/work_in_progress →
+    ticket.presence_busy → Host 的 turn_context 註記（只驗註記進到 think stage 的 Utterance，不啟動任何背景工作以外的東西）。"""
+    from tests.uep.echo_support import make_session
+    from uep.echo.host import PRESENCE_BUSY_TURN_CONTEXT
+
+    monkeypatch.setattr(get_settings(), "presence_arbiter", "shadow")
+    rig = build_rig(session_factory, tmp_path, session=make_session(platform="discord"))
+    seen = []
+    original = rig.think.stream
+
+    def spy(utterance, token):
+        seen.append(dict(utterance.metadata))
+        return original(utterance, token)
+
+    rig.think.stream = spy
+    store = PlanStore(session_factory)
+    cmd = PlanItemCommand(activity_kind="work", location="discord", recurrence="weekly",
+                          weekdays=(1, 2, 3, 4, 5, 6, 7), local_start=time(0, 0), local_end=time(23, 59),
+                          tz="Asia/Taipei")
+    store.create_item(OWNER, cmd, expected_revision=store.revision())
+    arbiter = attach_presence_arbiter(SimpleNamespace(presence_arbiter="shadow"), rig.core,
+                                      session_factory=session_factory, reader=store)
+    try:
+        assert rig.host.presence_sinks.bound
+        decision = rig.host.presence_sinks.judge_now(
+            target="discord", is_owner=True, actor_ref="discord:111", actor_authenticated=True)
+        assert (decision.outcome, decision.reason_code) == ("REJECTED", "work_in_progress")
+        result = rig.say("你在忙嗎", source_endpoint_id="ep")  # 已認證需要 ingress 簽發的 endpoint
+        assert result.ticket is not None and result.ticket.presence_busy == "work"
+        rig.wait_terminal(result.ticket.turn_id)
+        [meta] = seen
+        assert meta["presence_busy"] == "work"
+        assert PRESENCE_BUSY_TURN_CONTEXT["work"] in meta["turn_context"]
+    finally:
+        arbiter.stop()
+        rig.core.shutdown()

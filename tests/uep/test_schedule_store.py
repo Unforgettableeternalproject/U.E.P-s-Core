@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -65,7 +66,8 @@ def test_migration_0021_upgrade_downgrade_upgrade(engine, alembic_cfg):
         return set(inspect(engine).get_table_names())
 
     assert set(PLAN_TABLES) <= tables()
-    command.downgrade(alembic_cfg, "-1")
+    # 指定明確 revision，不用 "-1"：0021 之後還有其他 migration（例如 0022），相對降版只會退一步
+    command.downgrade(alembic_cfg, "0020_decision_log_chain")
     try:
         assert not set(PLAN_TABLES) & tables()
         with engine.connect() as conn:
@@ -74,7 +76,8 @@ def test_migration_0021_upgrade_downgrade_upgrade(engine, alembic_cfg):
         command.upgrade(alembic_cfg, "head")
     assert set(PLAN_TABLES) <= tables()
     with engine.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0021_presence_plan"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == \
+            ScriptDirectory.from_config(alembic_cfg).get_current_head()
 
 
 def test_id_prefixes_registered():

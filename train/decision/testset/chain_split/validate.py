@@ -21,7 +21,8 @@ def print_stats(rows: list[dict]) -> None:
     segs = [s for r in rows for s in r["segments"]]
     print("segment route:", dict(Counter(s["route"] for s in segs)))
     print("independent 段落 route:", dict(Counter(s["route"] for r in rows if r["kind"] == "independent" for s in r["segments"])))
-    print("vocative 段落:", sum(1 for s in segs if s["vocative"]), "；addressed=false 段落:", sum(1 for s in segs if not s["addressed"]))
+    print("vocative 段落:", sum(1 for s in segs if s["vocative"]), "；addressed=false 段落:", sum(1 for s in segs if not s["addressed"]),
+          "；ambiguous 段落:", sum(1 for s in segs if s.get("ambiguous")))
     pron = Counter(s["route"] for s in segs for _ in s["pronouns"])
     print("pronouns 依段落 route:", dict(pron))
 

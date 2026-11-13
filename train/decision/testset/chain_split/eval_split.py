@@ -10,8 +10,9 @@ split_single_segment／split_over_limit）；有錯誤、缺列或輸出驗證�
 naive_punct（照標點硬切）、fault（oracle 注入固定錯誤，用來確認各指標會動）。
 
 指標 3（代名詞補完）在此是啟發式判定，不是契約的 LLM 輔助判定：補完後的段落必須含 resolves_to
-（完整先行詞片語）或 accept 之一（中心詞等較短說法，兩種粒度都算對），且不能再含代名詞本身。指標 10 在此是 proxy（用標註的 addressed 加稱呼保留與否推算），
-真值需 Laya 對段落的重判。
+（完整先行詞片語，含時間、所屬等限定修飾語）或 accept 之一（換一種說法的等價寫法，§10.4），且不能再含代名詞本身。
+只剩中心詞的輸出（丟掉修飾語）不算對；比對時忽略書名號與引號。指標 10 在此是 proxy（用標註的 addressed 加稱呼保留與否推算），
+真值需 Laya 對段落的重判。標為 ambiguous 的段落（§10.5 第 5 條）不計入 addressed／route 相關指標（指標 7、10）。
 用法：python eval_split.py --gold smoke.jsonl --splitter identity [--out report.json]
 """
 from __future__ import annotations
@@ -26,7 +27,7 @@ from difflib import Match, SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable
 
-from split_schema import contains_name, is_punct, load_jsonl, source_spans
+from split_schema import contains_name, is_punct, load_jsonl, source_spans, strip_marks
 
 K_LEN = 2          # 單段長度上限倍數（契約 3.4）
 MAX_SEG = 4        # max_segments
@@ -184,12 +185,15 @@ def best_gold(pred_text: str, gold_segs: list[dict[str, Any]]) -> dict[str, Any]
 
 def heuristic_pronoun_judge(seg_text: str, pron: dict[str, Any]) -> bool:
     """啟發式判定：含 resolves_to（或 accept），且代名詞不再出現。LLM 判定可替換此函式。"""
-    targets = [pron["resolves_to"], *pron.get("accept", [])]
-    if not any(contains_name(seg_text, t) for t in targets):
+    res = pron["resolves_to"]
+    # 防禦：accept 若是 resolves_to 的子字串就是丟了修飾語（§10.4），不採用，避免舊資料放水
+    targets = [res, *(a for a in pron.get("accept", []) if a.lower() not in res.lower())]
+    text = strip_marks(seg_text)
+    if not any(contains_name(text, strip_marks(t)) for t in targets):
         return False
-    if pron["surface"] in pron["resolves_to"]:
+    if pron["surface"] in res:
         return True
-    return not contains_name(seg_text, pron["surface"])
+    return not contains_name(text, pron["surface"])
 
 
 def ratio(n: int, d: int) -> float | None:
@@ -217,6 +221,7 @@ def evaluate(gold: list[dict[str, Any]], preds: dict[str, dict[str, Any]],
     voc_disp = [0, 0]
     leaked = [0, 0]
     chain_items = all_false = 0
+    n_amb = 0
     r_ok = a_ok = j_ok = l_total = 0
     first_ms: list[float] = []
     total_ms: list[float] = []
@@ -277,19 +282,25 @@ def evaluate(gold: list[dict[str, Any]], preds: dict[str, dict[str, Any]],
                     leaked[1] += 1
                     leaked[0] += (not kept)
 
+        n_amb += sum(1 for gs in row["segments"] if gs.get("ambiguous"))
         if multi:
-            chain_items += 1
             proxy = []
             for ps in segs:
                 gs = best_gold(ps["text"], row["segments"])
+                if gs.get("ambiguous"):   # ambiguous 段落不計入 addressed 指標
+                    continue
                 kept = (not gs["vocative"]) or contains_name(ps["text"], gs["vocative"])
                 proxy.append(gs["addressed"] and kept)
-            all_false += not any(proxy)
+            if proxy:
+                chain_items += 1
+                all_false += not any(proxy)
 
         if laya is not None and row["id"] in laya and not code:
             lsegs = laya[row["id"]]["segments"]
             for ps, ls in zip(segs, lsegs):
                 gs = best_gold(ps["text"], row["segments"])
+                if gs.get("ambiguous"):
+                    continue
                 l_total += 1
                 rr = ls.get("route") == gs["route"]
                 aa = ls.get("addressed") == gs["addressed"]
@@ -305,7 +316,7 @@ def evaluate(gold: list[dict[str, Any]], preds: dict[str, dict[str, Any]],
     risky_ok_all = sum(pron_ok[r][0] for r in ("task_request", "agent_loop"))
     risky_n_all = sum(pron_ok[r][1] for r in ("task_request", "agent_loop"))
     m: dict[str, Any] = {
-        "n_rows": n, "missing_pred": missing,
+        "n_rows": n, "missing_pred": missing, "n_ambiguous_segments_excluded": n_amb,
         "m1_cut_f1": {"f1": f1, "precision": prec, "recall": rec_, "tp": tp, "fp": fp, "fn": fn},
         "m2_segment_count_acc": {"value": ratio(ind_count_ok, ind_total), "n": ind_total},
         # 主要分母（裁決 11/13）：只算拆成多段、真的會派發的輸出；all 是含退回單段的分母，並列回報

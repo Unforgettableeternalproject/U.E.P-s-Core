@@ -33,6 +33,11 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def strip_marks(s: str) -> str:
+    """去掉書名號與各式引號（作品名稱判定時忽略，§10.4）。"""
+    return re.sub("[《》〈〉「」『』\"“”‘’]", "", s)
+
+
 def is_punct(ch: str) -> bool:
     return ch.isspace() or unicodedata.category(ch)[0] in "PSZ"
 
@@ -104,6 +109,11 @@ def validate_row(row: dict[str, Any]) -> tuple[list[str], list[str]]:
         need(isinstance(sen, str) and sen.strip() != "", f"{p}.text_en 需為非空字串")
         need(seg.get("route") in ROUTES, f"{p}.route 需為 {ROUTES}")
         need(isinstance(seg.get("addressed"), bool), f"{p}.addressed 需為布林")
+        amb = seg.get("ambiguous", False)
+        if need(isinstance(amb, bool), f"{p}.ambiguous 需為布林（缺省視為 false）") and amb:
+            # ambiguous 段落的 addressed／route 只是名目值，固定填 true／direct_chat 以免下游誤用（§10.5 第 5 條）
+            need(seg.get("addressed") is True and seg.get("route") == "direct_chat" and seg.get("vocative") is None,
+                 f"{p}: ambiguous=true 時需 addressed=true、route=direct_chat、vocative=null（名目值）")
         if isinstance(seg.get("addressed"), bool) and seg.get("route") in ROUTES:
             need(seg["addressed"] == (seg["route"] != "ignore"), f"{p} addressed=false 當且僅當 route=ignore")
         voc = seg.get("vocative")
@@ -134,8 +144,11 @@ def validate_row(row: dict[str, Any]) -> tuple[list[str], list[str]]:
                     need(contains_name(src, s), f"{q}.surface 必須出現在該段 source")
                 if isinstance(r, str) and isinstance(st, str):
                     need(contains_name(st, r), f"{q}: 補完後 text 必須含 resolves_to")
-                if isinstance(r, str) and isinstance(acc, list) and any(isinstance(x, str) and len(x) > len(r) for x in acc):
-                    warn.append(f"{q}: accept 有比 resolves_to 更長的說法；resolves_to 應為完整先行詞片語（§10.4）")
+                if isinstance(r, str) and isinstance(acc, list):
+                    # §10.4：accept 只收等價寫法；若是 resolves_to 的子字串，就是丟掉了限定範圍的修飾語
+                    for x in acc:
+                        if isinstance(x, str) and x and (x == r or x.lower() in r.lower()):
+                            err.append(f"{q}: accept「{x}」是 resolves_to「{r}」的子字串，丟掉了限定修飾語（§10.4）")
                 if isinstance(s, str) and isinstance(st, str) and isinstance(r, str) and s not in r:
                     need(not contains_name(st, s), f"{q}: 補完後 text 不應再含代名詞 surface")
 
@@ -149,7 +162,8 @@ def validate_row(row: dict[str, Any]) -> tuple[list[str], list[str]]:
         if kind in ("dependent", "multi_step"):
             need(s0.get("route") == "agent_loop", f"{kind} 的 route 必須為 agent_loop")
     if kind == "independent" and all(isinstance(s, dict) for s in segs):
-        need(any(s.get("addressed") is True for s in segs), "independent 至少要有一段 addressed=true（chain 啟動條件 3）")
+        need(any(s.get("addressed") is True and not s.get("ambiguous", False) for s in segs),
+             "independent 至少要有一段非 ambiguous 且 addressed=true（chain 啟動條件 3）")
         spans = source_spans(text, segs)
         if need(spans is not None, "各段 source 必須依序、不重疊地出現在原文"):
             covered = sum(b - a for a, b in spans)

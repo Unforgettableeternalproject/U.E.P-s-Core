@@ -18,7 +18,6 @@ from datetime import datetime
 
 from uep.contracts.schedule import (
     PRESENCE_TARGET_HOST,
-    PRIORITY_BY_AUTHORITY,
     PRIORITY_EMERGENCY,
     PRIORITY_OWNER,
     PRIORITY_PLAN,
@@ -68,8 +67,8 @@ SameBandPolicy = Callable[[ArbiterRequest, OverrideView], bool]
 
 
 def priority_of(request: ArbiterRequest) -> int:
-    """優先序帶：緊急 300（僅 system）；其餘依 authority（member 50／system 100／owner 200）。"""
-    return PRIORITY_EMERGENCY if request.emergency else PRIORITY_BY_AUTHORITY[request.authority]
+    """優先序帶＝請求者階級的值：緊急 300（僅 system）；其餘 member 50／admin 75／system 100／owner 200。"""
+    return int(request.tier)
 
 
 def same_band_prevails(request: ArbiterRequest, current: OverrideView) -> bool:

@@ -13,6 +13,13 @@ from datetime import datetime, time
 from enum import StrEnum
 from typing import Literal, Protocol
 
+from uep.contracts.permission import (
+    InstructionLevel,
+    RequesterTier,
+    check_authority_tier,
+    derive_tier,
+)
+
 PlanLocation = str  # PlatformId（desktop|discord|website）或 "host"
 PRESENCE_TARGET_HOST = "host"
 PLAN_LOCATIONS = frozenset({"desktop", "discord", "website", PRESENCE_TARGET_HOST})
@@ -21,11 +28,12 @@ PLAN_LOCATIONS = frozenset({"desktop", "discord", "website", PRESENCE_TARGET_HOS
 REQUEST_TARGET_LOCATIONS = PLAN_LOCATIONS
 
 # 優先序帶：仲裁器擁有數值；本契約只要求 PLAN 嚴格最低
-PRIORITY_PLAN = 0  # 建議：PLAN 0 < REQUESTER 50 < SYSTEM 100 < OWNER 200 < EMERGENCY 300
-PRIORITY_REQUESTER = 50  # 已認證＋已登記的一般請求者（authority="member"，屬仲裁器階段）
-PRIORITY_SYSTEM = 100
-PRIORITY_OWNER = 200
-PRIORITY_EMERGENCY = 300
+PRIORITY_PLAN = 0  # 建議：PLAN 0 < REQUESTER 50 < SYSTEM 100 < OWNER 200 < EMERGENCY 300；PLAN 不是階級
+# 其餘數值與名稱保留，對應到請求者階級（權限契約 §1.1）
+PRIORITY_REQUESTER = int(RequesterTier.MEMBER)  # 已認證＋已登記的一般請求者（authority="member"，屬仲裁器階段）
+PRIORITY_SYSTEM = int(RequesterTier.SYSTEM)
+PRIORITY_OWNER = int(RequesterTier.OWNER)
+PRIORITY_EMERGENCY = int(RequesterTier.EMERGENCY)
 
 # Behavior 模式值（BehaviorState 的字串值；REST 由 PP-3 加入 coordinator）
 MODE_REST = "REST"
@@ -321,6 +329,9 @@ class ArbiterRequest:
     ``emergency``＝系統緊急（只允許 authority=system）：優先序 EMERGENCY，可覆寫一切、只形成 override 不放棄工作項。
     ``explicit_abandon``＝伴隨已驗證的 owner 放棄訊號（``AbandonResult`` ACCEPTED 之後才設）。
     ``received_seq``＝Core 收到的順序（不信任端點時間戳；Q-PP-5 同級衝突用）。
+    ``tier``＝請求者階級，預設由 authority／emergency 推導，建構時檢查與 authority 一致（權限契約 §1.3，fail-closed）；
+    ``instruction``＝決策層歸類出的指示等級（None＝尚未歸類，PM-2 起由仲裁器依 target／slot 推導）；
+    ``human_origin``＝是否為人類發起（強制睡眠專用，PM-6 才消費）。
     """
 
     request_id: str
@@ -331,12 +342,22 @@ class ArbiterRequest:
     received_seq: int = 0
     emergency: bool = False
     explicit_abandon: bool = False
+    tier: RequesterTier | None = None
+    instruction: InstructionLevel | None = None
+    human_origin: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.request_id, str) or _REQUEST_ID_RE.fullmatch(self.request_id) is None:
             raise ValueError(f"request_id 不合法：{self.request_id!r}")
         if self.authority not in ARBITER_AUTHORITIES:
             raise ValueError(f"authority 只收 owner／system／member：{self.authority!r}")
+        if self.tier is None:
+            object.__setattr__(self, "tier", derive_tier(self.authority, self.emergency))
+        check_authority_tier(self.authority, self.tier, self.emergency)
+        if self.instruction is not None and not isinstance(self.instruction, InstructionLevel):
+            raise ValueError(f"instruction 必須是 InstructionLevel：{self.instruction!r}")
+        if self.human_origin not in (True, False):
+            raise ValueError("human_origin 必須是布林")
         if self.target not in REQUEST_TARGET_LOCATIONS:
             raise ValueError(f"target 不合法：{self.target!r}")
         if self.actor_authenticated not in (True, False):

@@ -39,4 +39,7 @@ def test_schedule_does_not_import_memory():
 
 
 def test_schedule_contract_is_zero_dependency():
-    assert not [m for m in _modules(UEP_ROOT / "contracts" / "schedule.py") if m.split(".")[0] == "uep"]
+    # 只放行同為零依賴的權限契約（11/13 艾斯維爾同意；permission.py 自身的零依賴由 test_permission_contract 鎖住）
+    allowed = {"uep.contracts.permission"}
+    assert not [m for m in _modules(UEP_ROOT / "contracts" / "schedule.py")
+                if m.split(".")[0] == "uep" and m not in allowed]

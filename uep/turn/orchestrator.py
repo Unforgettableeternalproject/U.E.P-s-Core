@@ -634,6 +634,7 @@ class TurnOrchestrator:
     def _fact_platform(fact: UtteranceFact) -> str | None:
         """輸入宣告的來源平台（Presence location 詞彙，如 desktop／discord／website）；未宣告或不在閉集回 None。
         放棄訊號的 ``source_platform`` 兩條路徑共用此規則。"""
+        # 刻意差異：absent 路徑 turn.skipped payload 的 source_location 仍記 "invalid"（診斷用），放棄訊號則用 "missing"
         source = fact.source_location
         if isinstance(source, PresenceLocation):
             return source.value

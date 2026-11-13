@@ -306,3 +306,28 @@ def test_abandon_source_platform_uses_declared_source_on_both_paths():
         ("turn", "desktop"), ("turn", "website"), ("absent", "discord"),
     ]
     assert TurnOrchestrator._fact_platform(UtteranceFact(speaker_ref=OWNER, text="x", seq=1)) is None
+
+
+def test_abandon_absent_path_source_platform_is_missing_when_undeclared_or_invalid():
+    """缺席端來源未宣告（Host 不持有 Lease 才會走缺席端）或無效（INVALID_SOURCE_LOCATION）：source_platform 一律 missing。"""
+    judged: list = []
+    identity = IdentityDirectory({OWNER: "actor_owner"}, {"actor_owner": "owner1"})
+    inactive = _wired(TurnOrchestrator(
+        Capture(), TurnGenerations(), auth_provider=lambda: None, proposer=Pass(),  # type: ignore[arg-type]
+        identity=identity, host_location="desktop", run_id="run1", on_abandon_signal=_owner_sink([]),
+    ), judged)
+    inactive.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄", seq=1, source_endpoint_id="ep"))
+    invalid = _wired(_orch(Capture(), on_abandon_signal=_owner_sink([])), judged)  # require_source_location 預設關
+    result = invalid.on_utterance(CTX, UtteranceFact(
+        speaker_ref=OWNER, text="放棄", seq=2, source_location="bogus", source_endpoint_id="ep",  # type: ignore[arg-type]
+    ))
+    assert result.reason_code == "absent_platform_input"
+    assert [(j["path"], j["source_platform"]) for j in judged] == [("absent", "missing"), ("absent", "missing")]
+
+
+def test_fact_platform_rejects_invalid_strings():
+    for bad in ("invalid", "web", "", "Desktop "):
+        fact = UtteranceFact(speaker_ref=OWNER, text="x", seq=1, source_location=bad)  # type: ignore[arg-type]
+        assert TurnOrchestrator._fact_platform(fact) is None
+    assert TurnOrchestrator._fact_platform(
+        UtteranceFact(speaker_ref=OWNER, text="x", seq=1, source_location=PresenceLocation.DISCORD)) == "discord"

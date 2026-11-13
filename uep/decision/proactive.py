@@ -38,6 +38,7 @@ from uep.decision.contracts import (
     DecisionResult,
 )
 from uep.decision.hub import DecisionHub
+from uep.decision.presence_absent_intent import TARGET_LOCATIONS
 from uep.decision.registry import DecisionPointSpec
 from uep.events.envelope import scope_rank
 from uep.ids import new_id
@@ -95,6 +96,7 @@ R_AUTHORIZATION_SCOPE_INSUFFICIENT = "authorization_scope_insufficient"
 R_AUDIENCE_TOO_WIDE_MOVE = "audience_too_wide_move"
 R_AUDIENCE_TOO_WIDE_WAIT = "audience_too_wide_wait"
 R_PRESENCE_TRANSFERRING = "presence_transferring"
+R_TARGET_NOT_MOVABLE = "target_not_movable"
 R_PRESENCE_MISMATCH_MOVE = "presence_mismatch_move"
 R_PRESENCE_NONE_QUEUED = "presence_none_queued"
 R_PRESENCE_NONE_PREAUTHORIZED = "presence_none_preauthorized"
@@ -119,7 +121,7 @@ FALLBACK_REASONS: tuple[str, ...] = (ON_TIMEOUT_REASON, ON_BUSY_REASON, ON_ERROR
 REASON_CODES: tuple[str, ...] = (
     R_CANDIDATE_EXPIRED, R_CANDIDATE_MALFORMED, R_GLOBAL_STOP, R_AUTHORIZATION_REVOKED, R_NO_AUTHORIZATION,
     R_AUTHORIZATION_SCOPE_INSUFFICIENT, R_AUDIENCE_TOO_WIDE_MOVE, R_AUDIENCE_TOO_WIDE_WAIT,
-    R_PRESENCE_TRANSFERRING, R_PRESENCE_MISMATCH_MOVE, R_PRESENCE_NONE_QUEUED, R_PRESENCE_NONE_PREAUTHORIZED,
+    R_PRESENCE_TRANSFERRING, R_TARGET_NOT_MOVABLE, R_PRESENCE_MISMATCH_MOVE, R_PRESENCE_NONE_QUEUED, R_PRESENCE_NONE_PREAUTHORIZED,
     R_ACTIVITY_NOT_INTERRUPTIBLE, R_MUTED, R_IN_COMMITTED_INTERACTION, R_COST_EXCEEDS_VALUE,
     R_COOLDOWN_ACTIVE, R_DELIVERY_UNKNOWN, R_DUPLICATE_DELIVERED, R_BUDGET_EXHAUSTED, R_LOW_CONFIDENCE,
     R_READY_PRESENT, R_READY_MOVE, R_READY_ASSIGNMENT, *FALLBACK_REASONS,
@@ -503,6 +505,11 @@ def _defer(reason: str, gate: str, after_ms: int, placement: DecisionPlacement |
     )
 
 
+def _movable(loc: PresenceLocation | None) -> bool:
+    """可請求她前往的場域：與 presence.absent_intent 的 TARGET_LOCATIONS 同一份閉集（console 只能被排程指定，不可成為移轉目標）。"""
+    return loc is not None and loc.value in TARGET_LOCATIONS
+
+
 def _value(candidate: ProactiveCandidate) -> float:
     """打擾價值：salience（排序用）、urgency、confidence 的加權和；暫定權重。"""
     return 0.35 * candidate.memory_salience + 0.45 * _URGENCY_WEIGHT[candidate.urgency] + 0.20 * candidate.confidence
@@ -530,10 +537,14 @@ def arbitrate(candidate: ProactiveCandidate, ctx: ProactiveContext) -> Proactive
         channel = c.desired_location or ctx.current_platform
         if c.privacy_scope not in grant.scope_refs or (channel is not None and channel not in grant.locations):
             return _verdict(OUTCOME_REJECTED, R_AUTHORIZATION_SCOPE_INSUFFICIENT, GATE_AUTHORIZATION)
+    # 移轉目標守門：desired_location 不在可請求場域時 fail-closed（比照其他不允許路徑：rejected，不產生 placement、不在原地開口）
+    if c.desired_location is not None and not _movable(c.desired_location):
+        return _verdict(OUTCOME_REJECTED, R_TARGET_NOT_MOVABLE, GATE_PRESENCE)
     # G3 audience：聽眾比內容寬 -> deferred；有私人位置可移則提議 request_move
     if not scope_admits(ctx.audience_scope, c.privacy_scope):
-        move_to = c.desired_location if c.desired_location in ctx.private_locations else (
-            ctx.private_locations[0] if ctx.private_locations else None
+        movable_private = tuple(loc for loc in ctx.private_locations if _movable(loc))  # 非可移轉場域不當移轉落點
+        move_to = c.desired_location if c.desired_location in movable_private else (
+            movable_private[0] if movable_private else None
         )
         if move_to is not None:
             placement = DecisionPlacement(
@@ -548,7 +559,8 @@ def arbitrate(candidate: ProactiveCandidate, ctx: ProactiveContext) -> Proactive
     if ctx.transfer_pending or ctx.presence_status is PresenceStatus.RECOVERING:
         return _defer(R_PRESENCE_TRANSFERRING, GATE_PRESENCE, p.short_retry_ms)
     if ctx.presence_status is PresenceStatus.NONE:
-        chosen = (c.desired_location or (grant.locations[0] if grant and grant.locations else None))
+        grant_movable = tuple(loc for loc in grant.locations if _movable(loc)) if grant else ()
+        chosen = (c.desired_location or (grant_movable[0] if grant_movable else None))
         if grant is not None and grant.may_choose_location and chosen is not None:
             target, intent, ready_reason = chosen, "none", R_PRESENCE_NONE_PREAUTHORIZED
         else:

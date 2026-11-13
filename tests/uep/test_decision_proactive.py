@@ -162,15 +162,16 @@ def test_fixture_has_enough_records_and_each_matches_expectation():
     assert not mismatched, mismatched
 
 
-def test_reason_codes_total_28_and_unique():
-    assert len(REASON_CODES) == 28 and len(set(REASON_CODES)) == 28
+def test_reason_codes_total_29_and_unique():
+    assert len(REASON_CODES) == 29 and len(set(REASON_CODES)) == 29
     assert set(FALLBACK_REASONS) == {ON_TIMEOUT_REASON, ON_BUSY_REASON, ON_ERROR_REASON, ON_INVALID_REASON}
     assert all(r == r.lower() and r.replace("_", "").isalnum() for r in REASON_CODES)
 
 
 def test_fixture_covers_every_non_fallback_reason_code_and_every_gate():
     seen = {r["expect"]["reason_code"] for r in _records()}
-    assert seen == set(REASON_CODES) - set(FALLBACK_REASONS)
+    # target_not_movable 需要非可移轉場域（console）才觸發，fixture 不收；由專屬測試覆蓋
+    assert seen == set(REASON_CODES) - set(FALLBACK_REASONS) - {"target_not_movable"}
     by_gate: dict[str, set[str]] = {}
     for r in _records():
         by_gate.setdefault(r["expect"]["gate"], set()).add(r["expect"]["outcome"])
@@ -701,3 +702,47 @@ def test_console_never_chosen_as_move_target_when_not_in_private_locations():
     # 有授權但 grant.locations 不含 console：授權範圍不足
     verdict = arbitrate(_cand(desired_location=console), _ctx())
     assert verdict.reason_code == "authorization_scope_insufficient"
+
+
+def test_movable_targets_match_absent_intent_target_locations():
+    """proactive 的可移轉目標與 presence.absent_intent 的 TARGET_LOCATIONS 同源，且不含 console。"""
+    from uep.decision import presence_absent_intent as pai
+    from uep.decision import proactive as pro
+
+    assert pro.TARGET_LOCATIONS is pai.TARGET_LOCATIONS
+    assert "console" not in pro.TARGET_LOCATIONS
+    assert "target_not_movable" in REASON_CODES
+
+
+@pytest.mark.skipif(not _ENUM_HAS_CONSOLE, reason="PresenceLocation 尚無 console；加入後此測試自動生效")
+def test_g4_console_desired_location_is_target_not_movable():
+    console = PresenceLocation("console")
+    cand = _cand(source_kind="assignment", authorization_ref=None, desired_location=console)
+    # assignment 預授權、grant=None、聽眾夠窄、目前在 desktop、desired 為 console
+    verdict = arbitrate(cand, _ctx(grant=None))
+    assert (verdict.outcome, verdict.reason_code, verdict.gate) == ("rejected", "target_not_movable", "presence")
+    assert verdict.plan.placement is None and verdict.plan.loop is None
+    # presence NONE 且 grant 可自選場域：不得選 console
+    verdict = arbitrate(cand, _ctx(
+        presence_status=PresenceStatus.NONE, current_platform=None,
+        grant=GrantFact(valid=True, scope_refs=("scope_private",), locations=(console,), may_choose_location=True),
+    ))
+    assert verdict.reason_code == "target_not_movable"
+
+
+@pytest.mark.skipif(not _ENUM_HAS_CONSOLE, reason="PresenceLocation 尚無 console；加入後此測試自動生效")
+def test_console_in_private_or_grant_locations_never_becomes_move_target():
+    console = PresenceLocation("console")
+    # G3：desired 未指定，private_locations 只有 console -> 視為無私人位置可移，走 wait
+    verdict = arbitrate(
+        _cand(source_kind="assignment", authorization_ref=None),
+        _ctx(grant=None, audience_scope="scope_group_g1", private_locations=(console,)),
+    )
+    assert verdict.reason_code == "audience_too_wide_wait" and verdict.plan.placement is None
+    # G4 NONE：grant.locations 首位為 console、desired 未指定 -> 不選 console，改為排隊
+    verdict = arbitrate(
+        _cand(source_kind="assignment", authorization_ref=None),
+        _ctx(presence_status=PresenceStatus.NONE, current_platform=None, grant=GrantFact(
+            valid=True, scope_refs=("scope_private",), locations=(console,), may_choose_location=True)),
+    )
+    assert verdict.reason_code == "presence_none_queued" and verdict.plan.placement is None

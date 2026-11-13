@@ -1,0 +1,76 @@
+{
+ "n_rows": 414,
+ "missing_pred": 0,
+ "n_ambiguous_segments_excluded": 5,
+ "m1_cut_f1": {
+  "f1": 0.9732,
+  "precision": 0.9852,
+  "recall": 0.9614,
+  "tp": 399,
+  "fp": 6,
+  "fn": 16
+ },
+ "m2_segment_count_acc": {
+  "value": 0.967,
+  "n": 303
+ },
+ "m3_pronoun_by_route": {
+  "agent_loop": {
+   "value": 0.931,
+   "n": 29,
+   "all": 0.9333,
+   "n_all": 30
+  },
+  "direct_chat": {
+   "value": 1.0,
+   "n": 13,
+   "all": 1.0,
+   "n_all": 13
+  },
+  "task_request": {
+   "value": 0.9101,
+   "n": 89,
+   "all": 0.9022,
+   "n_all": 92
+  }
+ },
+ "m3_pronoun_side_effect_routes": {
+  "value": 0.9153,
+  "n": 118,
+  "all": 0.9098,
+  "n_all": 122
+ },
+ "m4_single_recall": {
+  "value": 1.0,
+  "n": 111
+ },
+ "m5_miss_split_rate": {
+  "value": 0.0264,
+  "n": 303
+ },
+ "m6_vocative_retention": {
+  "value": 1.0,
+  "n": 283,
+  "dispatched_only": 1.0,
+  "lost_for_not_addressed_segments": {
+   "lost": 0,
+   "n": 129
+  }
+ },
+ "m9_invalid_rate": {
+  "value": 0.0,
+  "by_code": {}
+ },
+ "m10_no_addressed_segment_proxy": {
+  "value": 0.0,
+  "n_chain_items": 295,
+  "note": "proxy：用標註 addressed 與稱呼保留推算，非 Laya 重判"
+ },
+ "m7_route_addressed_agreement": "N/A（需 --laya：Laya 對各段的 route／addressed 結果）",
+ "m8_latency_ms": {
+  "first_p50": 2328.95,
+  "first_p95": 3810.9,
+  "total_p95": 4197.6,
+  "n": 414
+ }
+}

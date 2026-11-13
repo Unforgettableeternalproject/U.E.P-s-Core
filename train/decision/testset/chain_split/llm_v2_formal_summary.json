@@ -1,0 +1,25 @@
+{
+ "model": "gpt-6-luna",
+ "effort": "low",
+ "prompt_version": "baseline-v2",
+ "gold": "formal.jsonl",
+ "n": 414,
+ "cache_hit": 0,
+ "sent": 414,
+ "failed": 0,
+ "tokens": {
+  "input": 488466,
+  "cached_input": 466992,
+  "output": 69923,
+  "reasoning": 39641
+ },
+ "first_segment_ms": {
+  "p50": 2328.3,
+  "p95": 3810.9
+ },
+ "total_ms": {
+  "p50": 2637.5,
+  "p95": 4197.6
+ },
+ "latency_note": "只含本次實際送出的呼叫與快取內記錄的歷史延遲；串流量測，首段=第一個完整 segment 物件"
+}

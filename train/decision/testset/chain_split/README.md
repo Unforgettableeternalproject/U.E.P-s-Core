@@ -50,26 +50,32 @@ python dedup_check.py formal.jsonl --root ../.. --git-ref feature/decision-laya-
 
 ## 雲端 LLM 基線（`llm_splitter.py`）
 
-最簡 prompt（`PROMPT_VERSION=baseline-v1`：依賴只回一段、保留稱呼、補完指代）、專案 Think 的 `UEP_LLM_*` 設定，
-模型 `gpt-6-luna`（Responses API、reasoning effort=low、並發 4、串流量測首段）。prompt 只含 `text` 與 `context`，不含任何標註欄位。
-逐筆快取於 `.llm_split_cache.jsonl`（不入版控），重跑不重送。
+專案 Think 的 `UEP_LLM_*` 設定，模型 `gpt-6-luna`（Responses API、reasoning effort=low、並發 4、串流量測首段）。
+prompt 只描述規則、只送 `text` 與 `context`，不含標註欄位或題目原句。逐筆快取於 `.llm_split_cache.jsonl`（`.gitignore` 排除），重跑不重送。
+`--prompt v1` 是舊基線，`--prompt v2`（預設）是依新 §10.4／§10.5 改版：輸出用原文語言、無稱呼段落沿用最近的稱呼對象
+（對別人說話就補回名字，對 Yuki 說不補）、只有她的資料或裝置才算對她說。
 
 ```text
-python llm_splitter.py --gold formal.jsonl --out pred_llm_formal.jsonl --env-file <主 repo>/.env --summary-out llm_formal_summary.json
-python eval_split.py --gold formal.jsonl --pred pred_llm_formal.jsonl --out eval_llm_formal.json --review-out review_llm_formal.jsonl
+python llm_splitter.py --prompt v2 --gold formal.jsonl --out pred_llm_v2_formal.jsonl --env-file <主 repo>/.env --summary-out llm_v2_formal_summary.json
+python eval_split.py --gold formal.jsonl --pred pred_llm_v2_formal.jsonl --out eval_llm_v2_formal.json --review-out review_llm_v2_formal.jsonl
 ```
 
-跑的版本：`smoke.jsonl` blob `e9eaa0a2`、`formal.jsonl` blob `5a2ebedf`（commit d254809）；`formal_asr.jsonl` 當時尚不存在，未跑。
+檔案：`pred_llm_{v2_smoke,v2_formal,v2_asr,v1_formal}.jsonl`、`eval_llm_*.json`（`_base`＝cs-0001..0302、`_hard`＝cs-0303..0414 的子集）、
+`llm_*_summary.json`（token 與延遲）、`review_llm_v2_{smoke,formal,asr}.jsonl`（指標 3 複核抽樣）。
+基於 HEAD 7eed3f6 的 `smoke.jsonl`、`formal.jsonl`（414 列）、`formal_asr.jsonl`（414 列）。
 
-| 指標 | naive_punct | LLM 基線（formal 302 句） | 門檻 |
-|---|---|---|---|
-| 1 切點 F1 | 0.615 | 0.979 | 0.85 |
-| 2 段數正確率 | - | 0.980 | 回報 |
-| 3 代名詞 task_request／agent_loop／direct_chat | 0.163／0.000／0.000 | 0.952／1.000／1.000（n=42／29／8，主要分母） | 0.95／0.95／0.90 |
-| 4 依賴只回一段召回 | 0.220 | 0.990 | 0.95 |
-| 5 漏拆率 | - | 0.010 | 回報 |
-| 6 稱呼保留 | 0.488 | 0.995 | 0.95 |
-| 9 輸出驗證失敗 | - | 0.000 | 回報 |
+formal 結果（v1 用同一份新 gold 重跑；指標 3 為啟發式 proxy，主要分母）：
 
-指標 3 為啟發式 proxy，需看 `review_llm_formal.jsonl` 複核。延遲為 4 並發下的串流量測，首段 p50／p95 約 2.1／4.0 秒，
-遠高於首段 p95 ≤800ms 的暫定值（effort=low 仍有推理 token，之後可比較 effort=none 與較小模型）。
+| 指標 | v1 全 414 | v2 全 414 | v1 base 302 | v2 base 302 | v1 hard 112 | v2 hard 112 | v2 asr 414 |
+|---|---|---|---|---|---|---|---|
+| 1 切點 F1 | 0.974 | 0.973 | 0.982 | 0.971 | 0.952 | 0.981 | 0.962 |
+| 2 段數正確率 | 0.960 | 0.967 | 0.980 | 0.970 | 0.921 | 0.960 | 0.964 |
+| 3 task_request | 0.909 | 0.910 | 0.952 | 0.975 | 0.870 | 0.857 | 0.912 |
+| 3 agent_loop | 1.000 | 0.931 | 1.000 | 0.931 | - | - | 1.000 |
+| 3 direct_chat | 0.923 | 1.000 | 1.000 | 1.000 | 0.800 | 1.000 | 0.923 |
+| 4 依賴只回一段 | 0.991 | 1.000 | 0.990 | 1.000 | 1.000 | 1.000 | 0.991 |
+| 5 漏拆率 | 0.030 | 0.026 | 0.010 | 0.020 | 0.069 | 0.040 | 0.020 |
+| 6 稱呼保留 | 0.989 | 1.000 | 0.985 | 1.000 | 1.000 | 1.000 | 0.979 |
+| 10 no_addressed proxy | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.010 |
+
+延遲為 4 並發下的串流量測，v2 formal 首段 p50／p95 約 2.3／3.8 秒，遠高於首段 p95 ≤800ms 的暫定值。

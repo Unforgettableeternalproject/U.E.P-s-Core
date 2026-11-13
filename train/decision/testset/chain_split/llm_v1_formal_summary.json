@@ -3,23 +3,23 @@
  "effort": "low",
  "prompt_version": "baseline-v1",
  "gold": "formal.jsonl",
- "n": 302,
- "cache_hit": 0,
- "sent": 302,
+ "n": 414,
+ "cache_hit": 279,
+ "sent": 135,
  "failed": 0,
  "tokens": {
-  "input": 235096,
+  "input": 322452,
   "cached_input": 0,
-  "output": 43590,
-  "reasoning": 20601
+  "output": 60060,
+  "reasoning": 29800
  },
  "first_segment_ms": {
-  "p50": 2128.7,
-  "p95": 4023.2
+  "p50": 2104.9,
+  "p95": 3784.9
  },
  "total_ms": {
-  "p50": 2508.1,
-  "p95": 4488.8
+  "p50": 2419.0,
+  "p95": 4338.7
  },
  "latency_note": "只含本次實際送出的呼叫與快取內記錄的歷史延遲；串流量測，首段=第一個完整 segment 物件"
 }

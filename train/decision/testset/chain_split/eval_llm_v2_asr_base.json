@@ -1,16 +1,17 @@
 {
  "n_rows": 302,
  "missing_pred": 0,
+ "n_ambiguous_segments_excluded": 3,
  "m1_cut_f1": {
-  "f1": 0.9788,
-  "precision": 0.9836,
-  "recall": 0.974,
-  "tp": 300,
-  "fp": 5,
-  "fn": 8
+  "f1": 0.9689,
+  "precision": 0.9769,
+  "recall": 0.961,
+  "tp": 296,
+  "fp": 7,
+  "fn": 12
  },
  "m2_segment_count_acc": {
-  "value": 0.9802,
+  "value": 0.9653,
   "n": 202
  },
  "m3_pronoun_by_route": {
@@ -27,16 +28,16 @@
    "n_all": 8
   },
   "task_request": {
-   "value": 0.9524,
+   "value": 0.9762,
    "n": 42,
-   "all": 0.9302,
+   "all": 0.9535,
    "n_all": 43
   }
  },
  "m3_pronoun_side_effect_routes": {
-  "value": 0.9718,
+  "value": 0.9859,
   "n": 71,
-  "all": 0.9452,
+  "all": 0.9589,
   "n_all": 73
  },
  "m4_single_recall": {
@@ -44,16 +45,16 @@
   "n": 100
  },
  "m5_miss_split_rate": {
-  "value": 0.0099,
+  "value": 0.0149,
   "n": 202
  },
  "m6_vocative_retention": {
-  "value": 0.995,
-  "n": 201,
-  "dispatched_only": 0.9949,
+  "value": 0.9901,
+  "n": 202,
+  "dispatched_only": 0.9897,
   "lost_for_not_addressed_segments": {
-   "lost": 1,
-   "n": 89
+   "lost": 2,
+   "n": 90
   }
  },
  "m9_invalid_rate": {
@@ -62,14 +63,14 @@
  },
  "m10_no_addressed_segment_proxy": {
   "value": 0.0,
-  "n_chain_items": 201,
+  "n_chain_items": 200,
   "note": "proxy：用標註 addressed 與稱呼保留推算，非 Laya 重判"
  },
  "m7_route_addressed_agreement": "N/A（需 --laya：Laya 對各段的 route／addressed 結果）",
  "m8_latency_ms": {
-  "first_p50": 2130.25,
-  "first_p95": 4023.2,
-  "total_p95": 4488.8,
+  "first_p50": 2310.75,
+  "first_p95": 4068.1,
+  "total_p95": 4478.4,
   "n": 302
  }
 }

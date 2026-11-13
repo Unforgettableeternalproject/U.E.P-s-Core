@@ -1,0 +1,2 @@
+{"id": "cs-s002", "route": "task_request", "dispatched": true, "surface": "它", "resolves_to": "剛剛那份預算表", "accept": ["剛才那份預算表"], "pred_segment": "幫我把剛剛那份預算表存到雲端資料夾", "judge": true, "human_or_llm": null}
+{"id": "cs-s012", "route": "task_request", "dispatched": true, "surface": "it", "resolves_to": "lease agreement dated October 3rd", "accept": ["the lease agreement dated October 3rd", "lease agreement from October 3rd"], "pred_segment": "Email the lease agreement dated October 3rd to Ann", "judge": true, "human_or_llm": null}

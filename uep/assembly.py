@@ -410,6 +410,33 @@ def check_m_group_pinned(registrations: Sequence[tuple[Any, Any]]) -> None:
             raise AssemblyError(f"module_registrations：{getattr(descriptor, 'module_id', '?')} 是 M 群（kind={descriptor.kind}），v1 必須 pinned=True")
 
 
+def check_module_coverage(
+    entries: Mapping[str, Any], known_ids: Collection[str], registrations: Sequence[tuple[Any, Any]], *, enforce: bool,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """雙向覆蓋檢查（設計稿 §13.3）。純函式，可離線測試。回傳 ``(缺漏, 未被引用)``：
+
+    - 正向：所有工具 ``requires`` 都必須是已登記的 module id；缺漏 ``(工具名, module_id)``。``enforce``（coordinator 驅動註冊表）時
+      有缺漏即 ``AssemblyError``（否則該工具 readiness 恆為 unavailable 卻無人知道），不驅動時只記警告。
+    - 反向：``kind="service"`` 描述子必須被某個工具的 ``requires`` 引用（否則是沒人用的死登記）；M 群（kind=model／stage）豁免。只記警告。"""
+    known = set(known_ids)
+    missing = sorted(
+        (name, module) for name, entry in entries.items() for module in getattr(entry, "requires", ()) if module not in known
+    )
+    referenced = {module for entry in entries.values() for module in getattr(entry, "requires", ())}
+    unreferenced = sorted(
+        d.module_id for d, _ in registrations
+        if getattr(d, "kind", None) == "service" and d.module_id not in referenced
+    )
+    if missing and enforce:
+        detail = "；".join(f"{name}->{module}" for name, module in missing)
+        raise AssemblyError(f"工具 requires 含未登記的模組（module coordinator 驅動註冊表時不允許）：{detail}")
+    if missing:
+        logger.warning("工具 requires 含未登記的模組：%s", [f"{n}->{m}" for n, m in missing])
+    if unreferenced:
+        logger.warning("service 描述子沒有任何工具 requires 引用：%s", unreferenced)
+    return missing, unreferenced
+
+
 def build_module_budget(settings: Any, probe: VramProbe | None = None) -> ResourceBudget | None:
     """依設定建立資源預算；``UEP_MODULE_VRAM_HEADROOM_MB`` 未設 => None（不啟用預算管理）。
     只設 budget 沒設 headroom => ``AssemblyError``。沒給 probe 時才建 NVML probe（延遲載入 pynvml，建立本身不碰 GPU）。"""
@@ -804,6 +831,7 @@ def assemble_core(
             module_sink if module_sink is not None else bus_sink(publisher, persona_id=persona_id),
             epoch_source=lambda: presence.core_epoch,  # presence.start() 之後才讀得到（coordinator.start() 內才呼叫）
             mode="manage" if coordinator_drives_registry else "observe",
+            probe_interval_s=get_settings().module_probe_interval_s,  # 預設 0 = 不定期探活（現況）
             budget=build_module_budget(get_settings(), module_vram_probe),  # PR-3：未設 headroom => None（不啟用預算管理）
         )
         for descriptor, handle in module_registrations:
@@ -872,6 +900,10 @@ def assemble_core(
                 wire_map(tool_resolver.entries())
             except ToolNameError as exc:
                 raise AssemblyError(f"工具名稱無法安全轉譯給 provider：{exc}") from exc
+    if coordinator_obj is not None and callable(getattr(tool_resolver, "entries", None)):
+        check_module_coverage(
+            tool_resolver.entries(), coordinator_obj.known_ids(), module_registrations, enforce=coordinator_drives_registry,
+        )
     _check_registry_executors(tool_resolver, executors, internal_executors)
     assert turn_generation_source is not None and presence_audience is not None
 

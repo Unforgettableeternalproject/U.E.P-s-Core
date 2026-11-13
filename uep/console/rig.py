@@ -224,6 +224,17 @@ def build_fake_runtime(
         from uep.console.agent_rig import install_loop_route
 
         install_loop_route(host, loop_switch)
+    assemble_extra = dict(assemble_kwargs or {})
+    from uep.config import get_settings as _module_settings
+
+    coordinator_flag = assemble_extra.get("module_coordinator")  # 與 assemble_core 同一判定：明確傳值優先於設定
+    if coordinator_flag is None:
+        coordinator_flag = _module_settings().module_coordinator
+    if coordinator_flag and "module_registrations" not in assemble_extra:
+        # 旗標關閉時完全不載入、不登記
+        from uep.tools.module_handles import build_s_group_registrations
+
+        assemble_extra["module_registrations"] = build_s_group_registrations(_module_settings())
     core = assemble_core(
         session_factory, **{
             "bus": bus, "publisher": publisher, "control": InProcessControlChannel(), "adapter": host.adapter,
@@ -231,7 +242,7 @@ def build_fake_runtime(
             "turn_generation_source": host.generation_source, "presence_audience": lambda: PRIVATE_SCOPE,
             "epoch_store": HostEpochStore(session_dir / "host_epoch.json"), "maintenance_interval": None, "echo": host,
             "memory": memory_host,  # 決策日誌由組裝層依 UEP_DECISION_LOG 接上（DL-3）
-            **(assemble_kwargs or {}),
+            **assemble_extra,
         },
     )
     runtime = ConsoleRuntime(

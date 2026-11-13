@@ -136,6 +136,30 @@ def build_vision(
     return OpenAIVision(lambda: factory(30.0), model)
 
 
+_UNSET: Any = object()  # 區分「沒注入」與「注入 None」
+
+
+def web_search_available(
+    settings: UepSettings, *, chain: SearchChain | None = None, transport: Transport | None = None,
+    resolver: Resolver | None = None, client_factory: Callable[[float], Any] | None = None,
+) -> bool:
+    """web.search 的設定面可用判定（至少一個可用 provider 或備援）；不做網路 I/O。組裝閘與模組 handle 共用。
+    ``chain`` 給了（注入或已組好）就直接問它，否則依設定組一次。"""
+    built = chain if chain is not None else build_search_chain(
+        settings, transport=transport, resolver=resolver, client_factory=client_factory,
+    )
+    return built.available()
+
+
+def image_read_available(
+    settings: UepSettings, *, vision: Any = _UNSET, client_factory: Callable[[float], Any] | None = None,
+) -> bool:
+    """image.read 的設定面可用判定（有視覺模型）；不做網路 I/O。組裝閘與模組 handle 共用。
+    ``vision`` 不給 = 依設定組；明確給 None = 已知沒有視覺模型（不再重組）。"""
+    port = build_vision(settings, client_factory=client_factory) if vision is _UNSET else vision
+    return port is not None
+
+
 def image_roots(settings: UepSettings) -> tuple[str, ...]:
     """白名單目錄；相對路徑或磁碟根目錄不合格，警告並略過（不讓組裝失敗）。"""
     valid: list[str] = []
@@ -182,20 +206,22 @@ def with_web_image(
         ),
     }
     modules = set(getattr(registry, "_known_modules", frozenset()))
-    if chain.available():
+    search_ok = web_search_available(settings, chain=chain)
+    vision_ok = image_read_available(settings, vision=vision_port)
+    if search_ok:
         modules.add(MODULE_WEB_SEARCH)
     if settings.web_fetch_enabled:
         modules.add(MODULE_WEB_FETCH)
-    if vision_port is not None:  # URL 圖片不需要白名單；本機路徑沒設白名單時由 executor 拒絕
+    if vision_ok:  # URL 圖片不需要白名單；本機路徑沒設白名單時由 executor 拒絕
         modules.add(MODULE_IMAGE_READ)
     existing = registry.entries()
     if any(name in existing for name in WEB_IMAGE_TOOLS):
         return registry, executors
     if coordinator is not None:
         apply_config_gates(coordinator, {
-            MODULE_WEB_SEARCH: None if chain.available() else "not_configured",
+            MODULE_WEB_SEARCH: None if search_ok else "not_configured",
             MODULE_WEB_FETCH: None if settings.web_fetch_enabled else "disabled",
-            MODULE_IMAGE_READ: None if vision_port is not None else "not_configured",
+            MODULE_IMAGE_READ: None if vision_ok else "not_configured",
         })
     if coordinator is not None and drive_registry:
         known = set(getattr(registry, "_known_modules", frozenset())) | set(coordinator.known_ids())

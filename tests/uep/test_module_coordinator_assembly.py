@@ -279,6 +279,13 @@ def test_failed_start_closes_inputs_even_if_coordinator_start_raises():
 
 # --- 真 assemble_core（需 DB）---
 
+def _s_group(*skip: str):
+    """真組裝（coordinator 驅動註冊表）下，工具 requires 的 S 群模組必須全部登記（PR-4 雙向檢查）。"""
+    from uep.tools.module_handles import build_s_group_registrations
+
+    return [(d, h) for d, h in build_s_group_registrations(UepSettings(_env_file=None)) if d.module_id not in skip]
+
+
 def _db_core(session_factory, tmp_path, **over):
     from tests.uep.echo_support import fast_speak, make_identity, make_session
     from tests.uep.test_agent_loop_entry_db import _agent_pieces
@@ -339,7 +346,7 @@ def test_db_both_flags_start_snapshot_precedes_ready_and_shutdown_order(session_
     desc = ModuleDescriptor("lore", autoload=True)
     core, _ = _db_core(
         session_factory, tmp_path, module_coordinator=True, tool_module_events=True,
-        module_registrations=[(desc, FakeHandle())], module_sink=lambda t, p: seen.append(dict(p)),
+        module_registrations=[(desc, FakeHandle()), *_s_group("lore")], module_sink=lambda t, p: seen.append(dict(p)),
     )
     try:
         assert core.module_coordinator.mode == "manage" and core.module_events_unsubscribe is not None
@@ -401,17 +408,28 @@ def test_assemble_core_wraps_registration_errors_in_assembly_error():
 
 # --- PR-3：預算設定、M 群 pinned 檢查（離線）---
 
+@pytest.fixture(autouse=True)
+def _isolate_module_env(monkeypatch):
+    """與 repo 根 .env 和行程環境無關：預算相關設定一律從乾淨狀態起算，需要的值由測試明確傳入。"""
+    for key in (
+        "UEP_MODULE_VRAM_HEADROOM_MB", "UEP_MODULE_VRAM_BUDGET_MB", "UEP_MODULE_VRAM_READING_MAX_AGE_S",
+        "UEP_MODULE_VRAM_RECOVER_MARGIN_MB", "UEP_MODULE_EVICT_COOLDOWN_S", "UEP_MODULE_GPU_INDEX",
+        "UEP_MODULE_VRAM_READ_TIMEOUT_S", "UEP_MODULE_UNLOAD_RELEASE_RATIO",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_budget_settings_default_off_and_budget_management_disabled_without_headroom():
     fields = UepSettings.model_fields
     assert fields["module_vram_headroom_mb"].default is None and fields["module_vram_budget_mb"].default is None
-    assert build_module_budget(UepSettings()) is None  # 未設定 = 不啟用預算管理（不建立 NVML probe）
+    assert build_module_budget(UepSettings(_env_file=None)) is None  # 未設定 = 不啟用預算管理（不建立 NVML probe）
 
 
 def test_budget_only_without_headroom_is_an_assembly_error_and_headroom_builds_budget():
     with pytest.raises(AssemblyError, match="HEADROOM"):
-        build_module_budget(UepSettings(UEP_MODULE_VRAM_BUDGET_MB=8000))
+        build_module_budget(UepSettings(_env_file=None, UEP_MODULE_VRAM_BUDGET_MB=8000))
     probe = MagicMock()
-    budget = build_module_budget(UepSettings(UEP_MODULE_VRAM_HEADROOM_MB=2000, UEP_MODULE_VRAM_BUDGET_MB=8000), probe)
+    budget = build_module_budget(UepSettings(_env_file=None, UEP_MODULE_VRAM_HEADROOM_MB=2000, UEP_MODULE_VRAM_BUDGET_MB=8000), probe)
     assert budget is not None and budget.config.headroom_mb == 2000 and budget.config.budget_mb == 8000
     assert budget.config.recover_margin_mb == 256 and budget.config.evict_cooldown_s == 60.0
     probe.read.assert_not_called()  # 建立預算不量測
@@ -419,7 +437,7 @@ def test_budget_only_without_headroom_is_an_assembly_error_and_headroom_builds_b
 
 def test_probe_without_headroom_is_an_assembly_error_not_silently_dropped():
     with pytest.raises(AssemblyError, match="module_vram_probe"):
-        build_module_budget(UepSettings(), MagicMock())
+        build_module_budget(UepSettings(_env_file=None), MagicMock())
 
 
 def test_m_group_descriptors_must_be_pinned():
@@ -450,10 +468,10 @@ def test_db_budget_is_wired_into_coordinator_and_admits_gpu_load(session_factory
     probe = FakeProbe(free=20000)
     desc = ModuleDescriptor("gpu_svc", uses_gpu=True, vram_mb=4000, autoload=True)
     handle = FakeHandle()
-    monkeypatch.setattr(assembly_mod, "get_settings", lambda: UepSettings(UEP_MODULE_VRAM_HEADROOM_MB=2000))
+    monkeypatch.setattr(assembly_mod, "get_settings", lambda: UepSettings(_env_file=None, UEP_MODULE_VRAM_HEADROOM_MB=2000))
     core, _ = _db_core(
         session_factory, tmp_path, module_coordinator=True, tool_module_events=True,
-        module_registrations=[(desc, handle)], module_sink=lambda t, p: None, module_vram_probe=probe,
+        module_registrations=[(desc, handle), *_s_group()], module_sink=lambda t, p: None, module_vram_probe=probe,
     )
     try:
         core.start()
@@ -463,12 +481,15 @@ def test_db_budget_is_wired_into_coordinator_and_admits_gpu_load(session_factory
         core.shutdown()
 
 
-def test_db_budget_not_configured_rejects_gpu_load_but_keeps_services(session_factory, tmp_path):
+def test_db_budget_not_configured_rejects_gpu_load_but_keeps_services(session_factory, tmp_path, monkeypatch):
+    import uep.assembly as assembly_mod
+
+    monkeypatch.setattr(assembly_mod, "get_settings", lambda: UepSettings(_env_file=None))  # 不讀 .env：確保預算未設定
     gpu_desc = ModuleDescriptor("gpu_svc", uses_gpu=True, vram_mb=4000, autoload=True)
     svc_desc = ModuleDescriptor("plain_svc", autoload=True)  # 不用 lore：真組裝下 lore 會被設定閘住
     core, _ = _db_core(
         session_factory, tmp_path, module_coordinator=True, tool_module_events=True,
-        module_registrations=[(gpu_desc, FakeHandle()), (svc_desc, FakeHandle())], module_sink=lambda t, p: None,
+        module_registrations=[(gpu_desc, FakeHandle()), (svc_desc, FakeHandle()), *_s_group()], module_sink=lambda t, p: None,
     )
     try:
         core.start()

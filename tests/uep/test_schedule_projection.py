@@ -151,7 +151,7 @@ NOW = datetime(2026, 11, 12, 4, tzinfo=TPE)
 
 
 def _slot(source=PlanSource.ITEM, kind=ActivityKind.WORK):
-    return PlanSlot("available", "discord", kind, source, "x", r.InterruptPolicy.SAFE_POINT,
+    return PlanSlot("available", "discord", kind, source, "x", r.InterruptTiming.SAFE_POINT,
                     r.suggestions_for(kind, source), NOW, None, None, 1)
 
 

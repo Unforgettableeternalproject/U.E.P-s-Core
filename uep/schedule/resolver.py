@@ -25,7 +25,7 @@ from uep.contracts.schedule import (
     PRESENCE_TARGET_HOST,
     ActivityKind,
     BehaviorSuggestion,
-    InterruptPolicy,
+    InterruptTiming,
     OverrideView,
     PlanDelay,
     PlanDirective,
@@ -35,6 +35,7 @@ from uep.contracts.schedule import (
     SlotMark,
     SlotNotice,
     SlotState,
+    default_interrupt_timing,
 )
 
 _UTC = UTC
@@ -124,9 +125,6 @@ def override_end_reason(override: OverrideView, now: datetime) -> str | None:
 
 # ---- 預設與建議 ----
 
-def default_interrupt_policy(kind: ActivityKind) -> InterruptPolicy:
-    return InterruptPolicy.FREE if kind == ActivityKind.SOCIAL else InterruptPolicy.SAFE_POINT
-
 
 def suggestions_for(kind: ActivityKind, source: PlanSource,
                     explicit: tuple[str, ...] | None = None,
@@ -152,7 +150,7 @@ def unavailable_slot(at: datetime, plan_revision: int = 0, reason_code: str | No
     """行程不可用（X1）：host、無建議、source=DEFAULT；``reason_code`` 說明原因（如 tz_unavailable）。"""
     return PlanSlot(
         availability="unavailable", location=PRESENCE_TARGET_HOST, activity_kind=ActivityKind.REST,
-        source=PlanSource.DEFAULT, item_ref=None, interrupt_policy=InterruptPolicy.SAFE_POINT,
+        source=PlanSource.DEFAULT, item_ref=None, interrupt_timing=InterruptTiming.SAFE_POINT,
         suggestions=(), starts_at=_utc(at), ends_at=None, next_boundary_at=None, plan_revision=plan_revision,
         standby=True, reason_code=reason_code)
 
@@ -352,7 +350,7 @@ def _resolve(items, override, now: datetime, tz: str, rev: int, delay, marks) ->
         return PlanSlot(
             availability="available", location=ov.location, activity_kind=ov.activity_kind,
             source=PlanSource.OVERRIDE, item_ref=ov.override_id,
-            interrupt_policy=default_interrupt_policy(ov.activity_kind),
+            interrupt_timing=default_interrupt_timing(ov.activity_kind),
             suggestions=suggestions_for(ov.activity_kind, PlanSource.OVERRIDE),
             starts_at=_utc(ov.started_at), ends_at=_utc(ov.expires_at), next_boundary_at=_utc(ov.expires_at),
             plan_revision=rev, override_state=ov.status, standby=ov.activity_kind == ActivityKind.REST)
@@ -361,7 +359,7 @@ def _resolve(items, override, now: datetime, tz: str, rev: int, delay, marks) ->
         # 預設格的 starts_at 是 directive_id 的錨：向後看 8 天找上一個邊界，找不到用固定值（不隨時間改變）
         return PlanSlot(
             availability="available", location=PRESENCE_TARGET_HOST, activity_kind=ActivityKind.REST,
-            source=PlanSource.DEFAULT, item_ref=None, interrupt_policy=InterruptPolicy.SAFE_POINT,
+            source=PlanSource.DEFAULT, item_ref=None, interrupt_timing=InterruptTiming.SAFE_POINT,
             suggestions=suggestions_for(ActivityKind.REST, PlanSource.DEFAULT),
             starts_at=starts or DEFAULT_EPOCH, ends_at=next_b, next_boundary_at=next_b, plan_revision=rev,
             standby=True)
@@ -372,19 +370,20 @@ def _resolve(items, override, now: datetime, tz: str, rev: int, delay, marks) ->
               "blueprint_start_at": win.bp_start, "delay_s": win.delay_s, "tz": item.tz}
     if win.tag == "abandoned":  # fallback＝REST（主機），藍圖不改
         return PlanSlot(location=PRESENCE_TARGET_HOST, activity_kind=ActivityKind.REST,
-                        interrupt_policy=InterruptPolicy.SAFE_POINT,
+                        interrupt_timing=InterruptTiming.SAFE_POINT,
                         suggestions=suggestions_for(ActivityKind.REST, source, slot_state="abandoned"),
                         standby=True, slot_state="abandoned", **common)
     location = item.location if item.location is not None else PRESENCE_TARGET_HOST
     kind = ActivityKind.REST if item.location is None else item.activity_kind  # X3
-    interrupt = item.interrupt_policy or default_interrupt_policy(kind)
+    interrupt = item.interrupt_timing or default_interrupt_timing(kind)
+    common["min_rank"] = item.min_rank  # 誰能叫走她：由行程項帶入投影（§3.6）
     paused = win.tag == "paused"
     if paused:  # 留在原平台待命：位置與 activity_kind 不變，建議 [CHAT]
-        return PlanSlot(location=location, activity_kind=kind, interrupt_policy=interrupt,
+        return PlanSlot(location=location, activity_kind=kind, interrupt_timing=interrupt,
                         suggestions=suggestions_for(kind, source, slot_state="paused"),
                         standby=True, slot_state="paused", **common)
     # 待命只有 REST（含預設、fallback）；SOCIAL、休息時段（SLEEP）、WORK 不是
-    return PlanSlot(location=location, activity_kind=kind, interrupt_policy=interrupt,
+    return PlanSlot(location=location, activity_kind=kind, interrupt_timing=interrupt,
                     suggestions=suggestions_for(kind, source, item.suggested_behaviors),
                     standby=kind == ActivityKind.REST and source != PlanSource.REST_WINDOW, **common)
 

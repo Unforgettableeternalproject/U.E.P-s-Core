@@ -64,7 +64,9 @@ class PlanItemRow(Base):
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     priority: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="50")
     flexibility: Mapped[str] = mapped_column(String, nullable=False, server_default="fixed")
-    interrupt_policy: Mapped[str | None] = mapped_column(String)
+    interrupt_policy: Mapped[str | None] = mapped_column(String)  # 舊欄位：下一個 migration 才刪（只讀相容）
+    min_rank: Mapped[int | None] = mapped_column(SmallInteger)  # 誰能叫走她（RequesterTier 值；§3.6）
+    interrupt_timing: Mapped[str | None] = mapped_column(String)  # 何時可打斷：free／safe_point
     suggested_behaviors: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     note_ref: Mapped[str | None] = mapped_column(String)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
@@ -82,6 +84,9 @@ class PlanItemRow(Base):
         CheckConstraint(_in("flexibility", ("fixed", "deferrable", "flexible")), name="flexibility"),
         CheckConstraint("interrupt_policy IS NULL OR " + _in("interrupt_policy", ("free", "safe_point", "owner_only")),
                         name="interrupt"),
+        CheckConstraint("min_rank IS NULL OR min_rank IN (50, 75, 100, 200)", name="min_rank"),
+        CheckConstraint("interrupt_timing IS NULL OR " + _in("interrupt_timing", ("free", "safe_point")),
+                        name="interrupt_timing"),
         CheckConstraint("priority BETWEEN 0 AND 99", name="priority"),
         CheckConstraint("location IS NOT NULL OR activity_kind = 'rest'", name="null_loc_rest"),
         CheckConstraint(

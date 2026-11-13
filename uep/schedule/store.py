@@ -22,16 +22,20 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from uep.contracts.permission import RequesterTier
 from uep.contracts.schedule import (
+    MIN_RANK_CHOICES,
     PLAN_LOCATIONS,
     ActivityKind,
     InterruptPolicy,
+    InterruptTiming,
     OverrideView,
     PlanDelay,
     PlanItem,
     PlanLocation,
     PlanSlot,
     SlotMark,
+    resolve_interrupt_fields,
 )
 from uep.ids import new_id
 from uep.schedule import resolver
@@ -101,9 +105,11 @@ class PlanItemCommand:
     valid_until: datetime | None = None
     priority: int = USER_PRIORITY
     flexibility: str = "fixed"
-    interrupt_policy: str | None = None
+    interrupt_policy: str | None = None  # 舊輸入（相容期）：兩個新欄位都沒給時才轉換，見 resolve_interrupt_fields
     suggested_behaviors: tuple[str, ...] | None = None
     note_ref: str | None = None
+    min_rank: int | None = None  # 誰能叫走她（RequesterTier 值：50／75／100／200）；None＝無抬高
+    interrupt_timing: str | None = None  # free／safe_point；None＝依活動類別預設
 
 
 @dataclass(frozen=True)
@@ -166,6 +172,10 @@ def validate_item_command(cmd: PlanItemCommand) -> str | None:
         return "invalid_flexibility"
     if cmd.interrupt_policy is not None and cmd.interrupt_policy not in {p.value for p in InterruptPolicy}:
         return "invalid_interrupt_policy"
+    if cmd.min_rank is not None and (isinstance(cmd.min_rank, bool) or cmd.min_rank not in {int(t) for t in MIN_RANK_CHOICES}):
+        return "invalid_min_rank"
+    if cmd.interrupt_timing is not None and cmd.interrupt_timing not in {t.value for t in InterruptTiming}:
+        return "invalid_interrupt_timing"
     if not isinstance(cmd.priority, int) or isinstance(cmd.priority, bool) or not 0 <= cmd.priority <= 99:
         return "invalid_priority"
     if cmd.suggested_behaviors is not None and (
@@ -211,20 +221,25 @@ def _is_owner(actor: PlanActor, allowed_sources: tuple[str, ...]) -> bool:
 
 _ITEM_COLUMNS = (
     "item_id, role, activity_kind, location, recurrence, once_start_at, once_end_at, weekdays, local_start, local_end, "
-    "tz, valid_from, valid_until, priority, flexibility, interrupt_policy, suggested_behaviors, created_at")
+    "tz, valid_from, valid_until, priority, flexibility, interrupt_policy, min_rank, interrupt_timing, "
+    "suggested_behaviors, created_at")
 _OVERRIDE_COLUMNS = ("override_id, location, activity_kind, started_at, expires_at, round_end_at, status, "
                      "cause_request_id, authority, priority")
 _MARK_COLUMNS = "mark_id, kind, item_ref, planned_start_at, started_at, cause_request_id"
 
 
 def _item_from_row(m) -> PlanItem:
+    # 新欄位優先；兩個新欄位都是 NULL 才回退舊 interrupt_policy（舊欄位下一個 migration 才刪）
+    min_rank, timing = resolve_interrupt_fields(
+        m["interrupt_policy"], RequesterTier(m["min_rank"]) if m["min_rank"] is not None else None,
+        m["interrupt_timing"])
     return PlanItem(
         item_id=m["item_id"], activity_kind=ActivityKind(m["activity_kind"]), location=m["location"],
         recurrence=m["recurrence"], role=m["role"], once_start_at=m["once_start_at"], once_end_at=m["once_end_at"],
         weekdays=tuple(int(d) for d in (m["weekdays"] or ())), local_start=m["local_start"],
         local_end=m["local_end"], tz=m["tz"], valid_from=m["valid_from"], valid_until=m["valid_until"],
         priority=int(m["priority"]), flexibility=m["flexibility"],
-        interrupt_policy=InterruptPolicy(m["interrupt_policy"]) if m["interrupt_policy"] else None,
+        min_rank=min_rank, interrupt_timing=timing,
         suggested_behaviors=tuple(m["suggested_behaviors"]) if m["suggested_behaviors"] is not None else None,
         created_at=m["created_at"])
 
@@ -587,11 +602,16 @@ class PlanStore:
 
     @staticmethod
     def _item_params(cmd: PlanItemCommand) -> dict:
+        # 舊欄位 interrupt_policy 一律寫 NULL（讀取以新欄位優先；寫 NULL 才能清掉殘留的舊值）
+        rank, it = resolve_interrupt_fields(
+            cmd.interrupt_policy, RequesterTier(cmd.min_rank) if cmd.min_rank is not None else None,
+            cmd.interrupt_timing)
+        mr = int(rank) if rank is not None else None
         return {
             "kind": cmd.activity_kind, "loc": cmd.location, "rec": cmd.recurrence, "os": cmd.once_start_at,
             "oe": cmd.once_end_at, "wd": list(cmd.weekdays) if cmd.recurrence == "weekly" else None,
             "ls": cmd.local_start, "le": cmd.local_end, "tz": cmd.tz, "vf": cmd.valid_from, "vu": cmd.valid_until,
-            "pr": cmd.priority, "fx": cmd.flexibility, "ip": cmd.interrupt_policy,
+            "pr": cmd.priority, "fx": cmd.flexibility, "ip": None, "mr": mr, "it": it.value if it is not None else None,
             "sb": list(cmd.suggested_behaviors) if cmd.suggested_behaviors is not None else None,
             "nr": cmd.note_ref}
 
@@ -611,9 +631,9 @@ class PlanStore:
             s.execute(text(
                 "INSERT INTO presence_plan_items (item_id, persona_id, role, activity_kind, location, recurrence, "
                 "once_start_at, once_end_at, weekdays, local_start, local_end, tz, valid_from, valid_until, priority, "
-                "flexibility, interrupt_policy, suggested_behaviors, note_ref, created_by, updated_by, created_at, "
-                "updated_at) VALUES (:id, :p, 'user', :kind, :loc, :rec, :os, :oe, :wd, :ls, :le, :tz, :vf, :vu, :pr, "
-                ":fx, :ip, :sb, :nr, :by, :by, :now, :now)"),
+                "flexibility, interrupt_policy, min_rank, interrupt_timing, suggested_behaviors, note_ref, created_by, "
+                "updated_by, created_at, updated_at) VALUES (:id, :p, 'user', :kind, :loc, :rec, :os, :oe, :wd, :ls, "
+                ":le, :tz, :vf, :vu, :pr, :fx, :ip, :mr, :it, :sb, :nr, :by, :by, :now, :now)"),
                 {**self._item_params(cmd), "id": item_id, "p": self._persona, "by": actor.actor_ref, "now": now})
             return WriteResult("OK", ref_id=item_id)
 
@@ -638,7 +658,8 @@ class PlanStore:
                 "UPDATE presence_plan_items SET activity_kind = :kind, location = :loc, recurrence = :rec, "
                 "once_start_at = :os, once_end_at = :oe, weekdays = :wd, local_start = :ls, local_end = :le, "
                 "tz = :tz, valid_from = :vf, valid_until = :vu, priority = :pr, flexibility = :fx, "
-                "interrupt_policy = :ip, suggested_behaviors = :sb, note_ref = :nr, version = version + 1, "
+                "interrupt_policy = :ip, min_rank = :mr, interrupt_timing = :it, suggested_behaviors = :sb, "
+                "note_ref = :nr, version = version + 1, "
                 "updated_by = :by, updated_at = :now WHERE item_id = :id"),
                 {**self._item_params(cmd), "id": item_id, "by": actor.actor_ref, "now": now})
             return WriteResult("OK", ref_id=item_id)

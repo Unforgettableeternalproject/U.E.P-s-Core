@@ -61,9 +61,54 @@ class PlanSource(StrEnum):
 
 
 class InterruptPolicy(StrEnum):
+    """舊的行程中斷政策（權限契約 §3.6 起由 ``min_rank`` 與 ``InterruptTiming`` 取代；只保留作相容輸入與舊欄位讀取）。"""
+
     FREE = "free"
     SAFE_POINT = "safe_point"
     OWNER_ONLY = "owner_only"
+
+
+class InterruptTiming(StrEnum):
+    """何時可打斷（與「誰能叫走她」的 ``min_rank`` 互相獨立；§3.6）。"""
+
+    FREE = "free"  # 不因進行中的互動等待
+    SAFE_POINT = "safe_point"  # 等安全點（互動／不可中斷工作／做夢照 _safe_point_block）
+
+
+# 格上 min_rank 允許的階級：只能抬高、不得低於移轉門檻（PERM-9）；緊急不是可排程的門檻
+MIN_RANK_CHOICES = frozenset({RequesterTier.MEMBER, RequesterTier.ADMIN, RequesterTier.SYSTEM, RequesterTier.OWNER})
+
+
+def default_interrupt_timing(kind: ActivityKind) -> InterruptTiming:
+    """依活動類別的預設打斷時機：SOCIAL 不等互動，其餘等安全點。"""
+    return InterruptTiming.FREE if kind == ActivityKind.SOCIAL else InterruptTiming.SAFE_POINT
+
+
+def split_interrupt_policy(policy: InterruptPolicy | str | None) -> tuple[RequesterTier | None, InterruptTiming | None]:
+    """舊 ``interrupt_policy`` 的相容讀取（§3.6，單一實作，store／契約型別共用）。
+
+    free → (None, FREE)；safe_point → (None, SAFE_POINT)；owner_only → (OWNER, FREE，刻意的行為變更：
+    owner_only 格不再因進行中互動而等待)；None → (None, None)。未知值拋 ValueError。
+    """
+    if policy is None:
+        return None, None
+    value = InterruptPolicy(policy)
+    if value == InterruptPolicy.OWNER_ONLY:
+        return RequesterTier.OWNER, InterruptTiming.FREE
+    return None, InterruptTiming(value.value)
+
+
+def resolve_interrupt_fields(
+    policy: InterruptPolicy | str | None, min_rank: RequesterTier | None, timing: InterruptTiming | str | None,
+) -> tuple[RequesterTier | None, InterruptTiming | None]:
+    """新欄位優先；兩個新欄位都沒給時才回退舊 ``interrupt_policy``。同時驗證型別與 min_rank 的允許值（fail-closed）。"""
+    if min_rank is not None and (not isinstance(min_rank, RequesterTier) or min_rank not in MIN_RANK_CHOICES):
+        raise ValueError(f"min_rank 只收 MEMBER／ADMIN／SYSTEM／OWNER：{min_rank!r}")
+    if timing is not None:
+        timing = InterruptTiming(timing)
+    if min_rank is None and timing is None:
+        return split_interrupt_policy(policy)
+    return min_rank, timing
 
 
 @dataclass(frozen=True)
@@ -85,9 +130,16 @@ class PlanItem:
     valid_until: datetime | None = None
     priority: int = 50  # 僅用於行程內部重疊決勝
     flexibility: Literal["fixed", "deferrable", "flexible"] = "fixed"
-    interrupt_policy: InterruptPolicy | None = None  # None＝依活動類別預設
+    interrupt_policy: InterruptPolicy | None = None  # 舊欄位（相容輸入）：兩個新欄位都沒給時才讀，見 resolve_interrupt_fields
     suggested_behaviors: tuple[str, ...] | None = None
     created_at: datetime | None = None
+    min_rank: RequesterTier | None = None  # 誰能叫走她；只能抬高（§3.6）；None＝無抬高
+    interrupt_timing: InterruptTiming | None = None  # None＝依活動類別預設（SOCIAL→FREE，其餘 SAFE_POINT）
+
+    def __post_init__(self) -> None:
+        min_rank, timing = resolve_interrupt_fields(self.interrupt_policy, self.min_rank, self.interrupt_timing)
+        object.__setattr__(self, "min_rank", min_rank)
+        object.__setattr__(self, "interrupt_timing", timing)
 
 
 @dataclass(frozen=True)
@@ -161,7 +213,7 @@ class PlanSlot:
     activity_kind: ActivityKind
     source: PlanSource
     item_ref: str | None  # item_id / override_id；DEFAULT 為 None
-    interrupt_policy: InterruptPolicy
+    interrupt_timing: InterruptTiming | InterruptPolicy  # 位置參數保留；舊 InterruptPolicy 值於建構時相容轉換（§3.6）
     suggestions: tuple[BehaviorSuggestion, ...]
     starts_at: datetime  # 本格起點（投影後的實際起點，UTC）
     ends_at: datetime | None  # 本格終點（投影）；None＝開放
@@ -174,6 +226,16 @@ class PlanSlot:
     slot_state: SlotState = "normal"  # paused＝工作暫停（留在原平台待命）；abandoned＝fallback REST（藍圖未改）
     reason_code: str | None = None  # unavailable 時的固定原因碼（如 tz_unavailable）
     tz: str | None = None  # 行程項自己的時區（weekly 項）；once 項、預設層、override 為 None
+    min_rank: RequesterTier | None = None  # 誰能叫走她（投影值，由行程項帶入）；None＝無抬高
+
+    def __post_init__(self) -> None:
+        legacy_rank, timing = resolve_interrupt_fields(
+            self.interrupt_timing if isinstance(self.interrupt_timing, InterruptPolicy) else None, self.min_rank, None)
+        if isinstance(self.interrupt_timing, InterruptPolicy):  # 舊值：owner_only → (OWNER, FREE)
+            object.__setattr__(self, "min_rank", legacy_rank)
+            object.__setattr__(self, "interrupt_timing", timing)
+        else:
+            object.__setattr__(self, "interrupt_timing", InterruptTiming(self.interrupt_timing))
 
 
 @dataclass(frozen=True)
@@ -395,3 +457,9 @@ class ArbitrationDecision:
     override_location: PlanLocation | None = None
     override_end_reason: str | None = None
     return_to_plan: bool = False
+    # 仲裁審計（權限契約 §4.4）：只有授權／時機類的拒絕或延後才帶；不含私人內容，對請求者的回條仍只給中性文字（INV-07）
+    blocked_axis: Literal["tier", "instruction", "grade", "tool", "timing", "state"] | None = None
+    also_failed: tuple[str, ...] = ()  # 同時不足的其他軸（供調參數據）
+    required: int | None = None  # 擋下那一軸需要的階級值（RequesterTier 值）
+    actual: int | None = None  # 請求者實際階級值
+    policy_revision: int | None = None  # 判定當下的對照表版本

@@ -511,3 +511,80 @@ def test_has_rest_window_and_seed_overwrite_logs_old_value(store, caplog):
     with caplog.at_level(logging.WARNING, logger="uep.schedule.store"):
         store.seed_rest_window(time(9), time(18), TZ, overwrite=True)
     assert any("03:00:00-05:30:00" in r.message and "09:00:00-18:00:00" in r.message for r in caplog.records)
+
+
+# ---- PM-2：interrupt_policy 拆為 min_rank／interrupt_timing（權限契約 §3.6）----
+
+def _insert_raw_item(sf, item_id, **cols):
+    base = {"item_id": item_id, "persona_id": "uep", "role": "user", "activity_kind": "rest", "location": None,
+            "recurrence": "weekly", "weekdays": [1, 2, 3, 4, 5, 6, 7], "local_start": time(13), "local_end": time(14),
+            "tz": TZ, "created_by": "a", "updated_by": "a"}
+    base.update(cols)
+    names = ", ".join(base)
+    marks = ", ".join(f":{k}" for k in base)
+    with sf() as s:
+        s.execute(text(f"INSERT INTO presence_plan_items ({names}) VALUES ({marks})"), base)
+        s.commit()
+
+
+def test_migration_0023_backfills_min_rank_and_timing_and_keeps_legacy_column(engine, alembic_cfg, sf):
+    command.downgrade(alembic_cfg, "0022_console_location")
+    try:
+        assert "min_rank" not in {c["name"] for c in inspect(engine).get_columns("presence_plan_items")}
+        for item_id, policy in (("plan_a", "owner_only"), ("plan_b", "free"), ("plan_c", "safe_point"), ("plan_d", None)):
+            _insert_raw_item(sf, item_id, interrupt_policy=policy)
+        command.upgrade(alembic_cfg, "0023_plan_min_rank_timing")
+        with engine.connect() as conn:
+            rows = {r.item_id: (r.min_rank, r.interrupt_timing, r.interrupt_policy) for r in conn.execute(text(
+                "SELECT item_id, min_rank, interrupt_timing, interrupt_policy FROM presence_plan_items"))}
+        assert rows == {"plan_a": (200, "free", "owner_only"), "plan_b": (None, "free", "free"),
+                        "plan_c": (None, "safe_point", "safe_point"), "plan_d": (None, None, None)}  # 舊欄位保留
+        with sf() as s, pytest.raises(IntegrityError):  # 新 CHECK：min_rank 只允許 50／75／100／200
+            s.execute(text("UPDATE presence_plan_items SET min_rank = 10 WHERE item_id = 'plan_d'"))
+            s.commit()
+        with sf() as s, pytest.raises(IntegrityError):
+            s.execute(text("UPDATE presence_plan_items SET interrupt_timing = 'owner_only' WHERE item_id = 'plan_d'"))
+            s.commit()
+        # 降版：舊欄位為 NULL 的列由新欄位回填
+        with sf() as s:
+            s.execute(text("UPDATE presence_plan_items SET interrupt_policy = NULL, min_rank = 75, "
+                           "interrupt_timing = 'safe_point' WHERE item_id = 'plan_c'"))
+            s.execute(text("UPDATE presence_plan_items SET interrupt_policy = NULL WHERE item_id = 'plan_a'"))
+            s.commit()
+        command.downgrade(alembic_cfg, "0022_console_location")
+        with engine.connect() as conn:
+            legacy = dict(conn.execute(text("SELECT item_id, interrupt_policy FROM presence_plan_items")).all())
+        assert legacy == {"plan_a": "owner_only", "plan_b": "free", "plan_c": "safe_point", "plan_d": None}
+    finally:
+        command.upgrade(alembic_cfg, "head")
+
+
+def test_store_roundtrip_min_rank_and_timing_and_legacy_input(store, sf):
+    item_id = create(store, activity_kind="rest", location=None, min_rank=75, interrupt_timing="safe_point")
+    [got] = [i for i in store.snapshot(OWNER).items if i.item_id == item_id]
+    assert (int(got.min_rank), got.interrupt_timing.value) == (75, "safe_point")
+    # 舊輸入 interrupt_policy=owner_only：寫成新欄位，舊欄位寫 NULL
+    legacy_id = create(store, activity_kind="rest", location=None, interrupt_policy="owner_only")
+    with sf() as s:
+        row = s.execute(text("SELECT min_rank, interrupt_timing, interrupt_policy FROM presence_plan_items "
+                             "WHERE item_id = :i"), {"i": legacy_id}).one()
+    assert tuple(row) == (200, "free", None)
+    # 更新時清空：不得讓殘留的舊值經回退讀取復活
+    res = store.update_item(OWNER, legacy_id, work_cmd(activity_kind="rest", location=None),
+                            expected_revision=store.revision())
+    assert res.status == "OK"
+    [cleared] = [i for i in store.snapshot(OWNER).items if i.item_id == legacy_id]
+    assert (cleared.min_rank, cleared.interrupt_timing) == (None, None)
+
+
+def test_store_reads_legacy_column_when_new_columns_are_null(store, sf):
+    _insert_raw_item(sf, "plan_legacy", interrupt_policy="owner_only")  # 模擬舊程式在回滾期寫入的列
+    [got] = [i for i in store.snapshot(OWNER).items if i.item_id == "plan_legacy"]
+    assert (int(got.min_rank), got.interrupt_timing.value) == (200, "free")
+
+
+def test_invalid_min_rank_and_timing_commands(store):
+    for bad, reason in ((work_cmd(min_rank=10), "invalid_min_rank"), (work_cmd(min_rank=300), "invalid_min_rank"),
+                        (work_cmd(interrupt_timing="owner_only"), "invalid_interrupt_timing"),
+                        (work_cmd(interrupt_policy="bogus"), "invalid_interrupt_policy")):
+        assert store.create_item(OWNER, bad, expected_revision=0).reason_code == reason

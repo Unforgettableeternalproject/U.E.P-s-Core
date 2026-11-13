@@ -194,3 +194,18 @@ def test_other_causes_abandoned_slot_replayed_by_another_signal_writes_nothing(s
     assert store.find_mark_by_cause("abandon:other") is None
     [ignored] = rows(session_factory, "schedule.abandon_work")
     assert ignored.payload["result"] == "ignored" and ignored.payload["reason_code"] == "not_in_work"
+
+
+def test_rejected_decision_event_carries_audit_axis(session_factory, events):
+    """PM-2 仲裁審計（權限契約 §4.4）：拒絕判決的事件帶 blocked_axis／also_failed／required／actual／policy_revision。"""
+    from uep.contracts.schedule import ArbitrationDecision
+
+    decision = ArbitrationDecision("REJECTED", "member_not_accepted_in_slot", 50, blocked_axis="instruction",
+                                   also_failed=("tier",), required=75, actual=50, policy_revision=1)
+    events.arbitration_decided(source="request", ref="req-audit", decision=decision, executed=False,
+                               exec_reason="not_accepted")
+    [decided] = [r for r in rows(session_factory, "schedule.arbitration_decided")
+                 if r.payload["request_id"] == "req-audit"]
+    assert decided.payload["blocked_axis"] == "instruction" and decided.payload["also_failed"] == ["tier"]
+    assert (decided.payload["required"], decided.payload["actual"], decided.payload["policy_revision"]) == (75, 50, 1)
+    assert set(decided.payload) <= DEFAULT_REGISTRY.lookup("schedule.arbitration_decided").payload_keys

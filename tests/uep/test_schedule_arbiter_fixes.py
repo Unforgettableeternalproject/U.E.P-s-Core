@@ -38,7 +38,8 @@ QUIET = InterruptFacts()
 
 
 def req(authority="owner", target="host", **kw):
-    base = {"request_id": "r-1", "authority": authority, "requester_ref": "discord:1", "actor_authenticated": True,
+    base = {"request_id": "r-1", "authority": authority, "requester_ref": "core.schedule_planner" if authority == "system" else "discord:1",
+            "actor_authenticated": True,
             "target": target}
     base.update(kw)
     return ArbiterRequest(**base)

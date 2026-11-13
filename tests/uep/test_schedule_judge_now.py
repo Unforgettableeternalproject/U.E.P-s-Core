@@ -3,7 +3,13 @@ import threading
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-from uep.contracts.schedule import ActivityKind, InterruptFacts, PlanItem
+from uep.contracts.permission import RequesterTier
+from uep.contracts.schedule import (
+    ActivityKind,
+    InterruptFacts,
+    InterruptPolicy,
+    PlanItem,
+)
 from uep.schedule import arbiter, resolver
 from uep.schedule.arbiter_shadow import PresenceArbiterShadow
 from uep.schedule.planner import PresenceReading
@@ -287,3 +293,27 @@ def test_target_none_filters_to_work_and_uninterruptible_only():
     # 非 None target 的行為不變：同樣的 interaction_active 仍回 DEFERRED
     explicit = make(probe=InterruptFacts(interaction_active=True), **rest).judge_now(**KW)
     assert explicit is not None and explicit.reason_code == "interaction_active"
+
+
+def test_new_permission_reason_codes_are_not_reported_as_busy_by_judge_now():
+    """PM-2：格上 min_rank 擋下時（owner 以外不會走到 judge_now，這裡用 owner 以上的 min_rank 驗證不誤判）；
+    owner 能通過任何 min_rank，judge_now 不會因新碼回傳忙碌判決。"""
+    from uep.turn.orchestrator import _busy_kind
+
+    guarded = PlanItem("g", ActivityKind.REST, None, "weekly", weekdays=(1, 2, 3, 4, 5, 6, 7), local_start=time(13),
+                       local_end=time(14), tz=TZ, min_rank=RequesterTier.OWNER)
+    decision = make(items=(guarded,), now=REST_NOW).judge_now(**KW)
+    assert decision is not None and decision.outcome == "ACCEPTED_TRANSFER"
+    assert _busy_kind(decision) is None
+    for code in (arbiter.R_MIN_RANK_INSUFFICIENT, arbiter.R_TIER_INSUFFICIENT, arbiter.R_TIER_BELOW_FLOOR):
+        assert _busy_kind(arbiter.ArbitrationDecision("REJECTED", code, 50)) is None
+
+
+def test_owner_only_slot_does_not_wait_for_interaction_but_uninterruptible_still_defers():
+    """§3.6 刻意的行為變更：舊 owner_only 格＝min_rank=OWNER＋timing=FREE，進行中的互動不再 DEFERRED。"""
+    guarded = PlanItem("g", ActivityKind.REST, None, "weekly", weekdays=(1, 2, 3, 4, 5, 6, 7), local_start=time(13),
+                       local_end=time(14), tz=TZ, interrupt_policy=InterruptPolicy.OWNER_ONLY)
+    free = make(items=(guarded,), now=REST_NOW, probe=InterruptFacts(interaction_active=True)).judge_now(**KW)
+    assert (free.outcome, free.reason_code) == ("ACCEPTED_TRANSFER", "accepted")
+    blocked = make(items=(guarded,), now=REST_NOW, probe=InterruptFacts(has_uninterruptible_work=True)).judge_now(**KW)
+    assert (blocked.outcome, blocked.reason_code) == ("DEFERRED", "uninterruptible_work")

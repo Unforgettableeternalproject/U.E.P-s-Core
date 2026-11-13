@@ -31,6 +31,9 @@ class RequesterTier(IntEnum):
 # 帶數值對照（priority_of 走 tier 後的來源）
 TIER_BAND: dict[RequesterTier, int] = {tier: int(tier) for tier in RequesterTier}
 
+# 在場移轉請求的最低階級（§3.4 待命列、§4.1 第 1 步；常數，不進設定檔；Q-PP-6：已認證且已登記者才能請她）
+PRESENCE_REQUEST_MIN_TIER = RequesterTier.MEMBER
+
 
 class InstructionLevel(IntEnum):
     """指示等級；值越大 = 所需權限越高，只用於排序與單調性檢查。"""

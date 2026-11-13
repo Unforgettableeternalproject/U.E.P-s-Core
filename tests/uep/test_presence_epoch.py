@@ -106,4 +106,5 @@ def test_migration_chain_head_is_decision_log():
     assert script.get_revision("0019_decision_log_target").down_revision == "0018_decision_log_platform_ctx"
     assert script.get_revision("0021_presence_plan").down_revision == "0020_decision_log_chain"
     assert script.get_revision("0022_console_location").down_revision == "0021_presence_plan"
-    assert script.get_current_head() == "0022_console_location"
+    assert script.get_revision("0023_plan_min_rank_timing").down_revision == "0022_console_location"
+    assert script.get_current_head() == "0023_plan_min_rank_timing"

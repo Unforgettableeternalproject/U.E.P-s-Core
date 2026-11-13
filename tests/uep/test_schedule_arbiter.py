@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from uep.contracts.permission import RequesterTier
 from uep.contracts.platform import PRESENCE_REQUEST_AUTHORITIES
 from uep.contracts.schedule import (
     PRIORITY_EMERGENCY,
@@ -16,6 +17,7 @@ from uep.contracts.schedule import (
     ArbiterRequest,
     InterruptFacts,
     InterruptPolicy,
+    InterruptTiming,
     OverrideView,
     PlanItem,
     SlotMark,
@@ -50,7 +52,8 @@ def slot_at(h, mi=0, *, items=ITEMS, override=None, marks=()):
 
 
 def req(authority="owner", target="desktop", **kw):
-    base = {"request_id": "r-1", "authority": authority, "requester_ref": "discord:1", "actor_authenticated": True,
+    base = {"request_id": "r-1", "authority": authority, "requester_ref": "core.schedule_planner" if authority == "system" else "discord:1",
+            "actor_authenticated": True,
             "target": target}
     base.update(kw)
     return ArbiterRequest(**base)
@@ -141,7 +144,7 @@ def test_work_accepts_only_explicit_abandon_and_emergency():  # PP-18／PP-20
     assert (emergency.outcome, emergency.override_action, emergency.priority) == ("ACCEPTED_TRANSFER", "begin", 300)
 
 
-def test_social_and_sleep_window_accept_only_owner_and_system():
+def test_social_and_sleep_window_accept_only_owner_and_system():  # ADMIN 的新案例見 test_schedule_arbiter_permission.py
     for slot in (slot_at(11, 30), slot_at(4)):
         assert decide(req("member", "desktop"), slot).reason_code == ar.R_MEMBER_NOT_ACCEPTED
         assert decide(req("owner", "desktop"), slot).outcome == "ACCEPTED_TRANSFER"
@@ -157,10 +160,16 @@ def test_leave_outside_work_abandons_the_current_item_or_just_moves():  # §9.1 
 
 
 def test_owner_only_interrupt_policy():
+    # 舊 interrupt_policy=owner_only 相容讀取為 min_rank=OWNER＋interrupt_timing=FREE（權限契約 §3.6）；
+    # 仍只有 owner 能叫走她，被擋時沿用舊碼 owner_only
     guarded = item("g", time(13), time(14), ActivityKind.REST, location=None, interrupt_policy=InterruptPolicy.OWNER_ONLY)
     slot = slot_at(13, 30, items=[guarded])
+    assert (slot.min_rank, slot.interrupt_timing) == (RequesterTier.OWNER, InterruptTiming.FREE)
     assert decide(req("system", "desktop"), slot).reason_code == ar.R_OWNER_ONLY
     assert decide(req("owner", "desktop"), slot).outcome == "ACCEPTED_TRANSFER"
+    # 新欄位直接寫 min_rank 的等價語意
+    direct = item("g", time(13), time(14), ActivityKind.REST, location=None, min_rank=RequesterTier.OWNER)
+    assert decide(req("system", "desktop"), slot_at(13, 30, items=[direct])).reason_code == ar.R_OWNER_ONLY
 
 
 # ---- override：只比優先序、Q-PP-5 ----
@@ -187,10 +196,12 @@ def test_existing_override_priority_rules():
 def test_leave_while_override_ends_it_and_returns_to_plan():  # PP-9
     ov = override()
     slot = slot_at(15, override=ov)
-    for authority in ("owner", "system"):
-        d = decide(req(authority, "host"), slot, at("desktop"), ov)
+    # §3.5：結束 override 需 TEMP_SESSION 權限且階級不低於建立者的帶；system（100）不再能結束 owner（200）的 override
+    for authority, held in (("owner", ov), ("system", override(PRIORITY_SYSTEM))):
+        d = decide(req(authority, "host"), slot, at("desktop"), held)
         assert (d.outcome, d.override_action, d.override_end_reason, d.return_to_plan, d.transfer_target) == (
             "ACCEPTED_TRANSFER", "end", "owner_ended", True, None)
+    assert decide(req("system", "host"), slot, at("desktop"), ov).reason_code == ar.R_NOT_OVERRIDE_OWNER
     assert decide(req("member", "host"), slot, at("desktop"), ov).reason_code == ar.R_NOT_OVERRIDE_OWNER
 
 
@@ -222,9 +233,9 @@ def test_safe_point_deferrals_and_free_policy():
         ar.R_INTERACTION_ACTIVE)
     assert decide(owner, default, at("desktop"), probe=InterruptFacts(has_uninterruptible_work=True)
                   ).reason_code == ar.R_UNINTERRUPTIBLE_WORK
-    # social 格 interrupt_policy=free：進行中的互動不用等；不可中斷工作照等
+    # social 格 interrupt_timing=free：進行中的互動不用等；不可中斷工作照等
     social = slot_at(11, 30)
-    assert social.interrupt_policy == InterruptPolicy.FREE
+    assert social.interrupt_timing == InterruptTiming.FREE
     assert decide(owner, social, at("desktop"), probe=InterruptFacts(interaction_active=True)).outcome == (
         "ACCEPTED_TRANSFER")
     assert decide(owner, social, at("desktop"), probe=InterruptFacts(has_uninterruptible_work=True)).outcome == (

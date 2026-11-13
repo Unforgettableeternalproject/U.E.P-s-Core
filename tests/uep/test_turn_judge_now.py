@@ -66,6 +66,10 @@ def test_mapping_accepts_only_busy_combinations():
     assert _busy_kind(SimpleNamespace(outcome="ACCEPTED_TRANSFER", reason_code="accepted")) is None
     assert _busy_kind(SimpleNamespace(outcome="REJECTED", reason_code="owner_only")) is None
     assert _busy_kind(SimpleNamespace(outcome="DEFERRED", reason_code="work_in_progress")) is None
+    # 權限契約 §4.3 的新 reason_code（PM-2）不是「她在忙」：不得被誤判為忙碌
+    for code in ("min_rank_insufficient", "tier_insufficient", "tier_below_floor"):
+        for outcome in ("REJECTED", "DEFERRED"):
+            assert _busy_kind(SimpleNamespace(outcome=outcome, reason_code=code)) is None
 
 
 def test_mapping_with_real_arbitration_decision_values():

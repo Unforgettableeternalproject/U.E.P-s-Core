@@ -134,6 +134,10 @@ class ScheduleEvents:
             "band": decision.priority, "override_action": decision.override_action,
             "transfer_target": decision.transfer_target, "executed": executed, "exec_reason": exec_reason,
             "mark_written": mark_written}
+        if decision.blocked_axis is not None:  # 仲裁審計（權限契約 §4.4）：只放軸、階級值與對照表版本，不含私人內容
+            payload.update({
+                "blocked_axis": decision.blocked_axis, "also_failed": list(decision.also_failed),
+                "required": decision.required, "actual": decision.actual, "policy_revision": decision.policy_revision})
         payload["directive_id" if source == "directive" else "request_id"] = ref
         # 同一個 ref 的不同判決（outcome／reason_code 不同）是不同的事實，不能被 idempotency 吃掉
         digest = hashlib.sha1(f"{source}:{ref}:{decision.outcome}:{decision.reason_code}".encode()).hexdigest()[:32]

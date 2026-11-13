@@ -7,15 +7,26 @@
 位置：放在 ``uep/schedule/``（而不是 ``uep/presence/``）——純仲裁只依賴行程契約與 Planner 的 ``PresenceReading``，
 不碰 Presence 寫入面；之後執行端（會呼叫 Presence Manager）才需要放在 ``uep/presence/`` 或 echo 組裝層。
 
-優先序：PLAN 0 ＜ REQUESTER 50 ＜ SYSTEM 100 ＜ OWNER 200 ＜ EMERGENCY 300（``priority_of``）。
+優先序：PLAN 0 ＜ REQUESTER 50 ＜ ADMIN 75 ＜ SYSTEM 100 ＜ OWNER 200 ＜ EMERGENCY 300（``priority_of``）。
 同級 owner 衝突（Q-PP-5，暫定：後到者優先，待 Bernie 明示）由 ``same_band_prevails`` 決定，可整個替換
 （``arbitrate_request(..., same_band_policy=...)``）。
 """
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 
+from uep.contracts.permission import (
+    DEFAULT_POLICY,
+    GRADE_LEVEL,
+    PRESENCE_REQUEST_MIN_TIER,
+    InstructionLevel,
+    PermissionPolicy,
+    RequesterTier,
+    WorkGrade,
+    system_component,
+)
 from uep.contracts.schedule import (
     PRESENCE_TARGET_HOST,
     PRIORITY_EMERGENCY,
@@ -25,7 +36,7 @@ from uep.contracts.schedule import (
     ArbiterRequest,
     ArbitrationDecision,
     InterruptFacts,
-    InterruptPolicy,
+    InterruptTiming,
     OverrideView,
     PlanDirective,
     PlanSlot,
@@ -56,11 +67,16 @@ R_UNINTERRUPTIBLE_WORK = "uninterruptible_work"
 R_OVERRIDE_ACTIVE = "override_active"
 R_STALE_DIRECTIVE = "stale_directive"
 R_DIRECTIVE_EXPIRED = "directive_expired"
+# 權限契約 §4.3 新增：格上 min_rank 擋下（有效門檻為 OWNER 時沿用舊碼 owner_only）、通用階級不足、認證但低於移轉門檻
+R_MIN_RANK_INSUFFICIENT = "min_rank_insufficient"
+R_TIER_INSUFFICIENT = "tier_insufficient"
+R_TIER_BELOW_FLOOR = "tier_below_floor"
 REASON_CODES = frozenset({
     R_ACCEPTED, R_ALREADY_AT_TARGET, R_UNAUTHENTICATED, R_EMERGENCY_REQUIRES_SYSTEM, R_PRESENCE_RECOVERING,
     R_TRANSFER_IN_PROGRESS, R_WORK_IN_PROGRESS, R_ABANDON_REQUIRES_HOST, R_MEMBER_NOT_ACCEPTED, R_OWNER_ONLY,
     R_LOWER_THAN_OVERRIDE, R_SAME_PRIORITY_QUEUED, R_NOT_OVERRIDE_OWNER, R_EMERGENCY_OVERRIDE_ACTIVE, R_OVERRIDE_ENDED, R_DREAM_IN_FLIGHT,
     R_INTERACTION_ACTIVE, R_UNINTERRUPTIBLE_WORK, R_OVERRIDE_ACTIVE, R_STALE_DIRECTIVE, R_DIRECTIVE_EXPIRED,
+    R_MIN_RANK_INSUFFICIENT, R_TIER_INSUFFICIENT, R_TIER_BELOW_FLOOR,
 })
 
 SameBandPolicy = Callable[[ArbiterRequest, OverrideView], bool]
@@ -89,18 +105,78 @@ def actual_location(presence: PresenceReading) -> str | None:
     return None
 
 
-def _reject(code: str, priority: int = PRIORITY_PLAN) -> ArbitrationDecision:
-    return ArbitrationDecision("REJECTED", code, priority)
+def _reject(code: str, priority: int = PRIORITY_PLAN, **audit) -> ArbitrationDecision:
+    return ArbitrationDecision("REJECTED", code, priority, **audit)
 
 
-def _defer(code: str, priority: int) -> ArbitrationDecision:
-    return ArbitrationDecision("DEFERRED", code, priority)
+def _defer(code: str, priority: int, **audit) -> ArbitrationDecision:
+    return ArbitrationDecision("DEFERRED", code, priority, **audit)
+
+
+@dataclass(frozen=True)
+class _Check:
+    """一道授權門檻：``axis`` 是審計軸、``required`` 是階級門檻、``code`` 是不足時的 reason_code。"""
+
+    axis: str
+    required: int  # 階級值（RequesterTier 值或歷史 override 的帶值）
+    code: str
+
+
+def _denial(request: ArbiterRequest, band: int, checks: list[_Check], policy: PermissionPolicy,
+            ) -> ArbitrationDecision | None:
+    """依序檢查門檻；全部通過回 None。第一個不足的門檻決定 reason_code 與 blocked_axis，其餘不足的軸進 also_failed。"""
+    failed = [c for c in checks if request.tier < c.required]
+    if not failed:
+        return None
+    first = failed[0]
+    also = tuple(dict.fromkeys(c.axis for c in failed[1:] if c.axis != first.axis))
+    return _reject(first.code, band, blocked_axis=first.axis, also_failed=also, required=int(first.required),
+                   actual=int(request.tier), policy_revision=policy.revision)
+
+
+def _min_rank_check(slot: PlanSlot) -> _Check | None:
+    """格上 ``min_rank``（誰能叫走她）；有效門檻為 OWNER 時沿用舊碼 ``owner_only``（§3.6）。"""
+    if slot.min_rank is None:
+        return None
+    code = R_OWNER_ONLY if slot.min_rank == RequesterTier.OWNER else R_MIN_RANK_INSUFFICIENT
+    return _Check("tier", slot.min_rank, code)
+
+
+def _slot_grade(slot: PlanSlot) -> WorkGrade:
+    """工作格的分級；``PlanSlot`` 暫無 work_grade 欄位（PM-4 才加），恆為 NORMAL。"""
+    return getattr(slot, "work_grade", None) or WorkGrade.NORMAL
+
+
+def _displacement_checks(slot: PlanSlot, policy: PermissionPolicy) -> list[_Check]:
+    """§3.4 各格類別的受理門檻（非放棄；依判定順序：指示等級 → 階級下限 → 工作分級 → 格上 min_rank）。
+
+    有效門檻＝三者取最大（§3.3）：格上 min_rank、work_grade 推導的門檻、臨時階段的最低階級；每一道各自成檢查，
+    取最大等價於全部通過，同時保留是哪一軸擋下。
+    """
+    checks: list[_Check] = []
+    temp = policy.required_tier(InstructionLevel.TEMP_SESSION)
+    if _is_work(slot):
+        checks.append(_Check("instruction", temp, R_WORK_IN_PROGRESS))
+        checks.append(_Check("grade", policy.required_tier(GRADE_LEVEL[_slot_grade(slot)]), R_WORK_IN_PROGRESS))
+    elif slot.source == PlanSource.REST_WINDOW:  # SLEEP 休息窗：TEMP_SESSION 且階級 ≥ SYSTEM（受信任系統指令；Q-PM-5）
+        checks.append(_Check("instruction", temp, R_MEMBER_NOT_ACCEPTED))
+        checks.append(_Check("tier", RequesterTier.SYSTEM, R_MEMBER_NOT_ACCEPTED))
+    elif slot.activity_kind == ActivityKind.SOCIAL:
+        checks.append(_Check("instruction", temp, R_MEMBER_NOT_ACCEPTED))
+    else:  # 待命（REST 行程、fallback、預設層、暫停中的工作也屬工作格，已在上面處理）：沒有東西被取代，不是臨時階段
+        checks.append(_Check("instruction", policy.required_tier(InstructionLevel.ACTION), R_TIER_INSUFFICIENT))
+        checks.append(_Check("tier", PRESENCE_REQUEST_MIN_TIER, R_TIER_BELOW_FLOOR))
+    min_rank = _min_rank_check(slot)
+    if min_rank is not None:
+        checks.append(min_rank)
+    return checks
 
 
 def _safe_point_block(slot: PlanSlot, probe: InterruptFacts, actual: str | None, target: str) -> str | None:
     """離開目前位置前的安全點檢查：回需要等待的 reason_code（None＝可以走）。
 
-    ``interrupt_policy=free`` 的格不因進行中的互動等待；不可中斷工作與做夢一律要等（緊急例外，呼叫端先處理）。
+    ``interrupt_timing=free`` 的格（含 ``min_rank`` 為 OWNER 的舊 owner_only 格）不因進行中的互動等待；
+    不可中斷工作與做夢一律要等（緊急例外，呼叫端先處理）。
     """
     if actual == target:
         return None  # 不離開目前位置
@@ -108,7 +184,7 @@ def _safe_point_block(slot: PlanSlot, probe: InterruptFacts, actual: str | None,
         return R_DREAM_IN_FLIGHT  # 在主機做夢中被叫：先做完這一輪（X9）
     if probe.has_uninterruptible_work:
         return R_UNINTERRUPTIBLE_WORK
-    if probe.interaction_active and slot.interrupt_policy != InterruptPolicy.FREE:
+    if probe.interaction_active and slot.interrupt_timing != InterruptTiming.FREE:
         return R_INTERACTION_ACTIVE
     return None
 
@@ -120,11 +196,18 @@ def _is_work(slot: PlanSlot) -> bool:
 def arbitrate_request(
     request: ArbiterRequest, *, slot: PlanSlot, presence: PresenceReading, override: OverrideView | None,
     probe: InterruptFacts, now: datetime, same_band_policy: SameBandPolicy = same_band_prevails,
+    policy: PermissionPolicy = DEFAULT_POLICY,
 ) -> ArbitrationDecision:
-    """owner／system／member 的在場請求（含「回主機」target=host）。"""
+    """owner／admin／member／system 的在場請求（含「回主機」target=host）。
+
+    授權來自請求者階級 × 指示等級 × 工作分級 × 格上 min_rank，依 ``policy`` 對照表消費（權限契約 §3.3、§3.4、§4.1）。
+    """
     band = priority_of(request)
     if request.actor_authenticated is not True:
         return _reject(R_UNAUTHENTICATED)  # 未認證者不建立請求（只留言／中性回條）
+    if not request.emergency and request.tier < PRESENCE_REQUEST_MIN_TIER:
+        return _reject(R_TIER_BELOW_FLOOR, band, blocked_axis="tier", required=int(PRESENCE_REQUEST_MIN_TIER),
+                       actual=int(request.tier), policy_revision=policy.revision)  # 防線：認證但階級不足移轉門檻
     if request.emergency and request.authority != "system":
         return _reject(R_EMERGENCY_REQUIRES_SYSTEM)
     actual = actual_location(presence)
@@ -142,35 +225,54 @@ def arbitrate_request(
         return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "supersede" if has_override else "begin",
                                    None if actual == request.target else request.target, request.target)
 
+    # ---- 受信任的系統指令（§1.2a、§3.4 名詞約定）：非緊急 system 只有登記表內且可提移轉的系統元件能提出移轉 ----
+    if request.authority == "system":
+        component = system_component(request.requester_ref)
+        if component is None or not component.may_propose_transfer:
+            return _reject(R_TIER_INSUFFICIENT, band, blocked_axis="tier", actual=int(request.tier),
+                           policy_revision=policy.revision)
+
     # ---- 授權類判定先於 DEFERRED／QUEUED：沒有資格的請求不該被排隊或等待 ----
     abandon = False
     held_priority = PRIORITY_PLAN
     if has_override:
         held_priority = override.priority if override is not None and override.priority is not None else PRIORITY_OWNER
         if leave:
-            if held_priority >= PRIORITY_EMERGENCY and request.authority != "system":
-                # 保守做法（待 Bernie 確認）：緊急 override 只有 system 能結束，owner 的「回主機」也不行
-                return _reject(R_EMERGENCY_OVERRIDE_ACTIVE, band)
-            if request.authority not in ("owner", "system"):
-                return _reject(R_NOT_OVERRIDE_OWNER, band)
+            if held_priority >= PRIORITY_EMERGENCY:
+                if request.authority != "system":
+                    # 保守做法（待 Bernie 確認）：緊急 override 只有 system 能結束，owner 的「回主機」也不行
+                    return _reject(R_EMERGENCY_OVERRIDE_ACTIVE, band, blocked_axis="tier",
+                                   required=PRIORITY_EMERGENCY, actual=int(request.tier),
+                                   policy_revision=policy.revision)
+            else:
+                # 結束 override（§3.5）：需 TEMP_SESSION 權限，且階級不低於 override 建立者的帶。
+                # 「同一請求者」條款需要 override 記錄 requester_ref，目前沒有，未實作（回報待裁決）
+                denied = _denial(request, band, [
+                    _Check("instruction", policy.required_tier(InstructionLevel.TEMP_SESSION), R_NOT_OVERRIDE_OWNER),
+                    _Check("tier", held_priority, R_NOT_OVERRIDE_OWNER)], policy)
+                if denied is not None:
+                    return denied
         elif band < held_priority:
-            return _reject(R_LOWER_THAN_OVERRIDE, band)
+            return _reject(R_LOWER_THAN_OVERRIDE, band, blocked_axis="tier", required=held_priority,
+                           actual=int(request.tier), policy_revision=policy.revision)
     else:
         if _is_work(slot):
-            # 工作格規則（§9.1）：「回主機」＝放棄工作，只受理 owner 的明示放棄；
-            # owner 叫她去別處是臨時指示（形成 override），不在此拒絕，交給後續安全點／狀態判定；
-            # member／system（非緊急）目前維持不受理（待裁決）；系統緊急在上方已處理。
-            if request.explicit_abandon and request.authority == "owner":
+            # 工作格規則（§3.3、§3.4）：「回主機」＝放棄工作（SESSION_INTERRUPT，只有 owner 且須明示放棄）；
+            # 叫她去別處是臨時指示（形成 override），門檻＝三者取最大（格上 min_rank、work_grade、TEMP_SESSION），
+            # 通過後交給後續安全點／狀態判定；系統緊急在上方已處理。
+            abandon_ok = request.explicit_abandon and policy.authorize(request.tier, InstructionLevel.SESSION_INTERRUPT)
+            if abandon_ok:
                 if not leave:
                     return _reject(R_ABANDON_REQUIRES_HOST, band)
                 abandon = True
-            elif leave or request.authority != "owner":
-                return _reject(R_WORK_IN_PROGRESS, band)
-        elif (slot.activity_kind == ActivityKind.SOCIAL or slot.source == PlanSource.REST_WINDOW) \
-                and request.authority == "member":
-            return _reject(R_MEMBER_NOT_ACCEPTED, band)  # SOCIAL／SLEEP 時段保守：只受理 owner 與系統
-        if slot.interrupt_policy == InterruptPolicy.OWNER_ONLY and request.authority != "owner":
-            return _reject(R_OWNER_ONLY, band)
+            elif leave or request.explicit_abandon:
+                return _reject(R_WORK_IN_PROGRESS, band, blocked_axis="instruction",
+                               required=int(policy.required_tier(InstructionLevel.SESSION_INTERRUPT)),
+                               actual=int(request.tier), policy_revision=policy.revision)
+        if not abandon:
+            denied = _denial(request, band, _displacement_checks(slot, policy), policy)
+            if denied is not None:
+                return denied
 
     # ---- 目前狀態類：Presence 不明、移轉中、同級排隊 ----
     if actual is None:
@@ -186,7 +288,7 @@ def arbitrate_request(
             return ArbitrationDecision("QUEUED", R_SAME_PRIORITY_QUEUED, band)
         blocked = _safe_point_block(slot, probe, actual, request.target)
         if blocked is not None:
-            return _defer(blocked, band)
+            return _defer(blocked, band, blocked_axis="timing")
         return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "supersede",
                                    None if actual == request.target else request.target, request.target)
 
@@ -203,14 +305,14 @@ def arbitrate_request(
             return _reject(R_ALREADY_AT_TARGET, band)
         blocked = _safe_point_block(slot, probe, actual, request.target)
         if blocked is not None:
-            return _defer(blocked, band)
+            return _defer(blocked, band, blocked_axis="timing")
         return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "mark_abandon" if mark else "none",
                                    PRESENCE_TARGET_HOST)
     if actual == request.target and slot.location == request.target:
         return _reject(R_ALREADY_AT_TARGET, band)  # 人已在目標、行程也在目標：不需要 override
     blocked = _safe_point_block(slot, probe, actual, request.target)
     if blocked is not None:
-        return _defer(blocked, band)
+        return _defer(blocked, band, blocked_axis="timing")
     return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, band, "begin",
                                None if actual == request.target else request.target, request.target)
 
@@ -248,5 +350,5 @@ def arbitrate_directive(
         return ArbitrationDecision("QUEUED", R_TRANSFER_IN_PROGRESS, PRIORITY_PLAN)
     blocked = _safe_point_block(slot, probe, actual, directive.target)
     if blocked is not None:
-        return _defer(blocked, PRIORITY_PLAN)
+        return _defer(blocked, PRIORITY_PLAN, blocked_axis="timing")
     return ArbitrationDecision("ACCEPTED_TRANSFER", R_ACCEPTED, PRIORITY_PLAN, "none", directive.target)

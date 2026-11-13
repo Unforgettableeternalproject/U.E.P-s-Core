@@ -31,6 +31,30 @@ CAPABILITY_CATEGORIES: tuple[str, ...] = (
 DEFAULT_CAPABILITIES: tuple[str, ...] = tuple(c for c in CAPABILITY_CATEGORIES if c != "device_control")
 NO_CAPABILITIES = "none"
 
+# 工具層能力標籤 -> 能力類別。標籤集合來自工具層 CAPABILITY_CEILING（決策層不 import 工具層，這裡只存字面值；
+# 覆蓋由測試比對）。lore／memory 寫入歸 files（寫入內部儲存的檔案式資料，沒有更貼近的既有類別）。
+TAG_CATEGORY: dict[str, str] = {
+    "memory.read": "query",
+    "lore.read": "query",
+    "web.search": "query",
+    "web.fetch": "query",
+    "image.read": "query",
+    "chatroom.read": "query",
+    "chatroom.post": "messaging",
+    "memory.write": "files",
+    "lore.write": "files",
+    "desktop.file_read": "files",
+    "desktop.file_write": "files",
+}
+# 刻意不對映的標籤：不是使用者能直接要求的能力（內部諮詢、呈現提案）或測試用。
+NON_USER_TAGS: frozenset[str] = frozenset({"decision.consult", "presentation.propose", "test.read", "test.approval"})
+READY = "ready"
+
+
+def categories_from_readiness(statuses: Iterable[tuple[str, str]]) -> frozenset[str]:
+    """(標籤, readiness) 串列 -> 能力類別集合；只取 readiness 為 ready 的標籤（warming 不算），未對映的標籤略過。"""
+    return frozenset(TAG_CATEGORY[tag] for tag, readiness in statuses if readiness == READY and tag in TAG_CATEGORY)
+
 
 def format_capabilities(capabilities: Iterable[str] | None = None) -> str:
     """能力清單 -> state 字面值（依類別固定順序，逗號分隔；空集合為 ``none``）。None 取現行預設清單。"""

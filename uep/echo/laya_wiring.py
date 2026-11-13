@@ -35,7 +35,7 @@ import sys
 import threading
 import time
 from collections import Counter, OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -46,6 +46,7 @@ from uep.decision.laya_schema import (
     QUESTIONS,
     WARMUP_MESSAGE,
     build_state_dict,
+    categories_from_readiness,
     format_recent_context,
 )
 from uep.echo.translate_wiring import BoundaryTranslator, create_boundary_translator
@@ -157,6 +158,7 @@ class LayaProposer:
         on_translate_unavailable: str = "fallback",
         autoload: bool = True,
         capabilities: Sequence[str] | None = None,
+        capabilities_source: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         if not laya_available():
             raise ValueError(
@@ -164,8 +166,10 @@ class LayaProposer:
                 "或從 UEP_DECISION_SHADOW_PROPOSERS 移除 laya.shadow"
             )
         self._model_id = model_id
-        # 可用能力清單：None＝laya_schema.DEFAULT_CAPABILITIES；工具層清單接上後由組裝層傳入（接點：這個參數）
+        # 可用能力清單：None＝laya_schema.DEFAULT_CAPABILITIES；固定清單走 capabilities，
+        # 動態來源（工具層快照）走 capabilities_source／bind_capabilities_source，有來源時每次推論前重讀
         self._capabilities = tuple(capabilities) if capabilities is not None else None
+        self._capabilities_source = capabilities_source
         self._revision = revision or None
         self._source_revision = source_revision or None  # 本地載入時的來源 revision，只用於 version 標示
         self._device = device
@@ -187,6 +191,24 @@ class LayaProposer:
         self._context_threads: list[threading.Thread] = []
         if autoload:
             self.start_warmup()
+
+    # ---- 可用能力 ----
+
+    def bind_capabilities_source(self, source: Callable[[], Iterable[str]] | None) -> None:
+        """組裝層在工具註冊表就緒後接上動態來源（回傳能力類別）；None＝退回固定清單／預設。"""
+        self._capabilities_source = source
+
+    def _current_capabilities(self) -> Sequence[str] | None:
+        """本次推論用的能力類別。有來源就讀一次；讀取失敗（例外）算空集合（state 為 ``none``），不退回預設。"""
+        source = self._capabilities_source
+        if source is None:
+            return self._capabilities
+        try:
+            return tuple(source())
+        except Exception:
+            self.metrics["capabilities_read_error"] += 1
+            logger.exception("laya：讀取可用能力失敗，本次視為 none")
+            return ()
 
     # ---- 載入 ----
 
@@ -220,7 +242,7 @@ class LayaProposer:
                 self._translator.start_warmup()
             # 假推論：CUDA 冷啟動（實測第一次約 16 秒）要在 warmup 內發生，ready 之後才算可用
             agent.predict(
-                build_state_dict(assistant_name=self._state_assistant_name(), message=WARMUP_MESSAGE, capabilities=self._capabilities), QUESTIONS,
+                build_state_dict(assistant_name=self._state_assistant_name(), message=WARMUP_MESSAGE, capabilities=self._current_capabilities()), QUESTIONS,
             )
             if self._translator is not None:
                 self._translator.wait_ready()  # 翻譯器失敗不擋 Laya，propose 會走 translate_unavailable
@@ -324,7 +346,7 @@ class LayaProposer:
                 self._recent_text[candidate.candidate_id] = candidate.text
                 while len(self._recent_text) > 16:
                     self._recent_text.popitem(last=False)
-        state = build_state(candidate, assistant, message=message, recent_context=context, capabilities=self._capabilities)
+        state = build_state(candidate, assistant, message=message, recent_context=context, capabilities=self._current_capabilities())
         result = agent.predict(state, QUESTIONS)
         answers = result["answers"]
         reply = answers["reply_mode"]
@@ -360,6 +382,42 @@ def read_absent_compound(answers: dict) -> bool | None:
         return float(answers["absent.compound"]["noul"]) >= 0.5
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def registry_capabilities_source(registry: object) -> Callable[[], frozenset[str]]:
+    """把工具註冊表轉接成 LayaProposer 的能力來源（決策層不 import 工具層，用 getattr 取快照）。
+
+    ``registry.capability_snapshot()`` 不存在時記一次 warning，之後每次讀取都視為失敗（拋例外，由 LayaProposer 算 none）。
+    """
+    warned = False
+
+    def read() -> frozenset[str]:
+        nonlocal warned
+        snapshot_fn = getattr(registry, "capability_snapshot", None)
+        if not callable(snapshot_fn):
+            if not warned:
+                warned = True
+                logger.warning("laya：工具註冊表沒有 capability_snapshot，可用能力一律視為 none")
+            raise TypeError("工具註冊表沒有 capability_snapshot")
+        snapshot = snapshot_fn()
+        return categories_from_readiness((row.tag, row.readiness) for row in snapshot.tags)
+
+    return read
+
+
+def bind_laya_capabilities(orchestrator: object, registry: object) -> int:
+    """組裝層：把註冊表接到 orchestrator 內所有可綁定的 proposer（primary 與 shadow；``laya.primary`` 取其內層 Laya）。回傳綁定數。"""
+    source = registry_capabilities_source(registry)
+    found: list[object] = [getattr(orchestrator, "proposer", None)]
+    found.extend(sp for sp, _ in getattr(orchestrator, "_shadows", ()) or ())
+    bound = 0
+    for proposer in found:
+        target = getattr(proposer, "laya", proposer)
+        bind = getattr(target, "bind_capabilities_source", None)
+        if callable(bind):
+            bind(source)
+            bound += 1
+    return bound
 
 
 def create_laya_proposer(config: DecisionConfig | None = None, settings: object | None = None, **_: object) -> LayaProposer:

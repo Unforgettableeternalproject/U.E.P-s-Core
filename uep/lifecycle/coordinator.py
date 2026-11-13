@@ -24,21 +24,42 @@ PR-3 增加。只有 ``UEP_MODULE_COORDINATOR`` 關閉（不建立 coordinator�
 - 依賴 failed：作用中的依賴者標為 ``degraded(dependency_failed)``（不燒自己的重試次數，依賴恢復後回 ready）；停機依反向依賴序卸載；
   hung 的 handle 呼叫達上限時拒絕新增載入／探活並告警，且排隊中就已逾時的工作在開始前就被丟棄（不會事後才真的 load）。
 
-PR-3 不含：真實 handle（PR-4）、提議政策（PR-5）、R13 健康橋接、閒置 TTL 與需求驅動的驅逐（§7.4 規則 3～6）。
+PR-3 後段（同樣只在啟用預算時生效）：
+- 需求驅動的驅逐（§7.4 規則 3～5）：``priority=on_demand`` 且 ``cause=demand`` 的載入在空間不足時，驅逐類別較低（speculative 先、background 後）、
+  無保護（pinned／resident／lease／依賴者）、無在途操作的候選；一律先挑好整組候選（不夠就一個都不動），登記預留（claim），等卸載完成且有更新的樣本
+  確認釋放後才放行原載入；仍不足回 ``rejected:insufficient_resource``。speculative／background 與非 demand 起因的載入永遠不驅逐（規則 2）。
+- 閒置 TTL（規則 6）：描述子 ``idle_ttl_s``，speculative／on_demand 在 ready、無保護、閒置超時後於 tick 卸載（cause=idle、reason=idle_ttl）。
+- ``load_cost="heavy"`` 全域序列化：同時最多一個 heavy 載入在途，其餘回 ``rejected:heavy_load_in_flight``（不排隊）。
+- 宣告值 vs 觀測值校正：handle 選填 ``observed_resource()``；偏差超過 25% 記 ``vram_deviation`` 警告，之後放行與預算以 max(宣告, 觀測) 為準。
+- 卸載後 NVML 差值驗證：卸載前後各取樣一次，釋放量低於持有量 × ``unload_release_ratio`` 記 ``unload_incomplete`` 並把未釋放量保守保留於預算，
+  直到後續樣本顯示已釋放；量測不可用時不判定（放行本來就因量測失敗而 fail-closed）。
+
+PR-3 不含：真實 handle（PR-4）、提議政策（PR-5）、R13 健康橋接。
 """
 from __future__ import annotations
 
 import dataclasses
 import itertools
 import logging
+import math
 import queue
+import statistics
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from uep.lifecycle.budget import REJECT_UNCONFIGURED, ResourceBudget
+from uep.lifecycle.budget import (
+    OBSERVED_DEVIATION_RATIO,
+    REJECT_HEAVY_IN_FLIGHT,
+    REJECT_INSUFFICIENT,
+    REJECT_UNCONFIGURED,
+    UNLOAD_VERIFY_MIN_MB,
+    ResourceBudget,
+    VramReading,
+)
 from uep.lifecycle.descriptor import ModuleDescriptor
 from uep.lifecycle.handles import ModuleHandle
 from uep.lifecycle.publisher import ModuleEventPublisher, Sink
@@ -62,6 +83,10 @@ REJECT_POOL_SATURATED = "worker_pool_saturated"
 DEFAULT_LEASE_TTL_S = 60.0
 DEFAULT_LEASE_MAX_TTL_S = 3600.0
 _PRESSURE_EVICTABLE = ("background", "speculative")  # R7：只收回 P3 -> P2
+_DEMAND_EVICTABLE = ("speculative", "background")  # 需求驅逐 speculative 先、background 後，與壓力收回（background 先）相反——依設計稿 §7.4 規則 3；順序即優先序，改這裡即可調整
+_TTL_CLASSES = frozenset({"speculative", "on_demand"})  # 規則 6／描述子註解：可閒置自動卸載的類別
+_WAIT_EVICTION = "waiting_eviction"  # 內部哨兵：等驅逐完成，不是拒絕原因（不計數、不進 admission_reason）
+_WARM_SAMPLES = 8  # 載入耗時環形緩衝長度（取中位數當 warm_p50）
 
 
 class CoordinatorError(RuntimeError):
@@ -81,6 +106,15 @@ class LeaseResult:
     state: str
     reason: str
     expires_at: float | None = None
+
+
+@dataclass(frozen=True)
+class _EvictWait:
+    """需求載入的驅逐預留（claim）：被挑中的候選與預留的成本；其他載入在評估時要把它當作已占用。"""
+
+    victims: tuple[str, ...]
+    cost_mb: int
+    deadline: float  # 登記時間 + 候選最長卸載逾時 + 一個樣本新鮮度上限；超過就放棄預留（卸載卡住或樣本一直來不了時不永久占位）
 
 
 @dataclass
@@ -107,6 +141,9 @@ class ModuleStatus:
     admission_reason: str | None = None  # 最近一次被放行閘拒絕的原因（budget／壓力／worker 池）；None = 未被拒
     protected: str | None = None  # 目前的保護原因（pinned／resident／lease／has_dependents）；None = 可驅逐
     leases: int = 0  # 有效 lease 數
+    observed_vram_mb: int | None = None  # handle 回報的實際 VRAM（最近一次載入後）；None = 未觀測
+    unreleased_mb: int = 0  # unload_incomplete 後仍保守保留於預算的未釋放量
+    waiting_eviction: bool = False  # 需求載入正在等驅逐完成
 
 
 class _Rec:
@@ -115,11 +152,13 @@ class _Rec:
     __slots__ = (
         "admission_reason",
         "attempt_no",
+        "cleanup_pending",
         "cooldown_until",
         "dead_count",
         "deadline",
         "desc",
         "evict_hold_until",
+        "evict_wait",
         "exhausted",
         "failures",
         "handle",
@@ -128,10 +167,16 @@ class _Rec:
         "job_kind",
         "job_started",
         "last_used",
+        "leak_base_free",
+        "leak_base_others",
+        "leak_expected",
+        "leak_mb",
+        "observed_mb",
         "occupied",
         "op_pinned",
         "probe_due",
         "reason",
+        "release_confirm_at",
         "reserved_at",
         "retry_at",
         "revision",
@@ -142,6 +187,7 @@ class _Rec:
         "unload_submitted",
         "want_cause",
         "wanted",
+        "warm_samples",
     )
 
     def __init__(self, desc: ModuleDescriptor, handle: ModuleHandle) -> None:
@@ -172,6 +218,15 @@ class _Rec:
         self.admission_reason: str | None = None
         self.evict_hold_until = 0.0  # 壓力收回之後的重載冷卻（與 R12 的 cooldown_until 分開）
         self.stop_tried = False  # 停機時已嘗試卸載（failed 視為終態）
+        self.evict_wait: _EvictWait | None = None  # 正在等驅逐完成的預留
+        self.observed_mb: int | None = None  # handle 回報的實際 VRAM；放行與預算取 max(宣告, 觀測)
+        self.leak_mb = 0  # unload_incomplete：仍保守保留的未釋放量
+        self.leak_base_free = 0  # 判定當時卸載前的實測空閒（之後的樣本與它比較）
+        self.leak_expected = 0  # 判定當時的持有量
+        self.leak_base_others = 0  # 判定當時其他 GPU 模組的持有量（恢復判定要扣除之後它們造成的空閒變化）
+        self.cleanup_pending = False  # 被需求驅逐者：卸載失敗時即使 wanted=False 也要重試清理
+        self.release_confirm_at = 0.0  # 時間戳 >= 此值的樣本才反映這次卸載（驅逐放行用）
+        self.warm_samples: deque[float] = deque(maxlen=_WARM_SAMPLES)  # 最近幾次 loading -> ready 秒數
 
 
 class _Workers:
@@ -267,6 +322,8 @@ class ModuleCoordinator:
         self._evict_target: str | None = None
         self._evict_next_at = float("-inf")
         self._evict_settled_at = float("-inf")
+        self._dirty = False  # 鎖內動作改變了別的模組（例如啟動驅逐）：reconcile 要再跑一輪
+        self._gpu_io_seq = 0  # 任何 GPU 模組的狀態轉移都會遞增：卸載前後的 VRAM 差值只在這段期間沒有其他 GPU 操作時才有意義
 
     # --- 登記 ---
 
@@ -363,6 +420,7 @@ class ModuleCoordinator:
                 self._leases.clear()
             for rec in self._recs.values():
                 rec.wanted = False
+                rec.evict_wait = None
                 rec.op_pinned = False
                 if rec.state == "unloading":
                     rec.unload_cause = "shutdown"  # 已在卸載中：只改原因，不重複轉移
@@ -432,6 +490,8 @@ class ModuleCoordinator:
                 return RequestResult(True, "already_ready")
             if rec.exhausted:  # R12：顯式請求不重設上限
                 return RequestResult(False, "retries_exhausted")
+            if not rec.wanted:
+                rec.evict_wait = None  # 不沿用過期的候選名單（只有「仍在等」的重複請求才保留既有預留）
             rec.wanted, rec.want_cause = True, cause
             rec.admission_reason = None
             now = self._clock()
@@ -439,6 +499,8 @@ class ModuleCoordinator:
             if rec.admission_reason is not None and rec.state in ("unloaded", "failed") and not rec.in_flight:
                 rec.wanted = False  # 被放行閘拒絕：不排隊
                 result = RequestResult(False, f"rejected:{rec.admission_reason}")
+            elif rec.evict_wait is not None and rec.state == "unloaded":
+                result = RequestResult(True, "evicting")  # 已啟動驅逐，等卸載完成後再放行；最終被拒時看 status().admission_reason
             elif rec.state not in _ACTIVE_STATES and rec.cooldown_until > now:
                 result = RequestResult(True, "queued_until_cooldown")  # R12：不繞過冷卻（failed、unloading、unloaded 都一樣）
             else:
@@ -463,6 +525,7 @@ class ModuleCoordinator:
                     self._count("unload_refused_protected")
                     return RequestResult(False, f"protected:{protected}")
             rec.wanted = False
+            rec.evict_wait = None  # 請求者不要了：釋放驅逐預留
             if rec.state == "unloaded":
                 return RequestResult(True, "already_unloaded")
             if rec.state == "unloading":
@@ -526,6 +589,7 @@ class ModuleCoordinator:
             rec = self._recs[lease.module_id]
             now = self._clock()
             if lease.expires_at <= now:
+                rec.last_used = now
                 del self._leases[lease_id]
                 self._count("lease_expired")
                 return LeaseResult(False, None, rec.state, "lease_expired")
@@ -539,8 +603,10 @@ class ModuleCoordinator:
     def release_lease(self, lease_id: str) -> bool:
         """釋放一個 lease；冪等（不存在回 False）。"""
         with self._lock:
-            if self._leases.pop(lease_id, None) is None:
+            lease = self._leases.pop(lease_id, None)
+            if lease is None:
                 return False
+            self._recs[lease.module_id].last_used = self._clock()  # 閒置計時從釋放起算（idle TTL、驅逐排序）
             self._count("lease_released")
             return True
 
@@ -548,7 +614,9 @@ class ModuleCoordinator:
         """釋放某 owner 的全部 lease（Supervisor 保底）；冪等，回傳釋放數。"""
         with self._lock:
             ids = [lid for lid, lease in self._leases.items() if lease.owner == owner]
+            now = self._clock()
             for lid in ids:
+                self._recs[self._leases[lid].module_id].last_used = now
                 del self._leases[lid]
             if ids:
                 self.counters["lease_released"] = self.counters.get("lease_released", 0) + len(ids)
@@ -600,6 +668,8 @@ class ModuleCoordinator:
             self._timeouts_locked(t)
             self._expire_leases_locked(t)
             self._probes_locked(t)
+            self._leaks_locked(t)
+            self._idle_ttl_locked(t)
             self._pressure_locked(t)
             self._reconcile_locked(t)
             if self._resync_due is not None and t >= self._resync_due:
@@ -639,12 +709,14 @@ class ModuleCoordinator:
 
     def _expire_leases_locked(self, now: float) -> None:
         for lid in [lid for lid, lease in self._leases.items() if lease.expires_at <= now]:
+            self._recs[self._leases[lid].module_id].last_used = now  # 閒置計時從到期起算，避免剛用完就被 idle TTL／驅逐排序視為很久沒用
             del self._leases[lid]
             self._count("lease_expired")
 
     def _revoke_leases_locked(self, module_id: str) -> None:
         for lid in [lid for lid, lease in self._leases.items() if lease.module_id == module_id]:
             del self._leases[lid]
+            self._recs[module_id].last_used = self._clock()
             self._count("lease_revoked")
 
     def _live_dependents_locked(self, rec: _Rec) -> list[_Rec]:
@@ -675,39 +747,217 @@ class ModuleCoordinator:
             self._count("hung_pool_alarm")
         self._hung_alarmed = saturated
 
-    def _held_locked(self, now: float) -> tuple[int, int]:
-        """所有仍持有 VRAM 的 GPU 模組的宣告值總和，與其中「樣本尚未反映」的部分（載入中、或在最近樣本之後才進入載入）。
-        未確認釋放（occupied）的不退還；宣告值未知的算 0（實測側仍會反映真實占用，取較保守者）。"""
+    def _cost_locked(self, rec: _Rec) -> int | None:
+        """放行與預算用的成本：max(宣告, 觀測)（§7.3）；宣告未知維持 None（=> unmeasured_cost）。"""
+        declared = rec.desc.vram_mb
+        if declared is None:
+            return None
+        return max(declared, rec.observed_mb or 0)
+
+    def _claim_valid_locked(self, r: _Rec, now: float) -> bool:
+        """驅逐預留是否仍有效；失效就地清掉並放棄請求（不排隊）：停機、請求者不要了／離開 unloaded、依賴已不 ready
+        （例如依賴被別人驅逐或 failed，載入永遠開始不了）、或超過期限。"""
+        wait = r.evict_wait
+        if wait is None:
+            return False
+        why = None
+        if self._stopping or not r.wanted or r.state != "unloaded":
+            why = ""
+        elif not self._deps_ready_locked(r):
+            why = "dependency_not_ready"
+        elif now >= wait.deadline:
+            why = "eviction_expired"
+        if why is None:
+            return True
+        r.evict_wait = None
+        if why:
+            r.wanted = False
+            r.admission_reason = why
+            self._count("evict_claim_dropped")
+            logger.info("模組 %s 的驅逐預留作廢：%s", r.desc.module_id, why)
+        return False
+
+    def _claims_locked(self, exclude: _Rec | None, now: float) -> int:
+        """其他載入的驅逐預留總和（等驅逐完成的需求載入）；已放棄的預留（不再想載入、離開 unloaded、停機）在這裡順手清掉。
+        候選仍在卸載中（unloading）時，它的成本還算在持有量裡，預留只計超出這部分的缺口，避免同一塊空間被算兩次而擋掉
+        另一個本來可以靠別的候選成功的載入。"""
+        total = 0
+        for r in self._recs.values():
+            wait = r.evict_wait
+            if wait is None or r is exclude:
+                continue
+            if not self._claim_valid_locked(r, now):
+                continue
+            covering = sum(
+                self._cost_locked(self._recs[v]) or 0 for v in wait.victims if self._recs[v].state == "unloading"
+            )
+            total += max(0, wait.cost_mb - covering)
+        return total
+
+    def _held_locked(self, now: float, exclude: _Rec | None = None) -> tuple[int, int]:
+        """所有仍持有 VRAM 的 GPU 模組的成本總和（max(宣告, 觀測)），與其中「樣本尚未反映」的部分（載入中、或在最近樣本之後才進入載入）。
+        未確認釋放（occupied）的不退還；unload_incomplete 的未釋放量繼續保留（與模組自己的成本取大者，不重複計）；
+        其他載入的驅逐預留（``exclude`` 以外）也算已占用且尚未反映，避免兩個載入搶同一塊剛騰出的空間。
+        宣告值未知的算 0（實測側仍會反映真實占用，取較保守者）。"""
         assert self._budget is not None
         _, taken_at = self._budget.reading()
         held = pending = 0
         for r in self._recs.values():
-            if not r.desc.uses_gpu or not (r.occupied or r.state in _HOLDING_STATES):
+            if not r.desc.uses_gpu:
                 continue
-            cost = r.desc.vram_mb or 0
-            held += cost
-            if r.state in ("loading", "warming") or (r.in_flight and r.job_kind == "load") or taken_at is None or r.reserved_at >= taken_at:
-                pending += cost
-        return held, pending
+            amount = 0
+            if r.occupied or r.state in _HOLDING_STATES:
+                cost = self._cost_locked(r) or 0
+                amount = cost
+                if r.state in ("loading", "warming") or (r.in_flight and r.job_kind == "load") or taken_at is None or r.reserved_at >= taken_at:
+                    pending += cost
+            held += max(amount, r.leak_mb)
+        claims = self._claims_locked(exclude, now)
+        return held + claims, pending + claims
+
+    def _heavy_in_flight_locked(self, rec: _Rec) -> bool:
+        """另一個 heavy 模組正在載入（含暖機，或載入呼叫仍在 worker 上），或已為它驅逐完正在等放行（預留中，不讓別的 heavy 插隊）：
+        載入峰值與磁碟 I/O 不疊加。已逾時而 handle 仍卡住（hung）的載入不計，否則一個卡死的載入會永遠擋住所有 heavy；
+        它占住的資源仍由 occupied 留在預算裡。"""
+        return any(
+            r is not rec and r.desc.load_cost == "heavy" and not self._observing(r)
+            and (
+                r.state in ("loading", "warming") or (r.in_flight and r.job_kind == "load" and not r.hung)
+                or r.evict_wait is not None
+            )
+            for r in self._recs.values()
+        )
+
+    def _may_evict_locked(self, rec: _Rec) -> bool:
+        """§7.4 規則 2／3：只有 on_demand 類別、起因是 demand（ensure）的載入可以驅逐別人；預載（proposal）、startup 自動載入、
+        speculative／background 一律只撿現有空位。"""
+        return (
+            self._mode == "manage" and not self._stopping and rec.state == "unloaded"
+            and rec.desc.priority == "on_demand" and rec.want_cause == "demand"
+        )
+
+    def _dep_closure_locked(self, rec: _Rec) -> set[str]:
+        seen: set[str] = set()
+        stack = list(rec.desc.depends_on)
+        while stack:
+            d = stack.pop()
+            if d not in seen:
+                seen.add(d)
+                stack.extend(self._recs[d].desc.depends_on)
+        return seen
+
+    @staticmethod
+    def _warm_p50(rec: _Rec) -> float | None:
+        return statistics.median(rec.warm_samples) if rec.warm_samples else None
+
+    def _pick_victims_locked(self, rec: _Rec, now: float, shortfall_mb: int) -> list[_Rec]:
+        """挑出能補足缺口的候選（全有或全無：湊不夠就一個都不動）。排序：類別（speculative 先）-> last_used 最舊 -> warm_p50 小者先 ->
+        module_id（確定性）。候選必須 uses_gpu、有已知成本、ready／degraded、無在途操作、coordinator 能卸載、無保護
+        （pinned／resident／有效 lease／作用中依賴者），且不是請求者自己的依賴。"""
+        deps = self._dep_closure_locked(rec)
+        for other in self._recs.values():  # 別的等驅逐的請求者所依賴的模組也不能動（否則它永遠載不起來）
+            if other is not rec and other.evict_wait is not None:
+                deps |= self._dep_closure_locked(other)
+        cands = [
+            r for r in self._recs.values()
+            if r is not rec and r.desc.module_id not in deps and r.desc.uses_gpu and r.desc.priority in _DEMAND_EVICTABLE
+            and r.state in _ACTIVE_STATES and not r.in_flight and not self._observing(r) and self._does_unload(r)
+            and (self._cost_locked(r) or 0) > 0 and self._protection_locked(r, now) is None
+        ]
+        cands.sort(key=lambda r: (
+            _DEMAND_EVICTABLE.index(r.desc.priority), r.last_used,
+            math.inf if self._warm_p50(r) is None else self._warm_p50(r), r.desc.module_id,
+        ))
+        picked: list[_Rec] = []
+        freed = 0
+        for r in cands:
+            if freed >= shortfall_mb:
+                break
+            picked.append(r)
+            freed += self._cost_locked(r) or 0
+        return picked if freed >= shortfall_mb else []
+
+    def _victims_settled_locked(self, wait: _EvictWait, now: float) -> bool:
+        """候選都已卸載完成、且有不早於各次卸載的樣本確認釋放（failed／逾時的候選不會釋放，占用仍計入預算，交給放行評估拒絕）。"""
+        assert self._budget is not None
+        _, taken_at = self._budget.reading()  # 最近一次成功樣本（不論新鮮度）：它不早於卸載就足以證明釋放已被反映
+        for vid in wait.victims:
+            v = self._recs[vid]
+            if v.state == "unloading":
+                return False
+            if v.state == "unloaded" and (taken_at is None or taken_at < v.release_confirm_at):
+                return False  # 未確認釋放：量測暫時不可用時也繼續等，由預留期限收尾
+        return True
+
+    def _admit_via_eviction_locked(self, rec: _Rec, now: float, adm: Any, cost: int | None, record: bool) -> str | None:
+        """空間不足的需求載入：啟動驅逐（只在 record=True 時）並等待；候選釋放後重新評估。回傳 None = 放行，``_WAIT_EVICTION`` = 等待。"""
+        wait = rec.evict_wait
+        if wait is None:  # 剛發現不足：挑候選、登記預留
+            victims = self._pick_victims_locked(rec, now, (cost or 0) - (adm.effective_free_mb or 0))
+            if not victims:
+                return REJECT_INSUFFICIENT
+            for v in victims:
+                v.wanted = False  # 被驅逐者不自動重載
+                v.cleanup_pending = True  # 但卸載失敗時仍要重試清理，不能因 wanted=False 永遠卡在 failed 占用
+                v.evict_hold_until = now + (self._budget.config.evict_cooldown_s if self._budget else 0.0)  # 與壓力收回相同的重載冷卻
+                self._count("evicted")
+                self._count("evicted_for_demand")
+                logger.info("需求載入 %s 空間不足：驅逐模組 %s（%s）", rec.desc.module_id, v.desc.module_id, v.desc.priority)
+                self._begin_unload_locked(v, "eviction", "evicted_demand", now)
+            rec.evict_wait = _EvictWait(
+                tuple(v.desc.module_id for v in victims), cost or 0,
+                now + max(v.desc.unload_timeout_s for v in victims) + (self._budget.config.reading_max_age_s if self._budget else 0.0),
+            )
+            self._dirty = True
+            return _WAIT_EVICTION
+        if now >= wait.deadline:  # 預留逾期（候選卸載卡住或樣本一直來不了）：放棄，不排隊
+            if record:
+                rec.evict_wait, rec.wanted = None, False
+                self._count("evict_claim_dropped")
+            return "eviction_expired"
+        if adm.ok:  # 已有足夠空間（候選釋放，或別處騰出）
+            if record:
+                rec.evict_wait = None
+            return None
+        if not self._victims_settled_locked(wait, now):
+            return _WAIT_EVICTION  # 候選還在卸載或尚未確認釋放：量測失敗／過期／壓力也先等，待結算後才依最新樣本判定
+        if adm.reason != REJECT_INSUFFICIENT:  # 結算後仍量測失敗／過期／壓力：不再等，也不排隊
+            if record:
+                rec.evict_wait, rec.wanted = None, False
+            return adm.reason
+        if record:  # 驅逐後仍不足：不排隊，也不再挑下一輪候選（只驅逐一輪）
+            rec.evict_wait, rec.wanted = None, False
+            self._count("evict_insufficient")
+        return REJECT_INSUFFICIENT
 
     def _admit_locked(self, rec: _Rec, now: float, *, record: bool = True) -> str | None:
         """載入放行閘：回傳拒絕原因，None = 放行。只套在 coordinator 真的會呼叫 handle.load 的模組（觀測型不經過）。"""
         reason: str | None = None
         if self._hung_count_locked() >= self._max_hung:
             reason = REJECT_POOL_SATURATED
+        elif self._budget is not None and not self._observing(rec) and rec.desc.load_cost == "heavy" and self._heavy_in_flight_locked(rec):
+            reason = REJECT_HEAVY_IN_FLIGHT  # heavy 全域序列化（§7.3）；被擋不排隊
         elif rec.desc.uses_gpu and not self._observing(rec):
             if self._budget is None:
                 reason = REJECT_UNCONFIGURED  # 預算管理未啟用：fail-closed，不猜 VRAM 夠不夠
             elif rec.evict_hold_until > now:
                 reason = "evict_hold"
             else:
-                held, pending = self._held_locked(now)
-                reason = self._budget.evaluate(cost_mb=rec.desc.vram_mb, held_mb=held, pending_mb=pending, now=now).reason
-        if record and reason != rec.admission_reason:
-            if reason is not None:
-                self._count(f"rejected_{reason}")
-                logger.info("模組 %s 載入被拒：%s", rec.desc.module_id, reason)
-            rec.admission_reason = reason
+                held, pending = self._held_locked(now, exclude=rec)
+                cost = self._cost_locked(rec)
+                adm = self._budget.evaluate(cost_mb=cost, held_mb=held, pending_mb=pending, now=now)
+                reason = adm.reason
+                if rec.evict_wait is not None or (reason == REJECT_INSUFFICIENT and record and self._may_evict_locked(rec)):
+                    reason = self._admit_via_eviction_locked(rec, now, adm, cost, record)
+        if record and rec.evict_wait is not None and reason is not None and reason != _WAIT_EVICTION:
+            rec.evict_wait, rec.wanted = None, False  # 等驅逐期間被別的條件擋下（heavy、worker 池…）：不排隊，放棄
+        if record:
+            shown = None if reason == _WAIT_EVICTION else reason
+            if shown != rec.admission_reason:
+                if shown is not None:
+                    self._count(f"rejected_{shown}")
+                    logger.info("模組 %s 載入被拒：%s", rec.desc.module_id, shown)
+                rec.admission_reason = shown
         return reason
 
     def _pressure_locked(self, now: float) -> None:
@@ -741,6 +991,141 @@ class ModuleCoordinator:
         self._count("evicted")
         logger.warning("外部 VRAM 壓力：收回模組 %s（%s）", victim.desc.module_id, victim.desc.priority)
         self._begin_unload_locked(victim, "pressure", "evicted_pressure", now)
+
+    def _idle_ttl_locked(self, now: float) -> None:
+        """規則 6：speculative／on_demand 在 ready、無保護、閒置超過 ``idle_ttl_s`` 即卸載（不自動重載）。
+        只在啟用預算時生效；pinned／resident／有 lease／有作用中依賴者的模組不動。"""
+        if self._budget is None or self._mode != "manage" or self._stopping:
+            return
+        for rec in self._recs.values():
+            ttl = rec.desc.idle_ttl_s
+            if (
+                ttl is None or rec.desc.priority not in _TTL_CLASSES or rec.state != "ready" or rec.in_flight
+                or self._observing(rec) or not self._does_unload(rec) or now - rec.last_used <= ttl
+                or self._protection_locked(rec, now) is not None
+            ):
+                continue
+            rec.wanted = False
+            self._count("idle_ttl_unload")
+            logger.info("模組 %s 閒置超過 %.1f 秒：自動卸載", rec.desc.module_id, ttl)
+            self._begin_unload_locked(rec, "idle", "idle_ttl", now)
+
+    def _others_held_locked(self, rec: _Rec) -> int:
+        """其他 GPU 模組目前持有的成本總和（不含 leak：leak 是已經不在的記帳，不代表空閒會再變）。
+        近似：這裡用宣告／觀測成本，而 ``leak_base_free`` 是實測空閒，兩者對同一個模組未必相等；恢復判定因此是估計，
+        誤差方向由門檻（0.5）吸收，且不會讓未釋放量超過判定當時的持有量。"""
+        return sum(
+            self._cost_locked(r) or 0 for r in self._recs.values()
+            if r is not rec and r.desc.uses_gpu and (r.occupied or r.state in _HOLDING_STATES)
+        )
+
+    def clear_unreleased(self, module_id: str) -> RequestResult:
+        """運維入口：確認未釋放的 VRAM 已不存在（例如重啟過行程外的占用者）後，清除 unload_incomplete 保留的預算。
+        leak 沒有自動到期：沒有樣本能證明已釋放時寧可一直保守，由運維決定何時退還。"""
+        with self._lock:
+            rec = self._recs.get(module_id)
+            if rec is None:
+                return RequestResult(False, "unknown_module")
+            if rec.leak_mb <= 0:
+                return RequestResult(True, "nothing_to_clear")
+            rec.leak_mb = 0
+            self._count("unload_leak_cleared")
+            return RequestResult(True, "cleared")
+
+    def _leaks_locked(self, now: float) -> None:
+        """unload_incomplete 的後續樣本：釋放量達門檻就退還保留的預算，否則依最新樣本更新未釋放量。模組又在持有資源時不判（基準已失效）。"""
+        if self._budget is None:
+            return
+        ratio = self._budget.config.unload_release_ratio
+        reading = None
+        for rec in self._recs.values():
+            if rec.leak_mb <= 0 or rec.occupied or rec.state in _HOLDING_STATES:
+                continue
+            if reading is None:
+                reading, _ = self._budget.fresh_reading(now)
+                if reading is None:
+                    return  # 量測不可用：維持保守
+            # 扣除判定之後其他模組持有量的變化：它們載入造成的空閒下降不是這個模組沒釋放（反之亦然）
+            delta = reading.free_mb - rec.leak_base_free + (self._others_held_locked(rec) - rec.leak_base_others)
+            if ratio > 0 and delta < ratio * rec.leak_expected:
+                rec.leak_mb = min(rec.leak_expected, max(1, rec.leak_expected - max(delta, 0)))
+            else:
+                logger.info("模組 %s 先前未釋放的 VRAM 已釋放（event=unload_recovered）", rec.desc.module_id)
+                self._count("unload_recovered")
+                rec.leak_mb = 0
+
+    def _judge_release_locked(self, rec: _Rec, before: VramReading | None, after: VramReading | None, clean: bool) -> None:
+        """卸載前後的 NVML 差值驗證（§9.2）：釋放量 < 持有量 × ratio => unload_incomplete，未釋放量保守保留。
+        任一次量測不可用、或這段期間有其他 GPU 載入／卸載同時進行（差值被汙染）就不判定：之後放行本來就因量測失敗而
+        fail-closed，且實測空閒會如實反映；外部行程的同時變動無法排除，這是門檻取 0.5 的另一個理由。"""
+        if self._budget is None or before is None or after is None:
+            return
+        if not clean:
+            self._count("unload_unverified_concurrent")
+            return
+        expected = self._cost_locked(rec) or 0
+        ratio = self._budget.config.unload_release_ratio
+        if ratio <= 0 or expected < UNLOAD_VERIFY_MIN_MB:
+            return
+        delta = after.free_mb - before.free_mb
+        rec.leak_base_free, rec.leak_expected = before.free_mb, expected
+        rec.leak_base_others = self._others_held_locked(rec)
+        if delta >= ratio * expected:
+            rec.leak_mb = 0
+            return
+        rec.leak_mb = max(1, expected - max(delta, 0))
+        self._count("unload_incomplete")
+        logger.warning(
+            "event=unload_incomplete module=%s expected_mb=%d released_mb=%d；未釋放量保守保留於預算", rec.desc.module_id, expected, delta,
+            extra={"event": "unload_incomplete", "module_id": rec.desc.module_id},
+        )
+
+    def _should_verify_unload(self, rec: _Rec) -> bool:
+        return (
+            self._budget is not None and self._mode == "manage" and not self._stopping and rec.desc.uses_gpu
+            and not self._observing(rec) and self._budget.config.unload_release_ratio > 0
+            and (self._cost_locked(rec) or 0) >= UNLOAD_VERIFY_MIN_MB
+        )
+
+    def _observe_vram(self, rec: _Rec) -> int | None:
+        """鎖外向 handle 取實際 VRAM 用量（選填介面）；沒有、失敗或值不合法都回 None（不校正）。"""
+        if self._budget is None or not rec.desc.uses_gpu or self._observing(rec):
+            return None
+        fn = getattr(rec.handle, "observed_resource", None)
+        if fn is None:
+            return None
+        box: dict[str, Any] = {}
+
+        def call() -> None:
+            try:
+                box["v"] = fn()
+            except Exception as exc:  # noqa: BLE001
+                box["err"] = type(exc).__name__
+
+        # 限時：觀測只是校正用，卡住不得拖到載入逾時而把已成功的載入判成 load_timeout（卡住的呼叫留在 daemon 執行緒上）
+        thread = threading.Thread(target=call, name="UepObserveResource", daemon=True)
+        thread.start()
+        thread.join(self._budget.config.read_timeout_s)
+        if thread.is_alive() or "err" in box:
+            logger.warning("模組 %s observed_resource %s；略過校正", rec.desc.module_id, "逾時" if thread.is_alive() else f"失敗：{box['err']}")
+            return None
+        mb = getattr(box.get("v"), "vram_mb", None)
+        if isinstance(mb, bool) or not isinstance(mb, int) or mb < 0:
+            return None
+        return mb
+
+    def _calibrate_locked(self, rec: _Rec, observed: int | None) -> None:
+        """記錄觀測值；與宣告值偏差超過 25% 記警告（event=vram_deviation）。之後的放行與預算用 max(宣告, 觀測)。"""
+        declared = rec.desc.vram_mb
+        if observed is None or declared is None:
+            return
+        rec.observed_mb = observed
+        if abs(observed - declared) > OBSERVED_DEVIATION_RATIO * max(declared, 1):
+            self._count("vram_deviation")
+            logger.warning(
+                "event=vram_deviation module=%s declared_mb=%d observed_mb=%d；放行改以 max(宣告, 觀測) 為準",
+                rec.desc.module_id, declared, observed, extra={"event": "vram_deviation", "module_id": rec.desc.module_id},
+            )
 
     def _dep_broken_locked(self, rec: _Rec) -> bool:
         """作用中的模組有依賴不在作用中（failed、重試載入中、清理中…）或遞移地因依賴 failed 而 degraded。
@@ -790,6 +1175,7 @@ class ModuleCoordinator:
             blocked_reason=rec.desc.blocked_reason, retries_exhausted=rec.exhausted,
             admission_reason=rec.admission_reason, protected=self._protection_locked(rec, self._clock()),
             leases=self._active_leases_locked(rec.desc.module_id, self._clock()),
+            observed_vram_mb=rec.observed_mb, unreleased_mb=rec.leak_mb, waiting_eviction=rec.evict_wait is not None,
         )
 
     def _payload(self, rec: _Rec, state: str, cause: str, reason: str | None, revision: int) -> dict[str, Any]:
@@ -811,11 +1197,14 @@ class ModuleCoordinator:
         validate_state_changed_payload(payload)
         rec.revision += 1
         rec.state, rec.reason = state, reason
+        if rec.desc.uses_gpu:
+            self._gpu_io_seq += 1
         if state == "loading":
             rec.reserved_at = self._clock()
         elif state == "ready":
             rec.last_used = self._clock()
             if payload["prev_state"] in ("loading", "warming"):
+                rec.warm_samples.append(max(rec.last_used - rec.reserved_at, 0.0))  # 驅逐排序的重載成本（warm_p50）
                 rec.reserved_at = rec.last_used  # 載入完成才成立的占用：下一個樣本之前仍算「樣本尚未反映」
         elif state in ("unloaded", "failed"):
             self._revoke_leases_locked(rec.desc.module_id)  # 模組已失效：lease 不再有意義，持有者 renew 時會得知
@@ -884,6 +1273,7 @@ class ModuleCoordinator:
         """-> failed：保留占用（occupied），安排有限退避重試；設定閘與停機中不重試（R12）。"""
         rec.token += 1  # 讓仍在跑的舊操作成為過期操作
         rec.deadline = None
+        rec.evict_wait = None
         if occupied:
             rec.occupied = True
         rec.failures += 1
@@ -917,6 +1307,8 @@ class ModuleCoordinator:
             for rec in self._recs.values():
                 if self._reconcile_one_locked(rec, now):
                     progressed = True
+                if self._dirty:  # 別的模組被改動（例如啟動驅逐）：要再跑一輪才會送出它們的卸載
+                    self._dirty, progressed = False, True
 
     def _reconcile_one_locked(self, rec: _Rec, now: float) -> bool:
         if rec.state == "unloading":
@@ -937,13 +1329,17 @@ class ModuleCoordinator:
                 return True
             return False
         if rec.state == "unloaded":
+            if rec.evict_wait is not None and not self._claim_valid_locked(rec, now):
+                return False  # 預留已作廢（依賴不在了、逾期…）：請求已放棄
             if self._can_begin_load_locked(rec, now):
                 self._begin_load_locked(rec, now)
                 return True
             return False
         if (
-            rec.state == "failed" and rec.wanted and not rec.desc.blocked and not rec.exhausted and not rec.in_flight
-            and rec.retry_at is not None and now >= rec.retry_at and self._deps_ready_locked(rec)
+            rec.state == "failed" and (rec.wanted or (rec.cleanup_pending and rec.occupied and self._does_unload(rec)))
+            and not rec.desc.blocked and not rec.exhausted and not rec.in_flight
+            and rec.retry_at is not None and now >= rec.retry_at
+            and (self._deps_ready_locked(rec) or (not rec.wanted and rec.cleanup_pending))  # 清理只是卸載，不需要依賴就緒
             and (rec.occupied and self._does_unload(rec) or self._admit_locked(rec, now) is None)  # 先清殘留不需放行；重 load 需要
         ):
             if rec.occupied and self._does_unload(rec):  # 先清理殘留占用，不在占用上重 load
@@ -1019,6 +1415,7 @@ class ModuleCoordinator:
                 rec.handle.load()
         except Exception as exc:  # noqa: BLE001
             err = type(exc).__name__
+        observed = self._observe_vram(rec) if err is None and verdict is None and not rec.desc.needs_warm else None
         warm = False
         with self._lock:
             now = self._clock()
@@ -1048,6 +1445,7 @@ class ModuleCoordinator:
                     warm = True
                 else:
                     rec.in_flight = False
+                    self._calibrate_locked(rec, observed)
                     self._ready_locked(rec, now)
                     self._reconcile_locked(now)
         if warm:
@@ -1060,6 +1458,7 @@ class ModuleCoordinator:
             rec.handle.warm()
         except Exception as exc:  # noqa: BLE001
             err = type(exc).__name__
+        observed = self._observe_vram(rec) if err is None else None
         with self._lock:
             now = self._clock()
             if self._stale_locked(rec, token):
@@ -1069,6 +1468,7 @@ class ModuleCoordinator:
                 if err is not None:
                     self._fail_locked(rec, "warm_error", "health", now)
                 else:
+                    self._calibrate_locked(rec, observed)
                     self._ready_locked(rec, now)
                 self._reconcile_locked(now)
 
@@ -1076,22 +1476,38 @@ class ModuleCoordinator:
         rec = self._recs[module_id]
         with self._lock:
             go = self._start_or_skip_locked(rec, token, self._clock())
+            seq0 = self._gpu_io_seq
+            clean = go and not any(  # 窗口一開始就有別的 GPU 操作在途：它的配置／釋放會混進差值
+                r is not rec and r.desc.uses_gpu and (r.state in _TRANSIENT_STATES or r.in_flight) and r.job_kind in ("load", "unload")
+                for r in self._recs.values()
+            )
         if not go:
             self._pub.drain()
             return
         err: str | None = None
         called = False
+        before: VramReading | None = None
+        after: VramReading | None = None
+        after_t = 0.0
         if rec.occupied and self._does_unload(rec):
             called = True
+            budget = self._budget if self._should_verify_unload(rec) else None
+            if budget is not None:  # 卸載前後各取樣一次（鎖外、有逾時）；量測失敗只代表不判定
+                before = budget.measure(self._clock())
             try:
                 rec.handle.unload()
             except Exception as exc:  # noqa: BLE001
                 err = type(exc).__name__
+            if budget is not None and err is None:
+                after_t = self._clock()
+                after = budget.measure(after_t)
+            clean = clean and self._gpu_io_seq == seq0
         with self._lock:
             now = self._clock()
             if self._stale_locked(rec, token):
                 if called and err is None:
                     rec.occupied = False  # 晚完成的清理：資源其實已釋放
+                    rec.cleanup_pending = False
                 self._finish_stale_locked(rec, now)
             elif err is not None:
                 rec.in_flight = False
@@ -1100,7 +1516,11 @@ class ModuleCoordinator:
             else:
                 rec.in_flight = False
                 rec.occupied = False
+                rec.cleanup_pending = False
                 rec.deadline = None
+                # 之後的樣本時間戳要不早於此值才算反映了這次卸載：有卸載後樣本用它，否則要等比現在更新的樣本
+                rec.release_confirm_at = after_t if after is not None else math.nextafter(now, math.inf)
+                self._judge_release_locked(rec, before, after, clean)
                 reason = "shutdown" if rec.unload_cause == "shutdown" else "unloaded"
                 if rec.desc.blocked:
                     reason = rec.desc.blocked_reason or reason

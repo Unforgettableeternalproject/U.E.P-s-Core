@@ -81,6 +81,8 @@ class UepSettings(BaseSettings):
     module_evict_cooldown_s: float = Field(default=60.0, ge=0, validation_alias="UEP_MODULE_EVICT_COOLDOWN_S")
     module_gpu_index: int = Field(default=0, ge=0, validation_alias="UEP_MODULE_GPU_INDEX")
     module_vram_read_timeout_s: float = Field(default=1.0, gt=0, validation_alias="UEP_MODULE_VRAM_READ_TIMEOUT_S")
+    # 卸載後釋放量驗證門檻（0 = 不驗證，預設）；啟用後釋放量 < 持有量 × 此值即記 unload_incomplete 並保守保留預算（建議 0.5）
+    module_unload_release_ratio: float = Field(default=0.0, ge=0, le=1, validation_alias="UEP_MODULE_UNLOAD_RELEASE_RATIO")
     # 測試用工具組（test_echo／test_clock／test_sleep／test_approval_echo）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效。
     # 開啟後組裝層才註冊這些工具與 executor，並把測試標籤併入 /loop（route=agent_loop）的 capability_tags；關閉時完全不存在
     tool_testkit: bool = Field(default=False, validation_alias="UEP_TOOL_TESTKIT")

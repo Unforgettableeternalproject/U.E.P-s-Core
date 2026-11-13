@@ -425,7 +425,7 @@ def build_module_budget(settings: Any, probe: VramProbe | None = None) -> Resour
         config = BudgetConfig(
             headroom_mb=headroom, budget_mb=settings.module_vram_budget_mb, reading_max_age_s=settings.module_vram_reading_max_age_s,
             recover_margin_mb=settings.module_vram_recover_margin_mb, evict_cooldown_s=settings.module_evict_cooldown_s,
-            read_timeout_s=settings.module_vram_read_timeout_s,
+            read_timeout_s=settings.module_vram_read_timeout_s, unload_release_ratio=settings.module_unload_release_ratio,
         )
     except ValueError as exc:
         raise AssemblyError(f"模組預算設定不合法：{exc}") from exc

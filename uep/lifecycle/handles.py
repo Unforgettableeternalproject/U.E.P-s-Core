@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
 ProbeResult = Literal["ok", "degraded", "dead"]
@@ -26,6 +27,21 @@ class ModuleHandle(Protocol):
     def unload(self) -> None: ...
 
     def probe(self) -> ProbeResult: ...
+
+
+@dataclass(frozen=True)
+class ObservedResource:
+    """handle 回報的實際用量（MB）；None = 無法觀測該項。"""
+
+    vram_mb: int | None = None
+
+
+@runtime_checkable
+class ResourceObservable(Protocol):
+    """選填介面：handle 載入完成後可回報實際 VRAM 用量，coordinator 用來校正描述子的宣告值（§7.3）。
+    不實作也可以（不校正）；方法在 worker 上呼叫，可阻塞。"""
+
+    def observed_resource(self) -> ObservedResource | None: ...
 
 
 class ObservationOnlyHandle:

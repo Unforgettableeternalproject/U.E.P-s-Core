@@ -65,6 +65,21 @@ class PresenceSinkProxy:
             logger.exception("轉發放棄訊號失敗")
             self._count("presence_sink.error.abandon_signal")
 
+    def judge_now(self, *, target: Any, is_owner: bool, actor_ref: str, actor_authenticated: bool) -> Any | None:
+        """唯讀判決查詢：轉給仲裁器的 ``judge_now``。未綁定（含 off）回 None，不計入 ``dropped``；例外不外拋。"""
+        with self._lock:
+            bound = self._target
+        if bound is None:
+            self._count("presence_sink.judge_now.unbound")
+            return None
+        try:
+            return bound.judge_now(target=target, is_owner=is_owner, actor_ref=actor_ref,
+                                   actor_authenticated=actor_authenticated)
+        except Exception:
+            logger.warning("轉發 judge_now 失敗", exc_info=True)
+            self._count("presence_sink.error.judge_now")
+            return None
+
     def on_presence_request(self, proposal: Any, *, request_id: str, actor_ref: str, actor_authenticated: bool,
                             is_owner: bool, source_platform: str) -> None:
         target = self._target_or_drop("presence_request")

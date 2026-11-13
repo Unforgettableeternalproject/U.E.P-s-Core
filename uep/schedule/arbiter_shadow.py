@@ -313,6 +313,38 @@ class PresenceArbiterShadow:
             return
         self._abandon.handle(signal, is_owner=is_owner)
 
+    # ---- 唯讀查詢（決策層同步呼叫）----
+
+    def judge_now(self, *, target: str, is_owner: bool, actor_ref: str, actor_authenticated: bool
+                  ) -> ArbitrationDecision | None:
+        """唯讀：以當下輸入同步算一次判決，回給呼叫端（例如回合回覆注入「她在工作中」）。
+
+        不走 ``_record``：不記 judgments、不發事件、不寫 mark／override、不排佇列、不 poke、不碰 Presence 寫入、
+        不推進 ``_seq``（received_seq 只借用目前值）。只做讀取（reader.resolve／override／presence.peek／probe，
+        約數次 DB SELECT）與記憶體內指標計數。回 None：已 stop、target 不在 PLAN_LOCATIONS、未認證、
+        非 owner（member 先不建，與 ``_handle_presence_request`` 一致）、或任何例外（不外拋）。
+        """
+        if self._closed:
+            return None
+        target = getattr(target, "value", target)
+        if target not in PLAN_LOCATIONS or actor_authenticated is not True or is_owner is not True:
+            self._count(f"{_METRIC}.judge_now.skipped")
+            return None
+        try:
+            now = self._clock()
+            slot = self._reader.resolve(now)
+            override = self._override_fn() if self._override_fn is not None else None
+            decision = arbiter.arbitrate_request(
+                ArbiterRequest(request_id=f"judge_now:{self._seq}", authority="owner", requester_ref=actor_ref,
+                               actor_authenticated=True, target=target, received_seq=self._seq),
+                slot=slot, presence=self._presence_fn(), override=override, probe=self._probe_fn(), now=now)
+        except Exception:
+            logger.warning("judge_now 失敗", exc_info=True)
+            self._count(f"{_METRIC}.judge_now.error")
+            return None
+        self._count(f"{_METRIC}.judge_now.{decision.outcome.lower()}")
+        return decision
+
     # ---- 生命週期 ----
 
     def add_cleanup(self, fn: Callable[[], None]) -> None:

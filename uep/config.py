@@ -81,6 +81,8 @@ class UepSettings(BaseSettings):
     module_evict_cooldown_s: float = Field(default=60.0, ge=0, validation_alias="UEP_MODULE_EVICT_COOLDOWN_S")
     module_gpu_index: int = Field(default=0, ge=0, validation_alias="UEP_MODULE_GPU_INDEX")
     module_vram_read_timeout_s: float = Field(default=1.0, gt=0, validation_alias="UEP_MODULE_VRAM_READ_TIMEOUT_S")
+    # 已就緒模組的定期探活間隔（秒）；0 = 不定期探活（現況，預設）。觀測模組 warming 時另有固定的重探間隔，不受此值影響（>0 時沿用此值）
+    module_probe_interval_s: float = Field(default=0.0, ge=0, validation_alias="UEP_MODULE_PROBE_INTERVAL_S")
     # 卸載後釋放量驗證門檻（0 = 不驗證，預設）；啟用後釋放量 < 持有量 × 此值即記 unload_incomplete 並保守保留預算（建議 0.5）
     module_unload_release_ratio: float = Field(default=0.0, ge=0, le=1, validation_alias="UEP_MODULE_UNLOAD_RELEASE_RATIO")
     # 測試用工具組（test_echo／test_clock／test_sleep／test_approval_echo）：預設關閉；只在 UEP_TOOL_PATH=agent 下有效。

@@ -279,6 +279,13 @@ def test_failed_start_closes_inputs_even_if_coordinator_start_raises():
 
 # --- 真 assemble_core（需 DB）---
 
+def _s_group(*skip: str):
+    """真組裝（coordinator 驅動註冊表）下，工具 requires 的 S 群模組必須全部登記（PR-4 雙向檢查）。"""
+    from uep.tools.module_handles import build_s_group_registrations
+
+    return [(d, h) for d, h in build_s_group_registrations(UepSettings(_env_file=None)) if d.module_id not in skip]
+
+
 def _db_core(session_factory, tmp_path, **over):
     from tests.uep.echo_support import fast_speak, make_identity, make_session
     from tests.uep.test_agent_loop_entry_db import _agent_pieces
@@ -339,7 +346,7 @@ def test_db_both_flags_start_snapshot_precedes_ready_and_shutdown_order(session_
     desc = ModuleDescriptor("lore", autoload=True)
     core, _ = _db_core(
         session_factory, tmp_path, module_coordinator=True, tool_module_events=True,
-        module_registrations=[(desc, FakeHandle())], module_sink=lambda t, p: seen.append(dict(p)),
+        module_registrations=[(desc, FakeHandle()), *_s_group("lore")], module_sink=lambda t, p: seen.append(dict(p)),
     )
     try:
         assert core.module_coordinator.mode == "manage" and core.module_events_unsubscribe is not None
@@ -464,7 +471,7 @@ def test_db_budget_is_wired_into_coordinator_and_admits_gpu_load(session_factory
     monkeypatch.setattr(assembly_mod, "get_settings", lambda: UepSettings(_env_file=None, UEP_MODULE_VRAM_HEADROOM_MB=2000))
     core, _ = _db_core(
         session_factory, tmp_path, module_coordinator=True, tool_module_events=True,
-        module_registrations=[(desc, handle)], module_sink=lambda t, p: None, module_vram_probe=probe,
+        module_registrations=[(desc, handle), *_s_group()], module_sink=lambda t, p: None, module_vram_probe=probe,
     )
     try:
         core.start()
@@ -482,7 +489,7 @@ def test_db_budget_not_configured_rejects_gpu_load_but_keeps_services(session_fa
     svc_desc = ModuleDescriptor("plain_svc", autoload=True)  # 不用 lore：真組裝下 lore 會被設定閘住
     core, _ = _db_core(
         session_factory, tmp_path, module_coordinator=True, tool_module_events=True,
-        module_registrations=[(gpu_desc, FakeHandle()), (svc_desc, FakeHandle())], module_sink=lambda t, p: None,
+        module_registrations=[(gpu_desc, FakeHandle()), (svc_desc, FakeHandle()), *_s_group()], module_sink=lambda t, p: None,
     )
     try:
         core.start()

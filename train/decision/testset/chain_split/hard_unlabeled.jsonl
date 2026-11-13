@@ -1,0 +1,112 @@
+{"id": "cs-0303", "lang": "zh", "text": "把它寄給房東，順便幫我設明天早上九點的鬧鐘。", "context": "User: 我桌面上有一份租約和一張旅行照片。\nAssistant: 好的，要先處理哪一個？\nUser: 先處理租約。"}
+{"id": "cs-0304", "lang": "zh", "text": "幫我把它加進播放清單，Yuki 順便查一下明天高雄的天氣。", "context": "User: 我剛下載了一首新歌，還有一份季度報告。\nAssistant: 兩個都在下載資料夾裡。"}
+{"id": "cs-0305", "lang": "zh", "text": "把它轉寄給法務，另外 Yuki 開一下掃地機器人。", "context": "User: 幫我看一下 Lena 昨天寄來的合約，還有那張計程車收據。\nAssistant: 合約我看完了，第三條的付款期限比較短。收據還沒找到。"}
+{"id": "cs-0306", "lang": "en", "text": "Play it while I cook, and also text Dan that I'm running late.", "context": "User: I downloaded a podcast episode and a PDF of the lease.\nAssistant: Both are in your downloads folder."}
+{"id": "cs-0307", "lang": "en", "text": "Send it to Ann; and what's the capital of Peru?", "context": "User: I have two drafts open, the cover letter and the budget memo.\nAssistant: Which one do you want to work on?\nUser: The cover letter first."}
+{"id": "cs-0308", "lang": "zh", "text": "幫我把它的快取清掉，順便把客廳的燈調暗一點。", "context": "User: 我有一個舊手機和一個新平板要整理。\nAssistant: 好的，要從哪個開始？\nUser: 平板。\nAssistant: 好，平板的儲存空間剩下 12GB。"}
+{"id": "cs-0309", "lang": "en", "text": "Email the property manager asking when it will be fixed, and set a timer for ten minutes.", "context": "User: My neighbor's dog keeps barking and the landlord still hasn't fixed the heater.\nAssistant: That sounds frustrating."}
+{"id": "cs-0310", "lang": "zh", "text": "幫我把它登記進衣櫃清單，然後 Yuki 提醒我週五去洗衣店。", "context": "User: 我買了一件外套，還有一份保固卡。\nAssistant: 保固卡要保留一年喔。"}
+{"id": "cs-0311", "lang": "en", "text": "Forward it to accounting, then set an alarm for six thirty.", "context": "User: Find the electricity bill and the gym receipt for me.\nAssistant: I found the electricity bill in your email. The gym receipt is still missing, though."}
+{"id": "cs-0312", "lang": "zh", "text": "幫我查一下它有沒有保固，還有今天晚上吃什麼比較好？", "context": "User: 我想換掉客廳的檯燈和書房的風扇。\nAssistant: 好的，檯燈的型號是 LX-20，風扇已經用了五年。\nUser: 風扇太吵了。"}
+{"id": "cs-0313", "lang": "en", "text": "Add it to my cart, then remind me to check out tonight.", "context": "User: I'm choosing between the blue backpack and the grey duffel bag.\nAssistant: The backpack has better reviews.\nUser: Then I'll take the backpack."}
+{"id": "cs-0314", "lang": "zh", "text": "把它列印出來，另外把玄關的燈打開。", "context": "User: 幫我找一下上個月的電費單和這個月的水費單。\nAssistant: 電費單我找到了，水費單還沒有寄到信箱。"}
+{"id": "cs-0315", "lang": "en", "text": "Book it for two nights, and Yuki, play some jazz.", "context": "User: I want to rent the cabin in Hakone or the apartment near the station.\nAssistant: The cabin is already booked for that weekend.\nUser: Okay, the apartment then."}
+{"id": "cs-0316", "lang": "zh", "text": "幫我訂第二間，另外你覺得老式相機還值得買嗎？", "context": "User: 附近有什麼好吃的餐廳？\nAssistant: 有三間：海風小館、老街麵館和河岸酒吧。"}
+{"id": "cs-0317", "lang": "zh", "text": "把第一部放進待看清單，然後 Yuki 把客廳的燈調暗一點。", "context": "User: 推薦一部適合週末看的電影。\nAssistant: 我推薦《霧港》，另外也可以看《夜行列車》。"}
+{"id": "cs-0318", "lang": "en", "text": "Book a table at the second one for four, and tell Rob I'll be late.", "context": "User: Find me a quiet cafe near the office.\nAssistant: There are two: Blue Door Cafe on Pine Street and Kettle & Leaf on Main."}
+{"id": "cs-0319", "lang": "en", "text": "Add that one to my cart and what's the return policy?", "context": "User: What's a good laptop for video editing?\nAssistant: I'd go with the Zephyr 15, it has the best screen in that price range."}
+{"id": "cs-0320", "lang": "zh", "text": "幫我訂 B，四個人，晚上七點，還有提醒我六點出門。", "context": "User: 週五晚上去哪裡吃飯好？\nAssistant: 我整理了三個選項：A. 山腳下燒肉、B. 漁港海鮮、C. 巷口義大利麵。"}
+{"id": "cs-0321", "lang": "en", "text": "Put that one on my watchlist and Yuki, dim the living room lights.", "context": "User: Which movie should I watch tonight?\nAssistant: Try The Lantern Road. It's short and the reviews are great."}
+{"id": "cs-0322", "lang": "zh", "text": "訂最後一班，然後把這週的待辦事項念給我聽。", "context": "User: 幫我查一下台北到高雄的高鐵。\nAssistant: 最近的三班是 14:10、14:40 和 15:15。"}
+{"id": "cs-0323", "lang": "en", "text": "Email them asking about the visa timeline, then pause the music.", "context": "User: Who should I ask about the visa, the consulate or the travel agent?\nAssistant: The consulate is more reliable, though it only answers email."}
+{"id": "cs-0324", "lang": "zh", "text": "幫我把那天空出來，還有提醒我那天前一晚早點睡。", "context": "User: 這個月哪一天適合去賞花？\nAssistant: 我建議 3 月 22 日，那天預報是晴天。"}
+{"id": "cs-0325", "lang": "en", "text": "Add the lighter one to my reading list; Dan, did you find the charger?", "context": "User: Recommend a book for the flight.\nAssistant: How about The Salt Garden? Or if you want something lighter, Paper Cranes."}
+{"id": "cs-0326", "lang": "zh", "text": "買後者，然後今天晚上吃什麼比較好？", "context": "User: 幫我找一下適合送給媽媽的生日禮物。\nAssistant: 有兩個選擇：一條絲巾，或是一組茶具。我覺得茶具比較實用。"}
+{"id": "cs-0327", "lang": "en", "text": "Order from the cheaper store, and remind me to call Mom at nine.", "context": "User: Which store has the cheapest rice cooker?\nAssistant: Mart One has it for $39, and Home Plus has it for $44."}
+{"id": "cs-0328", "lang": "zh", "text": "幫我把這個放進願望清單，另外提醒我下班買牛奶。", "context": "User: 我在網路上看到一支貓咪圖案的馬克杯。\nAssistant: 聽起來很可愛。"}
+{"id": "cs-0329", "lang": "zh", "text": "那個提早一小時提醒我就好，Dan 你去倒垃圾。", "context": "User: 下週三下午三點有個牙醫門診。\nAssistant: 需要我記下來嗎？\nUser: 不用，已經有了。"}
+{"id": "cs-0330", "lang": "en", "text": "Save this to my notes, and what time is sunset today?", "context": "User: I read an article about sleeping habits of teenagers.\nAssistant: Interesting topic."}
+{"id": "cs-0331", "lang": "en", "text": "Yes, put that on my calendar and Yuki, is it going to rain Saturday?", "context": "User: There's a free concert at the park on Saturday.\nAssistant: Nice, want details?"}
+{"id": "cs-0332", "lang": "zh", "text": "幫我查那裡週六的天氣，順便叫一台車去那裡。", "context": "User: 我想週末去象山看夜景。\nAssistant: 那裡傍晚人比較少。"}
+{"id": "cs-0333", "lang": "en", "text": "Find out when it closes, and book a parking spot there.", "context": "User: I'm thinking of going to the Riverside Market on Sunday.\nAssistant: It opens at nine."}
+{"id": "cs-0334", "lang": "zh", "text": "幫我查這個的保固期限，還有 Rob 你去把行李先放車上。", "context": "User: 這支新手機的電池只能撐半天。\nAssistant: 那確實偏短。"}
+{"id": "cs-0335", "lang": "en", "text": "Block off that morning in my calendar; Yuki, mute my phone for an hour.", "context": "User: The landlord is coming to check the boiler on Friday morning.\nAssistant: I'll keep that in mind."}
+{"id": "cs-0336", "lang": "zh", "text": "把那份報告寄給主管，然後把那個也存到雲端，還有今天晚上要不要吃麵？", "context": null}
+{"id": "cs-0337", "lang": "en", "text": "Email the invoice to accounting, and attach that to the March expense report.", "context": null}
+{"id": "cs-0338", "lang": "zh", "text": "幫我搜尋這個問題的解法，然後提醒我晚上八點備份資料。", "context": "User: 我的筆電最近常常自己重開機。\nAssistant: 可能是散熱或更新的問題。"}
+{"id": "cs-0339", "lang": "en", "text": "No, cancel that, and tell me how tall Mount Fuji is.", "context": "User: I got an email saying my subscription renews on the fifth.\nAssistant: Do you want to keep it?"}
+{"id": "cs-0340", "lang": "zh", "text": "幫我跟他說我會先到，另外 Dan 你去倒垃圾。", "context": "User: Tom 說他下午兩點才會到。\nAssistant: 好的，我記下了。"}
+{"id": "cs-0341", "lang": "zh", "text": "傳訊息跟她說我們在三號門等，Yuki 順便把客廳的燈打開。", "context": "User: Mia 的班機六點降落，她會自己搭計程車過來。\nAssistant: 好的。"}
+{"id": "cs-0342", "lang": "en", "text": "Text him that the party starts at seven, then Yuki, how long should I roast a chicken?", "context": "User: Ben is picking up the cake.\nAssistant: Got it."}
+{"id": "cs-0343", "lang": "en", "text": "Thank her by email, and pause the music.", "context": "User: Priya just sent me the slides.\nAssistant: Great."}
+{"id": "cs-0344", "lang": "zh", "text": "提醒我在他們來的前一天打掃，順便念一下今天的新聞標題。", "context": "User: 房東和管理員下週會來看房子。\nAssistant: 需要我準備什麼嗎？"}
+{"id": "cs-0345", "lang": "en", "text": "Remind me to unlock the gate before they arrive, and is it normal to feel tired in the afternoon?", "context": "User: The plumbers said they'd be here between nine and noon.\nAssistant: Noted."}
+{"id": "cs-0346", "lang": "zh", "text": "幫我傳訊息謝謝他，另外把鬧鐘延後十分鐘。", "context": "User: 阿凱和小玲都說週末可以幫忙搬家。\nAssistant: 太好了。\nUser: 阿凱還說他有一台小貨車。"}
+{"id": "cs-0347", "lang": "en", "text": "Ask her to send the slides by noon, then dim the lights.", "context": "User: Ana and Tom are both coming to the review.\nAssistant: Great. Ana is presenting first."}
+{"id": "cs-0348", "lang": "zh", "text": "到時候提醒我跟她說我們七點到，另外你最喜歡哪一種咖啡？", "context": "User: 我媽今天會打電話來，她想問週日聚餐的事。\nAssistant: 好的。"}
+{"id": "cs-0349", "lang": "en", "text": "Remind me to call him tomorrow morning, and Kei, can you set the table?", "context": "User: Who's handling the catering?\nAssistant: Marco is, he confirmed yesterday."}
+{"id": "cs-0350", "lang": "zh", "text": "把他的電話傳給她，然後把客廳的音量調小。", "context": "User: Ken 說他想認識 Mia，Mia 說她也想認識 Ken。\nAssistant: 需要我幫忙介紹嗎？"}
+{"id": "cs-0351", "lang": "en", "text": "Send a welcome email to her, then Yuki, what's the weather on Monday?", "context": "User: The new intern, Sofia, starts Monday and I want her to feel welcome.\nAssistant: A welcome note could help."}
+{"id": "cs-0352", "lang": "zh", "text": "幫我把今天的會議錄音整理成逐字稿，再把它存進共用資料夾。", "context": null}
+{"id": "cs-0353", "lang": "zh", "text": "把這份報價單轉成 PDF，再把它傳給客戶。", "context": null}
+{"id": "cs-0354", "lang": "zh", "text": "畫一張下週的工作甘特圖，完成後把它放進簡報。", "context": null}
+{"id": "cs-0355", "lang": "zh", "text": "擬一封給房東的催修信，然後把它寄出去。", "context": null}
+{"id": "cs-0356", "lang": "zh", "text": "做一份本月支出的圓餅圖，再把它貼進月報。", "context": null}
+{"id": "cs-0357", "lang": "zh", "text": "查一下台北到花蓮的火車時刻，把最早的一班存成行事曆活動，再把它分享給阿凱。", "context": null}
+{"id": "cs-0358", "lang": "en", "text": "Write a short thank-you note to the hosts and then send it by email.", "context": null}
+{"id": "cs-0359", "lang": "en", "text": "Make a packing list for the trip, then print it.", "context": null}
+{"id": "cs-0360", "lang": "en", "text": "Convert the slides to a PDF and upload it to the shared drive.", "context": null}
+{"id": "cs-0361", "lang": "en", "text": "Look up the three cheapest flights to Seoul, put them in a table, and send the table to Ann.", "context": null}
+{"id": "cs-0362", "lang": "en", "text": "Find the date of the next board meeting and create a reminder for it.", "context": null}
+{"id": "cs-0363", "lang": "zh", "text": "Yuki 幫我寫一份旅行行程再把它寄給家人，Rob 你去準備行李。", "context": null}
+{"id": "cs-0364", "lang": "en", "text": "Draft an agenda for tomorrow's meeting and send it to the team, and Ivy, can you set the table?", "context": null}
+{"id": "cs-0365", "lang": "zh", "text": "把這季的銷售數字做成圖表再把它放進簡報，順便提醒我明天早上帶雨傘。", "context": null}
+{"id": "cs-0366", "lang": "zh", "text": "幫我把客廳的燈關掉，你去把垃圾倒一倒。", "context": null}
+{"id": "cs-0367", "lang": "zh", "text": "把音樂放小聲一點，你過來幫我拿一下杯子。", "context": null}
+{"id": "cs-0368", "lang": "zh", "text": "提醒我下午三點開會，你去叫弟弟起床。", "context": null}
+{"id": "cs-0369", "lang": "en", "text": "Turn the thermostat down two degrees, and you, grab the mail.", "context": null}
+{"id": "cs-0370", "lang": "en", "text": "Set a timer for ten minutes. You, get the plates ready.", "context": null}
+{"id": "cs-0371", "lang": "zh", "text": "你去把門鎖好，提醒我下午兩點打電話給牙醫，還有你把車開出來。", "context": null}
+{"id": "cs-0372", "lang": "en", "text": "You take the groceries inside, and remind me to renew my passport next month.", "context": null}
+{"id": "cs-0373", "lang": "zh", "text": "把鬧鐘設在六點半，你先去洗澡。", "context": null}
+{"id": "cs-0374", "lang": "en", "text": "Dim the lights a little. You, put your shoes on, we're leaving.", "context": null}
+{"id": "cs-0375", "lang": "zh", "text": "查一下明天台中的天氣，你把桌子擦一擦，還有我的行事曆下週三有空嗎？", "context": null}
+{"id": "cs-0376", "lang": "zh", "text": "我們週末一起去山上走走吧，Yuki 幫我查一下天氣。", "context": null}
+{"id": "cs-0377", "lang": "zh", "text": "我們明天早上六點出發，幫我設一個五點半的鬧鐘。", "context": null}
+{"id": "cs-0378", "lang": "en", "text": "Let's meet at the station at eight. Yuki, set an alarm for seven.", "context": null}
+{"id": "cs-0379", "lang": "en", "text": "We should leave before it gets dark. Yuki, check the sunset time.", "context": null}
+{"id": "cs-0380", "lang": "zh", "text": "我們來玩個遊戲吧，Yuki 你出題。", "context": null}
+{"id": "cs-0381", "lang": "zh", "text": "我們把這週的家事分一分，我的待辦清單再加一項繳電費。", "context": null}
+{"id": "cs-0382", "lang": "en", "text": "Shall we order pizza tonight? Also, add pizza night to my calendar.", "context": null}
+{"id": "cs-0383", "lang": "en", "text": "Let's put on some music while we cook, and Yuki, how long should I boil an egg?", "context": null}
+{"id": "cs-0384", "lang": "zh", "text": "我們這個週末大掃除好不好，Yuki 提醒我週五先買垃圾袋。", "context": null}
+{"id": "cs-0385", "lang": "zh", "text": "幫我查一下明天的天氣，把投影布幕拉下來，阿傑。", "context": null}
+{"id": "cs-0386", "lang": "zh", "text": "Yuki 開一下除濕機，把窗戶關上，小玲。", "context": null}
+{"id": "cs-0387", "lang": "en", "text": "Play the evening playlist, Yuki. And pass me the screwdriver, Marco.", "context": null}
+{"id": "cs-0388", "lang": "en", "text": "Set a reminder for the dentist at ten, Yuki, and carry these boxes upstairs, Ivy.", "context": null}
+{"id": "cs-0389", "lang": "zh", "text": "把爐子關小火，老王，然後 Yuki 幫我設一個二十分鐘的計時器。", "context": null}
+{"id": "cs-0390", "lang": "en", "text": "Mute my phone for an hour, hold the door open, Sam, and wipe the table, Jun.", "context": null}
+{"id": "cs-0391", "lang": "zh", "text": "幫我把音量調小，你把行李拿下來，阿傑，然後提醒我六點吃藥。", "context": null}
+{"id": "cs-0392", "lang": "en", "text": "What time does the pharmacy close, Yuki? Come help me with the ladder, Dan.", "context": null}
+{"id": "cs-0393", "lang": "zh", "text": "把窗簾拉上，小玲，Yuki 把臥室的燈調暗一點。", "context": null}
+{"id": "cs-0394", "lang": "en", "text": "Turn off the porch light, Yuki, and set the table for six, Ivy, and turn the oven on, Dan.", "context": null}
+{"id": "cs-0395", "lang": "zh", "text": "老王 你問 Yuki 就好，Yuki 幫忙查一下今天的班表。", "context": null}
+{"id": "cs-0396", "lang": "zh", "text": "小玲 叫 Yuki 幫你設鬧鐘就好，我的手機也調成靜音。", "context": null}
+{"id": "cs-0397", "lang": "en", "text": "Rob, ask Yuki, she knows where the keys are. Yuki, mute my phone for an hour.", "context": null}
+{"id": "cs-0398", "lang": "en", "text": "Sam, you can ask Yuki about the train times. Also, remind me to pay rent on the first.", "context": null}
+{"id": "cs-0399", "lang": "en", "text": "Dan, Yuki can handle the bookings, so just pick the hotel. Yuki, hold a table for six at eight.", "context": null}
+{"id": "cs-0400", "lang": "zh", "text": "阿凱 你把問題丟給 Yuki 吧，Yuki 幫我預約下週三的牙醫。", "context": null}
+{"id": "cs-0401", "lang": "en", "text": "Ivy, tell Yuki what you want for dinner. Meanwhile, set a timer for fifteen minutes.", "context": null}
+{"id": "cs-0402", "lang": "en", "text": "Nora, I'll let Yuki know about the delivery, you don't need to call. Yuki, a package is arriving at noon, remind me at eleven.", "context": null}
+{"id": "cs-0403", "lang": "zh", "text": "Ann 你回頭問問 Yuki 吧，另外 Yuki 查一下回程的末班車幾點。", "context": null}
+{"id": "cs-0404", "lang": "en", "text": "Kei, Yuki already set the alarm, so you can sleep in. Yuki, what's the weather tomorrow?", "context": null}
+{"id": "cs-0405", "lang": "zh", "text": "優基 幫我把客廳的燈關掉，Dan 你去倒垃圾。", "context": null}
+{"id": "cs-0406", "lang": "zh", "text": "老王 你去切水果，尤基 幫我設一個二十分鐘的計時器。", "context": null}
+{"id": "cs-0407", "lang": "en", "text": "You key, set an alarm for six thirty, and Rob, grab the cooler.", "context": null}
+{"id": "cs-0408", "lang": "en", "text": "Yucky, what time does the pharmacy close? Kei, did you call the plumber?", "context": null}
+{"id": "cs-0409", "lang": "zh", "text": "幫我把音量調小，玉紀。小玲 你去把門鎖好。", "context": null}
+{"id": "cs-0410", "lang": "en", "text": "Nora, take the bins out. Yookie, mute my phone for an hour.", "context": null}
+{"id": "cs-0411", "lang": "zh", "text": "悠紀，查一下明天高雄的天氣，然後阿傑 你把椅子搬過來。", "context": null}
+{"id": "cs-0412", "lang": "en", "text": "Play the focus playlist, Eukie, and Dan, can you set the table?", "context": null}
+{"id": "cs-0413", "lang": "en", "text": "Hey U key, remind me to call Mom at nine. Ivy, hand me the charger.", "context": null}
+{"id": "cs-0414", "lang": "zh", "text": "You key 幫我預約下週三的剪髮，Jun 你來買明天的早餐。", "context": null}

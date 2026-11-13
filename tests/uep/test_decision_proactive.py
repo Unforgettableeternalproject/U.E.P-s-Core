@@ -746,3 +746,20 @@ def test_console_in_private_or_grant_locations_never_becomes_move_target():
             valid=True, scope_refs=("scope_private",), locations=(console,), may_choose_location=True)),
     )
     assert verdict.reason_code == "presence_none_queued" and verdict.plan.placement is None
+
+
+@pytest.mark.skipif(not _ENUM_HAS_CONSOLE, reason="PresenceLocation 尚無 console；加入後此測試自動生效")
+def test_target_not_movable_only_blocks_real_moves():
+    console = PresenceLocation("console")
+    asg = {"source_kind": "assignment", "authorization_ref": None}
+    # 原地（current=console、desired=console）：照常處理，不被擋
+    stay = arbitrate(_cand(desired_location=console, **asg), _ctx(grant=None, current_platform=console))
+    assert stay.reason_code != "target_not_movable" and stay.outcome == "ready"
+    # 從 console 移走（desired=desktop）照常可移
+    away = arbitrate(_cand(desired_location=PresenceLocation.DESKTOP, **asg), _ctx(
+        grant=GrantFact(valid=True, scope_refs=("scope_private",), locations=(PresenceLocation.DESKTOP,), may_move=True),
+        current_platform=console))
+    assert away.reason_code == "ready_move" and away.plan.placement.target_platform == "desktop"
+    # G1 stop 優先於這道守門
+    stopped = arbitrate(_cand(desired_location=console, **asg), _ctx(grant=None, global_stop=True))
+    assert stopped.reason_code == "global_stop"

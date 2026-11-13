@@ -537,8 +537,9 @@ def arbitrate(candidate: ProactiveCandidate, ctx: ProactiveContext) -> Proactive
         channel = c.desired_location or ctx.current_platform
         if c.privacy_scope not in grant.scope_refs or (channel is not None and channel not in grant.locations):
             return _verdict(OUTCOME_REJECTED, R_AUTHORIZATION_SCOPE_INSUFFICIENT, GATE_AUTHORIZATION)
-    # 移轉目標守門：desired_location 不在可請求場域時 fail-closed（比照其他不允許路徑：rejected，不產生 placement、不在原地開口）
-    if c.desired_location is not None and not _movable(c.desired_location):
+    # 移轉目標守門：不可被請求移往，但已身在該處時照常（如 console 排程指派在原地）。
+    # 只擋真正的移轉（desired 不可移轉且 != 目前場域），fail-closed：rejected，不產生 placement、不在原地開口
+    if c.desired_location is not None and not _movable(c.desired_location) and c.desired_location != ctx.current_platform:
         return _verdict(OUTCOME_REJECTED, R_TARGET_NOT_MOVABLE, GATE_PRESENCE)
     # G3 audience：聽眾比內容寬 -> deferred；有私人位置可移則提議 request_move
     if not scope_admits(ctx.audience_scope, c.privacy_scope):

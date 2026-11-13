@@ -183,6 +183,25 @@ class _ModuleRecord(NamedTuple):
     reason_code: str | None = None
 
 
+class CapabilityStatus(NamedTuple):
+    """能力快照的一列：capability 標籤、彙總 readiness、對應的 side_effect_class。"""
+
+    tag: str
+    readiness: Readiness
+    side_effect_class: str
+
+
+class CapabilitySnapshot(NamedTuple):
+    """``ToolRegistry.capability_snapshot`` 的結果；``revision`` 為 readiness 事件版本（同 ``project`` 的 revision）。"""
+
+    revision: int
+    tags: tuple[CapabilityStatus, ...]
+
+
+_READINESS_BY_RANK: tuple[Readiness, ...] = ("unavailable", "warming", "ready")
+_READINESS_RANK: dict[str, int] = {r: i for i, r in enumerate(_READINESS_BY_RANK)}
+
+
 class ToolRegistry:
     """建構即驗證並凍結的工具註冊表；實作 ``EnumerableToolSpecResolver``。"""
 
@@ -527,6 +546,30 @@ class ToolRegistry:
             entry.spec.capability for entry in self._entries.values()
             if not entry.disabled and entry.spec.capability in CAPABILITY_CEILING
             and self._readiness_in(entry, states) != "unavailable"
+        )
+
+    def capability_snapshot(self) -> CapabilitySnapshot:
+        """決策層讀取的能力快照：每個 capability 標籤的 readiness 與 side_effect_class，加上 readiness 事件版本。
+
+        範圍與 ``enabled_tags`` 相同（已註冊、未停用、限 ``CAPABILITY_CEILING``），但 ``unavailable`` 的標籤也列出。
+        同一標籤有多個工具時：readiness 取最好的一個（ready ＞ warming ＞ unavailable），
+        side_effect_class 取「達到該 readiness 的工具」中最高的一級。標籤依名稱排序。
+        readiness 與 ``revision`` 取自同一份快照；純記憶體、唯讀，不做 I/O，不可當授權依據。"""
+        revision, states = self._module_view
+        best: dict[str, tuple[int, int]] = {}
+        for entry in self._entries.values():
+            tag = entry.spec.capability
+            if entry.disabled or tag not in CAPABILITY_CEILING:
+                continue
+            key = (_READINESS_RANK[self._readiness_in(entry, states)], SIDE_EFFECT_ORDER.index(entry.spec.side_effect_class))
+            if tag not in best or key > best[tag]:
+                best[tag] = key
+        return CapabilitySnapshot(
+            revision=revision,
+            tags=tuple(
+                CapabilityStatus(tag, _READINESS_BY_RANK[rank], SIDE_EFFECT_ORDER[cls])
+                for tag, (rank, cls) in sorted(best.items())
+            ),
         )
 
     def _readiness_in(self, entry: ToolEntry, states: Mapping[str, _ModuleRecord]) -> Readiness:

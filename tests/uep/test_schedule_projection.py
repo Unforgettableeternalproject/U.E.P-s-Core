@@ -297,17 +297,17 @@ def test_consume_abandon_rules():
     stale = _signal(decided_at=tpe(2026, 11, 11, 21))
     assert ab.consume_abandon(stale, is_owner=True, now=now, slot=slot, tz=TZ).reason_code == "stale_round"
     idle = r.resolve([], None, now, TZ)
-    assert ab.consume_abandon(_signal(), is_owner=True, now=now, slot=idle, tz=TZ).reason_code == "not_in_work"
+    assert ab.consume_abandon(_signal(), is_owner=True, now=now, slot=idle, tz=TZ).reason_code == "not_abandonable"
     ov = OverrideView("o", "website", ActivityKind.WORK, tpe(2026, 11, 12, 20, 30), tpe(2026, 11, 12, 22),
                       tpe(2026, 11, 13))
     emergency = r.resolve([a], ov, now, TZ)  # WORK 中系統緊急只形成 override，不是放棄
-    assert ab.consume_abandon(_signal(), is_owner=True, now=now, slot=emergency, tz=TZ).reason_code == "not_in_work"
+    assert ab.consume_abandon(_signal(), is_owner=True, now=now, slot=emergency, tz=TZ).reason_code == "not_abandonable"
     # 接受後的 mark 餵回投影 → fallback REST
     s2 = r.resolve([a], None, now + timedelta(minutes=1), TZ, marks=[ok.mark])
     assert s2.slot_state == "abandoned" and s2.location == "host"
     again = ab.consume_abandon(_signal(signal_id="abandon:utt-2"), is_owner=True, now=now + timedelta(minutes=1),
                                slot=s2, tz=TZ)
-    assert again.reason_code == "not_in_work"
+    assert again.reason_code == "not_abandonable"
 
 
 def test_behavior_suggestion_dataclass_unchanged():

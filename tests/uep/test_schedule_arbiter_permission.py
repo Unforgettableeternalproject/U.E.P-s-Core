@@ -277,3 +277,71 @@ def test_accepted_and_state_decisions_carry_no_audit_axis():
 def test_audit_fields_are_allowed_in_event_payload_keys():
     keys = DEFAULT_REGISTRY.lookup("schedule.arbitration_decided").payload_keys
     assert {"blocked_axis", "also_failed", "required", "actual", "policy_revision"} <= keys
+
+
+# ---- 非 REST 行程項格（SOCIAL）回主機＝放棄：須明示放棄且 SESSION_INTERRUPT（艾斯維爾 11/13）----
+
+def test_social_leave_requires_explicit_abandon_by_owner():
+    social = slot_at(11, 30)
+    refused = decide(req("owner", "host"), social, at("discord"))
+    assert (refused.outcome, refused.reason_code, refused.blocked_axis, refused.required) == (
+        "REJECTED", ar.R_SLOT_IN_PROGRESS, "instruction", 200)
+    ok = decide(req("owner", "host", explicit_abandon=True), social, at("discord"))
+    assert (ok.outcome, ok.override_action, ok.transfer_target) == ("ACCEPTED_TRANSFER", "mark_abandon", "host")
+    denied = decide(admin("host", explicit_abandon=True), social, at("discord"))
+    assert (denied.outcome, denied.reason_code) == ("REJECTED", ar.R_SLOT_IN_PROGRESS)
+    assert decide(admin("host"), social, at("discord")).reason_code == ar.R_SLOT_IN_PROGRESS
+    assert decide(req("system", "host"), social, at("discord")).reason_code == ar.R_SLOT_IN_PROGRESS
+    # slot_in_progress 屬忙碌判決（_busy_kind→work）；非 REST 格的非「回主機」臨時指示不受影響
+    from uep.turn.orchestrator import _busy_kind
+    assert _busy_kind(refused) == "work"
+    assert decide(admin("desktop"), social, at("discord")).outcome == "ACCEPTED_TRANSFER"
+
+
+def test_rest_slots_and_override_leave_rules_are_unchanged():
+    for slot in (slot_at(15), slot_at(13, 30)):  # 預設待命、REST 行程項
+        assert decide(req("owner", "host"), slot, at("desktop")).outcome == "ACCEPTED_TRANSFER"
+        assert decide(req("member", "host"), slot, at("desktop")).outcome == "ACCEPTED_TRANSFER"
+    assert decide(req("owner", "host"), slot_at(4), HOST).reason_code == ar.R_ALREADY_AT_TARGET  # SLEEP 窗她本就在主機
+
+
+# ---- 回到行程（§3.5 / 裁決 C）：target＝底格位置、tier ≥ override 帶 → 結束 override，不要求 TEMP_SESSION ----
+
+def _ov(priority, authority="member"):
+    return OverrideView("povr_1", "desktop", ActivityKind.WORK, tpe(8), tpe(23), datetime(2026, 11, 13, tzinfo=TPE),
+                        "active", "r-0", authority, priority)
+
+
+def test_return_to_plan_member_ends_own_override_but_not_owners():
+    member_ov, owner_ov = _ov(50), _ov(200, "owner")
+    base = slot_at(15)  # 底格＝預設層（host）
+    d = decide(req("member", "host"), slot_at(15, override=member_ov), at("desktop"), member_ov, base_slot=base)
+    assert (d.outcome, d.override_action, d.override_end_reason, d.return_to_plan) == (
+        "ACCEPTED_TRANSFER", "end", "returned_to_plan", True)
+    d = decide(req("member", "host"), slot_at(15, override=owner_ov), at("desktop"), owner_ov, base_slot=base)
+    assert (d.outcome, d.reason_code, d.blocked_axis, d.required, d.actual) == (
+        "REJECTED", ar.R_NOT_OVERRIDE_OWNER, "tier", 200, 50)
+    d = decide(req("owner", "host"), slot_at(15, override=owner_ov), at("desktop"), owner_ov, base_slot=base)
+    assert (d.override_action, d.override_end_reason, d.return_to_plan) == ("end", "returned_to_plan", True)
+
+
+def test_return_to_plan_with_non_host_base_and_boundaries():
+    member_ov = _ov(50)
+    work = slot_at(9, 30)  # 底格＝discord 工作格；以 base_slot 比對 target
+    ov_slot = slot_at(9, 30, override=member_ov)
+    d = decide(req("member", "discord"), ov_slot, at("desktop"), member_ov, base_slot=work)
+    assert (d.override_action, d.override_end_reason, d.return_to_plan) == ("end", "returned_to_plan", True)
+    # target 不是底格位置：不算回到行程，走一般 override 比較（同帶 member 排隊）
+    d = decide(req("member", "website"), ov_slot, at("desktop"), member_ov, base_slot=work)
+    assert (d.outcome, d.reason_code) == ("QUEUED", ar.R_SAME_PRIORITY_QUEUED)
+    # base_slot=None：不啟用，沿用既有「回主機」規則（member 沒有 TEMP_SESSION → not_override_owner）
+    d = decide(req("member", "host"), slot_at(15, override=member_ov), at("desktop"), member_ov)
+    assert d.reason_code == ar.R_NOT_OVERRIDE_OWNER
+    # 緊急 override 不適用：仍只有 system 元件能結束
+    emergency = _ov(300, "system")
+    d = decide(req("owner", "host"), slot_at(15, override=emergency), at("desktop"), emergency, base_slot=slot_at(15))
+    assert d.reason_code == ar.R_EMERGENCY_OVERRIDE_ACTIVE
+    # 未登記 system 仍被擋
+    d = decide(req("system", "host", ref="core.unknown"), slot_at(15, override=member_ov), at("desktop"), member_ov,
+               base_slot=slot_at(15))
+    assert d.reason_code == ar.R_TIER_INSUFFICIENT

@@ -74,13 +74,15 @@ def test_pause_still_only_applies_to_work_and_rest_window_cannot_be_abandoned():
     assert slot_at(4, marks=[window_abandon]).slot_state == "normal"  # 休息窗口固定，不可放棄
 
 
-def test_signal_path_still_accepts_only_work():  # PP-21
+def test_signal_path_accepts_non_rest_item_slots():  # PP-21；11/13 起擴到 SOCIAL 等所有非 REST 行程項格
     signal = AbandonWorkSignal(
         signal_id="abandon:u1", actor_ref="discord:1", actor_authenticated=True, source_platform="discord",
         path="turn", decided_at=tpe(11, 25), decider_id="rules.abandon_work", decider_version="1")
     social = slot_at(11, 30)
     res = ab.consume_abandon(signal, is_owner=True, now=tpe(11, 30), slot=social, tz=TZ)
-    assert (res.status, res.reason_code) == ("IGNORED", "not_in_work")
+    assert res.status == "ACCEPTED" and res.mark.item_ref == "social"  # 舊行為：IGNORED(not_in_work)
+    rest = slot_at(13, 30)
+    assert ab.consume_abandon(signal, is_owner=True, now=tpe(13, 30), slot=rest, tz=TZ).reason_code == "not_abandonable"
     work = slot_at(9, 30)
     ok = ab.consume_abandon(signal, is_owner=True, now=tpe(9, 30), slot=work, tz=TZ)
     assert ok.status == "ACCEPTED" and ok.mark.item_ref == "work"
@@ -89,7 +91,7 @@ def test_signal_path_still_accepts_only_work():  # PP-21
 def test_end_to_end_arbiter_to_mark_to_projection():
     for presence in (PresenceReading("ACTIVE", "discord"), HOST):  # 人在 discord 或已在主機，行程格都要轉 REST
         slot = slot_at(11, 30)
-        decision = decide(req("owner", "host"), slot, presence)
+        decision = decide(req("owner", "host", explicit_abandon=True), slot, presence)  # SOCIAL 格回主機須明示放棄
         assert (decision.outcome, decision.override_action) == ("ACCEPTED_TRANSFER", "mark_abandon")
         assert decision.transfer_target == (None if presence is HOST else "host")
         mark = ar.abandon_mark_for(slot, "r-1", tpe(11, 30))
@@ -106,7 +108,7 @@ def test_end_to_end_arbiter_to_mark_to_projection():
 # ---- M2 ----
 
 def test_leave_at_host_with_a_markable_slot_still_abandons_it():
-    d = decide(req("owner", "host"), slot_at(11, 30), HOST)
+    d = decide(req("owner", "host", explicit_abandon=True), slot_at(11, 30), HOST)  # SOCIAL 格回主機須明示放棄
     assert (d.outcome, d.override_action, d.transfer_target) == ("ACCEPTED_TRANSFER", "mark_abandon", None)
     default = decide(req("owner", "host"), slot_at(15), HOST, now=tpe(15))
     assert (default.outcome, default.reason_code) == ("REJECTED", ar.R_ALREADY_AT_TARGET)  # 沒有可標記的格

@@ -151,10 +151,11 @@ class JudgeNowFn(Protocol):
         self, *, target: str | None, is_owner: bool, actor_ref: str, actor_authenticated: bool,
     ) -> object: ...
 # 判定「她在工作中」的判決組合（outcome, reason_code）-> 忙碌種類（"work"／"interaction"）。字串值來源：uep/schedule/arbiter.py 的 REASON_CODES
-# （R_WORK_IN_PROGRESS／R_UNINTERRUPTIBLE_WORK／R_INTERACTION_ACTIVE）與 ArbitrationDecision.outcome；
+# （R_WORK_IN_PROGRESS／R_SLOT_IN_PROGRESS／R_UNINTERRUPTIBLE_WORK／R_INTERACTION_ACTIVE）與 ArbitrationDecision.outcome；
 # 這裡只比對字串，不 import uep.schedule（turn 層不依賴排程層）。ACCEPTED 與其他結果都不斷言任何事
 _BUSY_JUDGMENTS: dict[tuple[str, str], BusyKind] = {
     ("REJECTED", "work_in_progress"): "work",
+    ("REJECTED", "slot_in_progress"): "work",  # 非工作、非 REST 的行程項格（如 SOCIAL）：回主機須明示放棄，她正在該格中
     ("DEFERRED", "uninterruptible_work"): "work",
     ("DEFERRED", "interaction_active"): "interaction",
 }

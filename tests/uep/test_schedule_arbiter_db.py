@@ -106,11 +106,11 @@ def test_signal_to_mark_to_projection_to_journal_and_idempotent_replay(session_f
     assert len(rows(session_factory, "schedule.abandon_work")) == 1
 
 
-def test_non_work_and_non_owner_signals_are_ignored(session_factory, store, events, clock):
-    add_item(store, "social", time(9), time(10))
+def test_rest_item_and_non_owner_signals_are_ignored(session_factory, store, events, clock):
+    add_item(store, "rest", time(9), time(10))
     owner = AbandonExecutor(store, store, events, is_owner_fn=lambda s: True, tz_fn=store.tz, clock=clock)
     res = owner.handle(signal("abandon:s1"))
-    assert (res.status, res.reason_code) == ("IGNORED", "not_in_work")  # 非 WORK 不准放寬（PP-21）
+    assert (res.status, res.reason_code) == ("IGNORED", "not_abandonable")  # REST 格無可放棄（SOCIAL 自 11/13 起可放棄）
     store.delete_item(OWNER, store.resolve().item_ref, expected_revision=store.revision())
     add_item(store, "work", time(9), time(10))
     stranger = AbandonExecutor(store, store, events, is_owner_fn=lambda s: False, tz_fn=store.tz, clock=clock)
@@ -118,7 +118,7 @@ def test_non_work_and_non_owner_signals_are_ignored(session_factory, store, even
     assert store.active_marks() == ()
     ignored = rows(session_factory, "schedule.abandon_work")
     assert sorted((r.payload["signal_id"], r.payload["result"], r.payload["reason_code"]) for r in ignored) == [
-        ("abandon:s1", "ignored", "not_in_work"), ("abandon:s2", "ignored", "not_owner")]
+        ("abandon:s1", "ignored", "not_abandonable"), ("abandon:s2", "ignored", "not_owner")]
     assert rows(session_factory, "schedule.slot_marked") == []
 
 
@@ -127,9 +127,12 @@ def test_arbitration_on_writes_decision_events_and_only_executes_mark_abandon(se
     shadow = PresenceArbiterShadow(
         store, lambda: PresenceReading("ACTIVE", "discord"), store.active_override, InterruptFacts, clock=clock,
         mode="on", events=events, mark_writer=store)
-    proposal = SimpleNamespace(intent="presence_request", target_location="host")
-    shadow.on_presence_request(proposal, request_id="req-1", actor_ref="discord:1", actor_authenticated=True,
-                               is_owner=True, source_platform="discord")
+    # SOCIAL 格回主機須明示放棄（11/13）：presence_request 路徑不帶放棄訊號，直接以帶明示放棄的請求進判決
+    from uep.contracts.schedule import ArbiterRequest
+
+    shadow._judge_request(ArbiterRequest(
+        request_id="req-1", authority="owner", requester_ref="discord:1", actor_authenticated=True, target="host",
+        explicit_abandon=True))
     [mark] = store.active_marks()
     assert (mark.item_ref, mark.cause_request_id) == (social_id, "req-1")
     [decided] = rows(session_factory, "schedule.arbitration_decided")
@@ -188,12 +191,12 @@ def test_other_causes_abandoned_slot_replayed_by_another_signal_writes_nothing(s
     revision = store.revision()
     executor = AbandonExecutor(store, store, events, tz_fn=store.tz, clock=clock)
     result = executor.handle(signal("abandon:other", decided_at=tpe(9, 35)), is_owner=True)
-    assert (result.status, result.reason_code) == ("IGNORED", "not_in_work")
+    assert (result.status, result.reason_code) == ("IGNORED", "not_abandonable")
     assert store.revision() == revision  # revision 不變
     assert [m.cause_request_id for m in store.active_marks()] == ["req-x"]  # mark 數量不變
     assert store.find_mark_by_cause("abandon:other") is None
     [ignored] = rows(session_factory, "schedule.abandon_work")
-    assert ignored.payload["result"] == "ignored" and ignored.payload["reason_code"] == "not_in_work"
+    assert ignored.payload["result"] == "ignored" and ignored.payload["reason_code"] == "not_abandonable"
 
 
 def test_rejected_decision_event_carries_audit_axis(session_factory, events):

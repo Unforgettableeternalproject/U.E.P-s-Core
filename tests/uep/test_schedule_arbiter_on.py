@@ -137,9 +137,8 @@ def test_mark_flows_into_projection_as_fallback_rest():
 
 @pytest.mark.parametrize(("kwargs", "reason"), [
     ({"owner": False}, "not_owner"),
-    ({"items": (SOCIAL,), "now": tpe(11, 30)}, "not_in_work"),  # 非 WORK 一律忽略（PP-21）
-    ({"items": (REST,), "now": tpe(13, 30)}, "not_in_work"),
-    ({"items": ()}, "not_in_work"),
+    ({"items": (REST,), "now": tpe(13, 30)}, "not_abandonable"),
+    ({"items": ()}, "not_abandonable"),
 ])
 def test_ignored_signals_only_emit_abandon_work_ignored(kwargs, reason):
     poked = []
@@ -149,6 +148,12 @@ def test_ignored_signals_only_emit_abandon_work_ignored(kwargs, reason):
     assert (result.status, result.reason_code) == ("IGNORED", reason)
     assert marks.calls == [] and poked == []
     assert events.log == [("abandon_work", "abandon:u1", "ignored", reason, None)]
+
+
+def test_social_slot_signal_is_accepted_since_non_rest_slots_are_abandonable():
+    ex, marks, _events = executor(items=(SOCIAL,), now=tpe(11, 30))
+    result = ex.handle(signal(decided_at=tpe(11, 30)))
+    assert result.status == "ACCEPTED" and marks.calls  # 舊行為：IGNORED(not_in_work)
 
 
 def test_stale_round_and_owner_failure_and_conflict():
@@ -198,9 +203,25 @@ def request(shadow, p, request_id="r-1", **kw):
     shadow.on_presence_request(p, **base)
 
 
-def test_mark_abandon_decision_is_executed_in_on_mode():
+def abandon_request(shadow, request_id="r-1"):
+    """帶明示放棄的 owner「回主機」請求（SOCIAL 格回主機須明示放棄；presence_request 路徑不帶放棄訊號，直接進判決）。"""
+    from uep.contracts.schedule import ArbiterRequest
+
+    shadow._judge_request(ArbiterRequest(
+        request_id=request_id, authority="owner", requester_ref="discord:1", actor_authenticated=True, target="host",
+        explicit_abandon=True))
+
+
+def test_social_leave_without_explicit_abandon_is_rejected_in_on_mode():
     shadow, marks, events = arbiter((SOCIAL,), PresenceReading("ACTIVE", "discord"))
     request(shadow, proposal(target="host"))
+    assert marks.calls == []
+    assert events.log == [("arbitration_decided", "request", "r-1", "REJECTED", "none", False, "not_accepted")]
+
+
+def test_mark_abandon_decision_is_executed_in_on_mode():
+    shadow, marks, events = arbiter((SOCIAL,), PresenceReading("ACTIVE", "discord"))
+    abandon_request(shadow)
     assert marks.calls == [("abandon", "social", "r-1")]
     assert events.log == [
         ("slot_marked", "pmark_1", "abandon", "social", "r-1"),
@@ -208,7 +229,7 @@ def test_mark_abandon_decision_is_executed_in_on_mode():
          "mark_written_transfer_not_implemented")]  # 只寫了 mark、移轉沒做：部分完成，executed=False
     assert events.mark_written == [True]
     at_host, marks2, events2 = arbiter((SOCIAL,), PresenceReading("NONE", None))
-    request(at_host, proposal(target="host"))
+    abandon_request(at_host)
     assert events2.log[-1][-2:] == (True, "mark_written") and marks2.calls  # 人已在主機：整個判決完成
     assert events2.mark_written == [True]
 
@@ -232,7 +253,7 @@ def test_other_accepted_decisions_are_never_executed():
 
 def test_mark_write_failure_is_reported_not_raised():
     shadow, _marks, events = arbiter((SOCIAL,), PresenceReading("ACTIVE", "discord"), marks=FakeMarks(fail=True))
-    request(shadow, proposal(target="host"))
+    abandon_request(shadow)
     assert events.log == [("arbitration_decided", "request", "r-1", "ACCEPTED_TRANSFER", "mark_abandon", False,
                            "mark_write_failed")]
 

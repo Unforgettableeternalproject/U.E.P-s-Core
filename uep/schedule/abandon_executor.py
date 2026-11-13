@@ -1,7 +1,7 @@
 """放棄訊號的消費端執行器（AR-3a；契約 §9.5）。
 
 入口介面就是 ``AbandonWorkSignal`` 物件本身（決策層直接呼叫 ``handle(signal, is_owner=...)``）。
-流程：先沿用 ``consume_abandon`` 的判斷（not_owner → tz → stale_round → not_in_work → stale）：
+流程：先沿用 ``consume_abandon`` 的判斷（not_owner → tz → stale_round → not_abandonable → stale）：
 - ACCEPTED：``SlotMarkWriter.begin_mark(kind=abandon, cause_request_id=signal_id)`` 寫入，發
   ``schedule.slot_marked`` 與 ``schedule.abandon_work(result=accepted)``，並 poke Planner 讓它在下一個 tick
   發 slot_left／slot_entered。

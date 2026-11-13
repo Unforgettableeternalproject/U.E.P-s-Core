@@ -71,12 +71,14 @@ R_DIRECTIVE_EXPIRED = "directive_expired"
 R_MIN_RANK_INSUFFICIENT = "min_rank_insufficient"
 R_TIER_INSUFFICIENT = "tier_insufficient"
 R_TIER_BELOW_FLOOR = "tier_below_floor"
+# 非 REST 的非工作行程項格（如 SOCIAL）：「回主機」＝放棄該格，未明示放棄或階級不足 SESSION_INTERRUPT 時拒絕
+R_SLOT_IN_PROGRESS = "slot_in_progress"
 REASON_CODES = frozenset({
     R_ACCEPTED, R_ALREADY_AT_TARGET, R_UNAUTHENTICATED, R_EMERGENCY_REQUIRES_SYSTEM, R_PRESENCE_RECOVERING,
     R_TRANSFER_IN_PROGRESS, R_WORK_IN_PROGRESS, R_ABANDON_REQUIRES_HOST, R_MEMBER_NOT_ACCEPTED, R_OWNER_ONLY,
     R_LOWER_THAN_OVERRIDE, R_SAME_PRIORITY_QUEUED, R_NOT_OVERRIDE_OWNER, R_EMERGENCY_OVERRIDE_ACTIVE, R_OVERRIDE_ENDED, R_DREAM_IN_FLIGHT,
     R_INTERACTION_ACTIVE, R_UNINTERRUPTIBLE_WORK, R_OVERRIDE_ACTIVE, R_STALE_DIRECTIVE, R_DIRECTIVE_EXPIRED,
-    R_MIN_RANK_INSUFFICIENT, R_TIER_INSUFFICIENT, R_TIER_BELOW_FLOOR,
+    R_MIN_RANK_INSUFFICIENT, R_TIER_INSUFFICIENT, R_TIER_BELOW_FLOOR, R_SLOT_IN_PROGRESS,
 })
 
 SameBandPolicy = Callable[[ArbiterRequest, OverrideView], bool]
@@ -189,6 +191,11 @@ def _safe_point_block(slot: PlanSlot, probe: InterruptFacts, actual: str | None,
     return None
 
 
+def _is_abandon_gated(slot: PlanSlot) -> bool:
+    """非 REST 的行程項格（WORK、SOCIAL…）：「回主機」是轉入 REST 的放棄意圖，須明示放棄（SESSION_INTERRUPT）。"""
+    return slot.availability == "available" and slot.source == PlanSource.ITEM and slot.activity_kind != ActivityKind.REST
+
+
 def _is_work(slot: PlanSlot) -> bool:
     return slot.availability == "available" and slot.source == PlanSource.ITEM and slot.activity_kind == ActivityKind.WORK
 
@@ -196,10 +203,13 @@ def _is_work(slot: PlanSlot) -> bool:
 def arbitrate_request(
     request: ArbiterRequest, *, slot: PlanSlot, presence: PresenceReading, override: OverrideView | None,
     probe: InterruptFacts, now: datetime, same_band_policy: SameBandPolicy = same_band_prevails,
-    policy: PermissionPolicy = DEFAULT_POLICY,
+    policy: PermissionPolicy = DEFAULT_POLICY, base_slot: PlanSlot | None = None,
 ) -> ArbitrationDecision:
     """owner／admin／member／system 的在場請求（含「回主機」target=host）。
 
+    ``base_slot``＝不套 override 的投影（行程不可用時為 host 格）；給了才啟用「回到行程」（§3.5）：override 生效、
+    非緊急、target 等於底格位置且 tier ≥ MEMBER 且 ≥ override 帶 → 結束 override（``returned_to_plan``），不要求 TEMP_SESSION。
+    None＝不啟用（既有呼叫端不變）。
     授權來自請求者階級 × 指示等級 × 工作分級 × 格上 min_rank，依 ``policy`` 對照表消費（權限契約 §3.3、§3.4、§4.1）。
     """
     band = priority_of(request)
@@ -235,9 +245,17 @@ def arbitrate_request(
     # ---- 授權類判定先於 DEFERRED／QUEUED：沒有資格的請求不該被排隊或等待 ----
     abandon = False
     held_priority = PRIORITY_PLAN
+    return_to_plan = False
     if has_override:
         held_priority = override.priority if override is not None and override.priority is not None else PRIORITY_OWNER
-        if leave:
+        if base_slot is not None and held_priority < PRIORITY_EMERGENCY and request.target == base_slot.location:
+            # 回到行程（§3.5）：門檻是「階級不低於 override 建立者的帶」，不要求 TEMP_SESSION；
+            # TODO(PM-6)：有強制睡眠遮罩時不得回到行程（目前尚無該功能）
+            if request.tier < held_priority:
+                return _reject(R_NOT_OVERRIDE_OWNER, band, blocked_axis="tier", required=held_priority,
+                               actual=int(request.tier), policy_revision=policy.revision)
+            return_to_plan = True
+        elif leave:
             if held_priority >= PRIORITY_EMERGENCY:
                 if request.authority != "system":
                     # 保守做法（待 Bernie 確認）：緊急 override 只有 system 能結束，owner 的「回主機」也不行
@@ -256,8 +274,9 @@ def arbitrate_request(
             return _reject(R_LOWER_THAN_OVERRIDE, band, blocked_axis="tier", required=held_priority,
                            actual=int(request.tier), policy_revision=policy.revision)
     else:
-        if _is_work(slot):
+        if _is_abandon_gated(slot):
             # 工作格規則（§3.3、§3.4）：「回主機」＝放棄工作（SESSION_INTERRUPT，只有 owner 且須明示放棄）；
+            # 非工作的非 REST 行程項格（SOCIAL）同規則，但拒絕碼用 slot_in_progress，不冒充「她在工作中」；
             # 叫她去別處是臨時指示（形成 override），門檻＝三者取最大（格上 min_rank、work_grade、TEMP_SESSION），
             # 通過後交給後續安全點／狀態判定；系統緊急在上方已處理。
             abandon_ok = request.explicit_abandon and policy.authorize(request.tier, InstructionLevel.SESSION_INTERRUPT)
@@ -266,7 +285,8 @@ def arbitrate_request(
                     return _reject(R_ABANDON_REQUIRES_HOST, band)
                 abandon = True
             elif leave or request.explicit_abandon:
-                return _reject(R_WORK_IN_PROGRESS, band, blocked_axis="instruction",
+                return _reject(R_WORK_IN_PROGRESS if _is_work(slot) else R_SLOT_IN_PROGRESS, band,
+                               blocked_axis="instruction",
                                required=int(policy.required_tier(InstructionLevel.SESSION_INTERRUPT)),
                                actual=int(request.tier), policy_revision=policy.revision)
         if not abandon:
@@ -281,6 +301,9 @@ def arbitrate_request(
         return ArbitrationDecision("QUEUED", R_TRANSFER_IN_PROGRESS, band)  # 進行中的移轉不中斷
 
     if has_override:
+        if return_to_plan:  # 回到行程：結束 override，之後走 return_to_plan 一般仲裁
+            return ArbitrationDecision("ACCEPTED_TRANSFER", R_OVERRIDE_ENDED, band, "end",
+                                       override_end_reason="returned_to_plan", return_to_plan=True)
         if leave:  # 回主機＝owner 顯式結束該 override，之後走 return_to_plan 一般仲裁
             return ArbitrationDecision("ACCEPTED_TRANSFER", R_OVERRIDE_ENDED, band, "end",
                                        override_end_reason="owner_ended", return_to_plan=True)

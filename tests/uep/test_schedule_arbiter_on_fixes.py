@@ -259,9 +259,9 @@ def test_ignore_paths_never_call_begin_mark():
     marks = ReadOnlyMarks()
     events = Events()
     ex = AbandonExecutor(Reader(marks), marks, events, clock=lambda: tpe(14))  # 14:00 沒有 WORK 格
-    assert ex.handle(signal(), is_owner=True).reason_code in ("not_in_work", "stale")
+    assert ex.handle(signal(), is_owner=True).reason_code in ("not_abandonable", "stale")
     assert marks.begin_calls == 0
-    # 別的 cause 放棄了這格，別的 signal 重送：維持 not_in_work，零寫入
+    # 別的 cause 放棄了這格，別的 signal 重送：維持 not_abandonable，零寫入
     class Abandoned(Reader):
         def resolve(self, at=None):
             from uep.schedule import resolver
@@ -274,4 +274,4 @@ def test_ignore_paths_never_call_begin_mark():
     other_cause = ReadOnlyMarks([record("someone-else")])
     ex2 = AbandonExecutor(Abandoned(other_cause), other_cause, Events(), clock=lambda: tpe(9, 40))
     res = ex2.handle(signal("abandon:new"), is_owner=True)
-    assert (res.status, res.reason_code) == ("IGNORED", "not_in_work") and other_cause.begin_calls == 0
+    assert (res.status, res.reason_code) == ("IGNORED", "not_abandonable") and other_cause.begin_calls == 0

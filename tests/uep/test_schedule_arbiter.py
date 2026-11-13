@@ -152,8 +152,11 @@ def test_social_and_sleep_window_accept_only_owner_and_system():  # ADMIN 的新
 
 
 def test_leave_outside_work_abandons_the_current_item_or_just_moves():  # §9.1 (c)
-    social = decide(req("owner", "host"), slot_at(11, 30), at("discord"))
+    # 新規則（艾斯維爾 11/13）：非 REST 的行程項格（SOCIAL）回主機＝放棄，須明示放棄；未明示拒絕、維持原位
+    social = decide(req("owner", "host", explicit_abandon=True), slot_at(11, 30), at("discord"))
     assert (social.override_action, social.transfer_target) == ("mark_abandon", "host")
+    refused = decide(req("owner", "host"), slot_at(11, 30), at("discord"))
+    assert (refused.outcome, refused.reason_code) == ("REJECTED", ar.R_SLOT_IN_PROGRESS)
     default = decide(req("owner", "host"), slot_at(15), at("desktop"))
     assert (default.override_action, default.transfer_target) == ("none", "host")  # 預設層沒有行程項可放棄
     assert decide(req("owner", "host"), slot_at(15), HOST).reason_code == ar.R_ALREADY_AT_TARGET

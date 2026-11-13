@@ -369,7 +369,7 @@ class CommitmentChangeSignal:
 @dataclass(frozen=True)
 class AbandonResult:
     status: Literal["ACCEPTED", "IGNORED"]
-    reason_code: str  # ACCEPTED＝accepted；IGNORED＝not_owner／stale_round／not_in_work
+    reason_code: str  # ACCEPTED＝accepted；IGNORED＝not_owner／stale_round／not_abandonable
     mark: SlotMark | None = None  # ACCEPTED 時：交給 SlotMarkWriter.begin_mark 的內容（cause_request_id＝signal_id）
 
 

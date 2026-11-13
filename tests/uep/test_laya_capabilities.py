@@ -5,6 +5,7 @@ import logging
 import sys
 import types
 from collections import Counter
+from enum import Enum
 from types import SimpleNamespace
 
 from uep.adapters.tool import CAPABILITY_CEILING
@@ -173,3 +174,57 @@ def test_snapshot_method_raising_gives_none_and_syncs_primary_metric(monkeypatch
     p.propose(_cand())
     assert agent.states[-1]["available_capabilities"] == "none"
     assert sink["laya_primary.capabilities_read_error"] == 1
+
+
+class _Phase(Enum):
+    ready = "ready"
+    warming = "warming"
+
+
+def test_enum_readiness_is_accepted():
+    assert categories_from_readiness([("memory.read", _Phase.ready), ("web.fetch", _Phase.warming)]) == {"query"}
+    read = registry_capabilities_source(_registry([("memory.read", _Phase.ready)]))
+    assert read() == {"query"}
+
+
+def test_malformed_snapshots_give_empty_without_raising():
+    for snap in (SimpleNamespace(tags=None), SimpleNamespace(), SimpleNamespace(tags=(SimpleNamespace(),)),
+                 SimpleNamespace(tags=(SimpleNamespace(tag="memory.read", readiness="???"),))):
+        read = registry_capabilities_source(SimpleNamespace(capability_snapshot=lambda s=snap: s))
+        assert read() == frozenset()
+
+
+def test_all_skipped_metric_only_when_tags_present_but_none_ready():
+    seen: list[str] = []
+    mk = lambda rows: registry_capabilities_source(_registry(rows), seen.append)
+    mk([("memory.read", "warming")])()
+    assert seen == ["capabilities_all_skipped"]
+    mk([])()
+    mk([("memory.read", "ready")])()
+    assert seen == ["capabilities_all_skipped"]
+
+
+def test_repeated_read_failures_log_once(monkeypatch, caplog):
+    def boom():
+        raise RuntimeError("x")
+
+    p, _ = _proposer(monkeypatch, capabilities_source=boom)  # warmup 已失敗一次
+    with caplog.at_level(logging.ERROR, logger=laya_wiring.logger.name):
+        for _ in range(5):
+            p.propose(_cand())
+    assert p.metrics["capabilities_read_error"] == 6
+    assert sum("讀取可用能力失敗" in r.getMessage() for r in caplog.records) == 1  # 只有 warmup 那次記了，之後都只計 metric
+    later = laya_wiring.time.monotonic() + 100.0
+    monkeypatch.setattr(laya_wiring.time, "monotonic", lambda: later)
+    with caplog.at_level(logging.ERROR, logger=laya_wiring.logger.name):
+        p.propose(_cand())
+    assert sum("讀取可用能力失敗" in r.getMessage() for r in caplog.records) == 2  # 超過 60 秒再記一次
+
+
+def test_shadow_proposer_is_bound(monkeypatch):
+    primary, _ = _proposer(monkeypatch)
+    shadow, shadow_agent = _proposer(monkeypatch)
+    orch = SimpleNamespace(proposer=SimpleNamespace(laya=primary), _shadows=[(shadow, None)])
+    assert bind_laya_capabilities(orch, _registry([("chatroom.post", "ready")])) == 2
+    shadow.propose(_cand())
+    assert shadow_agent.states[-1]["available_capabilities"] == "messaging"

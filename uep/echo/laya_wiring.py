@@ -141,6 +141,9 @@ def _shadow_fallback(candidate: TurnCandidate, reason_code: str) -> Proposal:
     return replace(base, proposer_id=LAYA_PROPOSER_ID, proposer_version="warming")
 
 
+_READ_ERROR_LOG_INTERVAL_S = 60.0  # 能力讀取失敗的 log 節流間隔
+
+
 class LayaProposer:
     """Laya 零樣本決策模型的 shadow proposer（reply_mode／route／addressed 三題）。"""
 
@@ -170,6 +173,7 @@ class LayaProposer:
         # 動態來源（工具層快照）走 capabilities_source／bind_capabilities_source，有來源時每次推論前重讀
         self._capabilities = tuple(capabilities) if capabilities is not None else None
         self._capabilities_source = capabilities_source
+        self._read_error_logged_at: float | None = None
         self.metric_hook: Callable[[str], None] | None = None  # 外層（laya.primary）掛上，讓計數同步進 orchestrator metrics
         self._revision = revision or None
         self._source_revision = source_revision or None  # 本地載入時的來源 revision，只用於 version 標示
@@ -214,7 +218,11 @@ class LayaProposer:
             return tuple(source())
         except Exception:
             self.count_metric("capabilities_read_error")
-            logger.exception("laya：讀取可用能力失敗，本次視為 none")
+            now = time.monotonic()
+            last = self._read_error_logged_at
+            if last is None or now - last >= _READ_ERROR_LOG_INTERVAL_S:  # 熱路徑：第一次與之後每 60 秒才記 log，其餘只計 metric
+                self._read_error_logged_at = now
+                logger.exception("laya：讀取可用能力失敗，本次視為 none")
             return ()
 
     # ---- 載入 ----
@@ -391,7 +399,9 @@ def read_absent_compound(answers: dict) -> bool | None:
         return None
 
 
-def registry_capabilities_source(registry: object) -> Callable[[], frozenset[str]] | None:
+def registry_capabilities_source(
+    registry: object, on_metric: Callable[[str], None] | None = None,
+) -> Callable[[], frozenset[str]] | None:
     """把工具註冊表轉接成 LayaProposer 的能力來源（決策層不 import 工具層，用 getattr 取快照）。
 
     ``registry.capability_snapshot`` 不存在（工具層尚未提供）回 None，呼叫端不綁定、Laya 維持靜態能力清單；
@@ -403,7 +413,12 @@ def registry_capabilities_source(registry: object) -> Callable[[], frozenset[str
 
     def read() -> frozenset[str]:
         snapshot = snapshot_fn()
-        return categories_from_readiness((row.tag, row.readiness) for row in snapshot.tags)
+        rows = tuple(getattr(snapshot, "tags", None) or ())  # 畸形快照（tags 為 None）視為沒有標籤
+        # 缺屬性的列用空標籤略過，不讓一列壞資料拖垮整份快照
+        result = categories_from_readiness((getattr(r, "tag", ""), getattr(r, "readiness", "")) for r in rows)
+        if rows and not result and on_metric is not None:
+            on_metric("capabilities_all_skipped")  # 有標籤卻一個 ready 類別都沒有：能力靜默變 none，留痕跡
+        return result
 
     return read
 
@@ -413,11 +428,11 @@ def bind_laya_capabilities(orchestrator: object, registry: object) -> int:
 
     註冊表沒有 ``capability_snapshot`` 時不綁定（記一次 warning 與 metric），Laya 維持靜態能力清單，輸入分佈不變。
     """
-    source = registry_capabilities_source(registry)
+    probe = registry_capabilities_source(registry)
     found: list[object] = [getattr(orchestrator, "proposer", None)]
     found.extend(sp for sp, _ in getattr(orchestrator, "_shadows", ()) or ())
     targets = [t for t in (getattr(p, "laya", p) for p in found) if callable(getattr(t, "bind_capabilities_source", None))]
-    if source is None:
+    if probe is None:
         logger.warning("laya：工具層快照不可用，Laya 維持靜態能力清單")
         for target in targets:
             count = getattr(target, "count_metric", None)
@@ -425,7 +440,10 @@ def bind_laya_capabilities(orchestrator: object, registry: object) -> int:
                 count("capabilities_snapshot_unavailable")
         return 0
     for target in targets:
-        target.bind_capabilities_source(source)  # type: ignore[attr-defined]
+        # 每個 Laya 各自一個來源，讓 all_skipped 計到自己的 metrics
+        target.bind_capabilities_source(  # type: ignore[attr-defined]
+            registry_capabilities_source(registry, getattr(target, "count_metric", None))
+        )
     return len(targets)
 
 

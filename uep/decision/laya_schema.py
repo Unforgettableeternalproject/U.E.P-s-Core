@@ -53,7 +53,10 @@ READY = "ready"
 
 def categories_from_readiness(statuses: Iterable[tuple[str, str]]) -> frozenset[str]:
     """(標籤, readiness) 串列 -> 能力類別集合；只取 readiness 為 ready 的標籤（warming 不算），未對映的標籤略過。"""
-    return frozenset(TAG_CATEGORY[tag] for tag, readiness in statuses if readiness == READY and tag in TAG_CATEGORY)
+    return frozenset(
+        TAG_CATEGORY[tag] for tag, readiness in statuses
+        if str(getattr(readiness, "value", readiness)) == READY and tag in TAG_CATEGORY  # 相容 Enum：取 .value
+    )
 
 
 def format_capabilities(capabilities: Iterable[str] | None = None) -> str:

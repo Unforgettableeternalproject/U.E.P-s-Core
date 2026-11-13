@@ -927,7 +927,9 @@ def assemble_core(
         bind_registry = getattr(echo, "bind_tool_registry", None)
         if callable(bind_registry):
             bind_registry(agent_registry)  # direct_chat 投影與 TaskManager／Gateway／loop 看同一份註冊表
-            bind_laya_capabilities(echo.orchestrator, agent_registry)  # Laya 的 available_capabilities 每次推論讀工具層快照
+            laya_orchestrator = getattr(echo, "orchestrator", None)
+            if laya_orchestrator is not None:
+                bind_laya_capabilities(laya_orchestrator, agent_registry)  # Laya 的 available_capabilities 每次推論讀工具層快照
         if loop_entry is None and loop_entry_on:
             # loop、TaskManager、Gateway、投影共用組裝層組出的同一份註冊表（含測試工具與原生工具）
             loop_registry = agent_registry

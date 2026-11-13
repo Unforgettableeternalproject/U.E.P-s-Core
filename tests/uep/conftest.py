@@ -2,22 +2,36 @@
 
 DB 測試只使用 UEP_TEST_DATABASE_URL；未設定時 skip（不以 SQLite 代替）。
 每個測試前 TRUNCATE CC-1 資料表；且只允許庫名以 _test 結尾，且不得與 UEP_DATABASE_URL 相同。
+
+隔離 repo 根 ``.env``：載入本檔時即讓 ``UepSettings`` 不再讀 env_file，測試只看環境變數與預設值，
+不被開發者本機 ``.env`` 污染。唯一例外是 DB URL（白名單：``UEP_TEST_DATABASE_URL``，比對用的
+``UEP_DATABASE_URL`` 亦同），取得順序見 ``resolve_db_urls``。
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from dotenv import dotenv_values
 from pydantic import SecretStr
 from sqlalchemy import make_url, text
+from sqlalchemy.exc import ArgumentError
 
 import uep.db.models_registry  # noqa: F401  確保 Base.metadata 含所有資料表
-from uep.config import get_settings
+from uep.config import UepSettings, get_settings
 from uep.db.engine import make_engine, make_session_factory, normalize_url
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# 測試不讀 repo 根 .env：覆寫 model_config 的 env_file，並清掉可能已建立的 get_settings() 單例
+UepSettings.model_config["env_file"] = None
+get_settings.cache_clear()
+
+TEST_DB_KEY = "UEP_TEST_DATABASE_URL"
+PROD_DB_KEY = "UEP_DATABASE_URL"
 CC6_TABLES = "receipts, action_intents, approvals, steps, runs, tasks, activities"
 CC1_TABLES = "inbox, outbox, events, payload_blobs, context_snapshots, output_intents, deliveries"
 CC4_TABLES = "presence_leases, presence_transfers, presence_current"
@@ -57,15 +71,58 @@ def chatroom_cursor_dir(monkeypatch, tmp_path) -> Path:
     return path
 
 
+def _read_dotenv_key(key: str, env_path: Path | None = None) -> str | None:
+    """只從 ``.env`` 讀單一鍵（白名單）；其他鍵一律不取。檔案不存在或鍵不存在回 None。"""
+    path = env_path if env_path is not None else REPO_ROOT / ".env"
+    try:
+        if not path.is_file():
+            return None
+        return dotenv_values(path, encoding="utf-8").get(key)
+    except OSError:
+        return None
+
+
+def resolve_db_urls(env_path: Path | None = None) -> tuple[str | None, str, str | None]:
+    """回傳 (測試庫 URL, 來源, 正式庫 URL)。
+
+    測試庫：環境變數 ``UEP_TEST_DATABASE_URL`` 有設就用（空字串 = 明確離線，來源 ``env``、URL 為 None）；
+    沒設才從 ``.env`` 白名單讀同一鍵；都沒有則來源 ``none``。正式庫 URL 只用於比對，同樣先環境變數再 ``.env``；
+環境變數設為空字串時視為明確沒有正式庫，不再回退讀 ``.env``。
+    """
+    if TEST_DB_KEY in os.environ:
+        test_url, source = os.environ[TEST_DB_KEY].strip() or None, "env"
+    else:
+        test_url = (_read_dotenv_key(TEST_DB_KEY, env_path) or "").strip() or None
+        source = ".env" if test_url else "none"
+    prod_url = (os.environ.get(PROD_DB_KEY) or "").strip() or None
+    if prod_url is None and PROD_DB_KEY not in os.environ:
+        prod_url = (_read_dotenv_key(PROD_DB_KEY, env_path) or "").strip() or None
+    return test_url, source, prod_url
+
+
+def pytest_report_header(config) -> str:
+    """報告標頭：說明測試庫來源與庫名；絕不輸出帳密或完整 URL。"""
+    url, source, _ = resolve_db_urls()
+    if url is None:
+        return f"uep test db: source={source} (離線，DB 測試將 skip)"
+    try:
+        name = make_url(normalize_url(url)).database or "?"
+    except (ArgumentError, ValueError):  # 畸形 URL（如非數字埠號）不得讓 pytest 啟動失敗
+        name = "?"
+    return f"uep test db: source={source} database={name}"
+
+
 @pytest.fixture(scope="session")
 def test_db_url() -> str:
-    settings = get_settings()
-    secret = settings.test_database_url
-    if not secret:
+    url, _, prod_url = resolve_db_urls()
+    if not url:
         pytest.skip("未設定 UEP_TEST_DATABASE_URL，略過需要 PostgreSQL 的測試")
-    url = secret.get_secret_value()
-    target = make_url(normalize_url(url))
-    if settings.database_url and make_url(normalize_url(settings.database_url.get_secret_value())) == target:
+    try:
+        target = make_url(normalize_url(url))
+        prod_target = make_url(normalize_url(prod_url)) if prod_url else None
+    except (ArgumentError, ValueError):
+        pytest.fail("UEP_TEST_DATABASE_URL／UEP_DATABASE_URL 格式不正確")  # 不帶 URL 內容，避免洩漏帳密
+    if prod_target is not None and prod_target == target:
         pytest.fail("UEP_TEST_DATABASE_URL 不得與 UEP_DATABASE_URL 相同")
     if not (target.database or "").endswith("_test"):
         pytest.fail("測試庫名稱必須以 _test 結尾（allowlist）")

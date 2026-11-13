@@ -80,6 +80,7 @@ _ACTIVE_STATES = frozenset({"ready", "degraded"})
 _TRANSIENT_STATES = frozenset({"loading", "warming", "unloading"})
 _HOLDING_STATES = frozenset({"loading", "warming", "ready", "degraded", "unloading"})  # 仍持有資源（預算側）
 REJECT_POOL_SATURATED = "worker_pool_saturated"
+WARMING_POLL_S = 2.0  # 觀測模組 warming 時的重新探測間隔（probe_interval_s 為 0 時用；>0 時沿用它）
 DEFAULT_LEASE_TTL_S = 60.0
 DEFAULT_LEASE_MAX_TTL_S = 3600.0
 _PRESSURE_EVICTABLE = ("background", "speculative")  # R7：只收回 P3 -> P2
@@ -1370,12 +1371,26 @@ class ModuleCoordinator:
             self._fail_locked(rec, reason, "health", now, occupied=rec.job_started)  # 沒開始的工作 handle 從沒被呼叫，不佔資源
             self._hung_check_locked()
 
+    def _warming_poll_s(self) -> float:
+        return self._probe_interval if self._probe_interval > 0 else WARMING_POLL_S
+
+    def _enter_warming_observed_locked(self, rec: _Rec, now: float) -> None:
+        """觀測模組 probe 回 warming：loading -> warming（已在 warming 則維持），排定下次探測；失敗計數與冷卻不動。"""
+        rec.dead_count = 0
+        rec.deadline = None
+        if rec.state != "warming":
+            self._emit_locked(rec, "warming", rec.want_cause, None)
+        rec.probe_due = now + self._warming_poll_s()
+
     def _probes_locked(self, now: float) -> None:
-        if self._probe_interval <= 0 or self._stopping or self._hung_count_locked() >= self._max_hung:
+        if self._stopping or self._hung_count_locked() >= self._max_hung:
             return
         for rec in self._recs.values():
-            if rec.state in _ACTIVE_STATES and not rec.in_flight and rec.probe_due is not None and now >= rec.probe_due:
-                rec.probe_due = now + self._probe_interval
+            if rec.in_flight or rec.probe_due is None or now < rec.probe_due:
+                continue
+            warming_observed = rec.state == "warming" and self._observing(rec)  # probe_interval=0 也要重探，否則永遠卡在 warming
+            if warming_observed or (rec.state in _ACTIVE_STATES and self._probe_interval > 0):
+                rec.probe_due = now + (self._warming_poll_s() if warming_observed else self._probe_interval)
                 self._submit_locked(self._probe_job, rec, "probe", rec.desc.load_timeout_s, now)
 
     # --- worker 工作（鎖外呼叫 handle，結果回鎖內以 token 驗證）---
@@ -1431,6 +1446,8 @@ class ModuleCoordinator:
                 rec.in_flight = False
                 if verdict == "dead":
                     self._fail_locked(rec, "probe_dead", "health", now)
+                elif verdict == "warming":  # 觀測模組持有者還在載入：維持 warming，不燒重試次數、不判 failed
+                    self._enter_warming_observed_locked(rec, now)
                 else:
                     self._ready_locked(rec, now)
                     if verdict == "degraded":
@@ -1540,19 +1557,30 @@ class ModuleCoordinator:
             verdict = rec.handle.probe()
         except Exception as exc:  # noqa: BLE001
             logger.warning("模組 %s probe 失敗：%s", module_id, type(exc).__name__)
+        if verdict == "warming" and not self._observing(rec):  # 可載入的 handle 沒有「載入中」的觀測語意：視同 ok
+            verdict = "ok"
         with self._lock:
             now = self._clock()
             if self._stale_locked(rec, token):
                 self._finish_stale_locked(rec, now)
             else:
                 rec.in_flight, rec.deadline = False, None
-                if rec.state in _ACTIVE_STATES and not rec.desc.blocked:
+                warming_observed = rec.state == "warming" and self._observing(rec)
+                if (rec.state in _ACTIVE_STATES or warming_observed) and not rec.desc.blocked:
                     if verdict == "dead":
                         rec.dead_count += 1
                         if rec.dead_count >= self._probe_dead_threshold:
                             self._fail_locked(rec, "probe_dead", "health", now, occupied=True)
+                    elif warming_observed:
+                        if verdict == "warming":
+                            self._enter_warming_observed_locked(rec, now)
+                        else:
+                            self._ready_locked(rec, now)
+                            if verdict == "degraded":
+                                self._emit_locked(rec, "degraded", "health", "probe_degraded")
                     else:
                         rec.dead_count = 0
+                        # ready 的觀測模組又回 warming：ready 不可轉 warming，只當作仍活著（狀態不動）
                         if verdict == "degraded" and rec.state == "ready":
                             self._emit_locked(rec, "degraded", "health", "probe_degraded")
                         elif verdict == "ok" and rec.state == "degraded" and rec.reason != "dependency_failed":

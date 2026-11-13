@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import sys
 import types
+from collections import Counter
 from types import SimpleNamespace
 
 from uep.adapters.tool import CAPABILITY_CEILING
@@ -17,11 +18,14 @@ from uep.decision.laya_schema import (
 from uep.echo import laya_wiring
 from uep.echo.laya_wiring import (
     LayaProposer,
+    LayaRulesProposer,
     bind_laya_capabilities,
     build_state,
     registry_capabilities_source,
 )
+from uep.turn.decision_config import DecisionConfig
 from uep.turn.models import SessionContext, TurnCandidate
+from uep.turn.rule_proposer import RuleProposer
 
 CTX = SessionContext(conversation_id="c1", segment_id="s1", audience_scope="aud", session_ref="sess")
 
@@ -132,17 +136,8 @@ def test_registry_adapter_maps_snapshot():
     assert read() == {"query"}
 
 
-def test_registry_adapter_without_method_warns_once_and_raises(caplog):
-    read = registry_capabilities_source(object())
-    with caplog.at_level(logging.WARNING, logger=laya_wiring.logger.name):
-        for _ in range(3):
-            try:
-                read()
-            except TypeError:
-                pass
-            else:
-                raise AssertionError("應拋例外")
-    assert sum("capability_snapshot" in r.getMessage() for r in caplog.records) == 1
+def test_registry_adapter_without_method_returns_none():
+    assert registry_capabilities_source(object()) is None
 
 
 def test_bind_helper_reaches_primary_and_inner_laya(monkeypatch):
@@ -152,7 +147,29 @@ def test_bind_helper_reaches_primary_and_inner_laya(monkeypatch):
     assert bind_laya_capabilities(orch, _registry([("lore.read", "ready")])) == 1
     p.propose(_cand())
     assert agent.states[-1]["available_capabilities"] == "query"
-    # 註冊表缺方法：推論得到 none，不崩
-    bind_laya_capabilities(orch, object())
+
+
+def test_missing_snapshot_method_does_not_bind_and_keeps_default(monkeypatch, caplog):
+    p, agent = _proposer(monkeypatch)
+    orch = SimpleNamespace(proposer=SimpleNamespace(laya=p), _shadows=[])
+    with caplog.at_level(logging.WARNING, logger=laya_wiring.logger.name):
+        assert bind_laya_capabilities(orch, object()) == 0
+    assert any("維持靜態能力清單" in r.getMessage() for r in caplog.records)
+    assert p.metrics["capabilities_snapshot_unavailable"] == 1
+    p.propose(_cand())
+    assert agent.states[-1]["available_capabilities"] == build_state(_cand(), "U.E.P")["available_capabilities"]
+
+
+def test_snapshot_method_raising_gives_none_and_syncs_primary_metric(monkeypatch):
+    def boom():
+        raise RuntimeError("x")
+
+    p, agent = _proposer(monkeypatch)
+    wrapper = LayaRulesProposer(p, RuleProposer(DecisionConfig()))
+    sink: Counter[str] = Counter()
+    wrapper.bind_metrics(sink)
+    orch = SimpleNamespace(proposer=wrapper, _shadows=[])
+    assert bind_laya_capabilities(orch, SimpleNamespace(capability_snapshot=boom)) == 1
     p.propose(_cand())
     assert agent.states[-1]["available_capabilities"] == "none"
+    assert sink["laya_primary.capabilities_read_error"] == 1

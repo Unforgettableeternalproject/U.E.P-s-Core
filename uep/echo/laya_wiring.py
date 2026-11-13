@@ -170,6 +170,7 @@ class LayaProposer:
         # 動態來源（工具層快照）走 capabilities_source／bind_capabilities_source，有來源時每次推論前重讀
         self._capabilities = tuple(capabilities) if capabilities is not None else None
         self._capabilities_source = capabilities_source
+        self.metric_hook: Callable[[str], None] | None = None  # 外層（laya.primary）掛上，讓計數同步進 orchestrator metrics
         self._revision = revision or None
         self._source_revision = source_revision or None  # 本地載入時的來源 revision，只用於 version 標示
         self._device = device
@@ -198,6 +199,12 @@ class LayaProposer:
         """組裝層在工具註冊表就緒後接上動態來源（回傳能力類別）；None＝退回固定清單／預設。"""
         self._capabilities_source = source
 
+    def count_metric(self, name: str) -> None:
+        self.metrics[name] += 1
+        hook = self.metric_hook
+        if hook is not None:
+            hook(name)
+
     def _current_capabilities(self) -> Sequence[str] | None:
         """本次推論用的能力類別。有來源就讀一次；讀取失敗（例外）算空集合（state 為 ``none``），不退回預設。"""
         source = self._capabilities_source
@@ -206,7 +213,7 @@ class LayaProposer:
         try:
             return tuple(source())
         except Exception:
-            self.metrics["capabilities_read_error"] += 1
+            self.count_metric("capabilities_read_error")
             logger.exception("laya：讀取可用能力失敗，本次視為 none")
             return ()
 
@@ -384,21 +391,17 @@ def read_absent_compound(answers: dict) -> bool | None:
         return None
 
 
-def registry_capabilities_source(registry: object) -> Callable[[], frozenset[str]]:
+def registry_capabilities_source(registry: object) -> Callable[[], frozenset[str]] | None:
     """把工具註冊表轉接成 LayaProposer 的能力來源（決策層不 import 工具層，用 getattr 取快照）。
 
-    ``registry.capability_snapshot()`` 不存在時記一次 warning，之後每次讀取都視為失敗（拋例外，由 LayaProposer 算 none）。
+    ``registry.capability_snapshot`` 不存在（工具層尚未提供）回 None，呼叫端不綁定、Laya 維持靜態能力清單；
+    方法存在但呼叫時拋例外屬讀取失敗，由 LayaProposer 算 none。
     """
-    warned = False
+    snapshot_fn = getattr(registry, "capability_snapshot", None)
+    if not callable(snapshot_fn):
+        return None
 
     def read() -> frozenset[str]:
-        nonlocal warned
-        snapshot_fn = getattr(registry, "capability_snapshot", None)
-        if not callable(snapshot_fn):
-            if not warned:
-                warned = True
-                logger.warning("laya：工具註冊表沒有 capability_snapshot，可用能力一律視為 none")
-            raise TypeError("工具註冊表沒有 capability_snapshot")
         snapshot = snapshot_fn()
         return categories_from_readiness((row.tag, row.readiness) for row in snapshot.tags)
 
@@ -406,18 +409,24 @@ def registry_capabilities_source(registry: object) -> Callable[[], frozenset[str
 
 
 def bind_laya_capabilities(orchestrator: object, registry: object) -> int:
-    """組裝層：把註冊表接到 orchestrator 內所有可綁定的 proposer（primary 與 shadow；``laya.primary`` 取其內層 Laya）。回傳綁定數。"""
+    """組裝層：把註冊表接到 orchestrator 內所有可綁定的 proposer（primary 與 shadow；``laya.primary`` 取其內層 Laya）。回傳綁定數。
+
+    註冊表沒有 ``capability_snapshot`` 時不綁定（記一次 warning 與 metric），Laya 維持靜態能力清單，輸入分佈不變。
+    """
     source = registry_capabilities_source(registry)
     found: list[object] = [getattr(orchestrator, "proposer", None)]
     found.extend(sp for sp, _ in getattr(orchestrator, "_shadows", ()) or ())
-    bound = 0
-    for proposer in found:
-        target = getattr(proposer, "laya", proposer)
-        bind = getattr(target, "bind_capabilities_source", None)
-        if callable(bind):
-            bind(source)
-            bound += 1
-    return bound
+    targets = [t for t in (getattr(p, "laya", p) for p in found) if callable(getattr(t, "bind_capabilities_source", None))]
+    if source is None:
+        logger.warning("laya：工具層快照不可用，Laya 維持靜態能力清單")
+        for target in targets:
+            count = getattr(target, "count_metric", None)
+            if callable(count):
+                count("capabilities_snapshot_unavailable")
+        return 0
+    for target in targets:
+        target.bind_capabilities_source(source)  # type: ignore[attr-defined]
+    return len(targets)
 
 
 def create_laya_proposer(config: DecisionConfig | None = None, settings: object | None = None, **_: object) -> LayaProposer:
@@ -494,6 +503,7 @@ class LayaRulesProposer:
 
     def __init__(self, laya: LayaProposer, rules: RuleProposer, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._laya = laya
+        self._laya.metric_hook = self._bump  # LayaProposer 的計數（如 capabilities_read_error）同步進 laya_primary. 前綴
         self._rules = rules
         self._clock = clock
         self._guard = ProposerGuard("laya-primary-inner")

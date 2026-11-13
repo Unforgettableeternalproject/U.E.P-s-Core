@@ -159,3 +159,85 @@ def test_proxy_concurrency_cap():
     release.set()
     t.join(5)
     assert results == ["done"] and proxy.judge_now(**KW) == "done"
+
+
+def test_attach_wires_strict_probe_that_raises_while_background_probe_degrades():
+    from types import SimpleNamespace
+
+    from tests.uep.test_schedule_arbiter_shadow import Reader as WiringReader
+    from tests.uep.test_schedule_arbiter_shadow import fake_core
+    from uep.echo.schedule_wiring import attach_presence_arbiter
+
+    class BrokenTasks:
+        def list_live_tasks(self):
+            raise RuntimeError("tasks down")
+
+    core = fake_core()
+    core.tasks = BrokenTasks()
+    shadow = attach_presence_arbiter(SimpleNamespace(presence_arbiter="shadow"), core, session_factory=None,
+                                     start=False, reader=WiringReader())
+    assert shadow._strict_probe_fn is not shadow._probe_fn
+    assert shadow._probe_fn().has_uninterruptible_work is True  # 背景 probe：降級為保守的 busy
+    try:
+        shadow._strict_probe_fn()
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("strict probe 應在 Task 查詢失敗時拋出")
+    assert shadow.judge_now(**KW) is None  # judge_now 因此回 None，不編造 DEFERRED
+    shadow.stop()
+
+
+def _expired_active_core():
+    from datetime import UTC, timedelta
+    from types import SimpleNamespace
+
+    from tests.uep.test_schedule_arbiter_shadow import fake_core
+
+    core = fake_core()
+    expires = datetime.now(UTC) - timedelta(minutes=5)
+    core.presence = SimpleNamespace(peek=lambda: SimpleNamespace(
+        status=SimpleNamespace(value="ACTIVE"), location="discord", transfer_id=None, expires_at=expires))
+    return core, expires
+
+
+def test_arbiter_presence_wrapper_turns_expired_active_into_recovering():
+    from types import SimpleNamespace
+
+    from tests.uep.test_schedule_arbiter_shadow import Reader as WiringReader
+    from uep.echo.schedule_wiring import attach_presence_arbiter
+
+    core, _ = _expired_active_core()
+    shadow = attach_presence_arbiter(SimpleNamespace(presence_arbiter="shadow"), core, session_factory=None,
+                                     start=False, reader=WiringReader())
+    assert shadow._presence_fn().status == "RECOVERING"  # 不把過期的 ACTIVE 原值交出去
+    shadow.stop()
+
+
+def test_planner_presence_wrapper_passes_expiry_and_planner_issues_no_directive(monkeypatch):
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from tests.uep.test_schedule_planner import Reader as PlannerReader
+    from tests.uep.test_schedule_planner import fake_core as planner_core
+    from uep.echo.schedule_wiring import attach_schedule_planner
+    from uep.schedule.planner import PresencePlanner
+
+    monkeypatch.setattr(PresencePlanner, "start", lambda self: None)  # 不開背景執行緒，手動 tick
+
+    def run(expires):
+        core = planner_core()
+        core.presence = SimpleNamespace(peek=lambda: SimpleNamespace(
+            status=SimpleNamespace(value="ACTIVE"), location="desktop", transfer_id=None, expires_at=expires))
+        planner = attach_schedule_planner(SimpleNamespace(schedule_planner="shadow"), core, session_factory=None,
+                                          reader=PlannerReader([WORK]))
+        reading = planner._presence_fn()
+        planner.tick(NOW)
+        types = [d.event_type for d, _ in core.publisher.sent]
+        return reading, types
+
+    reading, types = run(NOW - timedelta(minutes=5))  # Lease 已過期
+    assert reading.status == "ACTIVE" and reading.expires_at == NOW - timedelta(minutes=5)  # 包裝不轉狀態
+    assert "schedule.directive_issued" not in types  # 位置不明：planner.py 的 actual None 提前 return
+    _, control = run(NOW + timedelta(minutes=5))  # 對照：Lease 有效且位置與行程不同，會發 directive
+    assert "schedule.directive_issued" in control

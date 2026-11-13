@@ -376,7 +376,12 @@ class PresenceManager:
 
     def peek(self) -> PresenceView:
         """純唯讀快照：只做無鎖 SELECT，不進寫入交易、不處理過期轉換（過期的 ACTIVE 仍原樣回傳，
-        由呼叫端依 ``expires_at`` 自行判斷）。只供平台快照與 shadow 使用；不處理過期，不可作為 Lease 或授權判斷的依據。"""
+        由呼叫端依 ``expires_at`` 自行判斷）。只供平台快照與 shadow 使用；不處理過期，不可作為 Lease 或授權判斷的依據。
+
+        例外：``echo/schedule_wiring.py`` 可把 peek 當作仲裁器（shadow／judge_now）與 Planner 的建議性輸入，
+        這個例外仍然不得作為 Lease 或授權判斷的依據。
+        仲裁器包裝把過期的 ACTIVE 轉成 RECOVERING。
+        Planner 包裝不轉狀態，帶 expires_at 由 Planner 判為位置不明且不發 directive。"""
         with self._sf() as s:
             row = s.get(PresenceCurrentRow, self._persona)
             if row is None:

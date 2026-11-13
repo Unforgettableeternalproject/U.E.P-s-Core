@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.uep.loop_support import FakeTasks, Round
+from tests.uep.loop_support import FakeTasks, Round, projector_for
 from tests.uep.test_agent_loop import RUN, Rig, _crash, _park_checkpoint, trigger
 from uep.adapters.tool import CAPABILITY_CEILING, ToolCall, supports_cancel
 from uep.agent.budget import LoopBudget
@@ -49,6 +49,7 @@ from uep.tools.projection import ProjectionContext
 from uep.tools.registry import ToolRegistry, load_lockfile
 
 REGISTRY = with_testkit(memory_registry())
+CONSOLE = ProjectionContext.for_platform("console")  # testkit 屬 console 平台工具
 ALL_TAGS = frozenset(TESTKIT_TAGS)
 
 
@@ -70,12 +71,12 @@ def result_of(kit: TestkitToolExecutor, action_id: str) -> dict:
 
 # ───────────────────────── 宣告 ─────────────────────────
 
-def test_testkit_entries_are_builtin_core_local_global_with_full_schemas():
+def test_testkit_entries_are_builtin_core_local_console_only_with_full_schemas():
     entries = {e.name: e for e in kit_entries()}
     assert tuple(entries) == TESTKIT_TOOLS
     for entry in entries.values():
         assert (entry.spec.origin, entry.spec.targeting, entry.spec.provider) == ("builtin", "core_local", "core")
-        assert entry.scope.platforms == frozenset() and entry.scope.presence == "any"  # global
+        assert entry.scope.platforms == frozenset({"console"}) and entry.scope.presence == "any"  # 僅 console 平台
         assert entry.descriptor.input_schema["additionalProperties"] is False
         assert entry.output_schema is not None and entry.output_schema["additionalProperties"] is False
         assert entry.spec.executor == TESTKIT_EXECUTOR and entry.descriptor.injected_params == ()
@@ -116,7 +117,7 @@ def test_with_testkit_is_additive_idempotent_and_leaves_the_memory_registry_unto
 # ───────────────────────── 開關：投影與標籤 ─────────────────────────
 
 def test_projection_offers_testkit_tools_only_when_registered():
-    ctx = ProjectionContext()
+    ctx = CONSOLE
     assert names(REGISTRY.project({TEST_READ_TAG}, ctx)) == [TOOL_ECHO, TOOL_CLOCK, TOOL_SLEEP, TOOL_CLOCK_ECHO]
     assert names(REGISTRY.project({TEST_APPROVAL_TAG}, ctx)) == [TOOL_APPROVAL_ECHO, TOOL_ECHO_THEN_APPROVE]
     assert not set(TESTKIT_TOOLS) & set(names(REGISTRY.project({"memory.read", "memory.write"}, ctx)))
@@ -126,7 +127,7 @@ def test_projection_offers_testkit_tools_only_when_registered():
 def test_without_the_switch_no_projection_or_snapshot_contains_testkit():
     base = memory_registry()  # 開關關閉＝組裝層不併入測試工具，執行期註冊表就是記憶註冊表
     assert not TESTKIT_TAGS & base.enabled_tags()
-    assert names(base.project(ALL_TAGS | {"memory.read"}, ProjectionContext())) == ["deep_recall"]
+    assert names(base.project(ALL_TAGS | {"memory.read"}, CONSOLE)) == ["deep_recall"]
     with pytest.raises(Exception, match="未註冊"):
         base.entry(TOOL_ECHO)
 
@@ -255,6 +256,7 @@ def kit_rig(rounds, *, registry: ToolRegistry = REGISTRY, kit: TestkitToolExecut
     kw.setdefault("budget", LoopBudget(max_parallel=2, repeat_limit=99))
     kw.setdefault("executors", {TESTKIT_EXECUTOR: kit})
     kw.setdefault("cancel_grace_s", 1.0)
+    kw.setdefault("projector", projector_for(registry, "console"))  # testkit 只在 console 平台投影
     rig = Rig(rounds, registry=registry, **kw)
     rig.tasks = KitTasks(registry, kit)
     rig.loop = rig.new_loop()  # 以換上的 tasks（含它的 contents）重建 loop
@@ -364,7 +366,7 @@ def test_loop_without_the_approval_tag_cannot_call_approval_echo():
 
 def test_gateway_rejects_bad_testkit_arguments_before_any_action():
     gateway = ToolGateway(REGISTRY)
-    caps = REGISTRY.project(ALL_TAGS, ProjectionContext())
+    caps = REGISTRY.project(ALL_TAGS, CONSOLE)
     from uep.tools.gateway import GatewayRejected
 
     for tool, args in ((TOOL_ECHO, {"text": "x", "extra": 1}), (TOOL_SLEEP, {"seconds": SLEEP_MAX_S + 1}), (TOOL_CLOCK, {"x": 1})):
@@ -399,7 +401,7 @@ def test_composite_testkit_entries_follow_ra14_and_reference_only_persistent_out
 
 
 def test_composite_testkit_tools_are_projected_by_their_tags_and_hidden_without_the_switch():
-    ctx = ProjectionContext()
+    ctx = CONSOLE
     assert TOOL_CLOCK_ECHO in names(REGISTRY.project({TEST_READ_TAG}, ctx))
     assert TOOL_ECHO_THEN_APPROVE not in names(REGISTRY.project({TEST_READ_TAG}, ctx))
     assert TOOL_ECHO_THEN_APPROVE in names(REGISTRY.project({TEST_APPROVAL_TAG}, ctx))
@@ -440,3 +442,28 @@ def test_loop_clock_echo_is_invisible_without_the_test_read_tag():
     rig = kit_rig([Round("", ((TOOL_CLOCK_ECHO, {}),)), Round("好")])
     out = rig.run(trigger=trigger(tags={TEST_APPROVAL_TAG}))
     assert out.state == "completed" and fed(rig)[0]["reason_code"] == "capability_missing" and rig.kit.executions == []
+
+
+# ───────────────────────── 平台限定：只在 console 投影 ─────────────────────────
+
+@pytest.mark.parametrize("platform", [None, "desktop", "discord", "website"])
+def test_testkit_is_not_projected_outside_console_and_gateway_blocks_before_execution(platform):
+    from uep.tools.gateway import GatewayRejected
+
+    ctx = ProjectionContext.for_platform(platform)
+    caps = REGISTRY.project(ALL_TAGS | {"memory.read"}, ctx)
+    assert not set(TESTKIT_TOOLS) & set(names(caps))
+    assert "deep_recall" in names(caps)  # 原生工具任何平台可用
+    with pytest.raises(GatewayRejected):
+        ToolGateway(REGISTRY).check_intent(TOOL_ECHO, {"text": "x"}, caps)
+
+
+def test_testkit_is_projected_on_console_alongside_native_tools():
+    caps = REGISTRY.project(ALL_TAGS | {"memory.read"}, CONSOLE)
+    assert set(TESTKIT_TOOLS) <= set(names(caps)) and "deep_recall" in names(caps)
+
+
+def test_loop_outside_console_refuses_to_start_with_only_testkit_tags():
+    rig = kit_rig([Round("", ((TOOL_ECHO, {"text": "x"}),)), Round("好")], projector=projector_for(REGISTRY, "desktop"))
+    out = rig.run(trigger=trigger(tags={TEST_READ_TAG}))  # 投影為空：Run 拒絕啟動，工具一次都不執行
+    assert (out.state, out.reason_code) == ("rejected", "capability_empty") and rig.kit.executions == []

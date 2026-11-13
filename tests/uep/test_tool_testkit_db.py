@@ -72,7 +72,7 @@ class KitDb:
     def loop(self, *, runtime=None, epoch: int | None = None) -> AgentLoop:
         return AgentLoop(
             runtime=runtime or self.runtime, tasks=self.tm, gateway=ToolGateway(self.registry), registry=self.registry,
-            store=self.store, projector=projector_for(self.registry), budget=self.budget,
+            store=self.store, projector=projector_for(self.registry, "console"), budget=self.budget,
             worker_epoch=self.run.worker_epoch if epoch is None else epoch, content_lookup=self.kit.cache.text,
             executors={TESTKIT_EXECUTOR: self.kit}, cancel_grace_s=1.0,
         )

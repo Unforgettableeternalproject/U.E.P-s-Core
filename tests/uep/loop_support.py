@@ -78,9 +78,13 @@ def make_registry(*extra: ToolEntry) -> ToolRegistry:
     ])
 
 
-def projector_for(registry: ToolRegistry) -> Callable[[frozenset[str], frozenset[str] | None], Mapping[str, Any]]:
+def projector_for(
+    registry: ToolRegistry, platform: str | None = None,
+) -> Callable[[frozenset[str], frozenset[str] | None], Mapping[str, Any]]:
+    """``platform`` 給定時以該 Presence 平台投影（例如 testkit 只在 console 投影）；None＝不帶場域。"""
     def project(tags: frozenset[str], prior: frozenset[str] | None) -> Mapping[str, Any]:
-        return registry.project(tags, ProjectionContext(), prior=prior)
+        ctx = ProjectionContext.for_platform(platform) if platform is not None else ProjectionContext()
+        return registry.project(tags, ctx, prior=prior)
 
     return project
 

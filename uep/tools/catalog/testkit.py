@@ -35,9 +35,12 @@ from uep.adapters.tool import (
     ToolScope,
     ToolSpec,
 )
+from uep.contracts.presence import PresenceLocation
 from uep.tools.registry import ToolRegistry
 
 TESTKIT_EXECUTOR = "core_testkit"
+# 測試工具屬於測試 Console 的平台工具（#734／#740）：只在 console 平台投影；旗標 UEP_TOOL_TESTKIT 仍是開關
+TESTKIT_SCOPE = ToolScope(platforms=frozenset({PresenceLocation.CONSOLE.value}))
 TEST_READ_TAG = "test.read"
 TEST_APPROVAL_TAG = "test.approval"
 TESTKIT_TAGS: frozenset[str] = frozenset({TEST_READ_TAG, TEST_APPROVAL_TAG})
@@ -152,17 +155,17 @@ def testkit_entries() -> list[ToolEntry]:
         ToolEntry(
             name=TOOL_ECHO, spec=_read_spec(),
             descriptor=ToolDescriptor(description=ECHO_DESCRIPTION, input_schema=ECHO_INPUT_SCHEMA),
-            scope=ToolScope(), output_schema=ECHO_OUTPUT_SCHEMA, concurrency="parallel_safe", timeout_s=READ_TIMEOUT_S,
+            scope=TESTKIT_SCOPE, output_schema=ECHO_OUTPUT_SCHEMA, concurrency="parallel_safe", timeout_s=READ_TIMEOUT_S,
         ),
         ToolEntry(
             name=TOOL_CLOCK, spec=_read_spec(),
             descriptor=ToolDescriptor(description=CLOCK_DESCRIPTION, input_schema=CLOCK_INPUT_SCHEMA),
-            scope=ToolScope(), output_schema=CLOCK_OUTPUT_SCHEMA, concurrency="parallel_safe", timeout_s=READ_TIMEOUT_S,
+            scope=TESTKIT_SCOPE, output_schema=CLOCK_OUTPUT_SCHEMA, concurrency="parallel_safe", timeout_s=READ_TIMEOUT_S,
         ),
         ToolEntry(
             name=TOOL_SLEEP, spec=_read_spec(interruptible="interruptible"),
             descriptor=ToolDescriptor(description=SLEEP_DESCRIPTION, input_schema=SLEEP_INPUT_SCHEMA),
-            scope=ToolScope(), output_schema=SLEEP_OUTPUT_SCHEMA, concurrency="parallel_one_shot",
+            scope=TESTKIT_SCOPE, output_schema=SLEEP_OUTPUT_SCHEMA, concurrency="parallel_one_shot",
             timeout_s=SLEEP_TIMEOUT_S, cancellable=True,
         ),
         ToolEntry(
@@ -172,12 +175,12 @@ def testkit_entries() -> list[ToolEntry]:
                 presence_bound=False, tool_version=1, capability=TEST_APPROVAL_TAG, approval_level="per_action",
             ),
             descriptor=ToolDescriptor(description=APPROVAL_ECHO_DESCRIPTION, input_schema=APPROVAL_ECHO_INPUT_SCHEMA),
-            scope=ToolScope(), output_schema=APPROVAL_ECHO_OUTPUT_SCHEMA,
+            scope=TESTKIT_SCOPE, output_schema=APPROVAL_ECHO_OUTPUT_SCHEMA,
         ),
         ToolEntry(
             name=TOOL_CLOCK_ECHO, spec=_read_spec(),
             descriptor=ToolDescriptor(description=CLOCK_ECHO_DESCRIPTION, input_schema=CLOCK_INPUT_SCHEMA),
-            scope=ToolScope(), output_schema=ECHO_OUTPUT_SCHEMA, timeout_s=READ_TIMEOUT_S,
+            scope=TESTKIT_SCOPE, output_schema=ECHO_OUTPUT_SCHEMA, timeout_s=READ_TIMEOUT_S,
             composite=CompositeSpec(steps=(
                 CompositeStep(TOOL_CLOCK, {}),
                 CompositeStep(TOOL_ECHO, {"text": "$.steps[0].output.result_ref"}),
@@ -192,7 +195,7 @@ def testkit_entries() -> list[ToolEntry]:
             descriptor=ToolDescriptor(
                 description=ECHO_THEN_APPROVE_DESCRIPTION, input_schema=ECHO_THEN_APPROVE_INPUT_SCHEMA,
             ),
-            scope=ToolScope(), output_schema=APPROVAL_ECHO_OUTPUT_SCHEMA,
+            scope=TESTKIT_SCOPE, output_schema=APPROVAL_ECHO_OUTPUT_SCHEMA,
             composite=CompositeSpec(steps=(
                 CompositeStep(TOOL_ECHO, {"text": "$.input.text"}),
                 CompositeStep(TOOL_APPROVAL_ECHO, {"message": "$.input.text"}),

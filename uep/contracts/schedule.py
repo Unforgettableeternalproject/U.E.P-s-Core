@@ -15,7 +15,9 @@ from typing import Literal, Protocol
 
 PlanLocation = str  # PlatformId（desktop|discord|website）或 "host"
 PRESENCE_TARGET_HOST = "host"
-PLAN_LOCATIONS = frozenset({"desktop", "discord", "website", PRESENCE_TARGET_HOST})
+PLAN_LOCATIONS = frozenset({"desktop", "discord", "website", "console", PRESENCE_TARGET_HOST})
+# 在場請求（Laya／事件）可指定的移轉目標：排除 console——測試入口只能由人手動排程（PLAN_LOCATIONS），不得被請求移轉過去
+REQUEST_TARGET_LOCATIONS = PLAN_LOCATIONS - {"console"}
 
 # 優先序帶：仲裁器擁有數值；本契約只要求 PLAN 嚴格最低
 PRIORITY_PLAN = 0  # 建議：PLAN 0 < REQUESTER 50 < SYSTEM 100 < OWNER 200 < EMERGENCY 300

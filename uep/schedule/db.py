@@ -30,7 +30,8 @@ def _in(column: str, values: tuple[str, ...]) -> str:
     return f"{column} IN (" + ", ".join(f"'{v}'" for v in values) + ")"
 
 
-_LOCATIONS = ("desktop", "discord", "website", "host")
+_LOCATIONS = ("desktop", "discord", "website", "console", "host")
+# override 刻意不含 console：緊急 override 不能把她移到測試入口
 _OVERRIDE_LOCATIONS = ("desktop", "discord", "website")
 _KINDS = ("rest", "work", "social")
 

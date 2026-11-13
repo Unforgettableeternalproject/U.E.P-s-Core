@@ -12,6 +12,8 @@ from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import Any
 
+from uep.console.rig import CONSOLE_ENDPOINT_ID, CONSOLE_LOCATION
+from uep.contracts.presence import PresenceLocation
 from uep.memory import MemoryHost, NamespaceSpec
 from uep.memory.identity import IdentityDirectory
 
@@ -119,6 +121,10 @@ def build_stt_stage(settings: Any, warmups: MutableMapping[str, float]) -> Any:
             vad_hysteresis=settings.stt_vad_hysteresis, vad_hangover_s=settings.stt_vad_hangover_s,
         ),
     )
+    # 與 Host location（console）一致：/stream 的輸入不會被當成缺失來源（V18）；不受簽發旗標影響
+    stage.source_location = PresenceLocation(CONSOLE_LOCATION)
+    if getattr(settings, "console_ingress_endpoint", False):
+        stage.source_endpoint_id = CONSOLE_ENDPOINT_ID  # host 以 getattr 讀取，簽發給 /stream 路徑的 utterance
     timed_prepare(stage, "stt", warmups, after=stt_warmup)
     return stage
 

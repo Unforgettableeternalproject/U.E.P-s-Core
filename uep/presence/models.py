@@ -25,7 +25,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from uep.db.base import Base
 
 STATUSES = ("NONE", "ACTIVE", "RECOVERING")
-LOCATIONS = ("desktop", "discord", "website")
+LOCATIONS = ("desktop", "discord", "website", "console")
 PHASES = ("PREPARING", "QUIESCING", "CHECKPOINTED", "ACTIVATING", "DONE", "ABORTED")
 LEASE_STATES = ("ISSUED", "ACTIVE", "EXPIRED", "RELEASED", "REVOKED", "SUPERSEDED")
 

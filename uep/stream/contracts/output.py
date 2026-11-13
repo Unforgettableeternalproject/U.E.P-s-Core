@@ -253,6 +253,7 @@ class ModeRules(Protocol):
 BARGE_IN_PRESETS: dict[str, float] = {
     "website": 0.4,
     "desktop": 0.4,  # 暫定值：沿用 website 的單次事件語意，依實測再調
+    "console": 0.4,  # 測試 Console：文字／本機音訊，同 desktop 的單次事件語意
     "discord": 2.0,
 }
 """平台 preset：barge-in 的有聲秒數門檻（Q4）；鍵為 Presence location 詞彙（desktop／discord／website）。

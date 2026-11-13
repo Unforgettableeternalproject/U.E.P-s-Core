@@ -20,6 +20,7 @@ class PresenceLocation(StrEnum):
     DESKTOP = "desktop"
     DISCORD = "discord"
     WEBSITE = "website"
+    CONSOLE = "console"  # 測試 Console 的獨立平台（不與 desktop 共用）
 
 
 class TransferPhase(StrEnum):

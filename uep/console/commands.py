@@ -279,7 +279,19 @@ class Console:
                 over["source_location"] = PresenceLocation(rt.host.location)
             except ValueError:
                 pass
-        fact = UtteranceFact(speaker_ref=CONSOLE_SPEAKER, text=text, seq=rt.seq, **over)
+        # source_endpoint_id 只採組裝層簽發（宣告式信任）：外部傳入值一律丟棄；旗標關、或發話者／來源位置不是本機 Console 時為 None
+        over.pop("source_endpoint_id", None)
+        endpoint_id = getattr(rt, "ingress_endpoint_id", None)  # 假 runtime 可能沒有此欄位
+        if endpoint_id is not None:
+            try:
+                local = PresenceLocation(rt.host.location)
+            except ValueError:
+                local = None
+            if over.get("source_location") != local or local is None:
+                endpoint_id = None
+        fact = UtteranceFact(
+            speaker_ref=CONSOLE_SPEAKER, text=text, seq=rt.seq, source_endpoint_id=endpoint_id, **over,
+        )
         self._report_turn(rt.host.submit_utterance(fact))
 
     def _report_turn(self, result) -> None:

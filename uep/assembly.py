@@ -555,13 +555,17 @@ def _check_tool_path_consistency(tool_path: str, echo: EchoPipelineHost | None) 
         )
 
 
-def check_source_location_policy(input_locations: Collection[str], require_source_location: bool) -> None:
-    """V18 fail-closed 守門：註冊任何非 desktop 的輸入 adapter 而 ``UEP_REQUIRE_SOURCE_LOCATION`` 未開，拒絕組裝。
+# 本機 Host 的輸入位置：desktop 與測試 Console（console）；兩者的輸入都由本機 stage／Console 簽發 source_location
+LOCAL_INPUT_LOCATIONS = frozenset({"desktop", "console"})
 
-    觸發條件：``input_locations`` 含 ``desktop`` 以外的值（P4 的 Discord／Website adapter 接上時）。
+
+def check_source_location_policy(input_locations: Collection[str], require_source_location: bool) -> None:
+    """V18 fail-closed 守門：註冊任何非本機（desktop／console）的輸入 adapter 而 ``UEP_REQUIRE_SOURCE_LOCATION`` 未開，拒絕組裝。
+
+    觸發條件：``input_locations`` 含 desktop／console（本機）以外的值（P4 的 Discord／Website adapter 接上時）。
     目前 repo 沒有外部 adapter 註冊點；assemble_core 以 ``input_locations`` 參數呼叫本檢查，adapter 註冊點出現時沿用。
     """
-    external = sorted({str(loc) for loc in input_locations} - {"desktop"})
+    external = sorted({str(loc) for loc in input_locations} - LOCAL_INPUT_LOCATIONS)
     if external and not require_source_location:
         raise AssemblyError(
             f"註冊了非 desktop 輸入 adapter（{', '.join(external)}）時必須開啟 UEP_REQUIRE_SOURCE_LOCATION=true"

@@ -103,6 +103,9 @@ class UepSettings(BaseSettings):
     # V18 缺席端輸入 fail-closed：開啟後 UtteranceFact 缺 source_location 即否決（預設關＝缺失放行並計數）。
     # 註冊任何非 desktop 輸入 adapter 前必須開啟（assembly 強制）
     require_source_location: bool = Field(default=False, validation_alias="UEP_REQUIRE_SOURCE_LOCATION")
+    # Console 簽發 source_endpoint_id（宣告式信任，非 HMAC）：開啟後 Console 發話帶 ``test_console``，被判為已認證 owner。
+    # 只有 Console rig 讀它；預設關
+    console_ingress_endpoint: bool = Field(default=False, validation_alias="UEP_CONSOLE_INGRESS_ENDPOINT")
     # 決策中樞 proposer 選擇（DL-1b）：primary 的 proposer_id（未設＝rules.default）；shadow 清單以逗號分隔
     # （未設＝respond.minimal，設為空字串＝關閉 shadow）。未註冊的 id 於 Host 組裝時 fail-fast
     decision_proposer: str | None = Field(default=None, validation_alias="UEP_DECISION_PROPOSER")

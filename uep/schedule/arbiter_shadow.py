@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from uep.contracts.schedule import (
-    PLAN_LOCATIONS,
+    REQUEST_TARGET_LOCATIONS,
     ArbiterRequest,
     ArbitrationDecision,
     InterruptFacts,
@@ -270,8 +270,8 @@ class PresenceArbiterShadow:
         authenticated = payload.get("actor_authenticated") is True
         is_owner = payload.get("is_owner") == "true"
         ref = getattr(event, "event_id", "unknown")
-        if target not in PLAN_LOCATIONS or not authenticated:
-            self._count(f"{_METRIC}.request.no_target" if target not in PLAN_LOCATIONS
+        if target not in REQUEST_TARGET_LOCATIONS or not authenticated:
+            self._count(f"{_METRIC}.request.no_target" if target not in REQUEST_TARGET_LOCATIONS
                         else f"{_METRIC}.request.unauthenticated")
             logger.info("仲裁：觀察到在場請求但無法判決（target=%s authenticated=%s）", target, authenticated)
             return
@@ -295,7 +295,7 @@ class PresenceArbiterShadow:
             self._count(f"{_METRIC}.request.not_a_move")  # 只有 intent==presence_request 且有 target 才仲裁
             return
         target = getattr(target, "value", target)
-        if target not in PLAN_LOCATIONS:
+        if target not in REQUEST_TARGET_LOCATIONS:
             self._count(f"{_METRIC}.request.no_target")
             return
         if actor_authenticated is not True:
@@ -323,14 +323,14 @@ class PresenceArbiterShadow:
 
         不走 ``_record``：不記 judgments、不發事件、不寫 mark／override、不排佇列、不 poke、不碰 Presence 寫入、
         不推進 ``_seq``（received_seq 只借用目前值）。只做讀取（reader.resolve／override／presence.peek／probe，
-        約數次 DB SELECT）與記憶體內指標計數。回 None：已 stop、target 不在 PLAN_LOCATIONS、未認證、
+        約數次 DB SELECT）與記憶體內指標計數。回 None：已 stop、target 不在 REQUEST_TARGET_LOCATIONS（含排除 console）、未認證、
         非 owner（member 先不建，與 ``_handle_presence_request`` 一致）、或任何例外（不外拋）。
         """
         if self._closed:
             return None
         try:
             target = getattr(target, "value", target)
-            if target not in PLAN_LOCATIONS or actor_authenticated is not True or is_owner is not True:
+            if target not in REQUEST_TARGET_LOCATIONS or actor_authenticated is not True or is_owner is not True:
                 self._count(f"{_METRIC}.judge_now.skipped")
                 return None
             now = self._clock()

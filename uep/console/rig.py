@@ -39,6 +39,9 @@ MEMORY_CHOICES = ("fake", "real")
 PRIVATE_SCOPE = "scope_private_owner"
 CONSOLE_SPEAKER = "console:owner"
 CONSOLE_ACTOR = "actor_a"
+CONSOLE_LOCATION = "console"
+CONSOLE_ENDPOINT_ID = "test_console"
+"""旗標 ``UEP_CONSOLE_INGRESS_ENDPOINT`` 開啟時由組裝層簽發給 Console 發話的 source_endpoint_id。"""
 DEFAULT_REPLY = "你好，我是回聲。今天天氣不錯。"
 
 
@@ -131,6 +134,7 @@ class ConsoleRuntime:
     behavior_driver: Any = None  # PP-3b：Behavior driver（只在 real 記憶路徑；off 或 fake 時為 None）
     schedule_planner: Any = None  # PP-4b：PresencePlanner（UEP_SCHEDULE_PLANNER=shadow 且 real 記憶路徑才有）
     presence_arbiter: Any = None  # AR-2：在場請求仲裁 shadow（UEP_PRESENCE_ARBITER=shadow 且 real 記憶路徑才有）
+    ingress_endpoint_id: str | None = None  # UEP_CONSOLE_INGRESS_ENDPOINT 開啟才為 CONSOLE_ENDPOINT_ID，否則 None
 
     def close(self) -> None:
         try:
@@ -209,16 +213,16 @@ def build_fake_runtime(
             runtime.wav_sinks.append(sink)
         return sink
 
-    # Console 是本機麥克風／喇叭的桌面端，平台取 desktop（與 endpoint 預設 location 一致）
+    # Console 是獨立的測試平台 console（不與 desktop 共用 Presence location／工具投影／preset）
     session = SessionContext(
         conversation_id=new_id("conv"), segment_id=new_id("seg"), audience_scope=PRIVATE_SCOPE,
-        session_ref=f"console{int(time.time() * 1000)}", platform="desktop",
+        session_ref=f"console{int(time.time() * 1000)}", platform=CONSOLE_LOCATION,
     )
     host = EchoPipelineHost(
         publisher=publisher, think=think, speak=speak, sink_factory=sink_factory, session=session,
         identity=identity, tracer=tracer, endpoint_kwargs={"tick_interval": 0.05}, **host_extra,
-        **{"input_stage": input_stage, "memory": memory_host.access if memory_host is not None else None,
-           **(host_kwargs or {})},
+        **{"location": CONSOLE_LOCATION, "input_stage": input_stage,
+           "memory": memory_host.access if memory_host is not None else None, **(host_kwargs or {})},
     )
     if loop_switch is not None:
         from uep.console.agent_rig import install_loop_route
@@ -239,6 +243,7 @@ def build_fake_runtime(
         input_stage=input_stage, memory_host=memory_host, memory_root=memory_root, warmups=warmups, player=player,
         decision_log=core.decision_log, tool_path=(host_kwargs or {}).get("tool_path", "legacy"),
         loop_switch=loop_switch, model_port=model_port,
+        ingress_endpoint_id=_console_ingress_endpoint_id(),
     )
     if input_stage is not None:
         runtime.seq = TEXT_SEQ_BASE  # 與 Host 內部 STT utterance 的 seq 錯開，文字與語音混用時不碰撞
@@ -274,6 +279,13 @@ def build_fake_runtime(
 
 
 TEXT_SEQ_BASE = 1_000_000
+
+
+def _console_ingress_endpoint_id() -> str | None:
+    """旗標開啟時回 ``CONSOLE_ENDPOINT_ID``，否則 None。"""
+    from uep.config import get_settings
+
+    return CONSOLE_ENDPOINT_ID if get_settings().console_ingress_endpoint else None
 
 
 def _record_submissions(host: EchoPipelineHost, runtime: ConsoleRuntime) -> None:

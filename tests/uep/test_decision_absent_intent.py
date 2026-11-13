@@ -323,3 +323,41 @@ def test_read_absent_compound():
     assert read_absent_compound({"absent.compound": {"noul": 0.2}}) is False
     assert read_absent_compound({}) is None  # 舊模型沒有此題
     assert read_absent_compound({"absent.compound": {}}) is None
+
+
+# ---- console 不得成為移轉目標（測試平台只能是排程目的地）----
+
+def test_console_is_not_a_request_target_location():
+    from uep.decision.presence_absent_intent import TARGET_LOCATIONS
+
+    assert "console" not in TARGET_LOCATIONS
+
+
+def test_laya_training_target_locations_exclude_console():
+    """train/ 不在 uep 的 import 邊界內，改以 AST 讀字面值比對，避免載入訓練依賴。"""
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "train" / "decision" / "laya_data" / "kinds.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    values = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "TARGET_LOCATIONS" for t in node.targets):
+            values = ast.literal_eval(node.value)
+    assert values is not None, "kinds.py 找不到 TARGET_LOCATIONS"
+    assert "console" not in values
+
+
+def test_validate_proposal_rejects_console_target_fail_closed():
+    prop = AbsentIntentProposal(
+        intent=INTENT_PRESENCE_REQUEST, target_location="console", confidence=0.9,
+        proposer_id="rules.absent_intent", proposer_version="1",
+    )
+    assert validate_proposal(prop) == "bad_target_location"
+
+
+@pytest.mark.parametrize("text", ["到 console", "去console", "移到 console", "切換到 console"])
+def test_rules_proposer_never_targets_console(text):
+    out = RulesAbsentIntentProposer().propose(_inp(text))
+    assert out.target_location != "console"
+    assert validate_proposal(out) is None

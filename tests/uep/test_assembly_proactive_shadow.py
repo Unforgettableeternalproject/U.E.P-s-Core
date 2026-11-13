@@ -222,3 +222,13 @@ def test_repeat_evaluation_uses_distinct_request_ids_and_log_quiet(built, sinks)
     assert ids == {"pcand_dl6b:eval:1", "pcand_dl6b:eval:2", "pcand_dl6b:eval:3"}
     assert core.decision_log.flush(5.0)
     assert len([r for r in sinks[0].rows if r.get("kind") == KIND_PROACTIVE_INITIATE]) == 1  # 同 reason 連續只記一次
+
+
+def test_injected_locations_never_include_console(built, sinks):  # noqa: F811
+    """shadow 組裝的 private_locations／grant 不得帶 console（測試平台只能被排程指定）。"""
+    core, _, _ = built()
+    for loc in ("desktop", "discord", "website"):
+        shadow = _fake_facts(core, presence=_Presence(location=loc))
+        ctx = shadow.build_context(_cand())
+        assert "console" not in {v.value for v in ctx.private_locations}
+        assert ctx.grant is None or "console" not in {v.value for v in ctx.grant.locations}

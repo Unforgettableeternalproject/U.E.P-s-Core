@@ -669,3 +669,35 @@ def test_db_shadow_log_persists_primary_rows(engine, session_factory):
     assert by[("pcand_exp", "candidate_expired")]["sub_kind"] == "validity"
     assert all(r["role"] == "primary" and r["fallback"] is False and r["utterance_refs"] is None for r in rows)
     assert SECRET not in json.dumps(rows, default=str)
+
+
+# ---- console 不得成為移轉目標（enum 尚無 console 時以字串守住，加入後自動切換到行為斷言）----
+
+_ENUM_HAS_CONSOLE = "console" in {m.value for m in PresenceLocation}
+
+
+@pytest.mark.skipif(_ENUM_HAS_CONSOLE, reason="PresenceLocation 已含 console；改由行為測試守住")
+def test_console_string_is_rejected_by_contract_while_enum_lacks_it():
+    """PresenceLocation 尚無 console：任何位置欄位帶 console 都 fail-closed（ValueError）。"""
+    with pytest.raises(ValueError):
+        _cand(desired_location="console")
+    with pytest.raises(ValueError):
+        _ctx(private_locations=("console",))
+    facts = json.loads(json.dumps(context_to_facts(_ctx())))
+    facts["grant"]["locations"] = ["console"]
+    with pytest.raises(ValueError):
+        context_from_facts(facts)
+
+
+@pytest.mark.skipif(not _ENUM_HAS_CONSOLE, reason="PresenceLocation 尚無 console；加入後此測試自動生效")
+def test_console_never_chosen_as_move_target_when_not_in_private_locations():
+    console = PresenceLocation("console")
+    # 聽眾太寬且 desired 為 console，但 private_locations 不含 console：只能改選私人位置，絕不選 console
+    verdict = arbitrate(
+        _cand(source_kind="assignment", authorization_ref=None, desired_location=console),
+        _ctx(grant=None, audience_scope="scope_group_g1", private_locations=(PresenceLocation.DESKTOP,)),
+    )
+    assert verdict.plan is None or verdict.plan.placement is None or verdict.plan.placement.target_platform != "console"
+    # 有授權但 grant.locations 不含 console：授權範圍不足
+    verdict = arbitrate(_cand(desired_location=console), _ctx())
+    assert verdict.reason_code == "authorization_scope_insufficient"

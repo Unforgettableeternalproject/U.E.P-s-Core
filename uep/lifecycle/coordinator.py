@@ -1231,6 +1231,8 @@ class ModuleCoordinator:
     def _settled_locked(self) -> bool:
         now = self._clock()
         for rec in self._recs.values():
+            if rec.state == "warming" and self._observing(rec) and not rec.in_flight:
+                continue  # 觀測模組的持有者自己在載入（可能很久）：不是 coordinator 能等到穩定的轉移
             if rec.state in _TRANSIENT_STATES:
                 return False
             if self._can_begin_load_locked(rec, now, record=False):
@@ -1362,6 +1364,8 @@ class ModuleCoordinator:
             reason = {
                 "loading": "load_timeout", "warming": "load_timeout", "unloading": "unload_timeout",
             }.get(rec.state, "probe_timeout")
+            if rec.job_kind == "probe":
+                reason = "probe_timeout"  # 觀測模組 warming 期間的重探逾時：不是載入逾時
             logger.warning("模組 %s：%s 逾時，保留占用並標為 failed", rec.desc.module_id, rec.state)
             if rec.job_started:
                 rec.hung = True  # handle 已在 worker 上執行而沒回來：占住一條執行緒
@@ -1372,7 +1376,7 @@ class ModuleCoordinator:
             self._hung_check_locked()
 
     def _warming_poll_s(self) -> float:
-        return self._probe_interval if self._probe_interval > 0 else WARMING_POLL_S
+        return min(self._probe_interval, WARMING_POLL_S) if self._probe_interval > 0 else WARMING_POLL_S
 
     def _enter_warming_observed_locked(self, rec: _Rec, now: float) -> None:
         """觀測模組 probe 回 warming：loading -> warming（已在 warming 則維持），排定下次探測；失敗計數與冷卻不動。"""

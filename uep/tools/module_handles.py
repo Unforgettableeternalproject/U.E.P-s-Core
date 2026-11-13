@@ -76,7 +76,8 @@ class ConfigServiceHandle:
             return "ok"
         if verdict is False:
             return "dead"
-        return verdict if verdict in ("ok", "degraded", "dead") else "dead"
+        # "warming" 放行：S 群 handle 可載入，coordinator 對可載入的 handle 視同 ok（觀測語意只給 M 群）
+        return verdict if verdict in ("ok", "degraded", "dead", "warming") else "dead"
 
 
 def _descriptor(module_id: str, *depends_on: str) -> ModuleDescriptor:

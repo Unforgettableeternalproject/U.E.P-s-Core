@@ -51,6 +51,7 @@ class ObservedHolderHandle(ObservationOnlyHandle):
         return "degraded" if state.degraded else "ok"
 
 
+# 已知限制：stage prepare 失敗即使 degrade_on_failure 已降級繼續，readiness.ready 仍是 False，所以這裡一律顯示 dead。
 def _stage_reader(wiring: Any, key: str) -> Callable[[], ObservedState]:
     def read() -> ObservedState:
         readiness = wiring.readiness.get(key)

@@ -112,6 +112,7 @@ def test_health_callable_injected(no_network: None) -> None:
     assert regs["lore"][1].probe() == "dead" and calls == ["lore"]
     assert regs["chatroom"][1].probe() == "dead"
     assert regs["web_search"][1].probe() == "degraded"
+    assert table(full_settings(), health={"lore": lambda: "warming"})["lore"][1].probe() == "warming"
     assert regs["web_fetch"][1].probe() == "ok"  # 未注入 => 純設定判定
     with pytest.raises(ValueError):
         build_s_group_registrations(full_settings(), health={"nope": lambda: True})

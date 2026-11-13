@@ -132,6 +132,47 @@ def test_stop_while_observer_warming_unloads_cleanly() -> None:
     assert rig.state("model:x") == "unloaded" and obs.probes >= 1
 
 
+def test_wait_settled_does_not_wait_for_long_warming_observer() -> None:
+    import time
+
+    rig = Rig()
+    rig.add("model:x", handle=FakeObserver("warming"), kind="model", pinned=True)
+    rig.mc.start()
+    try:
+        t0 = time.monotonic()
+        wait_until(lambda: rig.state("model:x") == "warming")
+        assert rig.mc.wait_settled(2.0) is True
+        assert time.monotonic() - t0 < 1.5
+    finally:
+        rig.mc.stop()
+
+
+def test_warming_probe_timeout_uses_probe_timeout_reason() -> None:
+    rig = Rig()
+    handle = FakeHandle(can_load=False, can_unload=False)
+    handle.probe_result = "warming"
+    rig.add("model:x", handle=handle, kind="model", pinned=True)
+    rig.mc.start()
+    try:
+        settle(rig, "model:x", "warming")
+        gate = handle.block("probe")
+        poll(rig)
+        wait_until(lambda: rig.mc._recs["model:x"].in_flight)  # noqa: SLF001
+        poll(rig, 31.0)
+        settle(rig, "model:x", "failed")
+        assert rig.rec.of("model:x")[-1]["reason_code"] == "probe_timeout"
+        gate.set()
+    finally:
+        handle.release_all()
+        rig.mc.stop()
+
+
+def test_warming_poll_interval_is_capped_by_default_poll() -> None:
+    assert Rig(probe_interval_s=0.0).mc._warming_poll_s() == WARMING_POLL_S  # noqa: SLF001
+    assert Rig(probe_interval_s=0.5).mc._warming_poll_s() == 0.5  # noqa: SLF001
+    assert Rig(probe_interval_s=60.0).mc._warming_poll_s() == WARMING_POLL_S  # noqa: SLF001
+
+
 # --- M 群 handle ---
 
 

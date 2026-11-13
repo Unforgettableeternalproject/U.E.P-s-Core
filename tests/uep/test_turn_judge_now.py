@@ -1,6 +1,7 @@
 """turn.reply 注入在場判決忙碌事實（owner 限定；離線，不需資料庫、不呼叫真 LLM）。"""
 from __future__ import annotations
 
+import dataclasses
 import threading
 import types
 from types import SimpleNamespace
@@ -104,6 +105,34 @@ def test_declared_source_platform_is_the_target():
     finally:
         orch.close()
     assert judge.calls[0]["target"] == "discord" != CTX.platform
+
+def test_target_is_none_when_platform_not_plannable(monkeypatch):
+    """發話平台不在可排程集合（如 console）時 target 傳 None；用 ctx.platform 控制，不依賴 enum。"""
+    monkeypatch.setattr("uep.turn.orchestrator.PLAN_LOCATIONS", frozenset({"desktop", "discord", "website", "host"}))
+    for platform in ("console", "no_such_platform"):
+        judge = _Judge()
+        orch = _orch(judge)
+        try:
+            ticket = orch.on_utterance(
+                dataclasses.replace(CTX, platform=platform),
+                UtteranceFact(speaker_ref=OWNER, text="嗨", seq=1, source_endpoint_id="ep")).ticket
+        finally:
+            orch.close()
+        assert ticket is not None and ticket.presence_busy == "work"
+        assert judge.calls == [
+            {"target": None, "is_owner": True, "actor_ref": "actor_owner", "actor_authenticated": True}]
+
+
+@pytest.mark.parametrize("location", [PresenceLocation.DISCORD, PresenceLocation.DESKTOP])
+def test_target_is_platform_itself_when_plannable(location):
+    judge = _Judge()
+    orch = _orch(judge)
+    try:
+        orch.on_utterance(CTX, UtteranceFact(
+            speaker_ref=OWNER, text="嗨", seq=1, source_endpoint_id="ep", source_location=location))
+    finally:
+        orch.close()
+    assert judge.calls[0]["target"] == location.value
 
 
 @pytest.mark.parametrize("result", [None, SimpleNamespace(outcome="ACCEPTED_TRANSFER", reason_code="accepted")])

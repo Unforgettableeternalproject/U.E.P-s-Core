@@ -39,9 +39,10 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from secrets import token_hex
-from typing import Any
+from typing import Any, Protocol
 
 from uep.contracts.presence import AuthorizationTuple, PresenceLocation
+from uep.contracts.schedule import PLAN_LOCATIONS
 from uep.decision.commitment_change import (
     KIND_COMMITMENT_CHANGE,
     commitment_signal_id,
@@ -141,6 +142,14 @@ _SAFE_REF = re.compile(r"[A-Za-z0-9_:.\-]{1,128}")
 _SAFE_ACTOR_REF = re.compile(r"[a-z0-9_.:\-]{1,128}")
 # 在場判決（judge_now）忙碌事實：同步查詢的等待上限（intake 執行緒、_intake_lock 內，不能久等）
 _JUDGE_NOW_TIMEOUT_S = 0.04
+
+
+class JudgeNowFn(Protocol):
+    """在場判決唯讀查詢；``target`` 為 None＝以目前行程格的位置為準（發話平台不可排程時，如 console）。"""
+
+    def __call__(
+        self, *, target: str | None, is_owner: bool, actor_ref: str, actor_authenticated: bool,
+    ) -> object: ...
 # 判定「她在工作中」的判決組合（outcome, reason_code）-> 忙碌種類（"work"／"interaction"）。字串值來源：uep/schedule/arbiter.py 的 REASON_CODES
 # （R_WORK_IN_PROGRESS／R_UNINTERRUPTIBLE_WORK／R_INTERACTION_ACTIVE）與 ArbitrationDecision.outcome；
 # 這裡只比對字串，不 import uep.schedule（turn 層不依賴排程層）。ACCEPTED 與其他結果都不斷言任何事
@@ -237,7 +246,7 @@ class TurnOrchestrator:
         on_abandon_signal: Callable[..., None] | None = None,
         on_commitment_signal: Callable[..., None] | None = None,
         on_presence_request: Callable[..., None] | None = None,
-        judge_now: Callable[..., object] | None = None,
+        judge_now: JudgeNowFn | None = None,
     ) -> None:
         self._publisher = publisher
         # V18：本機 Host 持有的 location（比對對象）；None = 未提供，不做來源比對（獨立測試用）
@@ -765,6 +774,8 @@ class TurnOrchestrator:
         fn = self._judge_now
         if fn is None or self._closed:
             return None
+        # 發話平台不是可排程位置（如 console 測試入口）時 target 傳 None＝以目前行程格的位置為準
+        target: str | None = platform if platform in PLAN_LOCATIONS else None
         if actor_id == UNVERIFIED_ACTOR or not _SAFE_ACTOR_REF.fullmatch(actor_id):
             return None
         if not self._judge_inflight.acquire(blocking=False):
@@ -773,7 +784,7 @@ class TurnOrchestrator:
 
         def _run() -> object:
             try:
-                return fn(target=platform, is_owner=True, actor_ref=actor_id, actor_authenticated=True)
+                return fn(target=target, is_owner=True, actor_ref=actor_id, actor_authenticated=True)
             finally:
                 self._judge_inflight.release()  # 逾時後呼叫端已放棄，worker 結束才釋放，確保同時最多一筆
 

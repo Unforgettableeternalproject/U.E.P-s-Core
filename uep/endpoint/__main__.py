@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--endpoint-id", default="ep_cli")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--location", default="desktop", choices=["desktop", "discord", "website", "console"])
+    parser.add_argument("--location", default="desktop", choices=["desktop", "discord", "website"])
     args = parser.parse_args(argv)
 
     try:

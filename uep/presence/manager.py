@@ -161,6 +161,7 @@ class PresenceManager:
         outbox_targets: tuple[str, ...] = ("presence",),
         acquire_guard: Callable[[Session], str | None] | None = None,
         fresh_process_skew: timedelta = DEFAULT_FRESH_PROCESS_SKEW,
+        allow_console: bool = False,
     ) -> None:
         self._sf = session_factory
         self._persona = persona_id
@@ -174,6 +175,8 @@ class PresenceManager:
         # 全域停止的暫停旗標（T-17）：在 acquire 的鎖定交易內呼叫，回非 None 即拒絕核發（DENIED）
         self._acquire_guard = acquire_guard
         self._fresh_skew = fresh_process_skew
+        # console 只存在於測試模式：只有 Console rig 組裝時明確傳 True；正式組裝預設 False，acquire(console) 一律拒絕
+        self._allow_console = allow_console
         self._core_epoch: int | None = None
         self._fencing_epoch: int | None = None
 
@@ -480,6 +483,8 @@ class PresenceManager:
 
             if self._superseded(row):
                 return out(AcquireResult.DENIED, reason=AcquireDenyReason.SUPERSEDED_CORE)
+            if loc == PresenceLocation.CONSOLE.value and not self._allow_console:
+                return out(AcquireResult.DENIED, reason=AcquireDenyReason.CONSOLE_NOT_ALLOWED)  # fail-closed
             blocked = self._acquire_guard(s) if self._acquire_guard is not None else None
             if blocked is not None:
                 # 全域停止後暫停：直到明確解除前端點不得重 acquire

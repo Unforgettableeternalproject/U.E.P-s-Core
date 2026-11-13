@@ -281,7 +281,10 @@ class Console:
                 pass
         # source_endpoint_id 只採組裝層簽發（宣告式信任）：外部傳入值一律丟棄；旗標關、或發話者／來源位置不是本機 Console 時為 None
         over.pop("source_endpoint_id", None)
+        speaker = over.pop("speaker_ref", CONSOLE_SPEAKER)
         endpoint_id = getattr(rt, "ingress_endpoint_id", None)  # 假 runtime 可能沒有此欄位
+        if speaker != CONSOLE_SPEAKER:
+            endpoint_id = None  # 只簽給 console:owner
         if endpoint_id is not None:
             try:
                 local = PresenceLocation(rt.host.location)
@@ -290,7 +293,7 @@ class Console:
             if over.get("source_location") != local or local is None:
                 endpoint_id = None
         fact = UtteranceFact(
-            speaker_ref=CONSOLE_SPEAKER, text=text, seq=rt.seq, source_endpoint_id=endpoint_id, **over,
+            speaker_ref=speaker, text=text, seq=rt.seq, source_endpoint_id=endpoint_id, **over,
         )
         self._report_turn(rt.host.submit_utterance(fact))
 

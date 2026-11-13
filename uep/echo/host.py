@@ -940,13 +940,18 @@ class EchoPipelineHost:
         """執行緒池（單一 worker，保序）：ES 的 Utterance -> UtteranceFact -> submit_utterance。"""
         self._seq += 1
         spoken_s = (utt.ended_at or 0.0) - (utt.started_at or 0.0)  # 音訊長度：敘述中偵測累積說話秒數用
+        # source_endpoint_id 是宣告式信任：stage 必須同時宣告它對應的 owner speaker（source_endpoint_speaker），
+        # 且本句 speaker 與之相符才帶；未宣告或不符一律不帶（fail-closed）
+        endpoint_id = getattr(self._input_stage, "source_endpoint_id", None)
+        if endpoint_id is not None and utt.speaker_id != getattr(self._input_stage, "source_endpoint_speaker", None):
+            endpoint_id = None
         fact = UtteranceFact(
             speaker_ref=utt.speaker_id or "unknown", text=utt.text, seq=self._seq, language=utt.language,
             confidence=utt.confidence, legacy_ref=utt.turn_id,
             duration_ms=int(spoken_s * 1000) if spoken_s > 0 else None,
             # V18：來源由輸入 stage 自己宣告；Host 不用自己的 location 代簽（否則缺席端輸入會被蓋成本機而放行）
             source_location=getattr(self._input_stage, "source_location", None),
-            source_endpoint_id=getattr(self._input_stage, "source_endpoint_id", None),
+            source_endpoint_id=endpoint_id,
             from_voice=True,  # 輸入 stage 辨識出來的句子：分流 aggregator 只緩衝這條路徑
         )
         try:

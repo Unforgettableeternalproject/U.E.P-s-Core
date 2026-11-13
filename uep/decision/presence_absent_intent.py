@@ -42,8 +42,8 @@ INTENT_MESSAGE = "message"
 INTENT_TASK = "task"
 INTENT_OTHER = "other"
 INTENTS = (INTENT_PRESENCE_REQUEST, INTENT_MESSAGE, INTENT_TASK, INTENT_OTHER)
-# 可請求她前往的場域（移轉目標）。與排程的 PLAN_LOCATIONS 不同：後者是排程目的地，console 只在後者；
-# 前者刻意不含 console——測試平台只能被排程指定，不得由 Laya／rules／proactive 要求她移轉過去（fail-closed）。
+# 可請求她前往的場域（移轉目標），等於 REQUEST_TARGET_LOCATIONS（＝PLAN_LOCATIONS）。
+# 不含 console——測試平台只存在於測試模式，不是排程位置，也不得由 Laya／rules／proactive 要求她移轉過去（fail-closed）。
 TARGET_LOCATIONS = ("desktop", "discord", "website", "host")
 
 ON_TIMEOUT_REASON = "absent_intent_timeout"

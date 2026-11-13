@@ -103,7 +103,7 @@ class UepSettings(BaseSettings):
     # 開啟才回 REJECT_NOT_INTERACTION。開啟的時機另行裁決
     gate_require_interaction: bool = Field(default=False, validation_alias="UEP_GATE_REQUIRE_INTERACTION")
     # V18 缺席端輸入 fail-closed：開啟後 UtteranceFact 缺 source_location 即否決（預設關＝缺失放行並計數）。
-    # 註冊任何非 desktop 輸入 adapter 前必須開啟（assembly 強制）
+    # 註冊任何非本機（desktop／console）輸入 adapter 前必須開啟（assembly 強制）
     require_source_location: bool = Field(default=False, validation_alias="UEP_REQUIRE_SOURCE_LOCATION")
     # Console 簽發 source_endpoint_id（宣告式信任，非 HMAC）：開啟後 Console 發話帶 ``test_console``，被判為已認證 owner。
     # 只有 Console rig 讀它；預設關

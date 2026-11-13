@@ -595,7 +595,7 @@ def check_source_location_policy(input_locations: Collection[str], require_sourc
     external = sorted({str(loc) for loc in input_locations} - LOCAL_INPUT_LOCATIONS)
     if external and not require_source_location:
         raise AssemblyError(
-            f"註冊了非 desktop 輸入 adapter（{', '.join(external)}）時必須開啟 UEP_REQUIRE_SOURCE_LOCATION=true"
+            f"註冊了非本機（desktop／console）輸入 adapter（{', '.join(external)}）時必須開啟 UEP_REQUIRE_SOURCE_LOCATION=true"
             "（缺席端輸入 fail-closed）；否則缺 source_location 的缺席端輸入會被放行"
         )
 
@@ -740,6 +740,7 @@ def assemble_core(
     module_registrations: Sequence[tuple[Any, Any]] = (),
     module_sink: Callable[[str, Mapping[str, Any]], None] | None = None,
     module_vram_probe: VramProbe | None = None,
+    allow_console_platform: bool = False,
 ) -> CoreAssembly:
     """組裝 Core。缺必填前提即 ``AssemblyError``；不啟動任何東西（``start`` 才啟動）。
 
@@ -766,7 +767,7 @@ def assemble_core(
     0 不建立迴圈（由外部排程）；關機暫停則不論是否有迴圈都會執行。孤兒掃描的 ``older_than`` 取 ``UEP_SUPERVISOR_ORPHAN_OLDER_THAN_S``，
     必須大於 ``TURN_MAX_DURATION``，否則 ``AssemblyError``。
     ``require_source_location``（None 依 ``UEP_REQUIRE_SOURCE_LOCATION``，預設 false）：缺 source_location 的輸入即否決；
-    ``input_locations`` 為已註冊輸入 adapter 的場域，含非 desktop 而開關未開即 ``AssemblyError``（V18）。
+    ``input_locations`` 為已註冊輸入 adapter 的場域，含非本機（desktop／console）而開關未開即 ``AssemblyError``（V18）。
     ``module_coordinator``（None 依 ``UEP_MODULE_COORDINATOR``，預設關閉）與 ``tool_module_events``（None 依
     ``UEP_TOOL_MODULE_EVENTS``，預設關閉）：兩旗標分別回滾（R10）。subscriber 開而 producer 關 => ``AssemblyError``；
     producer 開、subscriber 關 => 觀測模式（coordinator 只觀測、發事件，不 provisioning／驅逐，註冊表也不訂閱）；兩者都開 =>
@@ -918,7 +919,7 @@ def assemble_core(
     flag_blocker = make_flag_blocker(persona_id)
     presence = PresenceManager(
         session_factory, persona_id=persona_id, epoch_store=epoch_store, publisher=publisher, control=control,
-        acquire_guard=flag_blocker, **clock_kw,
+        acquire_guard=flag_blocker, allow_console=allow_console_platform, **clock_kw,
     )
     # 出站端點能力宣告（IC-3、E3）：持有 Lease 的端點身分即互動端點（IC-4），所以「可 acquire 的端點」＝已宣告 interaction。
     # 來源只有兩處：ES 內建端點與 socket 端點的 secrets 鍵；其餘 endpoint_id 查無宣告（shadow 下計數）。

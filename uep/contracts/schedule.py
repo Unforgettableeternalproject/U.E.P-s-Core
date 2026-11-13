@@ -15,9 +15,10 @@ from typing import Literal, Protocol
 
 PlanLocation = str  # PlatformId（desktop|discord|website）或 "host"
 PRESENCE_TARGET_HOST = "host"
-PLAN_LOCATIONS = frozenset({"desktop", "discord", "website", "console", PRESENCE_TARGET_HOST})
-# 在場請求（Laya／事件）可指定的移轉目標：排除 console——測試入口只能由人手動排程（PLAN_LOCATIONS），不得被請求移轉過去
-REQUEST_TARGET_LOCATIONS = PLAN_LOCATIONS - {"console"}
+PLAN_LOCATIONS = frozenset({"desktop", "discord", "website", PRESENCE_TARGET_HOST})
+# 在場請求（Laya／事件）可指定的移轉目標：等於 PLAN_LOCATIONS。console 不在其中——測試 Console 只存在於測試模式，
+# 永遠不是行程可指派、也不是請求可移轉的位置
+REQUEST_TARGET_LOCATIONS = PLAN_LOCATIONS
 
 # 優先序帶：仲裁器擁有數值；本契約只要求 PLAN 嚴格最低
 PRIORITY_PLAN = 0  # 建議：PLAN 0 < REQUESTER 50 < SYSTEM 100 < OWNER 200 < EMERGENCY 300
@@ -336,7 +337,7 @@ class ArbiterRequest:
             raise ValueError(f"request_id 不合法：{self.request_id!r}")
         if self.authority not in ARBITER_AUTHORITIES:
             raise ValueError(f"authority 只收 owner／system／member：{self.authority!r}")
-        if self.target not in PLAN_LOCATIONS:
+        if self.target not in REQUEST_TARGET_LOCATIONS:
             raise ValueError(f"target 不合法：{self.target!r}")
         if self.actor_authenticated not in (True, False):
             raise ValueError("actor_authenticated 必須是布林")

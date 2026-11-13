@@ -99,3 +99,38 @@ def test_default_source_location_is_console() -> None:
     console, facts = _console(None)
     console._submit("你好")
     assert facts[0].source_location == PresenceLocation.CONSOLE
+
+
+def test_stt_stage_declares_owner_speaker_with_endpoint() -> None:
+    on = real_rig.build_stt_stage(UepSettings(_env_file=None, UEP_CONSOLE_INGRESS_ENDPOINT=True), {})
+    assert on.source_endpoint_speaker == CONSOLE_SPEAKER
+    off = real_rig.build_stt_stage(UepSettings(_env_file=None), {})
+    assert getattr(off, "source_endpoint_speaker", None) is None
+
+
+def test_explicit_non_owner_speaker_gets_no_endpoint() -> None:
+    console, facts = _console(CONSOLE_ENDPOINT_ID)
+    console._submit("你好", speaker_ref="discord:123")
+    assert facts[0].speaker_ref == "discord:123" and facts[0].source_endpoint_id is None
+    console._submit("你好", speaker_ref=CONSOLE_SPEAKER)
+    assert facts[1].source_endpoint_id == "test_console"
+
+
+def _stage_fact(stage, speaker: str):
+    from uep.echo.host import EchoPipelineHost
+
+    facts: list = []
+    fake = SimpleNamespace(_seq=0, _input_stage=stage, submit_utterance=facts.append)
+    utt = SimpleNamespace(speaker_id=speaker, text="嗨", ended_at=1.0, started_at=0.0, language="zh", confidence=0.9,
+                          turn_id="t1")
+    EchoPipelineHost._intake_stage_utterance(fake, utt)  # type: ignore[arg-type]
+    return facts[0]
+
+
+def test_host_signs_stage_endpoint_only_for_declared_owner_speaker() -> None:
+    stage = SimpleNamespace(source_location=PresenceLocation.CONSOLE, source_endpoint_id="test_console",
+                            source_endpoint_speaker=CONSOLE_SPEAKER)
+    assert _stage_fact(stage, CONSOLE_SPEAKER).source_endpoint_id == "test_console"
+    assert _stage_fact(stage, "discord:123").source_endpoint_id is None
+    undeclared = SimpleNamespace(source_location=PresenceLocation.CONSOLE, source_endpoint_id="test_console")
+    assert _stage_fact(undeclared, CONSOLE_SPEAKER).source_endpoint_id is None  # 未宣告 owner speaker：fail-closed

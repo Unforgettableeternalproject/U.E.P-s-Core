@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from uep.contracts.schedule import (
+    PRESENCE_TARGET_HOST,
     REQUEST_TARGET_LOCATIONS,
     ArbiterRequest,
     ArbitrationDecision,
@@ -37,6 +38,12 @@ from uep.schedule.planner import PresenceReading
 from uep.schedule.resolver import reconcile_directive
 
 logger = logging.getLogger(__name__)
+
+# judge_now(target=None) 只保留的判決：工作中，或不可中斷工作（其餘如 interaction_active 對發話者本人不成立）
+_NONE_TARGET_KEPT = frozenset({
+    ("REJECTED", arbiter.R_WORK_IN_PROGRESS),
+    ("DEFERRED", arbiter.R_UNINTERRUPTIBLE_WORK),
+})
 
 _METRIC = "schedule.arbiter.shadow"
 MODES = ("shadow", "on")
@@ -317,20 +324,31 @@ class PresenceArbiterShadow:
 
     # ---- 唯讀查詢（決策層同步呼叫）----
 
-    def judge_now(self, *, target: str, is_owner: bool, actor_ref: str, actor_authenticated: bool
+    def judge_now(self, *, target: str | None, is_owner: bool, actor_ref: str, actor_authenticated: bool
                   ) -> ArbitrationDecision | None:
         """唯讀：以當下輸入同步算一次判決，回給呼叫端（例如回合回覆注入「她在工作中」）。
 
         不走 ``_record``：不記 judgments、不發事件、不寫 mark／override、不排佇列、不 poke、不碰 Presence 寫入、
         不推進 ``_seq``（received_seq 只借用目前值）。只做讀取（reader.resolve／override／presence.peek／probe，
-        約數次 DB SELECT）與記憶體內指標計數。回 None：已 stop、target 不在 REQUEST_TARGET_LOCATIONS（含排除 console）、未認證、
+        約數次 DB SELECT）與記憶體內指標計數。
+
+        ``target`` 為 None＝以目前行程格的 location 為準（發話平台不是可排程位置時，如 console 測試入口）；
+        格沒有 location 時用 ``host``。非 None 時須在 REQUEST_TARGET_LOCATIONS（console 不在其中，回 None）。
+        target 為 None 時只保留兩種結果：``REJECTED/work_in_progress`` 與 ``DEFERRED/uninterruptible_work``
+        （她真的在工作或跑不可中斷的工作，屬實）；其餘一律回 None 並計數 ``judge_now.none_target_filtered``。
+        理由：發話平台（如 console）不等於行程格位置，仲裁器的 actual≠target 會把「正在互動的就是發話者自己」
+        判成 ``DEFERRED/interaction_active``，不能據此告訴使用者「她正在互動中」。
+        回 None：已 stop、target 非 None 且不在 REQUEST_TARGET_LOCATIONS、未認證、
         非 owner（member 先不建，與 ``_handle_presence_request`` 一致）、或任何例外（不外拋）。
         """
         if self._closed:
             return None
         try:
             target = getattr(target, "value", target)
-            if target not in REQUEST_TARGET_LOCATIONS or actor_authenticated is not True or is_owner is not True:
+            if target is not None and target not in REQUEST_TARGET_LOCATIONS:
+                self._count(f"{_METRIC}.judge_now.skipped")
+                return None
+            if actor_authenticated is not True or is_owner is not True:
                 self._count(f"{_METRIC}.judge_now.skipped")
                 return None
             now = self._clock()
@@ -338,6 +356,12 @@ class PresenceArbiterShadow:
             if slot.availability == "unavailable":  # 行程讀取失敗／時區不可用：不能拿預設格當事實
                 self._count(f"{_METRIC}.judge_now.unavailable")
                 return None
+            unspecified = target is None
+            if unspecified:
+                target = slot.location or PRESENCE_TARGET_HOST  # 以目前行程格的位置為準
+                if target not in REQUEST_TARGET_LOCATIONS:
+                    self._count(f"{_METRIC}.judge_now.skipped")
+                    return None
             override = self._override_fn() if self._override_fn is not None else None
             decision = arbiter.arbitrate_request(
                 ArbiterRequest(request_id=f"judge_now:{self._seq}", authority="owner", requester_ref=actor_ref,
@@ -346,6 +370,9 @@ class PresenceArbiterShadow:
         except Exception:
             logger.warning("judge_now 失敗", exc_info=True)
             self._count(f"{_METRIC}.judge_now.error")
+            return None
+        if unspecified and (decision.outcome, decision.reason_code) not in _NONE_TARGET_KEPT:
+            self._count(f"{_METRIC}.judge_now.none_target_filtered")
             return None
         self._count(f"{_METRIC}.judge_now.{decision.outcome.lower()}")
         return decision

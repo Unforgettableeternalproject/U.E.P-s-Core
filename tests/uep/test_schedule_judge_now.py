@@ -4,7 +4,7 @@ from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 from uep.contracts.schedule import ActivityKind, InterruptFacts, PlanItem
-from uep.schedule import resolver
+from uep.schedule import arbiter, resolver
 from uep.schedule.arbiter_shadow import PresenceArbiterShadow
 from uep.schedule.planner import PresenceReading
 from uep.schedule.sink_proxy import PresenceSinkProxy
@@ -241,3 +241,49 @@ def test_planner_presence_wrapper_passes_expiry_and_planner_issues_no_directive(
     assert "schedule.directive_issued" not in types  # 位置不明：planner.py 的 actual None 提前 return
     _, control = run(NOW + timedelta(minutes=5))  # 對照：Lease 有效且位置與行程不同，會發 directive
     assert "schedule.directive_issued" in control
+
+
+def test_target_none_follows_current_slot_location():
+    """target=None＝以目前行程格的 location 為準：discord 工作格 -> REJECTED/work_in_progress。"""
+    decision = make().judge_now(**{**KW, "target": None})
+    assert (decision.outcome, decision.reason_code) == ("REJECTED", "work_in_progress")
+    proxy = PresenceSinkProxy()
+    proxy.bind(make())
+    assert proxy.judge_now(**{**KW, "target": None}).reason_code == "work_in_progress"
+
+
+def test_target_none_without_slot_location_uses_host(monkeypatch):
+    seen = []
+    real = arbiter.arbitrate_request
+
+    def spy(request, **kw):
+        seen.append(request.target)
+        return real(request, **kw)
+
+    monkeypatch.setattr("uep.schedule.arbiter_shadow.arbiter.arbitrate_request", spy)
+    shadow = make(items=(), now=REST_NOW)  # 無行程項：預設格，沒有指定 location
+    shadow.judge_now(**{**KW, "target": None})  # 結果被 None-target 過濾；只確認判決用的 target
+    assert seen == ["host"]
+
+
+def test_console_target_returns_none_and_none_still_requires_owner_and_auth():
+    shadow = make()
+    assert shadow.judge_now(**{**KW, "target": "console"}) is None
+    assert shadow.judge_now(**{**KW, "target": None, "is_owner": False}) is None
+    assert shadow.judge_now(**{**KW, "target": None, "actor_authenticated": False}) is None
+    assert make(fail=True).judge_now(**{**KW, "target": None}) is None
+
+
+def test_target_none_filters_to_work_and_uninterruptible_only():
+    """target=None：非工作格的 interaction_active 不能注入（互動的是發話者自己）；工作與不可中斷工作才保留。"""
+    none = {**KW, "target": None}
+    rest = {"items": (REST,), "now": REST_NOW}
+    assert make(probe=InterruptFacts(interaction_active=True), **rest).judge_now(**none) is None
+    assert make(**rest).judge_now(**none) is None  # 非工作格、無 probe 旗標（例如 ACCEPTED）
+    kept = make(probe=InterruptFacts(has_uninterruptible_work=True), **rest).judge_now(**none)
+    assert (kept.outcome, kept.reason_code) == ("DEFERRED", "uninterruptible_work")
+    work = make().judge_now(**none)
+    assert (work.outcome, work.reason_code) == ("REJECTED", "work_in_progress")
+    # 非 None target 的行為不變：同樣的 interaction_active 仍回 DEFERRED
+    explicit = make(probe=InterruptFacts(interaction_active=True), **rest).judge_now(**KW)
+    assert explicit is not None and explicit.reason_code == "interaction_active"

@@ -12,7 +12,7 @@ from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import Any
 
-from uep.console.rig import CONSOLE_ENDPOINT_ID, CONSOLE_LOCATION
+from uep.console.rig import CONSOLE_ENDPOINT_ID, CONSOLE_LOCATION, CONSOLE_SPEAKER
 from uep.contracts.presence import PresenceLocation
 from uep.memory import MemoryHost, NamespaceSpec
 from uep.memory.identity import IdentityDirectory
@@ -125,6 +125,7 @@ def build_stt_stage(settings: Any, warmups: MutableMapping[str, float]) -> Any:
     stage.source_location = PresenceLocation(CONSOLE_LOCATION)
     if getattr(settings, "console_ingress_endpoint", False):
         stage.source_endpoint_id = CONSOLE_ENDPOINT_ID  # host 以 getattr 讀取，簽發給 /stream 路徑的 utterance
+        stage.source_endpoint_speaker = CONSOLE_SPEAKER  # host 只對這個 speaker 的句子帶 source_endpoint_id（console:owner）
     timed_prepare(stage, "stt", warmups, after=stt_warmup)
     return stage
 

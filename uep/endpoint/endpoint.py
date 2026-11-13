@@ -299,7 +299,7 @@ class CliEndpoint:
         ``superseded_core`` 表示連到的是已被取代的舊 Core，重試前須先重連（重連由 ReconnectSupervisor 處理，
         新 Core 的 acquire 會重新判定），所以仍視為可重試。
         """
-        return self._deny_reason is not AcquireDenyReason.GLOBAL_STOP_ENGAGED
+        return self._deny_reason not in (AcquireDenyReason.GLOBAL_STOP_ENGAGED, AcquireDenyReason.CONSOLE_NOT_ALLOWED)
 
     def start_lease(self) -> AcquireResult:
         """acquire -> 確認到場（confirm_activated）-> 武裝 watchdog；只有真的啟用才回 GRANTED。"""

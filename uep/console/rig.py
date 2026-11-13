@@ -246,6 +246,7 @@ def build_fake_runtime(
             "turn_generation_source": host.generation_source, "presence_audience": lambda: PRIVATE_SCOPE,
             "epoch_store": HostEpochStore(session_dir / "host_epoch.json"), "maintenance_interval": None, "echo": host,
             "memory": memory_host,  # 決策日誌由組裝層依 UEP_DECISION_LOG 接上（DL-3）
+            "allow_console_platform": True,  # console 只存在於測試模式：只有 Console rig 允許 acquire(console)
             **assemble_extra,
         },
     )

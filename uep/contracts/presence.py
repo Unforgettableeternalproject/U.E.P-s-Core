@@ -63,6 +63,7 @@ class AcquireDenyReason(StrEnum):
     GLOBAL_STOP_ENGAGED = "global_stop_engaged"  # 全域停止旗標成立：端點不得重試，直到明確解除
     SUPERSEDED_CORE = "superseded_core"  # 此 Core 的 epoch 已被較新的 Core 取代：應改連新的 Core
     GUARD_REJECTED = "guard_rejected"  # 其他 acquire_guard 拒絕（未歸類的原因）
+    CONSOLE_NOT_ALLOWED = "console_not_allowed"  # location=console 但此 Core 非測試模式組裝（不可重試）
 
 
 class RenewResult(StrEnum):

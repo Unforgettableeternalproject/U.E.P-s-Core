@@ -216,6 +216,7 @@ class SlotMarkWriter(Protocol):  # 仲裁器／PlanWriter 持有；只定介面
 # ---- 行程控制訊號 schedule.abandon_work（暫名；§9.5）----
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.:\-]{1,128}$")
+_SAFE_REF = re.compile(r"^[A-Za-z0-9_.:\-]{1,116}$")  # CommitmentChangeSignal 的 utterance 後綴；加 "commitment:" 前綴後仍在 128 內
 _ACTOR_REF = re.compile(r"^[a-z0-9_.:-]{1,128}$")
 _BLOB_REF = re.compile(r"^[a-z0-9_.:-]{1,128}$")
 
@@ -278,6 +279,8 @@ class CommitmentChangeSignal:
                 raise ValueError(f"{name} 不符安全字元集")
         if not self.signal_id.startswith("commitment:"):
             raise ValueError("signal_id 必須是 commitment:<utterance_id>")
+        if _SAFE_REF.fullmatch(self.signal_id[len("commitment:"):]) is None:  # 後綴不可為空，且須符合安全字元集
+            raise ValueError("signal_id 的 utterance 後綴不合法")
         if not isinstance(self.actor_ref, str) or _ACTOR_REF.fullmatch(self.actor_ref) is None:
             raise ValueError("actor_ref 必須是平台認證 ID 形式")
         if self.kind != "cancel":
@@ -286,8 +289,8 @@ class CommitmentChangeSignal:
             raise ValueError("source_platform 不可為空")
         if self.path not in ("turn", "absent"):
             raise ValueError("path 必須是 turn 或 absent")
-        if self.decided_at.tzinfo is None:
-            raise ValueError("decided_at 必須帶時區")
+        if not isinstance(self.decided_at, datetime) or self.decided_at.tzinfo is None:
+            raise ValueError("decided_at 必須是帶時區的 datetime")
 
 
 @dataclass(frozen=True)

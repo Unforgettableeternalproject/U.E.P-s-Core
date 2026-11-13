@@ -323,7 +323,7 @@ def test_turn_package_only_uses_hub_public_modules():
         "uep.decision.contracts", "uep.decision.hub", "uep.decision.turn_reply", "uep.decision.turn_interject",
         "uep.decision.presence_absent_intent",  # V18 後續：缺席端輸入的意圖判斷（presence.absent_intent）
         "uep.decision.commitment_change",  # 承諾變更判斷（commitment.change），turn／absent 路徑的 sink 接點
-        "uep.decision.schedule_abandon_work",  #放棄工作判斷（schedule.abandon_work），turn／absent 路徑的 sink 接點
+        "uep.decision.schedule_abandon_work",  # 放棄工作判斷（schedule.abandon_work），turn／absent 路徑的 sink 接點
     }
     for path in sorted((UEP_ROOT / "turn").glob("*.py")):
         bad = {i for i in _uep_imports(path) if i.startswith("uep.decision")} - allowed

@@ -64,10 +64,9 @@ POSITIVE = [
     "不用提醒我了", "不用提醒我了。", "不用再提醒我了", "請不用提醒我了", "不用提醒我", "不用 提醒我 了",
     "那個提醒取消", "那個提醒取消了", "那個提醒不用了", "這個提醒不用了", "剛剛的提醒取消", "取消那個提醒", "取消剛才的提醒",
     "剛剛拜託你的事不用了", "剛剛拜託你的事，不用了。", "剛才請你的事就不用了", "剛剛拜託你的那件事不用做了",
-    "不用幫我訂位了", "不用幫我買牛奶了", "不用再幫我查了", "好，不用幫我訂位了",
     "取消剛才那件事", "取消剛剛那件事", "取消剛剛拜託你的事",
-    "cancel that reminder", "Cancel that reminder.", "please cancel the reminder", "never mind the reminder",
-    "Never mind that reminder!", "forget that reminder", "forget about the reminder",
+    "cancel that reminder", "Cancel that reminder.", "please cancel that reminder", "never mind that reminder",
+    "Never mind that reminder!", "nevermind that reminder", "forget that reminder",
 ]
 
 
@@ -83,15 +82,22 @@ NEGATIVE = [
     "算了", "不用了", "算了不用了", "取消", "取消吧", "不用", "那個取消", "那件事不用了", "不要了", "never mind", "cancel that", "cancel",
     # 否定
     "不要取消那個提醒", "別取消那個提醒", "不是不用提醒我了", "沒有要取消那個提醒", "don't cancel that reminder",
-    "do not cancel the reminder", "不要不用提醒我", "不用幫我不訂位了", "不用幫我別訂位了",
+    "do not cancel the reminder", "不要不用提醒我", 
     # 疑問
     "不用提醒我了嗎", "不用提醒我了？", "不用提醒我了?", "可以取消那個提醒嗎", "要不要取消那個提醒", "那個提醒取消了嗎",
-    "cancel that reminder?", "should I cancel that reminder", "不用幫我訂位了嗎", "不用幫我什麼了",
+    "cancel that reminder?", "should I cancel that reminder",
     # 轉述
-    "他說不用提醒我了", "她說那個提醒取消", "我剛剛說不用提醒我了", "聽說不用提醒我了", "他說不用幫我訂位了",
+    "他說不用提醒我了", "她說那個提醒取消", "我剛剛說不用提醒我了", "聽說不用提醒我了", 
     "昨天不用提醒我了", "he said cancel that reminder",
     # 無關或空
-    "提醒我明天開會", "幫我訂位", "不用幫我了", "提醒", "", "   ", "今天天氣如何", "x" * 200,
+    "提醒我明天開會", "幫我訂位", "不用幫我了", "提醒",
+    # 即時指令與放棄工作：已移除「不用幫我○○了」句型
+    "不用幫我開燈了", "不用幫我關冷氣了", "不用幫我查天氣了", "不用幫我播放音樂了", "不用幫我做今天的工作了",
+    "不用幫我訂位了", "不用再幫我查了",
+    # 英文只收 that
+    "cancel the reminder", "cancel my reminder", "cancel this reminder", "never mind the reminder", "forget about the reminder",
+    "forget the reminder", "please forget about that reminder",
+ "", "   ", "今天天氣如何", "x" * 200,
     "不用提醒我了，但是明天還是要叫我起床",
 ]
 
@@ -102,10 +108,34 @@ def test_negative_phrases_do_not_match(text):
     assert _judge(_hub()[0], text) is None
 
 
+QUOTED = [
+    "「不用提醒我了」", "『那個提醒取消』", "\"cancel that reminder\"", "'never mind that reminder'", "“cancel that reminder”",
+    "他說「不用提醒我了」", "「取消那個提醒", "cancel that reminder\"",
+]
+
+
+@pytest.mark.parametrize("text", QUOTED)
+def test_quoted_sentences_are_treated_as_quotes(text):
+    assert not matches_commitment_cancel(text)
+    assert _judge(_hub()[0], text) is None
+
+
+def test_english_phrase_list_is_consistent_with_patterns():
+    from uep.decision.commitment_change import _EN_PATTERNS, _normalize_en
+
+    assert ENGLISH_PHRASES and all(any(p.fullmatch(_normalize_en(t)) for p in _EN_PATTERNS) for t in ENGLISH_PHRASES)
+    # 反向：只收 that，換成 the／my／this 的變體不在正則內
+    for t in ENGLISH_PHRASES:
+        for det in ("the", "my", "this"):
+            variant = t.replace("that", det)
+            assert not any(p.fullmatch(variant) for p in _EN_PATTERNS), variant
+    assert all("that reminder" in t for t in ENGLISH_PHRASES)
+
+
 def test_over_length_cap_is_not_a_match():
     long = "不用提醒我了" + "，" * 5 + "好" * 30
     assert not matches_commitment_cancel(long)
-    assert not matches_commitment_cancel("不用幫我" + "訂" * 40 + "了")
+    assert not matches_commitment_cancel("不用提醒我了" + "了" * 40)
 
 
 def test_non_string_text_is_not_a_match():
@@ -154,6 +184,8 @@ def test_signal_id_is_stable_for_same_utterance():
 
 
 @pytest.mark.parametrize("kwargs", [
+    {"signal_id": "commitment:"}, {"signal_id": "commitment:" + "u" * 117}, {"signal_id": "commitment:bad id"},
+    {"decided_at": "2026-11-13"}, {"decided_at": None},
     {"kind": "reschedule"}, {"path": "other"}, {"actor_ref": "小明"}, {"signal_id": "abandon:x"},
     {"decided_at": datetime(2026, 11, 13)}, {"source_platform": ""},
 ])
@@ -337,3 +369,17 @@ def test_shared_hub_with_kind_already_registered_is_reused():
     orch = _orch(Capture(), decision_hub=hub, on_commitment_signal=_sink_recorder(got))
     orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=PHRASE, seq=1, source_endpoint_id="ep"))
     assert len(got) == 1
+
+
+def test_overlong_utterance_id_counts_overflow_and_warns_once(caplog):
+    import logging
+
+    got = []
+    orch = _orch(Capture(), on_commitment_signal=_sink_recorder(got))
+    orch.run_id = "r" * 130  # 讓 turn 路徑的 utterance id 超出長度上限
+    with caplog.at_level(logging.WARNING, logger="uep.turn.orchestrator"):
+        orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=PHRASE, seq=1, source_endpoint_id="ep"))
+        orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=PHRASE, seq=2, source_endpoint_id="ep"))
+    assert got == [] and orch.metrics["intake.commitment_signal_id_overflow"] == 2
+    assert sum("冪等鍵" in r.getMessage() for r in caplog.records) == 1
+    assert orch.metrics["intake.commitment_signal_error"] == 0

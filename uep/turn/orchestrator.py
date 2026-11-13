@@ -44,6 +44,7 @@ from typing import Any
 from uep.contracts.presence import AuthorizationTuple, PresenceLocation
 from uep.decision.commitment_change import (
     KIND_COMMITMENT_CHANGE,
+    commitment_signal_id,
     judge_commitment_change,
     register_commitment_change,
 )
@@ -740,6 +741,11 @@ class TurnOrchestrator:
         if sink is None or not actor_authenticated:
             return
         if actor_id == UNVERIFIED_ACTOR or not _SAFE_ACTOR_REF.fullmatch(actor_id):
+            return
+        if commitment_signal_id(utterance_id) is None:  # id 超長或字元不合：冪等鍵無法衍生，只計數並在第一次記 warning
+            if self.metrics["intake.commitment_signal_id_overflow"] == 0:
+                logger.warning("承諾變更訊號略過：utterance id 無法衍生冪等鍵（過長或字元不合）")
+            self.metrics["intake.commitment_signal_id_overflow"] += 1
             return
         try:
             signal = self._judge_commitment(

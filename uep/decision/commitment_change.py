@@ -3,8 +3,8 @@
 - 只產生話語層事實（``CommitmentChangeSignal``）：不含 is_owner、不含承諾資料；owner 判定與承諾綁定由消費端自行處理。
 - 原文只存在於 ``DecisionRequest.native``（``CommitmentChangeInput.text``，``repr=False``，僅記憶體）；``facts``、
   決策日誌、訊號都不含原文（日誌只留 utterance 參考與固定原因碼）。
-- 規則刻意保守：整句（去除空白與標點後）必須完整符合「明確指向她答應的事」的句型（提醒、剛剛拜託你的事、不用幫我○○了）；
-  沒有指涉對象的「算了」「不用了」不觸發。疑問、否定、轉述（「他說不用提醒我了」）、超過長度上限一律不觸發，寧可漏判。
+- 規則刻意保守：整句（去除空白與標點後）必須完整符合「明確指向她答應的事」的句型（提醒、剛剛拜託你的事）；
+  沒有指涉對象的「算了」「不用了」不觸發。疑問、否定、轉述（「他說不用提醒我了」）、引號包住的引述、超過長度上限一律不觸發，寧可漏判。
 - 與 ``schedule.abandon_work`` 互斥：句型不重疊，且命中放棄工作句型的文字一律不當成取消承諾。
 - fail-closed：無命中、actor_ref 無效、輸入畸形、hub 未註冊或失敗一律回 None，不拋例外。
 """
@@ -66,8 +66,6 @@ _TAIL = r"(?:了|吧|啦|囉|喔|哦)?"
 _DET = r"(?:那個|這個|剛剛的?|剛才的?)"  # 指向性限定詞
 _ASKED = r"(?:拜託你|請你|麻煩你|交代你)"  # 「剛剛拜託你的事」
 _EARLIER = r"(?:剛剛|剛才)"
-# 「不用幫我○○了」的受詞：不得含他／她／說／否定字／疑問字（轉述、雙重否定、疑問都不收）
-_OBJ = r"[^他她說不沒別嗎呢吧啊哪誰什怎]{1,12}"
 
 _ZH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(rf"{_LEAD}不用(?:再)?提醒我{_TAIL}"),  # 不用提醒我了／不用再提醒我了
@@ -75,17 +73,17 @@ _ZH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(rf"{_LEAD}取消{_DET}提醒{_TAIL}"),  # 取消那個提醒
     re.compile(rf"{_LEAD}{_EARLIER}{_ASKED}的(?:那件)?事(?:情)?(?:就|都)?不用(?:再)?(?:做|辦|幫)?{_TAIL}"),  # 剛剛拜託你的事不用了
     re.compile(rf"{_LEAD}取消{_EARLIER}(?:那件事|那件事情|那個事情|{_ASKED}的事(?:情)?)"),  # 取消剛才那件事
-    re.compile(rf"{_LEAD}不用(?:再)?幫我{_OBJ}了(?:吧|啦|囉|喔|哦)?"),  # 不用幫我訂位了
 )
 _EN_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?:please )?(?:cancel|forget) (?:that|the|this|my) reminder"),
-    re.compile(r"(?:please )?forget about (?:that|the|this|my) reminder"),
-    re.compile(r"never ?mind (?:that|the|this|my) reminder"),
+    re.compile(r"(?:please )?(?:cancel|forget) that reminder"),
+    re.compile(r"never ?mind that reminder"),
 )
-# 英文片語清單（供回報與測試）
-ENGLISH_PHRASES = ("cancel that reminder", "forget that reminder", "forget about that reminder", "never mind the reminder")
+# 英文片語清單（供回報與測試）；須與上方正則一致（由測試保證）
+ENGLISH_PHRASES = ("cancel that reminder", "forget that reminder", "never mind that reminder", "nevermind that reminder")
 
 _QUESTION_MARK = re.compile(r"[?？]")
+# 句子被引號包住視為引述，不觸發（「」『』 "" '' 與全形／彎引號）
+_QUOTE_CHARS = frozenset("「」『』\"'“”‘’＂＇`")
 
 
 def _strip_noise(text: str) -> str:
@@ -107,6 +105,8 @@ def matches_commitment_cancel(text: object) -> bool:
         return False
     stripped = text.strip()
     if not stripped or len(stripped) > MAX_TEXT_LEN or _QUESTION_MARK.search(stripped):
+        return False
+    if any(ch in _QUOTE_CHARS for ch in stripped):  # 引述
         return False
     if matches_abandon_work(stripped):  # 與放棄工作互斥
         return False

@@ -129,6 +129,9 @@ class CoreTicket:
     # 降級事實（Chain 契約 Q-S）：agent_loop／task_request 因 capability_empty／capability_projection_empty
     # 退回 direct_chat 時為 "action_unavailable"，意思是「這個動作目前沒有可用的工具」。是事實不是指令，不含使用者可見字串
     degraded: Degraded | None = None
+    # 在場判決忙碌事實：owner 的回覆回合查到「她正在工作中（或不能被打斷）」時為 True。只是事實，不帶行程內容，
+    # 由 Host 轉成本輪情境註記；預設 False＝沒查或不確定（不斷言任何事）
+    presence_busy: bool = False
 
 
 @dataclass(frozen=True)

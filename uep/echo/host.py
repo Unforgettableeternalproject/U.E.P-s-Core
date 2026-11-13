@@ -139,6 +139,12 @@ DEGRADED_TURN_CONTEXT: dict[str, str] = {
         "請用你的語氣明確說明做不到；不得說已經做了、已設定或已提醒，也不要提議由你代為確認或執行。）"
     ),
 }
+# 在場判決忙碌事實 -> 本輪情境註記（與降級註記同一個 turn_context 槽、同樣只陳述事實）。
+# 不帶行程內容細節；回覆文字由角色以自己的語氣生成
+PRESENCE_BUSY_TURN_CONTEXT = (
+    "（系統事實：你現在正在工作中，暫時不方便被打斷。回覆時可以自然地說明這一點，"
+    "但不要描述工作的內容細節，也不要因此拒絕回應對方。）"
+)
 
 
 def _tool_name(definition: Any) -> str:
@@ -291,6 +297,7 @@ class EchoPipelineHost:
             host_location=location,
             on_abandon_signal=self.presence_sinks.on_abandon_signal if self.presence_sinks is not None else None,
             on_presence_request=self.presence_sinks.on_presence_request if self.presence_sinks is not None else None,
+            judge_now=self.presence_sinks.judge_now if self.presence_sinks is not None else None,
         )
         self._wire_decision_slot()
         self._tick_thread: threading.Thread | None = None
@@ -788,19 +795,26 @@ class EchoPipelineHost:
             "memory_retrieve_kwargs": retrieve_kwargs, "legacy_ref": fact.legacy_ref, "tool_context": tool_context,
         }
         degraded = getattr(ticket, "degraded", None)  # 舊式替身 ticket 沒有此欄
+        busy = getattr(ticket, "presence_busy", False) is True  # 在場判決忙碌事實（舊式替身 ticket 沒有此欄）
+        notes: list[str] = []
         if degraded is not None:
             # 降級事實（Chain 契約 Q-S）：結構化旗標＋本輪情境註記（turn_context 只附在本輪 user 訊息、不進歷史）。
             # 只陳述事實與生成限制，回覆文字仍由生成端以角色語氣產生，這裡不放任何可直接輸出的句子
             utterance_meta["degraded"] = degraded
             note = DEGRADED_TURN_CONTEXT.get(degraded)
             if note:
-                utterance_meta["turn_context"] = note
-            if not getattr(getattr(self, "think", None), "supports_turn_context", False):
-                # 結構化旗標仍在 metadata，但這個 think stage 不會把註記送進 prompt：降級事實可能沒傳到生成端
-                logger.warning("降級輪的 think stage 不支援 turn_context，註記不會送進 prompt：turn=%s", ticket.turn_id)
-                metrics = getattr(self, "metrics", None)
-                if metrics is not None:
-                    metrics.inc("echo.degraded_context_unsupported")
+                notes.append(note)
+        if busy:
+            utterance_meta["presence_busy"] = True
+            notes.append(PRESENCE_BUSY_TURN_CONTEXT)
+        if notes:
+            utterance_meta["turn_context"] = "".join(notes)  # 兩種事實都有時兩句都保留，降級註記在前
+        if (degraded is not None or busy) and not getattr(getattr(self, "think", None), "supports_turn_context", False):
+            # 結構化旗標仍在 metadata，但這個 think stage 不會把註記送進 prompt：事實可能沒傳到生成端
+            logger.warning("情境輪的 think stage 不支援 turn_context，註記不會送進 prompt：turn=%s", ticket.turn_id)
+            metrics = getattr(self, "metrics", None)
+            if metrics is not None:
+                metrics.inc("echo.degraded_context_unsupported")
         utterance = Utterance(
             text=ticket.user_text, turn_id=ticket.turn_id, speaker_id=ticket.speaker_ref,
             language=fact.language, confidence=fact.confidence if fact.confidence is not None else 1.0,

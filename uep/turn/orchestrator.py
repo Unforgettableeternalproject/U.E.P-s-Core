@@ -34,6 +34,8 @@ import threading
 import time
 from collections import Counter, OrderedDict, deque
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from secrets import token_hex
@@ -130,6 +132,23 @@ REJECTION_REASONS = frozenset({"admission_rejected", "dispatch_refused", "dispat
 RETRACT_REASONS = REJECTION_REASONS | frozenset({"presence_lost", "global_stop", "control_stop"})
 _SAFE_REF = re.compile(r"[A-Za-z0-9_:.\-]{1,128}")
 _SAFE_ACTOR_REF = re.compile(r"[a-z0-9_.:\-]{1,128}")
+# 在場判決（judge_now）忙碌事實：同步查詢的等待上限（intake 執行緒、_intake_lock 內，不能久等）
+_JUDGE_NOW_TIMEOUT_S = 0.04
+# 判定「她在工作中」的判決組合（outcome, reason_code）。字串值來源：uep/schedule/arbiter.py 的 REASON_CODES
+# （R_WORK_IN_PROGRESS／R_UNINTERRUPTIBLE_WORK／R_INTERACTION_ACTIVE）與 ArbitrationDecision.outcome；
+# 這裡只比對字串，不 import uep.schedule（turn 層不依賴排程層）。ACCEPTED 與其他結果都不斷言任何事
+_BUSY_JUDGMENTS = frozenset({
+    ("REJECTED", "work_in_progress"),
+    ("DEFERRED", "uninterruptible_work"),
+    ("DEFERRED", "interaction_active"),
+})
+
+
+def _is_busy_judgment(decision: object) -> bool:
+    """判決是否表示「她正在工作中（或不能被打斷）」；None 或其他組合一律 False。"""
+    if decision is None:
+        return False
+    return (str(getattr(decision, "outcome", "")), str(getattr(decision, "reason_code", ""))) in _BUSY_JUDGMENTS
 _SAFE_LANGUAGE = re.compile(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8}){0,3}")
 UNKNOWN_SPEAKER = "unknown:invalid"
 INVALID_SOURCE_LOCATION = "invalid"  # _sanitize 對無效 source_location 的標記：視為不一致（不是缺失）
@@ -210,6 +229,7 @@ class TurnOrchestrator:
         presence_request_hook: Callable[[UtteranceFact], bool | None] | None = None,
         on_abandon_signal: Callable[..., None] | None = None,
         on_presence_request: Callable[..., None] | None = None,
+        judge_now: Callable[..., object] | None = None,
     ) -> None:
         self._publisher = publisher
         # V18：本機 Host 持有的 location（比對對象）；None = 未提供，不做來源比對（獨立測試用）
@@ -223,6 +243,11 @@ class TurnOrchestrator:
         # on_presence_request(proposal, *, request_id, actor_ref, actor_authenticated, is_owner, source_platform)
         self._on_abandon_signal = on_abandon_signal
         self._on_presence_request = on_presence_request
+        # 在場判決唯讀查詢 judge_now(*, target, is_owner, actor_ref, actor_authenticated)：None＝完全不查、行為不變。
+        # 查詢跑在專用單執行緒（延遲建立），同時最多一筆；上一筆未結束就略過，逾時與例外都當作未知（None）
+        self._judge_now = judge_now
+        self._judge_executor: ThreadPoolExecutor | None = None
+        self._judge_inflight = threading.Lock()
         # 此次宿主執行的識別：進冪等鍵，避免重啟後 session 內 seq 從頭來而撞鍵（外部傳入的 seq 也在同一命名空間）
         self.run_id = run_id or token_hex(4)
         self.metrics: Counter[str] = Counter()
@@ -358,6 +383,9 @@ class TurnOrchestrator:
         self._guard.close()
         for _, guard in self._shadows:
             guard.close()
+        executor, self._judge_executor = self._judge_executor, None
+        if executor is not None:
+            executor.shutdown(wait=False)
 
     @property
     def proposer(self) -> TurnProposer:
@@ -675,6 +703,53 @@ class TurnOrchestrator:
             self.metrics["intake.abandon_signal_error"] += 1
             logger.exception("放棄工作訊號判斷或 sink 失敗（已吞掉，不影響回合）")
 
+    def _query_busy(self, platform: str, actor_id: str) -> bool:
+        """owner 回覆回合的在場判決查詢：判決為忙碌回 True。呼叫端已確認 owner、已認證、確定回覆。
+
+        同步呼叫但有硬上限（``_JUDGE_NOW_TIMEOUT_S``）：上一筆還沒結束、逾時、例外、判決非忙碌都回 False 並計數。"""
+        fn = self._judge_now
+        if fn is None:
+            return False
+        if actor_id == UNVERIFIED_ACTOR or not _SAFE_ACTOR_REF.fullmatch(actor_id):
+            return False
+        if not self._judge_inflight.acquire(blocking=False):
+            self.metrics["turn.judge_now.skipped_inflight"] += 1
+            return False
+
+        def _run() -> object:
+            try:
+                return fn(target=platform, is_owner=True, actor_ref=actor_id, actor_authenticated=True)
+            finally:
+                self._judge_inflight.release()  # 逾時後呼叫端已放棄，worker 結束才釋放，確保同時最多一筆
+
+        try:
+            executor = self._judge_executor
+            if executor is None:
+                executor = self._judge_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="judge-now")
+            future = executor.submit(_run)
+        except Exception:  # executor 已關閉等：fn 沒有排上，自己釋放
+            logger.warning("judge_now 無法排入執行緒（當作未知）", exc_info=True)
+            self._judge_inflight.release()
+            self.metrics["turn.judge_now.none"] += 1
+            return False
+        try:
+            decision = future.result(timeout=_JUDGE_NOW_TIMEOUT_S)
+        except FutureTimeoutError:
+            self.metrics["turn.judge_now.timeout"] += 1
+            return False
+        except Exception:
+            logger.warning("judge_now 查詢失敗（當作未知）", exc_info=True)
+            self.metrics["turn.judge_now.none"] += 1
+            return False
+        if decision is None:
+            self.metrics["turn.judge_now.none"] += 1
+            return False
+        if _is_busy_judgment(decision):
+            self.metrics["turn.judge_now.busy"] += 1
+            return True
+        self.metrics["turn.judge_now.not_busy"] += 1
+        return False
+
     def _record_absent_input(self, ctx: SessionContext, fact: UtteranceFact, reason: str) -> None:
         """寫缺席端輸入的 shadow 紀錄（turn.skipped）：來源、說話者／actor、is_owner、長度；不保存原文。
 
@@ -742,13 +817,13 @@ class TurnOrchestrator:
         if vetoed is not None:
             self._skip(ctx, intake.trace_id, intake.event_id, fact, vetoed, ReplyMode.PASS)
             return IntakeResult(None, vetoed, None, utterance_event_id=intake.event_id, fact=fact)
+        # 認證規則與缺席路徑一致（不得更鬆）：身分映射命中且輸入帶有 ingress 簽發的 source_endpoint_id。
+        # 桌面輸入若沒有 source_endpoint_id 就不會觸發，這是預期行為（fail-closed）
+        authenticated = bool(ident.actor_id is not None and fact.source_endpoint_id is not None)
+        # 與缺席路徑同一規則：以輸入宣告的來源為準；turn 路徑未宣告來源時才退回 session 平台
+        platform = self._fact_platform(fact) or ctx.platform
         if self._on_abandon_signal is not None:  # 通過否決（Presence ACTIVE 等）後、只處理已認證的 actor
-            # 認證規則與缺席路徑一致（不得更鬆）：身分映射命中且輸入帶有 ingress 簽發的 source_endpoint_id。
-            # 桌面輸入若沒有 source_endpoint_id 就不會觸發，這是預期行為（fail-closed）
-            authenticated = bool(ident.actor_id is not None and fact.source_endpoint_id is not None)
             uid = f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}"
-            # 與缺席路徑同一規則：以輸入宣告的來源為準；turn 路徑未宣告來源時才退回 session 平台
-            platform = self._fact_platform(fact) or ctx.platform
             self._emit_abandon(fact.text, uid, actor_id, authenticated, platform, "turn", not ident.guest)
         candidate = self._candidate(ctx, fact, turn.refs or (intake.event_id,), len(turn.segments), True)
         proposal = self._propose(candidate)
@@ -763,9 +838,15 @@ class TurnOrchestrator:
             self._skip(ctx, intake.trace_id, intake.event_id, fact, proposal.reason_code, proposal.reply_mode)
             return IntakeResult(None, proposal.reason_code, proposal, utterance_event_id=intake.event_id, fact=fact)
         assert auth is not None
+        # 在場判決忙碌事實：只在 owner、已認證、確定會出聲回覆（respond）三者同時成立時才查；
+        # 被否決、pass、defer、passive 的回合都不查。judge_now 為 None 時完全不動作
+        busy = False
+        if (self._judge_now is not None and proposal.reply_mode is ReplyMode.RESPOND
+                and not ident.guest and authenticated):
+            busy = self._query_busy(platform, actor_id)
         return self._start(
             ctx, fact, intake.event_id, intake.trace_id, candidate.candidate_id, proposal, auth, actor_id,
-            degraded=degraded,
+            degraded=degraded, presence_busy=busy,
         )
 
     def _capability_before_defer(self, proposal: Proposal) -> tuple[Proposal, Degraded | None]:
@@ -864,14 +945,14 @@ class TurnOrchestrator:
     def _start(
         self, ctx: SessionContext, fact: UtteranceFact, event_id: str | None, trace_id: str | None,
         candidate_id: str, proposal: Proposal, auth: AuthorizationTuple, actor_id: str,
-        speakers: tuple[str, ...] = (), degraded: Degraded | None = None,
+        speakers: tuple[str, ...] = (), degraded: Degraded | None = None, presence_busy: bool = False,
     ) -> IntakeResult:
         turn_id = new_id("turn")
         generation = self.generations.begin(turn_id)
         try:
             result = self._issue(
                 ctx, fact, event_id, trace_id, candidate_id, proposal, auth, actor_id, turn_id, generation,
-                speakers or (fact.speaker_ref,), degraded,
+                speakers or (fact.speaker_ref,), degraded, presence_busy,
             )
         except BaseException:
             # turn.started 寫入失敗：回收 live 與 generation，不留下沒有 started 事件的孤兒 turn
@@ -884,7 +965,7 @@ class TurnOrchestrator:
 
     def _issue(
         self, ctx, fact, event_id, trace_id, candidate_id, proposal, auth, actor_id, turn_id, generation, speakers,
-        degraded: Degraded | None = None,
+        degraded: Degraded | None = None, presence_busy: bool = False,
     ) -> IntakeResult:
         # 不出聲的回合（passive）一律當 direct_chat 靜默回合：不進 loop 入口、不啟動 Run、不跑工具，也不帶降級事實。
         # 對 proposer 一視同仁（不只 Laya）：route 是 task_request／agent_loop 也一樣，只有 respond 會動工具
@@ -904,6 +985,7 @@ class TurnOrchestrator:
             event_scope=ctx.event_scope, reply_mode=proposal.reply_mode.value, auth=auth,
             valid_until=self._clock() + self._ttl, snapshot_version=self._snapshot_version(),
             speaker_ref=fact.speaker_ref, actor_id=actor_id, user_text=fact.text, degraded=degraded,
+            presence_busy=presence_busy and runs_tools,
         )
         with self._lock:
             self._live[turn_id] = _Live(ticket, trace_id, event_id, candidate_id, proposal.reason_code, speakers)

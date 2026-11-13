@@ -258,6 +258,39 @@ class AbandonWorkSignal:
 
 
 @dataclass(frozen=True)
+class CommitmentChangeSignal:
+    """owner 要求變更「她答應的事」的話語層事實（v1 只有取消）。不含原文、不含 is_owner（消費端自行計算）。"""
+
+    signal_id: str  # 冪等鍵，格式 commitment:<utterance_id>
+    actor_ref: str  # 平台認證 ID 形式，不收顯示名稱
+    kind: Literal["cancel"]  # v1 固定為 cancel；改時間留待後續版本
+    source_platform: str  # 只描述來源，不代表她在場
+    path: Literal["turn", "absent"]  # 稽核用，不影響授權
+    decided_at: datetime
+    decider_id: str
+    decider_version: str
+    reason_code: str  # 固定原因碼，不存自由文字
+
+    def __post_init__(self) -> None:  # fail-closed
+        for name in ("signal_id", "decider_id", "decider_version", "reason_code"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or _SAFE_ID.fullmatch(value) is None:
+                raise ValueError(f"{name} 不符安全字元集")
+        if not self.signal_id.startswith("commitment:"):
+            raise ValueError("signal_id 必須是 commitment:<utterance_id>")
+        if not isinstance(self.actor_ref, str) or _ACTOR_REF.fullmatch(self.actor_ref) is None:
+            raise ValueError("actor_ref 必須是平台認證 ID 形式")
+        if self.kind != "cancel":
+            raise ValueError("kind 目前只支援 cancel")
+        if not isinstance(self.source_platform, str) or not self.source_platform:
+            raise ValueError("source_platform 不可為空")
+        if self.path not in ("turn", "absent"):
+            raise ValueError("path 必須是 turn 或 absent")
+        if self.decided_at.tzinfo is None:
+            raise ValueError("decided_at 必須帶時區")
+
+
+@dataclass(frozen=True)
 class AbandonResult:
     status: Literal["ACCEPTED", "IGNORED"]
     reason_code: str  # ACCEPTED＝accepted；IGNORED＝not_owner／stale_round／not_in_work

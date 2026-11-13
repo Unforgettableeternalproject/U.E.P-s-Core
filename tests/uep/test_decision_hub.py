@@ -302,6 +302,8 @@ def test_decision_package_boundary():
             "budget_events.py": {"uep.ids"},
             # schedule.abandon_work：訊號型別 AbandonWorkSignal 在零依賴的 contracts.schedule，decision_id／入口用 uep.ids
             "schedule_abandon_work.py": {"uep.contracts.schedule", "uep.ids"},
+            # commitment.change：訊號型別 CommitmentChangeSignal 同在 contracts.schedule
+            "commitment_change.py": {"uep.contracts.schedule", "uep.ids"},
             "presence_absent_intent.py": {"uep.ids"},  # V18 後續：presence.absent_intent（不 import uep.turn／contracts.platform）
             # DL-6a：proactive.initiate（Agent 層只認 trigger；scope 驗證與 Presence 共用型別）
             "proactive.py": {
@@ -320,7 +322,8 @@ def test_turn_package_only_uses_hub_public_modules():
     allowed = {
         "uep.decision.contracts", "uep.decision.hub", "uep.decision.turn_reply", "uep.decision.turn_interject",
         "uep.decision.presence_absent_intent",  # V18 後續：缺席端輸入的意圖判斷（presence.absent_intent）
-        "uep.decision.schedule_abandon_work",  # 放棄工作判斷（schedule.abandon_work），turn／absent 路徑的 sink 接點
+        "uep.decision.commitment_change",  # 承諾變更判斷（commitment.change），turn／absent 路徑的 sink 接點
+        "uep.decision.schedule_abandon_work",  #放棄工作判斷（schedule.abandon_work），turn／absent 路徑的 sink 接點
     }
     for path in sorted((UEP_ROOT / "turn").glob("*.py")):
         bad = {i for i in _uep_imports(path) if i.startswith("uep.decision")} - allowed

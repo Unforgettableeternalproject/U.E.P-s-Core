@@ -42,6 +42,11 @@ from secrets import token_hex
 from typing import Any
 
 from uep.contracts.presence import AuthorizationTuple, PresenceLocation
+from uep.decision.commitment_change import (
+    KIND_COMMITMENT_CHANGE,
+    judge_commitment_change,
+    register_commitment_change,
+)
 from uep.decision.contracts import DecisionRequest
 from uep.decision.hub import DecisionHub
 from uep.decision.presence_absent_intent import (
@@ -229,6 +234,7 @@ class TurnOrchestrator:
         require_source_location: bool = False,
         presence_request_hook: Callable[[UtteranceFact], bool | None] | None = None,
         on_abandon_signal: Callable[..., None] | None = None,
+        on_commitment_signal: Callable[..., None] | None = None,
         on_presence_request: Callable[..., None] | None = None,
         judge_now: Callable[..., object] | None = None,
     ) -> None:
@@ -243,6 +249,9 @@ class TurnOrchestrator:
         #   （身分映射 platform_links 命中 owner 才為 True），訊號本體不帶 owner 欄位
         # on_presence_request(proposal, *, request_id, actor_ref, actor_authenticated, is_owner, source_platform)
         self._on_abandon_signal = on_abandon_signal
+        # on_commitment_signal(signal, *, is_owner, actor_authenticated)：承諾變更訊號（CommitmentChangeSignal，v1 只有取消）；
+        #   條件與放棄工作相同（只對已認證的 actor 送出），預設 None＝完全不判斷、不寫日誌
+        self._on_commitment_signal = on_commitment_signal
         self._on_presence_request = on_presence_request
         # 在場判決唯讀查詢 judge_now(*, target, is_owner, actor_ref, actor_authenticated)：None＝完全不查、行為不變。
         # 查詢跑在專用單執行緒（延遲建立），同時最多一筆；上一筆未結束就略過，逾時與例外都當作未知（None）
@@ -306,6 +315,9 @@ class TurnOrchestrator:
         # 放棄工作判斷（schedule.abandon_work）：有 sink 才註冊；共用 hub 已註冊同 kind 時沿用，不重複註冊
         if self._on_abandon_signal is not None and self.hub.engine(KIND_SCHEDULE_ABANDON_WORK) is None:
             register_abandon_work(self.hub)
+        # 承諾變更判斷（commitment.change）：有 sink 才註冊；共用 hub 已註冊同 kind 時沿用
+        if self._on_commitment_signal is not None and self.hub.engine(KIND_COMMITMENT_CHANGE) is None:
+            register_commitment_change(self.hub)
         self._identity = identity
         self._snapshot_version = snapshot_version
         self._ttl = ticket_ttl
@@ -708,6 +720,38 @@ class TurnOrchestrator:
             self.metrics["intake.abandon_signal_error"] += 1
             logger.exception("放棄工作訊號判斷或 sink 失敗（已吞掉，不影響回合）")
 
+    def _judge_commitment(
+        self, *, text: str, utterance_id: str, actor_ref: str, actor_authenticated: bool, source_platform: str, path: str,
+    ) -> Any | None:
+        """承諾變更判斷：呼叫 ``judge_commitment_change``（決策點 ``commitment.change``）；命中回訊號，其餘回 None。"""
+        return judge_commitment_change(
+            self.hub, text, utterance_id=utterance_id, actor_ref=actor_ref, actor_authenticated=actor_authenticated,
+            source_platform=source_platform, path=path, now=self._clock(),
+        )
+
+    def _emit_commitment_change(
+        self, text: str, utterance_id: str, actor_id: str, actor_authenticated: bool, source_platform: str, path: str,
+        is_owner: bool,
+    ) -> None:
+        """判斷並通知 ``on_commitment_signal(signal, *, is_owner, actor_authenticated)``。
+
+        sink 為 None 時完全不判斷；只處理已認證的 actor；任何失敗只計數。``is_owner`` 與放棄工作同源，不寫進訊號。"""
+        sink = self._on_commitment_signal
+        if sink is None or not actor_authenticated:
+            return
+        if actor_id == UNVERIFIED_ACTOR or not _SAFE_ACTOR_REF.fullmatch(actor_id):
+            return
+        try:
+            signal = self._judge_commitment(
+                text=text, utterance_id=utterance_id, actor_ref=actor_id, actor_authenticated=True,
+                source_platform=source_platform, path=path,
+            )
+            if signal is not None:
+                sink(signal, is_owner=is_owner, actor_authenticated=True)
+        except Exception:
+            self.metrics["intake.commitment_signal_error"] += 1
+            logger.exception("承諾變更訊號判斷或 sink 失敗（已吞掉，不影響回合）")
+
     def _query_busy(self, platform: str, actor_id: str) -> BusyKind | None:
         """owner 回覆回合的在場判決查詢：判決為忙碌回忙碌種類。呼叫端已確認 owner、已認證、確定回覆。
 
@@ -811,6 +855,7 @@ class TurnOrchestrator:
         self._notify_presence_request(proposal, fact, actor_id, actor_authenticated, is_owner)
         source = self._fact_platform(fact) or "missing"  # 來源未宣告或無效：fail-closed，不退回 session 平台
         self._emit_abandon(fact.text, ref, actor_id, actor_authenticated, source, "absent", is_owner == "true")  # ref＝es:<run>:<session>:<seq>
+        self._emit_commitment_change(fact.text, ref, actor_id, actor_authenticated, source, "absent", is_owner == "true")
 
     def _decide_turn(self, ctx: SessionContext, turn: AggregatedTurn) -> IntakeResult:
         intake = turn.last.payload
@@ -835,6 +880,9 @@ class TurnOrchestrator:
         if self._on_abandon_signal is not None:  # 通過否決（Presence ACTIVE 等）後、只處理已認證的 actor
             uid = f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}"
             self._emit_abandon(fact.text, uid, actor_id, authenticated, platform, "turn", not ident.guest)
+        if self._on_commitment_signal is not None:  # 同一個否決後的位置；與放棄工作互斥由決策點句型保證
+            uid = f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}"
+            self._emit_commitment_change(fact.text, uid, actor_id, authenticated, platform, "turn", not ident.guest)
         candidate = self._candidate(ctx, fact, turn.refs or (intake.event_id,), len(turn.segments), True)
         proposal = self._propose(candidate)
         degraded: Degraded | None = None

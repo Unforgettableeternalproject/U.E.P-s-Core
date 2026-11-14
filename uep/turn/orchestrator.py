@@ -36,13 +36,15 @@ from collections import Counter, OrderedDict, deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from secrets import token_hex
 from typing import Any, Protocol
 
+from uep.confirm.service import ConfirmationService
+from uep.contracts.permission import RequesterTier
 from uep.contracts.presence import AuthorizationTuple, PresenceLocation
-from uep.contracts.schedule import PLAN_LOCATIONS
+from uep.contracts.schedule import PLAN_LOCATIONS, AbandonWorkSignal
 from uep.decision.commitment_change import (
     KIND_COMMITMENT_CHANGE,
     commitment_signal_id,
@@ -62,8 +64,12 @@ from uep.decision.presence_absent_intent import (
     proposal_from_result,
 )
 from uep.decision.schedule_abandon_work import (
+    GRADE_DIRECT,
+    GRADE_NEEDS_CONFIRMATION,
+    GRADE_PAUSE,
     KIND_SCHEDULE_ABANDON_WORK,
-    judge_abandon_work,
+    grade_abandon_text,
+    judge_abandon_work_graded,
     register_abandon_work,
 )
 from uep.decision.turn_interject import TurnInterjectEngine, turn_interject_spec
@@ -123,6 +129,30 @@ from uep.turn.proposer import (
 from uep.turn.wake import WakeDetector
 
 logger = logging.getLogger("uep.turn.orchestrator")
+
+
+@dataclass(frozen=True)
+class EndPhraseOutcome:
+    """``_handle_end_phrase`` 的結果：``skip_commitment``＝這句已被結束階段流程處理（不再進承諾判斷）；
+    ``force_pass``＝確認提示已送出，這輪的一般回覆改為 pass。"""
+
+    skip_commitment: bool = False
+    force_pass: bool = False
+
+
+NO_END_PHRASE = EndPhraseOutcome()
+
+
+@dataclass(frozen=True)
+class ConfirmationPrompt:
+    """要送出的確認提示（固定模板文字，不含話語原文）。``confirmation_prompt`` 回 True＝Output Gate 已接納、提示已送達。"""
+
+    proposal_id: str
+    text: str = field(repr=False)
+    ctx: SessionContext
+    actor_id: str
+    source_platform: str
+    reply_to_seq: int
 
 SOURCE_TURN = "core.turn"
 ACTOR_TURN = "uep:turn"
@@ -248,6 +278,8 @@ class TurnOrchestrator:
         on_commitment_signal: Callable[..., None] | None = None,
         on_presence_request: Callable[..., None] | None = None,
         judge_now: JudgeNowFn | None = None,
+        confirmation: ConfirmationService | None = None,
+        confirmation_prompt: Callable[[ConfirmationPrompt], bool] | None = None,
     ) -> None:
         self._publisher = publisher
         # V18：本機 Host 持有的 location（比對對象）；None = 未提供，不做來源比對（獨立測試用）
@@ -260,6 +292,13 @@ class TurnOrchestrator:
         #   （身分映射 platform_links 命中 owner 才為 True），訊號本體不帶 owner 欄位
         # on_presence_request(proposal, *, request_id, actor_ref, actor_authenticated, is_owner, source_platform)
         self._on_abandon_signal = on_abandon_signal
+        # 結束階段的確認流程（PM-2b §3A）：``confirmation`` 為 None＝只有 direct 生效，needs_confirmation 一律無事（fail-closed）。
+        # ``confirmation_prompt(prompt) -> bool``：把固定模板的提示送出（經 Output Gate）；回 True＝已送達。
+        # 沒有提示管線時不提案（提示送不出去就無法確認）。TODO(PM-2b 接線)：Host 的 Output Gate 提示管線尚未接上
+        self._confirmation = confirmation
+        self._confirmation_prompt = confirmation_prompt
+        self._confirm_ctx: OrderedDict[str, SessionContext] = OrderedDict()  # conversation_ref -> 最近的 ctx（發審計事件用）
+        self._confirm_event_seq = 0
         # on_commitment_signal(signal, *, is_owner, actor_authenticated)：承諾變更訊號（CommitmentChangeSignal，v1 只有取消）；
         #   條件與放棄工作相同（只對已認證的 actor 送出），預設 None＝完全不判斷、不寫日誌
         self._on_commitment_signal = on_commitment_signal
@@ -560,6 +599,7 @@ class TurnOrchestrator:
             self._aggregator.flush_all()
             self._ctx = None
             return []
+        self._sweep_confirmations()
         results: list[IntakeResult] = []
         try:
             turns = self._aggregator.tick()
@@ -699,37 +739,168 @@ class TurnOrchestrator:
     def _judge_abandon(
         self, *, text: str, utterance_id: str, actor_ref: str, actor_authenticated: bool, source_platform: str, path: str,
     ) -> Any | None:
-        """放棄工作判斷：呼叫 ``judge_abandon_work``（決策點 ``schedule.abandon_work``）；命中回訊號，其餘回 None。
+        """結束階段分級判斷：呼叫 ``judge_abandon_work_graded``（決策點 ``schedule.abandon_work``）；回 ``AbandonJudgement``，
+        無命中（none）回 None。direct 才帶訊號；needs_confirmation 與 pause 不帶訊號。
 
         文字只在記憶體經參數傳入。``now`` 取 Orchestrator 的時鐘（須帶時區，否則判斷端 fail-closed 回 None）。
         """
-        return judge_abandon_work(
+        return judge_abandon_work_graded(
             self.hub, text, utterance_id=utterance_id, actor_ref=actor_ref, actor_authenticated=actor_authenticated,
             source_platform=source_platform, path=path, now=self._clock(),
         )
 
-    def _emit_abandon(
-        self, text: str, utterance_id: str, actor_id: str, actor_authenticated: bool, source_platform: str, path: str,
-        is_owner: bool,
-    ) -> None:
-        """判斷並通知 ``on_abandon_signal(signal, *, is_owner)``。sink 為 None 時完全不判斷；只處理已認證的 actor；任何失敗只計數。
+    @staticmethod
+    def _conversation_ref(ctx: SessionContext) -> str:
+        """確認提案所在對話：conversation_id＋事件 scope（同對話、同範圍才可確認）。"""
+        return f"{ctx.conversation_id}:{ctx.event_scope}"
 
-        ``is_owner`` 由呼叫端依身分映射（platform_links）算出，與 ``on_presence_request`` 同源；不寫進訊號。"""
-        sink = self._on_abandon_signal
-        if sink is None or not actor_authenticated:
+    def _flush_confirmation_events(self, ctx: SessionContext | None = None) -> None:
+        """把確認服務累積的審計事件發布出去；tick 掃描（ctx 為 None）時用最近見過的同對話 ctx，找不到就丟棄並計數。"""
+        service = self._confirmation
+        if service is None:
             return
-        if actor_id == UNVERIFIED_ACTOR or not _SAFE_ACTOR_REF.fullmatch(actor_id):
+        for event in service.drain_events():
+            use = ctx if ctx is not None and self._conversation_ref(ctx) == event.conversation_ref else None
+            use = use or self._confirm_ctx.get(event.conversation_ref)
+            if use is None:
+                self.metrics["confirmation.event_dropped"] += 1
+                continue
+            self._confirm_event_seq += 1
+            draft = EventDraft(
+                event_type=event.event_type, conversation_id=use.conversation_id, segment_id=use.segment_id,
+                idempotency_key=f"{event.event_type.replace('.', '_')}:{self.run_id}:{event.proposal_id}:{self._confirm_event_seq}",
+                payload=dict(event.payload),
+            )
+            trusted = TrustedContext(
+                source=SOURCE_TURN, actor_id=ACTOR_TURN, scope_ref=use.event_scope, persona_id=self._persona
+            )
+            try:
+                self._publisher.publish(draft, trusted)
+            except Exception:
+                self.metrics["confirmation.event_error"] += 1
+                logger.exception("確認審計事件寫入失敗（已吞掉）")
+
+    def _sweep_confirmations(self) -> None:
+        """tick 掃描逾時的 pending（只記事件，不通知使用者）。"""
+        service = self._confirmation
+        if service is None:
             return
         try:
-            signal = self._judge_abandon(
-                text=text, utterance_id=utterance_id, actor_ref=actor_id, actor_authenticated=True,
-                source_platform=source_platform, path=path,
+            service.expire_due()
+            self._flush_confirmation_events(None)
+        except Exception:
+            self.metrics["confirmation.sweep_error"] += 1
+            logger.exception("確認逾時掃描失敗（已吞掉）")
+
+    def _handle_end_phrase(
+        self, ctx: SessionContext, fact: UtteranceFact, utterance_id: str, actor_id: str, actor_authenticated: bool,
+        source_platform: str, is_owner: bool, *, addressed: bool, participant_count: int,
+    ) -> EndPhraseOutcome:
+        """在場（turn）路徑的結束階段處理（契約 §3A.5）：先辨認確認／拒絕，再分級（direct／needs_confirmation／pause／none）。
+
+        - 不在場（absent）路徑沒有口語結束／放棄／暫停／確認（D7），本函式只由 turn 路徑呼叫。
+        - ``addressed ∨ participant_count==1`` 是 direct、提案與確認共同的前置（D3、D6）；不符不產生訊號、不提案。
+        - ``is_owner`` 與 sink 同源（身分映射），不信任提案內的值；只處理已認證的 actor；sink 為 None 時完全不判斷。
+        - 任何失敗只計數，不影響回合。``pause`` 在 PM-3 的 ``PauseWorkSignal`` 就緒前視同 none（只留決策日誌）。
+        """
+        sink = self._on_abandon_signal
+        if sink is None or not actor_authenticated:
+            return NO_END_PHRASE
+        if actor_id == UNVERIFIED_ACTOR or not _SAFE_ACTOR_REF.fullmatch(actor_id):
+            return NO_END_PHRASE
+        try:
+            directed = addressed or participant_count == 1
+            service = self._confirmation
+            conv_ref = self._conversation_ref(ctx)
+            if service is not None:
+                self._confirm_ctx[conv_ref] = ctx
+                self._confirm_ctx.move_to_end(conv_ref)
+                while len(self._confirm_ctx) > 64:
+                    self._confirm_ctx.popitem(last=False)
+                tier = RequesterTier.OWNER if is_owner else RequesterTier.MEMBER
+                is_trigger = grade_abandon_text(fact.text)[0] in (GRADE_DIRECT, GRADE_NEEDS_CONFIRMATION)
+                res = service.try_resolve(
+                    conversation_ref=conv_ref, actor_ref=actor_id, actor_authenticated=True,
+                    source_platform=source_platform, text=fact.text, addressed=addressed,
+                    solo=participant_count == 1, actor_tier=tier, is_trigger=is_trigger,
+                )
+                self._flush_confirmation_events(ctx)
+                if res.outcome == "confirmed" and res.proposal is not None:
+                    proposal = res.proposal
+                    signal = AbandonWorkSignal(
+                        signal_id=f"abandon:confirm:{proposal.proposal_id.lower()}", actor_ref=actor_id,
+                        actor_authenticated=True, source_platform=proposal.source_platform, path="turn",
+                        decided_at=self._clock(), decider_id="rules.abandon_work.confirmed", decider_version="1",
+                        reason_ref=proposal.reason_ref,
+                    )
+                    self.metrics["intake.abandon_confirmed"] += 1
+                    sink(signal, is_owner=is_owner)
+                if res.consumed:
+                    return EndPhraseOutcome(skip_commitment=True)  # 確認句不再進放棄／承諾判斷（仍進一般對話）
+            judgement = self._judge_abandon(
+                text=fact.text, utterance_id=utterance_id, actor_ref=actor_id, actor_authenticated=True,
+                source_platform=source_platform, path="turn",
             )
-            if signal is not None:
-                sink(signal, is_owner=is_owner)
+            if judgement is None:
+                return NO_END_PHRASE
+            grade = judgement.grade
+            if grade == GRADE_DIRECT:
+                if not directed:  # D6：不是對她說的 direct 不產生訊號
+                    self.metrics["intake.abandon_unaddressed"] += 1
+                    return NO_END_PHRASE
+                if service is not None:
+                    service.supersede_for_direct(conversation_ref=conv_ref, requester_ref=actor_id)
+                    self._flush_confirmation_events(ctx)
+                if judgement.signal is not None:
+                    sink(judgement.signal, is_owner=is_owner)
+                return EndPhraseOutcome(skip_commitment=True)
+            if grade == GRADE_NEEDS_CONFIRMATION:
+                return self._propose_confirmation(
+                    ctx, fact, utterance_id, actor_id, source_platform, is_owner, directed, conv_ref)
+            if grade == GRADE_PAUSE:
+                # TODO(PM-3)：PauseWorkSignal 型別與消費端就緒前視同 none（不放棄、不確認、不暫停，fail-closed）；
+                # 分級結果已留在決策日誌（reason=abandon_to_pause）。PAUSE 授權照對照表（ADMIN 以上），由消費端依階級判定
+                self.metrics["intake.end_phrase_pause_ignored"] += 1
+            return NO_END_PHRASE
         except Exception:
             self.metrics["intake.abandon_signal_error"] += 1
-            logger.exception("放棄工作訊號判斷或 sink 失敗（已吞掉，不影響回合）")
+            logger.exception("結束階段判斷、確認或 sink 失敗（已吞掉，不影響回合）")
+            return NO_END_PHRASE
+
+    def _propose_confirmation(
+        self, ctx: SessionContext, fact: UtteranceFact, utterance_id: str, actor_id: str, source_platform: str,
+        is_owner: bool, directed: bool, conv_ref: str,
+    ) -> EndPhraseOutcome:
+        """needs_confirmation：條件全成立才提案並送出固定模板提示（§3A.8）；其餘一律無事（未確認＝無事）。"""
+        service, prompt_sink = self._confirmation, self._confirmation_prompt
+        if service is None or prompt_sink is None or not is_owner or not directed:
+            self.metrics["intake.abandon_confirm_skipped"] += 1
+            return NO_END_PHRASE
+        result = service.propose(
+            action="abandon_item", requester_ref=actor_id, source_platform=source_platform, conversation_ref=conv_ref,
+            source_utterance_ref=f"cfm:{utterance_id}", actor_tier=RequesterTier.OWNER,
+        )
+        self._flush_confirmation_events(ctx)
+        if not result.send_prompt or result.proposal is None:
+            return EndPhraseOutcome(skip_commitment=True)
+        proposal = result.proposal
+        delivered = False
+        try:
+            text = service.render_prompt(proposal, audience=ctx.audience_scope)
+            if text:
+                delivered = bool(prompt_sink(ConfirmationPrompt(
+                    proposal_id=proposal.proposal_id, text=text, ctx=ctx, actor_id=actor_id,
+                    source_platform=source_platform, reply_to_seq=fact.seq,
+                )))
+        except Exception:
+            logger.exception("確認提示送出失敗（當作未送達）")
+        if delivered:
+            service.mark_prompt_delivered(proposal.proposal_id)
+        else:
+            service.mark_undelivered(proposal.proposal_id)
+        self._flush_confirmation_events(ctx)
+        self.metrics["intake.abandon_confirm_prompted" if delivered else "intake.abandon_confirm_undelivered"] += 1
+        return EndPhraseOutcome(skip_commitment=True, force_pass=delivered)
 
     def _judge_commitment(
         self, *, text: str, utterance_id: str, actor_ref: str, actor_authenticated: bool, source_platform: str, path: str,
@@ -872,7 +1043,7 @@ class TurnOrchestrator:
             logger.exception("缺席端輸入 shadow 紀錄寫入失敗")
         self._notify_presence_request(proposal, fact, actor_id, actor_authenticated, is_owner)
         source = self._fact_platform(fact) or "missing"  # 來源未宣告或無效：fail-closed，不退回 session 平台
-        self._emit_abandon(fact.text, ref, actor_id, actor_authenticated, source, "absent", is_owner == "true")  # ref＝es:<run>:<session>:<seq>
+        # D7：不在場路徑沒有口語結束／放棄／暫停／確認邏輯（只有 owner console 可做），這裡不判斷放棄
         self._emit_commitment_change(fact.text, ref, actor_id, actor_authenticated, source, "absent", is_owner == "true")
 
     def _decide_turn(self, ctx: SessionContext, turn: AggregatedTurn) -> IntakeResult:
@@ -895,14 +1066,22 @@ class TurnOrchestrator:
         authenticated = bool(ident.actor_id is not None and fact.source_endpoint_id is not None)
         # 與缺席路徑同一規則：以輸入宣告的來源為準；turn 路徑未宣告來源時才退回 session 平台
         platform = self._fact_platform(fact) or ctx.platform
-        if self._on_abandon_signal is not None:  # 通過否決（Presence ACTIVE 等）後、只處理已認證的 actor
-            uid = f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}"
-            self._emit_abandon(fact.text, uid, actor_id, authenticated, platform, "turn", not ident.guest)
-        if self._on_commitment_signal is not None:  # 同一個否決後的位置；與放棄工作互斥由決策點句型保證
-            uid = f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}"
-            self._emit_commitment_change(fact.text, uid, actor_id, authenticated, platform, "turn", not ident.guest)
         candidate = self._candidate(ctx, fact, turn.refs or (intake.event_id,), len(turn.segments), True)
         proposal = self._propose(candidate)
+        end_phrase = NO_END_PHRASE
+        if self._on_abandon_signal is not None:  # 通過否決（Presence ACTIVE 等）後、只處理已認證的 actor
+            # addressed 取該輪 turn 決策的結果（proposer 的 addressed，或精確喚醒詞）；1 對 1 另算（§3A.3、D6）
+            end_phrase = self._handle_end_phrase(
+                ctx, fact, f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}", actor_id, authenticated, platform,
+                not ident.guest, addressed=bool(proposal.addressed) or candidate.addressed_hint,
+                participant_count=candidate.participant_count or 1,
+            )
+        if self._on_commitment_signal is not None and not end_phrase.skip_commitment:  # 與放棄工作互斥由決策點句型保證
+            uid = f"turn:{self.run_id}:{ctx.session_ref}:{fact.seq}"
+            self._emit_commitment_change(fact.text, uid, actor_id, authenticated, platform, "turn", not ident.guest)
+        if end_phrase.force_pass:  # 確認提示已送出：這輪不再另外回覆（避免她亂回一段）
+            self._skip(ctx, intake.trace_id, intake.event_id, fact, "confirmation_prompted", ReplyMode.PASS)
+            return IntakeResult(None, "confirmation_prompted", proposal, utterance_event_id=intake.event_id, fact=fact)
         degraded: Degraded | None = None
         if proposal.reply_mode == ReplyMode.DEFER:
             # 能力查核在 interaction 請求之前：CC-7 與稽核記錄看到的是 respond，不是 defer

@@ -13,7 +13,7 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from uep.contracts.schedule import PlanReader, PlanSource
 from uep.memory.dream_planner import (
@@ -428,6 +428,9 @@ def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, r
         shadow.add_cleanup(lambda et=event_type, h=handler: bus.unsubscribe(et, h))
     if start:
         shadow.start()
+    confirmation = getattr(getattr(core, "echo", None), "confirmation", None)
+    if confirmation is not None and not confirmation.has_handler("abandon_item"):  # 結束階段確認的動作端（持有行程投影）
+        confirmation.register_handler(AbandonConfirmHandler(reader))
     sinks = getattr(getattr(core, "echo", None), "presence_sinks", None)
     if sinks is not None:  # Host 在 off 以外的旗標下會建 sink 代理：把決策層的 sink 接到仲裁器，關閉時解除
         sinks.bind(shadow)
@@ -436,7 +439,108 @@ def attach_presence_arbiter(settings: Any, core: Any, *, session_factory: Any, r
     return shadow
 
 
+class AbandonConfirmHandler:
+    """``abandon_item`` 的動作端 handler（PM-2b，契約 §3A.5）：持有行程投影，確認服務與決策層都看不到行程。
+
+    - ``prepare``：當下投影是進行中的非 REST 行程項（與 ``consume_abandon`` 的「可放棄」判斷一致）→ 回 binding＋摘要，否則 None（不提案）。
+    - ``validate``：確認時重驗——仍是同一個 ``item_ref``＋``planned_start_at``、仍在同一輪次、仍可放棄。
+    - ``render``：固定模板（zh-TW）；非私人 audience 只渲染最小資訊（「目前的行程」）。不含話語原文。
+    - 訊號本身仍走既有 sink→``consume_abandon``（owner、輪次、非 REST、stale 檢查不變）；這裡的驗證只是提案與確認的前置。
+    """
+
+    action = "abandon_item"
+    _KIND_LABEL: ClassVar[dict[str, str]] = {"work": "工作", "social": "社交"}
+
+    def __init__(self, reader: Any, *, tz_fn: Callable[[], str] | None = None) -> None:
+        self._reader = reader
+        self._tz_fn = tz_fn or getattr(reader, "tz", None) or (lambda: DEFAULT_TZ)
+
+    def _abandonable_slot(self, now: datetime) -> Any | None:
+        from uep.contracts.schedule import ActivityKind
+
+        slot = self._reader.resolve(now)
+        if (slot.availability != "available" or slot.source != PlanSource.ITEM
+                or slot.activity_kind == ActivityKind.REST or slot.slot_state == "abandoned"
+                or slot.item_ref is None or slot.blueprint_start_at is None):
+            return None
+        return slot
+
+    def prepare(self, *, actor_ref: str, now: datetime) -> Any | None:
+        from uep.contracts.confirmation import ConfirmationSummary, PreparedConfirmation
+        from uep.schedule.resolver import round_bounds
+
+        try:
+            slot = self._abandonable_slot(now)
+            if slot is None:
+                return None
+            round_start = round_bounds(now, self._tz_fn())[0]
+        except Exception:
+            logger.warning("結束階段確認：讀取行程投影失敗（當作不可提案）", exc_info=True)
+            return None
+        binding = {
+            "item_ref": slot.item_ref, "planned_start_at": slot.blueprint_start_at.isoformat(),
+            "round_start": round_start.isoformat(),
+        }
+        summary = ConfirmationSummary(
+            action="abandon_item", activity_kind=str(slot.activity_kind.value), window=(slot.starts_at, slot.ends_at),
+            location=slot.location,
+        )
+        return PreparedConfirmation(binding, summary)
+
+    def validate(self, binding: Any, *, now: datetime) -> bool:
+        from uep.schedule.resolver import round_bounds
+
+        try:
+            slot = self._abandonable_slot(now)
+            if slot is None:
+                return False
+            return (
+                binding.get("item_ref") == slot.item_ref
+                and binding.get("planned_start_at") == slot.blueprint_start_at.isoformat()
+                and binding.get("round_start") == round_bounds(now, self._tz_fn())[0].isoformat()
+            )
+        except Exception:
+            logger.warning("結束階段確認：binding 重驗失敗（當作失效）", exc_info=True)
+            return False
+
+    def _window_text(self, summary: Any) -> str:
+        from zoneinfo import ZoneInfo
+
+        if summary.window is None:
+            return ""
+        zone = ZoneInfo(self._tz_fn())
+        start, end = summary.window
+        text = start.astimezone(zone).strftime("%H:%M")
+        return f"{text}–{end.astimezone(zone).strftime('%H:%M')}" if end is not None else f"{text} 起"
+
+    def render(self, summary: Any, *, audience: str, locale: str) -> str:
+        from uep.events.envelope import scope_rank
+
+        if scope_rank(audience) >= 1:  # 非私人：只渲染最小資訊
+            return "要結束目前的行程、回主機嗎？"
+        label = self._KIND_LABEL.get(summary.activity_kind or "", "")
+        kind = f"〔{label}〕" if label else ""
+        window = self._window_text(summary)
+        detail = f"（{window}）" if window else ""
+        return f"要結束這次的{kind}行程{detail}、回主機嗎？"
+
+    def required_terms(self, summary: Any, *, audience: str) -> tuple[str, ...]:
+        """可選潤飾（D8）的驗證用必要語意詞：潤飾後仍須含「回主機」與類別、時段。"""
+        from uep.events.envelope import scope_rank
+
+        if scope_rank(audience) >= 1:
+            return ("回主機",)
+        terms = ["回主機"]
+        label = self._KIND_LABEL.get(summary.activity_kind or "")
+        if label:
+            terms.append(label)
+        window = self._window_text(summary)
+        if window:
+            terms.append(window)
+        return tuple(terms)
+
+
 __all__ = [
-    "PlanBackedRestWindowPolicy", "attach_behavior_driver", "attach_presence_arbiter", "attach_schedule_planner",
-    "build_rest_window_policy",
+    "AbandonConfirmHandler", "PlanBackedRestWindowPolicy", "attach_behavior_driver", "attach_presence_arbiter",
+    "attach_schedule_planner", "build_rest_window_policy",
 ]

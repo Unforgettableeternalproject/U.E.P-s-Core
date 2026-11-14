@@ -162,41 +162,52 @@ def test_default_rules_engine_also_reports_the_full_result():
     assert calls[0].proposer_id.startswith("rules.")
 
 
-# ---- 放棄工作 sink（judge 模組接上前只有接點）----
+# ---- 結束階段 sink（在場 turn 路徑；不在場路徑沒有口語結束，D7）----
+
+DIRECT = "結束這次行程"  # direct：明確提到「行程」
 
 
-def test_real_abandon_judge_turn_path_signals_only_for_the_abandon_phrase():
+def test_real_abandon_judge_turn_path_signals_only_for_the_direct_phrase():
     got: list = []
     orch = _orch(Capture(), on_abandon_signal=_owner_sink(got))
-    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=DIRECT, seq=1, source_endpoint_id="ep"))
     assert len(got) == 1 and got[0].path == "turn" and got[0].actor_ref == "actor_owner"
     assert got[0].actor_authenticated is True and got[0].signal_id.startswith("abandon:turn:run1:")
     orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="不用做了", seq=2, source_endpoint_id="ep"))
-    assert len(got) == 1  # 不是明確的放棄工作語句
-    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=3))  # 沒有 endpoint：未認證
-    orch.on_utterance(CTX, UtteranceFact(speaker_ref="discord:999", text="放棄這次工作", seq=4, source_endpoint_id="ep"))
+    assert len(got) == 1  # 不是明確的結束語句
+    # needs_confirmation（放棄這次工作）與 pause（收工）不再直接產生訊號（沒有確認服務時＝無事，fail-closed）
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=5, source_endpoint_id="ep"))
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="收工", seq=6, source_endpoint_id="ep"))
+    assert len(got) == 1 and orch.metrics["intake.end_phrase_pause_ignored"] == 1
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=DIRECT, seq=3))  # 沒有 endpoint：未認證
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref="discord:999", text=DIRECT, seq=4, source_endpoint_id="ep"))
     assert len(got) == 1  # 未認證與未映射 fail-closed
 
 
-def test_real_abandon_judge_absent_path_and_no_sink_and_veto():
+def test_absent_path_never_judges_or_signals_abandon():
+    """D7：不在場路徑沒有口語結束／放棄邏輯，即使是 owner 已認證的 direct 句型也不產生訊號、不判斷。"""
+    got, judged = [], []
+    orch = _wired(_orch(Capture(), on_abandon_signal=_owner_sink(got)), judged)
+    _absent(orch, text=DIRECT)
+    _absent(orch, text="放棄這次工作", seq=2)
+    assert got == [] and judged == []
+    real = _orch(Capture(), on_abandon_signal=_owner_sink(got))
+    _absent(real, text=DIRECT)
+    assert got == []
+
+
+def test_no_sink_does_not_register_or_judge_and_veto_comes_first():
     got: list = []
-    orch = _orch(Capture(), on_abandon_signal=_owner_sink(got))
-    _absent(orch, text="放棄這次工作")
-    assert len(got) == 1 and got[0].path == "absent" and got[0].source_platform == "discord"
-    _absent(orch, text="放棄這次工作", seq=2, endpoint=None)
-    _absent(orch, text="不用做了", seq=3)
-    assert len(got) == 1
     plain = _orch(Capture())  # 沒有 sink：不註冊決策點、不判斷
     assert plain.hub.engine("schedule.abandon_work") is None
-    plain.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
-    vetoed_got: list = []
+    plain.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=DIRECT, seq=1, source_endpoint_id="ep"))
     vetoed = TurnOrchestrator(
         Capture(), TurnGenerations(), auth_provider=lambda: AUTH, proposer=Pass(),  # type: ignore[arg-type]
         identity=IdentityDirectory({OWNER: "actor_owner"}, {"actor_owner": "owner1"}),
-        on_abandon_signal=_owner_sink(vetoed_got), veto=lambda ctx: "audience_blocked",
+        on_abandon_signal=_owner_sink(got), veto=lambda ctx: "audience_blocked",
     )
-    vetoed.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
-    assert vetoed_got == []
+    vetoed.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=DIRECT, seq=1, source_endpoint_id="ep"))
+    assert got == []
 
 
 def test_shared_hub_with_abandon_kind_already_registered_is_reused():
@@ -207,14 +218,14 @@ def test_shared_hub_with_abandon_kind_already_registered_is_reused():
     register_abandon_work(hub)
     got: list = []
     orch = _orch(Capture(), decision_hub=hub, on_abandon_signal=_owner_sink(got))
-    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=DIRECT, seq=1, source_endpoint_id="ep"))
     assert len(got) == 1
 
 
 def _wired(orch: TurnOrchestrator, calls: list) -> TurnOrchestrator:
     def judge(**kw):
         calls.append(kw)
-        return "SIGNAL"
+        return SimpleNamespace(grade="direct", signal="SIGNAL")
 
     orch._judge_abandon = judge  # type: ignore[method-assign]
     return orch
@@ -249,28 +260,22 @@ def test_abandon_sink_on_turn_path_only_for_authenticated_actor_after_veto():
     assert len(judged) == n  # 否決在前（audience 不允許等）：不判斷
 
 
-def test_abandon_sink_on_absent_path_and_failures_are_isolated():
-    got, judged = [], []
-    orch = _wired(_orch(Capture(), on_abandon_signal=_owner_sink(got)), judged)
-    _absent(orch)
-    assert got == ["SIGNAL"] and judged[0]["path"] == "absent" and judged[0]["source_platform"] == "discord"
+def test_abandon_sink_failures_are_isolated_and_no_sink_does_not_judge():
+    judged: list = []
 
     def boom(signal, **kw):
         raise RuntimeError("down")
 
-    bad = _wired(_orch(Capture(), on_abandon_signal=boom), [])
-    result = _absent(bad)
-    assert result.reason_code == "absent_platform_input" and bad.metrics["intake.abandon_signal_error"] == 1
+    bad = _wired(_orch(Capture(), on_abandon_signal=boom), judged)
+    result = bad.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="x", seq=1, source_endpoint_id="ep"))
+    assert result.reason_code == "x" and bad.metrics["intake.abandon_signal_error"] == 1  # 失敗被吞掉，回合照常
     no_sink = _wired(_orch(Capture()), judged)
     n = len(judged)
-    _absent(no_sink)
+    no_sink.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="x", seq=1, source_endpoint_id="ep"))
     assert len(judged) == n  # sink 為 None：完全不判斷
-    unverified = _wired(_orch(Capture(), on_abandon_signal=_owner_sink(got)), judged)
-    _absent(unverified, speaker="discord:999", endpoint=None)
-    assert len(judged) == n
 
 
-def test_abandon_sink_receives_is_owner_from_identity_mapping_on_both_paths():
+def test_abandon_sink_receives_is_owner_from_identity_mapping_on_turn_path():
     """owner 收到 True；已認證（映射到 actor）但不是 owner 的人收到 False；訊號本體不帶 is_owner。"""
     got, owners = [], []
     other = "discord:200"
@@ -279,20 +284,15 @@ def test_abandon_sink_receives_is_owner_from_identity_mapping_on_both_paths():
         Capture(), TurnGenerations(), auth_provider=lambda: AUTH, proposer=Pass(),  # type: ignore[arg-type]
         identity=identity, host_location="desktop", run_id="run1", on_abandon_signal=_owner_sink(got, owners),
     )
-    phrase = "放棄這次工作"
-    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=phrase, seq=1, source_endpoint_id="ep"))
-    orch.on_utterance(CTX, UtteranceFact(speaker_ref=other, text=phrase, seq=2, source_endpoint_id="ep"))
-    _absent(orch, text=phrase, speaker=OWNER, seq=3)
-    _absent(orch, text=phrase, speaker=other, seq=4)
-    assert [(s.path, s.actor_ref) for s in got] == [
-        ("turn", "actor_owner"), ("turn", "actor_guest"), ("absent", "actor_owner"), ("absent", "actor_guest"),
-    ]
-    assert owners == [True, False, True, False]
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=DIRECT, seq=1, source_endpoint_id="ep"))
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=other, text=DIRECT, seq=2, source_endpoint_id="ep"))
+    assert [(s.path, s.actor_ref) for s in got] == [("turn", "actor_owner"), ("turn", "actor_guest")]
+    assert owners == [True, False]
     assert all(not hasattr(s, "is_owner") for s in got)
 
 
-def test_abandon_source_platform_uses_declared_source_on_both_paths():
-    """兩條路徑同一規則：以輸入宣告的 source_location 為準（Presence 詞彙）；turn 未宣告才退回 session 平台；未宣告來源回 None。"""
+def test_abandon_source_platform_uses_declared_source_on_turn_path():
+    """以輸入宣告的 source_location 為準（Presence 詞彙）；turn 未宣告才退回 session 平台；未宣告來源回 None。"""
     import dataclasses
 
     judged: list = []
@@ -301,28 +301,8 @@ def test_abandon_source_platform_uses_declared_source_on_both_paths():
     orch.on_utterance(ctx, UtteranceFact(
         speaker_ref=OWNER, text="放棄", seq=1, source_location=PresenceLocation.DESKTOP, source_endpoint_id="ep"))
     orch.on_utterance(ctx, UtteranceFact(speaker_ref=OWNER, text="放棄", seq=2, source_endpoint_id="ep"))
-    _absent(orch)
-    assert [(j["path"], j["source_platform"]) for j in judged] == [
-        ("turn", "desktop"), ("turn", "website"), ("absent", "discord"),
-    ]
+    assert [(j["path"], j["source_platform"]) for j in judged] == [("turn", "desktop"), ("turn", "website")]
     assert TurnOrchestrator._fact_platform(UtteranceFact(speaker_ref=OWNER, text="x", seq=1)) is None
-
-
-def test_abandon_absent_path_source_platform_is_missing_when_undeclared_or_invalid():
-    """缺席端來源未宣告（Host 不持有 Lease 才會走缺席端）或無效（INVALID_SOURCE_LOCATION）：source_platform 一律 missing。"""
-    judged: list = []
-    identity = IdentityDirectory({OWNER: "actor_owner"}, {"actor_owner": "owner1"})
-    inactive = _wired(TurnOrchestrator(
-        Capture(), TurnGenerations(), auth_provider=lambda: None, proposer=Pass(),  # type: ignore[arg-type]
-        identity=identity, host_location="desktop", run_id="run1", on_abandon_signal=_owner_sink([]),
-    ), judged)
-    inactive.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄", seq=1, source_endpoint_id="ep"))
-    invalid = _wired(_orch(Capture(), on_abandon_signal=_owner_sink([])), judged)  # require_source_location 預設關
-    result = invalid.on_utterance(CTX, UtteranceFact(
-        speaker_ref=OWNER, text="放棄", seq=2, source_location="bogus", source_endpoint_id="ep",  # type: ignore[arg-type]
-    ))
-    assert result.reason_code == "absent_platform_input"
-    assert [(j["path"], j["source_platform"]) for j in judged] == [("absent", "missing"), ("absent", "missing")]
 
 
 def test_fact_platform_rejects_invalid_strings():

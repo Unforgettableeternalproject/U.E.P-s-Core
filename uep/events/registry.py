@@ -169,6 +169,18 @@ for _t, _k in SCHEDULE_EVENT_KEYS.items():
     DEFAULT_EVENT_SPECS[_t] = EventSpec(_D, payload_keys=_k)
 
 
+# 確認流程審計事件（PM-2b，契約 §3A.4；durable）。payload 只放 id／固定碼／計數，不含話語原文。
+# 鍵須與 ``uep.confirm.service.CONFIRMATION_EVENT_KEYS`` 一致（由測試鎖住；events 不 import confirm 以免循環）。
+# 契約原列 expires_at，但私人 scope 的 payload 一律扣除 expires_at（D78），改以 ttl_s 秒數表示
+CONFIRMATION_EVENT_TYPES: tuple[str, ...] = (
+    "confirmation.proposed", "confirmation.prompt_delivered", "confirmation.confirmed", "confirmation.declined",
+    "confirmation.expired", "confirmation.superseded", "confirmation.foreign_actor_ignored",
+)
+_CONFIRMATION_KEYS = _keys("proposal_id", "action", "requester_ref", "path", "ttl_s", "reason", "count")
+for _t in CONFIRMATION_EVENT_TYPES:
+    DEFAULT_EVENT_SPECS[_t] = EventSpec(_D, payload_keys=_CONFIRMATION_KEYS)
+
+
 class EventRegistry:
     """event_type -> EventSpec；可在測試或後續契約擴充。"""
 

@@ -41,6 +41,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from uep.config import get_settings
+from uep.confirm import ConfirmationService, default_policies
 from uep.contracts.platform import platform_from_presence_location
 from uep.contracts.presence import AcquireResult, GateDecision
 from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES, ROUTE_DIRECT_CHAT
@@ -111,6 +112,7 @@ from uep.turn.orchestrator import (
     ACTOR_ECHO,
     RETRACT_REASONS,
     SOURCE_ECHO,
+    ConfirmationPrompt,
     ShadowRecord,
     TurnOrchestrator,
     attempt_label,
@@ -293,6 +295,15 @@ class EchoPipelineHost:
         self.presence_sinks = (
             PresenceSinkProxy(metrics_inc=lambda name: self.metrics.inc(name))
             if (get_settings().presence_arbiter or "").strip().lower() not in ("", "off") else None)
+        # 結束階段的確認服務（PM-2b，記憶體存放）：只有仲裁 sink 存在時才有意義；handler 由 attach_presence_arbiter 註冊（持有行程投影）。
+        # 確認提示經 Output Gate 送出（``_deliver_confirmation_prompt``，沿用續跑回覆的 Gate／Delivery 通道）
+        self.confirmation = (
+            ConfirmationService(
+                policies=default_policies(
+                    ttl_abandon_s=settings.confirm_ttl_abandon_s,
+                    ttl_forced_sleep_s=settings.confirm_ttl_forced_sleep_s),
+                clock=lambda: datetime.now(UTC), polish_enabled=settings.confirm_polish_enabled)
+            if self.presence_sinks is not None else None)
         self.orchestrator = TurnOrchestrator(
             publisher, self.generations, auth_provider=self.endpoint.lease_auth, persona_id=persona_id,
             proposer=proposer, aggregator=aggregator, shadow_proposers=shadow_proposers, on_shadow=on_shadow,
@@ -305,6 +316,8 @@ class EchoPipelineHost:
             on_abandon_signal=self.presence_sinks.on_abandon_signal if self.presence_sinks is not None else None,
             on_presence_request=self.presence_sinks.on_presence_request if self.presence_sinks is not None else None,
             judge_now=self.presence_sinks.judge_now if self.presence_sinks is not None else None,
+            confirmation=self.confirmation,
+            confirmation_prompt=self._deliver_confirmation_prompt if self.confirmation is not None else None,
         )
         self._wire_decision_slot()
         self._tick_thread: threading.Thread | None = None
@@ -1588,6 +1601,50 @@ class EchoPipelineHost:
                 return ResumeDisposition.PENDING, code.lower()
             return ResumeDisposition.DROPPED, code.lower()
         return ResumeDisposition.DROPPED, "exhausted"
+
+    def _deliver_confirmation_prompt(self, prompt: ConfirmationPrompt) -> bool:
+        """結束階段確認提示（PM-2b，契約 §3A.5）：固定模板文字，經 Output Gate／Delivery 以目前 Lease 送出（不繞過 audience 過濾）。
+
+        沿用續跑回覆（``_deliver_resumed``）的通道：以新的 ``activity_id`` 綁定輸出、文字暫存在 ``loop_text``。
+        回 True＝已送達（SENT／ACCEPTED／RENDERED_PLAYED），之後的發言才可確認；Gate 拒絕、無 Lease、睡眠中（muted）、
+        送達不明（UNKNOWN／ENQUEUED）一律回 False（提案 superseded(undelivered)，未確認＝無事）。"""
+        services = self._services
+        if services is None or not prompt.text.strip():
+            return False
+        try:
+            if services.state.current(Axis.BEHAVIOR).state == BehaviorState.SLEEP.value:
+                return False
+        except Exception:
+            logger.warning("確認提示讀取 State 失敗（當作不送）", exc_info=True)
+            return False
+        activity_id = new_id("actv")
+        for attempt in (1, 2):  # STALE 時重取 Lease 重試一次
+            auth = self.endpoint.lease_auth()
+            if auth is None:
+                return False
+            ref = f"confirm:{prompt.proposal_id}:{attempt}"
+            self.loop_text.put(ref, activity_id, prompt.text)
+            intent = OutputIntent(
+                output_id=new_id("out"), sequence=0, kind=OutputKind.TEXT, origin=OutputOrigin.PERSONA,
+                persona_id=auth.persona_id, endpoint_id=auth.endpoint_id, lease_id=auth.lease_id,
+                fencing_epoch=auth.fencing_epoch, core_epoch=auth.core_epoch, presence_generation=auth.presence_generation,
+                activity_id=activity_id, audience_scope=prompt.ctx.audience_scope, content_ref=ref,
+                valid_until=datetime.now(UTC) + timedelta(seconds=self.RESUME_VALID_S),
+            )
+            try:
+                services.delivery.prepare(intent)
+                record = services.delivery.dispatch(intent)
+            finally:
+                self.loop_text.discard(ref)
+            if record.status in (DS.SENT, DS.ACCEPTED, DS.RENDERED_PLAYED):
+                return True
+            code = str((record.failure or {}).get("code", record.status.value))
+            if code == GateDecision.REJECT_STALE.value and attempt == 1:
+                self.metrics.inc("echo.confirm_prompt_stale_retry")
+                continue
+            self.metrics.inc("echo.confirm_prompt_not_delivered")
+            return False
+        return False
 
     def _store_memory(self, ticket: CoreTicket, facts: TurnEndFacts, tool_context: dict[str, Any]) -> None:
         """Q8：記憶寫入由 Core 依 outcome 自行 store（ES 的 think.memory 不寫入）；冪等鍵由 turn_id 衍生。

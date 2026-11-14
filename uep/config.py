@@ -177,6 +177,11 @@ class UepSettings(BaseSettings):
     schedule_behavior_driver: str = Field(default="shadow", validation_alias="UEP_BEHAVIOR_DRIVER")
     schedule_planner: str = Field(default="off", validation_alias="UEP_SCHEDULE_PLANNER")
     presence_arbiter: str = Field(default="off", validation_alias="UEP_PRESENCE_ARBITER")
+    # 確認流程（PM-2b，契約 §3A.4）：逾時秒數只能在 [30, 300] 內（越界由 ``uep.confirm.bounded_ttl`` 回預設）；
+    # 提示潤飾擴充點預設關（D8：固定模板，不經模型）
+    confirm_ttl_abandon_s: float = Field(default=90.0, validation_alias="UEP_CONFIRM_TTL_ABANDON_S")
+    confirm_ttl_forced_sleep_s: float = Field(default=120.0, validation_alias="UEP_CONFIRM_TTL_FORCED_SLEEP_S")
+    confirm_polish_enabled: bool = Field(default=False, validation_alias="UEP_CONFIRM_POLISH_ENABLED")
 
     # 系統日誌（uep/log.py，只在進入點 configure_logging 讀取）：UEP_LOG_LEVEL 優先於 UEP_LOG_DEPTH（1..4＝KEY／INFO／DEBUG／TRACE）；
     # log_levels 為 "uep.decision=DEBUG,echo_tts=WARNING" 的命名空間覆寫；console 輸出到 stderr；檔案每行程一組，JSONL 供查核

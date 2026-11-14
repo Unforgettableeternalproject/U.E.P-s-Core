@@ -356,7 +356,7 @@ def test_abandon_and_commitment_sinks_are_independent_and_mutually_exclusive():
         ab.append(signal)
 
     orch = _orch(Capture(), on_abandon_signal=ab_sink, on_commitment_signal=_sink_recorder(cm))
-    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="放棄這次工作", seq=1, source_endpoint_id="ep"))
+    orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text="結束這次行程", seq=1, source_endpoint_id="ep"))
     orch.on_utterance(CTX, UtteranceFact(speaker_ref=OWNER, text=PHRASE, seq=2, source_endpoint_id="ep"))
     assert len(ab) == 1 and len(cm) == 1
     assert ab[0].signal_id.startswith("abandon:") and cm[0].signal_id.startswith("commitment:")

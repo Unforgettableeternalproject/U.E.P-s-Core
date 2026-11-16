@@ -707,3 +707,88 @@ def test_bf16_default_dtype_serializes_concurrent_loads():
     assert not errors
     assert inside == [torch.bfloat16] * 4
     assert torch.get_default_dtype() == torch.float32
+
+
+# ---- 逐張量 safetensors loader ----
+
+
+def _sample_tensors(torch):
+    g = torch.Generator().manual_seed(0)
+    t = {
+        "f32": torch.randn(3, 5, generator=g),
+        "bf16": torch.randn(4, 2, generator=g).to(torch.bfloat16),
+        "f16": torch.randn(7, generator=g).to(torch.float16),
+        "f64": torch.randn(2, 2, generator=g).to(torch.float64),
+        "i64": torch.arange(6).reshape(2, 3),
+        "i32": torch.arange(5, dtype=torch.int32),
+        "i8": torch.tensor([-1, 2, 3], dtype=torch.int8),
+        "u8": torch.tensor([0, 255, 7], dtype=torch.uint8),
+        "bool": torch.tensor([True, False, True]),
+        "scalar": torch.tensor(3.5),
+        "empty": torch.empty(0, 4),
+    }
+    return t
+
+
+def test_per_tensor_loader_matches_safetensors(tmp_path):
+    torch = pytest.importorskip("torch")
+    st = pytest.importorskip("safetensors.torch")
+    tensors = _sample_tensors(torch)
+    path = tmp_path / "m.safetensors"
+    st.save_file(tensors, str(path), metadata={"k": "v"})
+    expected = st.load_file(str(path))
+    got = vb._load_file_per_tensor(str(path))
+    assert set(got) == set(expected) == set(tensors)
+    for k, ref in expected.items():
+        assert got[k].dtype == ref.dtype and got[k].shape == ref.shape, k
+        assert torch.equal(got[k], ref), k
+        got[k].add_(0) if got[k].is_floating_point() else None  # 可寫、不是唯讀 mmap
+
+
+def test_per_tensor_loader_rejects_unknown_dtype(tmp_path):
+    import json
+    import struct
+
+    pytest.importorskip("torch")
+    hdr = json.dumps({"x": {"dtype": "F4", "shape": [2], "data_offsets": [0, 1]}}).encode()
+    path = tmp_path / "bad.safetensors"
+    path.write_bytes(struct.pack("<Q", len(hdr)) + hdr + b"\x00")
+    with pytest.raises(ValueError, match="F4"):
+        vb._load_file_per_tensor(str(path))
+
+
+def test_per_tensor_loader_detects_truncated_file(tmp_path):
+    torch = pytest.importorskip("torch")
+    st = pytest.importorskip("safetensors.torch")
+    path = tmp_path / "t.safetensors"
+    st.save_file({"a": torch.randn(64)}, str(path))
+    path.write_bytes(path.read_bytes()[:-16])
+    with pytest.raises(ValueError, match="截斷"):
+        vb._load_file_per_tensor(str(path))
+
+
+def test_load_file_patched_only_inside_window(monkeypatch):
+    pytest.importorskip("torch")
+    sentinel = object()
+    _install_fake_voxcpm(monkeypatch, lambda model_cls: model_cls())
+    import sys
+
+    v2 = sys.modules["voxcpm.model.voxcpm2"]
+    v2.load_file = sentinel
+    with vb._bf16_default_dtype():
+        assert v2.load_file is vb._load_file_per_tensor
+    assert v2.load_file is sentinel
+    with pytest.raises(RuntimeError):
+        with vb._bf16_default_dtype():
+            raise RuntimeError("x")
+    assert v2.load_file is sentinel
+
+
+def test_load_file_target_missing_warns_and_continues(monkeypatch, caplog):
+    torch = pytest.importorskip("torch")
+    _install_fake_voxcpm(monkeypatch, lambda model_cls: model_cls())  # 替身沒有 load_file
+    with caplog.at_level("WARNING", logger=vb.logger.name):
+        with vb._bf16_default_dtype():
+            assert torch.get_default_dtype() == torch.bfloat16
+    assert any("load_file" in r.getMessage() for r in caplog.records)
+    assert torch.get_default_dtype() == torch.float32

@@ -476,9 +476,85 @@ class VoxBackend:
 _DEFAULT_DTYPE_LOCK = threading.Lock()
 
 
+_SAFETENSORS_DTYPE_NAMES = {
+    "BOOL": "bool", "U8": "uint8", "I8": "int8", "I16": "int16", "U16": "uint16", "I32": "int32", "U32": "uint32",
+    "I64": "int64", "U64": "uint64", "F16": "float16", "BF16": "bfloat16", "F32": "float32", "F64": "float64",
+    "F8_E4M3": "float8_e4m3fn", "F8_E5M2": "float8_e5m2",
+}
+
+
+def _load_file_per_tensor(filename: str | Path, device: str = "cpu") -> dict[str, Any]:
+    """逐張量讀取 safetensors（簽章與回傳值相容 ``safetensors.torch.load_file``）。
+
+    ``safetensors.load_file`` 以 mmap（copy-on-write）映射整個檔案再拷貝出整份，瞬間需要約兩倍檔案大小的 commit；
+    commit 不足時 ``torch/storage.py`` 會直接 access violation（0xC0000005）而不是 MemoryError。
+    這裡每個張量只配置自己的 buffer、直接 ``readinto``，不經 mmap、也不多複製一份。
+    """
+    import struct
+
+    import torch
+
+    dtypes: dict[str, Any] = {}
+    for key, name in _SAFETENSORS_DTYPE_NAMES.items():
+        dt = getattr(torch, name, None)
+        if dt is not None:
+            dtypes[key] = dt
+    out: dict[str, Any] = {}
+    with open(filename, "rb") as f:
+        (header_len,) = struct.unpack("<Q", f.read(8))
+        header = json.loads(f.read(header_len))
+        base = 8 + header_len
+        for name, info in header.items():
+            if name == "__metadata__":
+                continue
+            dtype = dtypes.get(info["dtype"])
+            if dtype is None:
+                raise ValueError(f"不支援的 safetensors dtype {info['dtype']!r}（張量 {name}）")
+            start, end = info["data_offsets"]
+            shape = list(info["shape"])
+            nbytes = end - start
+            if nbytes == 0:
+                out[name] = torch.empty(shape, dtype=dtype)
+            else:
+                raw = torch.empty(nbytes, dtype=torch.uint8)  # 可寫 buffer，直接讀進去
+                view = memoryview(raw.numpy())
+                f.seek(base + start)
+                got = 0
+                while got < nbytes:
+                    n = f.readinto(view[got:])
+                    if not n:
+                        raise ValueError(f"safetensors 檔案被截斷：張量 {name} 只讀到 {got}/{nbytes} bytes")
+                    got += n
+                out[name] = raw.view(dtype).reshape(shape)
+            if str(device) != "cpu":
+                out[name] = out[name].to(device)
+    return out
+
+
+@contextmanager
+def _patched_voxcpm_load_file() -> Iterator[None]:
+    """視窗內把 ``voxcpm.model.voxcpm2.load_file`` 換成逐張量讀取，離開（含例外）還原；找不到目標時記 warning 並沿用原 loader。"""
+    try:
+        from voxcpm.model import voxcpm2 as target
+    except ImportError:
+        logger.warning("找不到 voxcpm.model.voxcpm2，沿用原 safetensors loader")
+        yield
+        return
+    if not hasattr(target, "load_file"):
+        logger.warning("voxcpm.model.voxcpm2 沒有 load_file（第三方可能改版），沿用原 safetensors loader")
+        yield
+        return
+    original = target.load_file
+    target.load_file = _load_file_per_tensor
+    try:
+        yield
+    finally:
+        target.load_file = original
+
+
 @contextmanager
 def _bf16_default_dtype() -> Iterator[None]:
-    """載入期間暫時把 torch 全域預設 dtype 設成 bfloat16，離開（含例外）一律還原。
+    """VOX 載入視窗：暫時把 torch 全域預設 dtype 設成 bfloat16，並把 voxcpm 的 safetensors loader 換成逐張量版本；離開（含例外）一律還原。
 
     ``torch.set_default_dtype`` 是行程全域、不分執行緒：視窗內其他執行緒新建的 torch 模組也會拿到 bf16。
     因此只包住 ``VoxCPM.from_pretrained``（不含 LoRA、暖機與生成），並用鎖讓多個 VoxBackend 的載入互斥；
@@ -490,7 +566,8 @@ def _bf16_default_dtype() -> Iterator[None]:
         previous = torch.get_default_dtype()
         torch.set_default_dtype(torch.bfloat16)
         try:
-            yield
+            with _patched_voxcpm_load_file():
+                yield
         finally:
             torch.set_default_dtype(previous)
 

@@ -21,7 +21,7 @@ PROPOSERS.register(LAYA_PRIMARY_ID, create_laya_primary_proposer)
 # DL-5：英文 NLP 模型檔只在工廠建立時檢查；缺檔時 ValueError（啟動即報錯），預設不啟用
 PROPOSERS.register(NLP_PROPOSER_ID, create_nlp_proposer)
 
-# 支援 ``defer_warmup=True``（建構時不載模型、由呼叫端稍後 ``start_warmup``）的 proposer；Host 依此延後載入到 speak prepare 之後
+# 支援 ``defer_warmup=True``（建構時不載模型、由呼叫端稍後 ``start_warmup``）的 proposer；Host 依此延後載入到 speak／think／STT prepare 之後
 DEFERRABLE_PROPOSER_IDS = frozenset({LAYA_PROPOSER_ID, LAYA_PRIMARY_ID, NLP_PROPOSER_ID})
 
 

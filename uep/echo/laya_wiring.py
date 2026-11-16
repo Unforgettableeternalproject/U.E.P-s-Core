@@ -490,7 +490,7 @@ def create_laya_proposer(
     """registry 工廠：組態來自 ``UEP_LAYA_MODELS_DIR``／``UEP_LAYA_MODEL``／``UEP_LAYA_REVISION``／``UEP_LAYA_DEVICE``。
 
     ``UEP_LAYA_MODEL`` 未設時用預設本地目錄；該目錄不存在就在這裡拋 ``ValueError``（不退回 hub）。
-    ``defer_warmup=True``：建構時不開背景載入，由呼叫端（Host 在 speak prepare 完成後）呼叫 ``start_warmup``；
+    ``defer_warmup=True``：建構時不開背景載入，由呼叫端（Host 在 speak／think／STT prepare 完成後）呼叫 ``start_warmup``；
     載入完成前 ``propose`` 照舊回預設／走舊規則。
     """
     from uep.config import get_settings

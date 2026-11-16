@@ -1,4 +1,4 @@
-"""啟動順序：VOX（speak prepare）先完成，Laya／翻譯／NLP／記憶 embedding 的載入才開始（不需資料庫、不載任何模型）。"""
+"""啟動順序：VOX（speak）、think、STT 都 prepare 完，Laya／翻譯／NLP／記憶 embedding 的載入才開始（不需資料庫、不載任何模型）。"""
 from __future__ import annotations
 
 import asyncio
@@ -69,23 +69,24 @@ def _make_host(monkeypatch, events: list[str], *, fail_speak: bool = False, shad
     cfg = replace(DecisionConfig(), proposer_id="laya.primary", shadow_proposer_ids=shadows)
     host = EchoPipelineHost(
         publisher=None, think=_Stage("think", events), speak=_Stage("speak", events, fail_speak),  # type: ignore[arg-type]
-        sink_factory=lambda *a: "x", session=CTX, decision=cfg,
+        sink_factory=lambda *a: "x", session=CTX, decision=cfg, input_stage=_Stage("stt", events),
     )
     return host, created
 
 
-def test_laya_與_nlp_建構時延後載入且在_speak_prepare_之後才啟動(monkeypatch):
+def test_laya_與_nlp_建構時延後載入且在_stt_prepare_之後才啟動(monkeypatch):
     events: list[str] = []
     host, created = _make_host(monkeypatch, events, shadows=("nlp.legacy",))
     try:
         assert created and all(kw.get("defer_warmup") is True for _pid, kw in created)
         assert events == []  # 建構期不載任何東西
-        host.add_post_speak_hook(lambda: events.append("embedding.warm"))
+        host.add_post_start_hook(lambda: events.append("embedding.warm"))
         asyncio.run(host._startup())
         assert events == [
             "speak.prepare.start", "speak.prepare.end",  # VOX 先單獨完成
-            "laya.load", "nlp.load", "embedding.warm",  # 之後才開始其他載入
             "think.prepare.start", "think.prepare.end",
+            "stt.prepare.start", "stt.prepare.end",  # STT 載入也不與延後的載入重疊
+            "laya.load", "nlp.load", "embedding.warm",  # 整段 prepare 之後才開始其他載入
         ]
     finally:
         host.orchestrator.close()
@@ -95,7 +96,7 @@ def test_speak_prepare_失敗時其他元件仍會啟動且例外照常上拋(mo
     events: list[str] = []
     host, _ = _make_host(monkeypatch, events, fail_speak=True)
     try:
-        host.add_post_speak_hook(lambda: events.append("embedding.warm"))
+        host.add_post_start_hook(lambda: events.append("embedding.warm"))
         with pytest.raises(RuntimeError, match="prepare 失敗"):
             asyncio.run(host._startup())
         assert events == ["speak.prepare.start", "speak.prepare.failed", "laya.load", "embedding.warm"]
@@ -110,10 +111,10 @@ def test_延後啟動的例外只記_log_不擋其他元件(monkeypatch):
         def boom() -> None:
             raise RuntimeError("hook 失敗")
 
-        host.add_post_speak_hook(boom)
-        host.add_post_speak_hook(lambda: events.append("embedding.warm"))
+        host.add_post_start_hook(boom)
+        host.add_post_start_hook(lambda: events.append("embedding.warm"))
         asyncio.run(host._startup())
-        assert "laya.load" in events and "embedding.warm" in events and "think.prepare.end" in events
+        assert events[-2:] == ["laya.load", "embedding.warm"] and "stt.prepare.end" in events
     finally:
         host.orchestrator.close()
 
@@ -202,3 +203,19 @@ def test_echo_engine_factory_延後模式關掉_engine_自動暖機(monkeypatch,
     EchoEngineFactory(defer_embedding_warmup=True)("ns", tmp_path)
     EchoEngineFactory()("ns", tmp_path)
     assert seen[0]["warmup_embedding"] is False and "warmup_embedding" not in seen[1]
+
+
+def test_think_prepare_失敗時延後的載入仍會啟動(monkeypatch):
+    events: list[str] = []
+    host, _ = _make_host(monkeypatch, events)
+    try:
+        host.think.fail = True
+        host.add_post_start_hook(lambda: events.append("embedding.warm"))
+        with pytest.raises(RuntimeError, match="prepare 失敗"):
+            asyncio.run(host._startup())
+        assert events == [
+            "speak.prepare.start", "speak.prepare.end", "think.prepare.start", "think.prepare.failed",
+            "laya.load", "embedding.warm",
+        ]
+    finally:
+        host.orchestrator.close()

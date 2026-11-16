@@ -226,7 +226,7 @@ def build_fake_runtime(
     )
     warm_embedding = getattr(memory_host, "warm_embedding", None)
     if callable(warm_embedding):
-        host.add_post_speak_hook(warm_embedding)  # 記憶 embedding 暖機等 speak（VOX）prepare 完成後才啟動
+        host.add_post_start_hook(warm_embedding)  # 記憶 embedding 暖機等 speak／think／STT prepare 都完成後才啟動
     if loop_switch is not None:
         from uep.console.agent_rig import install_loop_route
 

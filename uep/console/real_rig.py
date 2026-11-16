@@ -167,7 +167,7 @@ class WarmEngineFactory:
             self._warmups["memory_embedding"] = self._warmups.get("memory_embedding", 0.0) + (time.perf_counter() - t0)
 
     def start_warm(self) -> None:
-        """在背景執行緒暖機（供 ``EchoPipelineHost.add_post_speak_hook``；立即返回）。"""
+        """在背景執行緒暖機（供 ``EchoPipelineHost.add_post_start_hook``；立即返回）。"""
         threading.Thread(target=self.warm, name="uep-embedding-warmup", daemon=True).start()
 
     def __call__(self, namespace_id: str, data_root: Path) -> Any:
@@ -204,7 +204,7 @@ def build_memory_host(
         data_root=root, namespaces=(NamespaceSpec(MEMORY_NAMESPACE, owner_id=MEMORY_OWNER),), identity=identity,
         publisher=publisher, session_factory=session_factory, **kwargs,
     )
-    host.warm_embedding = warm_factory.start_warm  # rig 掛到 EchoPipelineHost.add_post_speak_hook：VOX prepare 完成後才暖機
+    host.warm_embedding = warm_factory.start_warm  # rig 掛到 EchoPipelineHost.add_post_start_hook：speak／think／STT prepare 都完成後才暖機
     host.rest_window_policy = dream_rest_policy  # 供 BehaviorDriver 判定 in_rest_window（與做夢迴圈同一個 policy；PP-3b）
     return host
 

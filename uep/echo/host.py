@@ -281,7 +281,7 @@ class EchoPipelineHost:
         # 載入重的 proposer（Laya／NLP）由 Host 自己組裝時一律延後載入：VOX prepare 完成後才啟動（見 ``_startup``），
         # 避免它們的常駐記憶體墊在 VOX 載入的瞬時峰值之下；延後期間 propose 走既有的 warming 預設／舊規則回退
         self._deferred_warmups: list[Any] = []
-        self._post_speak_hooks: list[Callable[[], None]] = []
+        self._post_start_hooks: list[Callable[[], None]] = []
         if proposer is None:
             proposer = self._create_proposer(self._decision.proposer_id)
         wake = getattr(proposer, "wake", None)
@@ -585,7 +585,7 @@ class EchoPipelineHost:
         return self.lease_result
 
     def _create_proposer(self, proposer_id: str) -> TurnProposer:
-        """經 registry 建立 proposer；支援延後載入者以 ``defer_warmup=True`` 建立並登記，等 speak prepare 完成才啟動。"""
+        """經 registry 建立 proposer；支援延後載入者以 ``defer_warmup=True`` 建立並登記，等整段 prepare 完成才啟動。"""
         if proposer_id not in DEFERRABLE_PROPOSER_IDS:
             return create_proposer(proposer_id, config=self._decision)
         created = create_proposer(proposer_id, config=self._decision, defer_warmup=True)
@@ -595,33 +595,37 @@ class EchoPipelineHost:
             self._deferred_warmups.append(target)
         return created
 
-    def add_post_speak_hook(self, hook: Callable[[], None]) -> None:
-        """登記「speak prepare 結束後」要觸發的暖機（例如記憶 embedding）。
+    def add_post_start_hook(self, hook: Callable[[], None]) -> None:
+        """登記「整個 echo 啟動（speak、think、STT 都 prepare 完）之後」要觸發的暖機（例如記憶 embedding）。
 
-        hook 必須很快返回（只負責啟動背景載入）；例外只記 log，不影響啟動。speak prepare 失敗或逾時時照樣觸發
+        hook 必須很快返回（只負責啟動背景載入）；例外只記 log，不影響啟動。任何一段 prepare 失敗或逾時時照樣觸發
         （speak 的守衛會降級而不是讓 Host 啟動失敗），其他元件因此不會被一個失敗的 TTS 擋住。
         """
-        self._post_speak_hooks.append(hook)
+        self._post_start_hooks.append(hook)
 
-    def _run_post_speak_hooks(self) -> None:
+    def _run_post_start_hooks(self) -> None:
         for target in self._deferred_warmups:
             try:
                 target.start_warmup()
             except Exception:
                 logger.exception("延後的暖機啟動失敗：%s", type(target).__name__)
-        for hook in self._post_speak_hooks:
+        for hook in self._post_start_hooks:
             try:
                 hook()
             except Exception:
-                logger.exception("speak prepare 之後的暖機 hook 失敗")
+                logger.exception("啟動完成後的暖機 hook 失敗")
 
     async def _startup(self) -> None:
         # 暖機順序（ES 介面清單 B3）：speak -> think -> prewarm -> 輸入 stage
-        # speak（VOX 載入的瞬時峰值最高）先單獨完成；Laya／翻譯／NLP／記憶 embedding 的載入延後到它之後（成功或降級皆然）
+        # VOX（speak）與 STT 載入的瞬時峰值最高；Laya／翻譯／NLP／記憶 embedding 的載入延後到整段 prepare 結束之後
+        # （成功、降級或例外皆然），不與它們重疊
         try:
-            await self.speak.prepare()
+            await self._prepare_stages()
         finally:
-            self._run_post_speak_hooks()
+            self._run_post_start_hooks()
+
+    async def _prepare_stages(self) -> None:
+        await self.speak.prepare()
         await self.think.prepare()
         prewarm = getattr(self.think, "prewarm", None)
         if prewarm is not None and self._prewarm_prompt is not None:

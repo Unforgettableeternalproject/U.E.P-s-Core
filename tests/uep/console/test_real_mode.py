@@ -207,6 +207,26 @@ def test_warmup_耗時記錄且_embedding_先於_stage_prepare(monkeypatch, real
     assert rt.memory_host.started
 
 
+def test_記憶_embedding_暖機掛在_speak_prepare_之後(session_factory, tmp_path):
+    """memory.start 建 engine 時不暖機；rig 把 ``warm_embedding`` 掛成 Host 的 post-speak hook，speak prepare 完才觸發。"""
+    events: list[str] = []
+
+    def memory_factory(publisher, identity):
+        host = MemoryHost(
+            engine_factory=lambda ns, root: events.append("memory.engine") or FakeEngineFactory()(ns, root),
+            data_root=tmp_path / "mem", namespaces=(NamespaceSpec(real_rig.MEMORY_NAMESPACE, owner_id="owner"),),
+            identity=identity, publisher=publisher, llm_fn=lambda p: "ok", drain_timeout_s=1.0,
+        )
+        host.warm_embedding = lambda: events.append("embedding.warm")
+        return host
+
+    rt = build_fake_runtime(session_factory, tmp_path / "e2e", memory_factory=memory_factory, memory_root=tmp_path / "mem")
+    try:
+        assert events == ["memory.engine", "embedding.warm"]  # engine 先建（memory.start），暖機在 echo.start 的 speak prepare 後
+    finally:
+        rt.core.shutdown()
+
+
 def test_ollama_後端不走共用_warmup(monkeypatch):
     calls = []
     monkeypatch.setattr("uep.echo.memory_wiring.warmup_embedding", lambda m, d: calls.append(1), raising=False)

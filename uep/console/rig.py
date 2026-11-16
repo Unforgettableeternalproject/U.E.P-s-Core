@@ -224,6 +224,9 @@ def build_fake_runtime(
         **{"location": CONSOLE_LOCATION, "input_stage": input_stage,
            "memory": memory_host.access if memory_host is not None else None, **(host_kwargs or {})},
     )
+    warm_embedding = getattr(memory_host, "warm_embedding", None)
+    if callable(warm_embedding):
+        host.add_post_speak_hook(warm_embedding)  # 記憶 embedding 暖機等 speak（VOX）prepare 完成後才啟動
     if loop_switch is not None:
         from uep.console.agent_rig import install_loop_route
 

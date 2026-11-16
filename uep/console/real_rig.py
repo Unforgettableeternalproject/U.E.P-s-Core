@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable, MutableMapping
 from pathlib import Path
@@ -136,20 +137,25 @@ class WarmEngineFactory:
     """包住 ``EchoEngineFactory``：建 engine 前先預載行程共用的 embedding 模型（``echo_memory`` 的模組級 ``warmup``）。
 
     bge-m3 冷載入 9–18 秒遠大於 Access Layer 的 3 秒檢索逾時；共用模型讓之後每個 engine 都不再冷啟動。
+
+    ``defer=True``：建 engine 時不暖機，改由宿主在 TTS（VOX）prepare 完成後呼叫 ``start_warm``（背景執行緒），
+    讓 bge-m3 的常駐記憶體不墊在 VOX 載入的瞬時峰值之下；暖機完成前的檢索走原本的降級路徑（首次檢索自行載入）。
     """
 
     def __init__(
         self, inner: Callable[[str, Path], Any], warmups: MutableMapping[str, float], *, model: str | None,
-        device: str, backend: str | None,
+        device: str, backend: str | None, defer: bool = False,
     ) -> None:
         self._inner = inner
         self._warmups = warmups
         self._model = model
         self._device = device
         self._backend = backend
+        self._defer = defer
         self.engines: list[Any] = []
 
-    def __call__(self, namespace_id: str, data_root: Path) -> Any:
+    def warm(self) -> None:
+        """預載共用 embedding 模型並記錄耗時；失敗只記 log（降級），不往外拋。"""
         if self._model and (self._backend or "sentence-transformers") == "sentence-transformers":
             from uep.echo.memory_wiring import warmup_embedding
 
@@ -159,6 +165,14 @@ class WarmEngineFactory:
             except Exception:  # noqa: BLE001 - 暖機失敗不阻擋啟動，首次檢索會降級並記 log
                 logger.exception("記憶 embedding 暖機失敗（檢索可能降級）")
             self._warmups["memory_embedding"] = self._warmups.get("memory_embedding", 0.0) + (time.perf_counter() - t0)
+
+    def start_warm(self) -> None:
+        """在背景執行緒暖機（供 ``EchoPipelineHost.add_post_speak_hook``；立即返回）。"""
+        threading.Thread(target=self.warm, name="uep-embedding-warmup", daemon=True).start()
+
+    def __call__(self, namespace_id: str, data_root: Path) -> Any:
+        if not self._defer:
+            self.warm()
         engine = self._inner(namespace_id, data_root)
         self.engines.append(engine)
         return engine
@@ -178,16 +192,19 @@ def build_memory_host(
         device=memory_device(settings), embedding_backend=settings.memory_embedding_backend,
         embedding_model=settings.memory_embedding_model, min_similarity=settings.memory_min_similarity,
         assess_mode="off", dream_loop=dream_loop, dream_rest_policy=dream_rest_policy,
+        defer_embedding_warmup=True,  # engine 不自行暖機；時機交給 WarmEngineFactory.start_warm（VOX prepare 之後）
     )
     kwargs = wiring.host_kwargs()
-    kwargs["engine_factory"] = WarmEngineFactory(
+    warm_factory = WarmEngineFactory(
         kwargs["engine_factory"], warmups, model=settings.memory_embedding_model, device=memory_device(settings),
-        backend=settings.memory_embedding_backend,
+        backend=settings.memory_embedding_backend, defer=True,
     )
+    kwargs["engine_factory"] = warm_factory
     host = MemoryHost(
         data_root=root, namespaces=(NamespaceSpec(MEMORY_NAMESPACE, owner_id=MEMORY_OWNER),), identity=identity,
         publisher=publisher, session_factory=session_factory, **kwargs,
     )
+    host.warm_embedding = warm_factory.start_warm  # rig 掛到 EchoPipelineHost.add_post_speak_hook：VOX prepare 完成後才暖機
     host.rest_window_policy = dream_rest_policy  # 供 BehaviorDriver 判定 in_rest_window（與做夢迴圈同一個 policy；PP-3b）
     return host
 

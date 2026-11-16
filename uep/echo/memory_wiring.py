@@ -93,8 +93,10 @@ class EchoEngineFactory:
         embedding_model: str | None = None,
         events_enabled_fn: Callable[[], bool] | None = None,
         min_similarity: float | None = None,
+        defer_embedding_warmup: bool = False,
     ) -> None:
         self._min_similarity = min_similarity
+        self._defer_embedding_warmup = defer_embedding_warmup  # True：engine 不自動暖機 embedding，由宿主在 TTS 載入後觸發
         self._device = device
         self._embedding_backend = embedding_backend
         self._embedding_model = embedding_model
@@ -121,6 +123,8 @@ class EchoEngineFactory:
             kwargs["embedding_backend"] = self._embedding_backend
         if self._embedding_model:
             kwargs["embedding_model"] = self._embedding_model
+        if self._defer_embedding_warmup:
+            kwargs["warmup_embedding"] = False
         return MemoryEngine(**kwargs)
 
 
@@ -272,11 +276,13 @@ def build_memory_wiring(
     min_similarity: float | None = None,
     dream_loop: DreamLoopConfig | None = None,
     dream_rest_policy: RestWindowPolicy | None = None,
+    defer_embedding_warmup: bool = False,
 ) -> MemoryWiring:
     return MemoryWiring(
         engine_factory=EchoEngineFactory(
             device=device, embedding_backend=embedding_backend, embedding_model=embedding_model,
             events_enabled_fn=events_enabled_fn, min_similarity=min_similarity,
+            defer_embedding_warmup=defer_embedding_warmup,
         ),
         adapter_factory=make_adapter_factory(llm_fn=llm_fn, assess_llm_fn=assess_llm_fn, assess_mode=assess_mode),
         tool_backend=EchoMemoryToolBackend(),

@@ -118,7 +118,7 @@ from uep.turn.orchestrator import (
     attempt_label,
 )
 from uep.turn.proposer import RespondProposer, TickingProposer, TurnProposer
-from uep.turn.registry import create_proposer
+from uep.turn.registry import DEFERRABLE_PROPOSER_IDS, create_proposer
 from uep.turn.speech_filter import PassMarkerFilter
 from uep.turn.wake import WakeDetector
 
@@ -278,14 +278,18 @@ class EchoPipelineHost:
         if callable(set_resolver):
             set_resolver(self.loop_text.get)
         # primary：呼叫端明確傳入就以呼叫端為準；None 才依 DecisionConfig.proposer_id 經 registry 組裝
+        # 載入重的 proposer（Laya／NLP）由 Host 自己組裝時一律延後載入：VOX prepare 完成後才啟動（見 ``_startup``），
+        # 避免它們的常駐記憶體墊在 VOX 載入的瞬時峰值之下；延後期間 propose 走既有的 warming 預設／舊規則回退
+        self._deferred_warmups: list[Any] = []
+        self._post_speak_hooks: list[Callable[[], None]] = []
         if proposer is None:
-            proposer = create_proposer(self._decision.proposer_id, config=self._decision)
+            proposer = self._create_proposer(self._decision.proposer_id)
         wake = getattr(proposer, "wake", None)
         # shadow：呼叫端明確傳入（含空序列）就以呼叫端為準；None 才依 DecisionConfig.shadow_proposer_ids 自動組裝
         if shadow_proposers is None:
             primary_id = getattr(proposer, "proposer_id", None) or RespondProposer.proposer_id
             shadow_proposers = tuple(
-                create_proposer(pid, config=self._decision)
+                self._create_proposer(pid)
                 for pid in dict.fromkeys(self._decision.shadow_proposer_ids)
                 if pid != primary_id
             )
@@ -580,9 +584,44 @@ class EchoPipelineHost:
             logger.warning("EchoPipelineHost 沒有取得 Lease：%s", self.lease_result.value)
         return self.lease_result
 
+    def _create_proposer(self, proposer_id: str) -> TurnProposer:
+        """經 registry 建立 proposer；支援延後載入者以 ``defer_warmup=True`` 建立並登記，等 speak prepare 完成才啟動。"""
+        if proposer_id not in DEFERRABLE_PROPOSER_IDS:
+            return create_proposer(proposer_id, config=self._decision)
+        created = create_proposer(proposer_id, config=self._decision, defer_warmup=True)
+        # laya.primary 的 Laya 在 ``.laya``；其餘（laya.shadow、nlp.legacy）本身就有 start_warmup
+        target = getattr(created, "laya", created)
+        if callable(getattr(target, "start_warmup", None)):
+            self._deferred_warmups.append(target)
+        return created
+
+    def add_post_speak_hook(self, hook: Callable[[], None]) -> None:
+        """登記「speak prepare 結束後」要觸發的暖機（例如記憶 embedding）。
+
+        hook 必須很快返回（只負責啟動背景載入）；例外只記 log，不影響啟動。speak prepare 失敗或逾時時照樣觸發
+        （speak 的守衛會降級而不是讓 Host 啟動失敗），其他元件因此不會被一個失敗的 TTS 擋住。
+        """
+        self._post_speak_hooks.append(hook)
+
+    def _run_post_speak_hooks(self) -> None:
+        for target in self._deferred_warmups:
+            try:
+                target.start_warmup()
+            except Exception:
+                logger.exception("延後的暖機啟動失敗：%s", type(target).__name__)
+        for hook in self._post_speak_hooks:
+            try:
+                hook()
+            except Exception:
+                logger.exception("speak prepare 之後的暖機 hook 失敗")
+
     async def _startup(self) -> None:
         # 暖機順序（ES 介面清單 B3）：speak -> think -> prewarm -> 輸入 stage
-        await self.speak.prepare()
+        # speak（VOX 載入的瞬時峰值最高）先單獨完成；Laya／翻譯／NLP／記憶 embedding 的載入延後到它之後（成功或降級皆然）
+        try:
+            await self.speak.prepare()
+        finally:
+            self._run_post_speak_hooks()
         await self.think.prepare()
         prewarm = getattr(self.think, "prewarm", None)
         if prewarm is not None and self._prewarm_prompt is not None:

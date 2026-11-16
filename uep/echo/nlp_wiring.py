@@ -307,9 +307,12 @@ class NlpLegacyProposer:
         return proposal
 
 
-def create_nlp_proposer(config: DecisionConfig | None = None, settings: object | None = None, **_: object) -> NlpLegacyProposer:
-    """registry 工廠：模型目錄來自 ``UEP_NLP_MODEL_DIR``（未設＝repo 相對的 ``models/nlp``）。"""
+def create_nlp_proposer(
+    config: DecisionConfig | None = None, settings: object | None = None, defer_warmup: bool = False, **_: object,
+) -> NlpLegacyProposer:
+    """registry 工廠：模型目錄來自 ``UEP_NLP_MODEL_DIR``（未設＝repo 相對的 ``models/nlp``）。
+    ``defer_warmup=True``：建構時不開背景載入，由呼叫端稍後呼叫 ``start_warmup``。"""
     from uep.config import get_settings
 
     st = settings if settings is not None else get_settings()
-    return NlpLegacyProposer(model_dir=resolve_model_dir(getattr(st, "nlp_model_dir", None)))
+    return NlpLegacyProposer(model_dir=resolve_model_dir(getattr(st, "nlp_model_dir", None)), autoload=not defer_warmup)

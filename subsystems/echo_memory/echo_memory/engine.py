@@ -111,6 +111,7 @@ class MemoryEngine:
         embedding_backend: str = "sentence-transformers",
         ollama_base_url: str = "http://localhost:11434",
         event_emitter_enabled_fn: Callable[[], bool] | None = None,
+        warmup_embedding: bool = True,
     ):
         """
         初始化記憶引擎。
@@ -127,6 +128,8 @@ class MemoryEngine:
             ollama_base_url: Ollama server URL（僅 backend=ollama 時使用）
             event_emitter_enabled_fn: 宿主注入的 memory.* 事件開關；提供時取代全域
                 self_model_events_enabled 判斷（仍需 sink，且共享 namespace 不發）
+            warmup_embedding: 建立 episodic 時是否自動在背景暖機 embedding；宿主要自己決定載入時機
+                （例如等 TTS 載入完成後才暖機）時傳 False，之後由宿主呼叫 ``warmup``
         """
         self.namespace_id = normalize_namespace_id(namespace_id)
         self.storage_root = Path(storage_path)
@@ -140,6 +143,7 @@ class MemoryEngine:
         self._llm_fn = llm_fn
         self.embedding_backend = embedding_backend
         self.ollama_base_url = ollama_base_url
+        self._warmup_embedding = warmup_embedding
 
         # 延遲屬性的建構鎖：每個屬性一把（可重入），double-checked，保證並行冷啟動每個元件只建一份。
         # 鎖序：建構鎖只會依「依賴方向」巢狀取得（retrieval -> semantic -> episodic），
@@ -293,7 +297,7 @@ class MemoryEngine:
                     )
                     # 背景暖機 embedding 後端；失敗只標記 degraded，不影響使用。
                     # 測試或離線環境可設 ECHO_DISABLE_EMBEDDING_WARMUP=1 關閉。
-                    if os.getenv("ECHO_DISABLE_EMBEDDING_WARMUP", "").lower() not in ("1", "true", "yes"):
+                    if self._warmup_embedding and os.getenv("ECHO_DISABLE_EMBEDDING_WARMUP", "").lower() not in ("1", "true", "yes"):
                         obj.warmup(background=True)
                     self._episodic = obj
         return self._episodic

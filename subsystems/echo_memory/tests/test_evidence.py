@@ -356,6 +356,9 @@ def test_engine_warmup_wired_and_disableable(tmp_path, monkeypatch):
     monkeypatch.delenv("ECHO_DISABLE_EMBEDDING_WARMUP")
     MemoryEngine(storage_path=tmp_path / "b", namespace_id="b").episodic
     assert calls == [True]
+    # 宿主自己決定暖機時機（例如等 TTS 載入完成）：warmup_embedding=False 不自動暖機
+    MemoryEngine(storage_path=tmp_path / "c", namespace_id="c", warmup_embedding=False).episodic
+    assert calls == [True]
 
 
 def test_mock_executor_still_callable():

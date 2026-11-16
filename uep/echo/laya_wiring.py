@@ -484,10 +484,14 @@ def bind_laya_capabilities(orchestrator: object, registry: object, mode: str = "
     return len(targets)
 
 
-def create_laya_proposer(config: DecisionConfig | None = None, settings: object | None = None, **_: object) -> LayaProposer:
+def create_laya_proposer(
+    config: DecisionConfig | None = None, settings: object | None = None, defer_warmup: bool = False, **_: object,
+) -> LayaProposer:
     """registry 工廠：組態來自 ``UEP_LAYA_MODELS_DIR``／``UEP_LAYA_MODEL``／``UEP_LAYA_REVISION``／``UEP_LAYA_DEVICE``。
 
     ``UEP_LAYA_MODEL`` 未設時用預設本地目錄；該目錄不存在就在這裡拋 ``ValueError``（不退回 hub）。
+    ``defer_warmup=True``：建構時不開背景載入，由呼叫端（Host 在 speak prepare 完成後）呼叫 ``start_warmup``；
+    載入完成前 ``propose`` 照舊回預設／走舊規則。
     """
     from uep.config import get_settings
 
@@ -520,6 +524,7 @@ def create_laya_proposer(config: DecisionConfig | None = None, settings: object 
         device=(getattr(st, "laya_device", None) or "").strip() or DEFAULT_LAYA_DEVICE,
         assistant_name=cfg.bot_identity.primary_name,
         source_revision=source_revision,
+        autoload=not defer_warmup,
     )
 
 
@@ -804,6 +809,6 @@ def create_laya_primary_proposer(
 ) -> LayaRulesProposer:
     """registry 工廠（``laya.primary``）：Laya 設定同 ``create_laya_proposer``，規則部分用同一份 ``DecisionConfig``。"""
     cfg = config or DecisionConfig()
-    laya = create_laya_proposer(cfg, settings)
+    laya = create_laya_proposer(cfg, settings, defer_warmup=bool(kwargs.get("defer_warmup")))
     rules_kwargs = {k: v for k, v in kwargs.items() if k in ("clock", "on_mode_change")}
     return LayaRulesProposer(laya, RuleProposer(cfg, **rules_kwargs))  # type: ignore[arg-type]

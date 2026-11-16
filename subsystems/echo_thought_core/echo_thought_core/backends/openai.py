@@ -156,6 +156,10 @@ class OpenAIBackend(AbstractBackend):
         前思考得越久，那段時間全部計入串流管線的 TTFA。
         設為 None 表示不傳這個參數（給不支援的模型用）。"""
 
+        self.verbosity: str | None = cfg.get("verbosity")
+        """Responses API 的 ``text.verbosity``（low／medium／high）；None 表示不傳。
+        只影響可見輸出的詳略，不影響推理；chat 路徑不使用。"""
+
         self.character: str = cfg.get("character", character)
         self.timeout: int = cfg.get("timeout", timeout)
         self.max_tokens: int = cfg.get("max_output_tokens", max_tokens)
@@ -435,6 +439,8 @@ class OpenAIBackend(AbstractBackend):
             params["temperature"] = self.temperature
         if self.reasoning_effort:
             params["reasoning"] = {"effort": self.reasoning_effort}
+        if self.verbosity:
+            params["text"] = {"verbosity": self.verbosity}
 
         if use_previous_response and self._last_response_id:
             params["previous_response_id"] = self._last_response_id

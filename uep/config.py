@@ -258,6 +258,9 @@ class UepSettings(BaseSettings):
     llm_model: str | None = Field(default=None, validation_alias="UEP_LLM_MODEL")
     llm_api: str | None = Field(default=None, validation_alias="UEP_LLM_API")
     llm_reasoning_effort: str | None = Field(default=None, validation_alias="UEP_LLM_REASONING_EFFORT")
+    # 可見輸出的詳略（Responses API text.verbosity：low／medium／high）；未設＝不傳，由模型預設。
+    # 與 max_tokens 不同：它讓模型自己講短，而不是講到一半被截斷
+    llm_verbosity: str | None = Field(default=None, validation_alias="UEP_LLM_VERBOSITY")
     llm_max_tokens: int | None = Field(default=None, validation_alias="UEP_LLM_MAX_TOKENS")
     llm_temperature: float | None = Field(default=None, validation_alias="UEP_LLM_TEMPERATURE")
     llm_api_key: SecretStr | None = Field(default=None, validation_alias="UEP_LLM_API_KEY")
@@ -374,6 +377,7 @@ class UepSettings(BaseSettings):
             api=pick("llm_api", "legacy_llm_api", "ECHO_STREAM_LLM_API") or defaults.api,
             reasoning_effort=pick("llm_reasoning_effort", "legacy_llm_reasoning_effort", "ECHO_STREAM_LLM_REASONING_EFFORT")
             or defaults.reasoning_effort,
+            verbosity=(self.llm_verbosity or "").strip() or None,
             max_output_tokens=max_tokens if max_tokens else defaults.max_output_tokens,
             temperature=pick("llm_temperature", "legacy_llm_temperature", "ECHO_STREAM_LLM_TEMPERATURE"),
             api_key=pick("llm_api_key", "legacy_openai_api_key", "OPENAI_API_KEY") or None,

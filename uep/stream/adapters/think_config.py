@@ -19,6 +19,7 @@ class ThinkConfig:
     model: str = "gpt-6-luna"
     api: str = "chat"
     reasoning_effort: str = "medium"
+    verbosity: str | None = None  # Responses API text.verbosity；None＝不傳
     max_output_tokens: int = 1024
     temperature: float | None = None
     api_key: str | None = field(default=None, repr=False)
@@ -39,6 +40,7 @@ class ThinkConfig:
             "base_url": self.base_url,
             "api": self.api,
             "reasoning_effort": self.reasoning_effort,
+            "verbosity": self.verbosity,
             "max_output_tokens": self.max_output_tokens,
             "temperature": self.temperature,
         }

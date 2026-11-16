@@ -65,6 +65,7 @@ def _proposer(monkeypatch, mt: _MT | None = None, **kw):
     fake.__version__ = "0.4.30"
     fake.load = lambda model_id, device=None, **k: agent
     monkeypatch.setitem(sys.modules, "laya", fake)
+    monkeypatch.setattr(laya_wiring, "preimport_laya_deps", lambda: fake)  # 替身不需要預先 import transformers
     monkeypatch.setattr(laya_wiring, "resolve_device", lambda requested, cuda_available=None: requested)
     translator = _translator(mt) if mt is not None else None
     p = LayaProposer(device="cpu", assistant_name="U.E.P", translator=translator, **kw)
@@ -106,6 +107,7 @@ def test_warmup_inference_failure_means_not_loaded(monkeypatch):
     fake = types.ModuleType("laya")
     fake.load = lambda model_id, device=None, **k: agent
     monkeypatch.setitem(sys.modules, "laya", fake)
+    monkeypatch.setattr(laya_wiring, "preimport_laya_deps", lambda: fake)  # 替身不需要預先 import transformers
     monkeypatch.setattr(laya_wiring, "resolve_device", lambda requested, cuda_available=None: requested)
     p = LayaProposer(device="cpu")
     assert p.wait_ready(5) and not p.loaded
@@ -158,6 +160,7 @@ def test_translator_still_warming_is_unavailable(monkeypatch):
     fake = types.ModuleType("laya")
     fake.load = lambda model_id, device=None, **k: agent
     monkeypatch.setitem(sys.modules, "laya", fake)
+    monkeypatch.setattr(laya_wiring, "preimport_laya_deps", lambda: fake)  # 替身不需要預先 import transformers
     monkeypatch.setattr(laya_wiring, "resolve_device", lambda requested, cuda_available=None: requested)
     tr = BoundaryTranslator(backend_factory=lambda d: (_ for _ in ()).throw(RuntimeError("x")), device="cpu")
     p = LayaProposer(device="cpu", translator=tr)
@@ -249,6 +252,7 @@ def test_factory_builds_translator_only_when_enabled(monkeypatch, tmp_path):
     fake = types.ModuleType("laya")
     fake.load = lambda model_id, device=None, **k: agent
     monkeypatch.setitem(sys.modules, "laya", fake)
+    monkeypatch.setattr(laya_wiring, "preimport_laya_deps", lambda: fake)  # 替身不需要預先 import transformers
     monkeypatch.setattr(laya_wiring, "resolve_device", lambda requested, cuda_available=None: requested)
     monkeypatch.setattr(laya_wiring, "create_boundary_translator", lambda st, extra_aliases=(): _translator(_MT()))
     (tmp_path / "laya-multilingual").mkdir()
@@ -275,6 +279,7 @@ def test_translator_warmup_starts_only_after_laya_load(monkeypatch):
     fake = types.ModuleType("laya")
     fake.load = lambda model_id, device=None, **k: (order.append("laya.load"), agent)[1]
     monkeypatch.setitem(sys.modules, "laya", fake)
+    monkeypatch.setattr(laya_wiring, "preimport_laya_deps", lambda: fake)  # 替身不需要預先 import transformers
     monkeypatch.setattr(laya_wiring, "resolve_device", lambda requested, cuda_available=None: requested)
     tr = BoundaryTranslator(backend_factory=lambda d: (order.append("mt.load"), _MT())[1], device="cpu", warmup_sentences=())
     p = LayaProposer(device="cpu", translator=tr)

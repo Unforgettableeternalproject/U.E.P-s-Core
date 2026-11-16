@@ -49,6 +49,7 @@ from uep.decision.laya_schema import (
     categories_from_readiness,
     format_recent_context,
 )
+from uep.echo.import_guard import transformers_import_lock
 from uep.echo.translate_wiring import BoundaryTranslator, create_boundary_translator
 from uep.turn.decision_config import DecisionConfig
 from uep.turn.models import Proposal, ReplyMode, TurnCandidate, TurnOutcomeFacts
@@ -91,6 +92,19 @@ def read_source_revision(model_dir: Path) -> str | None:
     except OSError:
         return None
     return text or None
+
+
+def preimport_laya_deps() -> Any:
+    """在共用 import 鎖內把 ``laya.load`` 會用到的 transformers 名稱先 import 完（回傳 ``laya`` 模組）。
+
+    只提前 import 載入本來就要 import 的名稱，不載權重，不增加峰值；與 embedding 暖機的 import 互斥。
+    """
+    with transformers_import_lock:
+        import laya
+        import transformers.modeling_utils  # noqa: F401 - laya 的 no_init_weights 會走到
+        from transformers import AutoConfig, AutoModel, AutoTokenizer  # noqa: F401
+
+        return laya
 
 
 def laya_available() -> bool:
@@ -249,7 +263,7 @@ class LayaProposer:
 
     def _load(self) -> None:
         try:
-            import laya
+            laya = preimport_laya_deps()  # 與記憶 embedding 暖機共用 import 鎖，避免並行第一次 import transformers
 
             device = resolve_device(self._device)
             kwargs: dict[str, Any] = {"device": device}

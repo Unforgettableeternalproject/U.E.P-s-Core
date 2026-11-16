@@ -61,6 +61,7 @@ def _install_fake(monkeypatch, agent=None, gate: threading.Event | None = None, 
 
     fake.load = load
     monkeypatch.setitem(sys.modules, "laya", fake)
+    monkeypatch.setattr(laya_wiring, "preimport_laya_deps", lambda: fake)  # 替身不需要預先 import transformers
     monkeypatch.setattr(laya_wiring, "resolve_device", lambda requested, cuda_available=None: requested)
     return fake
 

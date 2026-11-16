@@ -60,6 +60,7 @@ def _proposer(monkeypatch, **kw) -> tuple[LayaProposer, _Agent]:
     agent = _Agent()
     fake.load = lambda model_id, device=None, **k: agent
     monkeypatch.setitem(sys.modules, "laya", fake)
+    monkeypatch.setattr(laya_wiring, "preimport_laya_deps", lambda: fake)  # 替身不需要預先 import transformers
     monkeypatch.setattr(laya_wiring, "resolve_device", lambda requested, cuda_available=None: requested)
     p = LayaProposer(device="cpu", **kw)
     assert p.wait_ready(5) and p.loaded

@@ -20,6 +20,7 @@ from datetime import time as _time
 from pathlib import Path
 from typing import Any
 
+from uep.echo.import_guard import transformers_import_lock
 from uep.memory.dream_planner import (
     DreamLoopConfig,
     FixedWindowPolicy,
@@ -123,10 +124,18 @@ class EchoEngineFactory:
         return MemoryEngine(**kwargs)
 
 
+def preimport_embedding_deps() -> None:
+    """在共用 import 鎖內先 import sentence-transformers（與 Laya 載入的 transformers import 互斥）；不載權重。"""
+    with transformers_import_lock:
+        import sentence_transformers  # noqa: F401
+        from sentence_transformers import SentenceTransformer  # noqa: F401
+
+
 def warmup_embedding(model: str, device: str) -> None:
     """宿主啟動時預載行程共用的 sentence-transformers 模型（EM 的模組級 ``warmup``），之後所有 engine 共用同一份。"""
     from echo_memory.storage.episodic import warmup
 
+    preimport_embedding_deps()
     warmup(model, device)
 
 

@@ -67,8 +67,11 @@ class MarianBackend:
     """opus-mt-zh-en 真後端。生成參數：greedy、no_repeat_ngram_size=3、max_new_tokens=min(64, 3×輸入 token+8)。"""
 
     def __init__(self, model_dir: Path, device: str) -> None:
-        import torch  # 延遲 import：推論依賴不進模組頂層
-        from transformers import MarianMTModel, MarianTokenizer
+        from uep.echo.import_guard import transformers_import_lock
+
+        with transformers_import_lock:  # 與 Laya／embedding 的第一次 import 互斥（transformers 延遲載入非執行緒安全）
+            import torch  # 延遲 import：推論依賴不進模組頂層
+            from transformers import MarianMTModel, MarianTokenizer
 
         self._torch = torch
         self._device = device

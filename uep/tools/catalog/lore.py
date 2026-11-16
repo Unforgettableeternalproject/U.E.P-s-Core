@@ -294,6 +294,7 @@ def with_lore(
         return ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, *coordinator.known_ids()})
     known = getattr(registry, "_known_modules", frozenset())  # 同套件內取（沒有公開存取子；與 with_testkit 一致）
     built = ToolRegistry.build([*existing.values(), *lore_entries()], known_modules={*known, LORE_MODULE, LORE_DELETE_MODULE})
+    built.inherit_module_state(registry)  # 先前併入者（chatroom 等）的未設定標記不因重建而遺失
     if not configured:
         built.apply_module_event(MODULE_STATE_CHANGED, unavailable_payload(LORE_MODULE, reason_code="not_configured"))
     if not delete_enabled:

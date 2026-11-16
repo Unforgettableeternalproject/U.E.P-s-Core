@@ -1,15 +1,51 @@
 {
-  "chatroom.post": {
-    "schema_hash": "b75fb95391138d2323f7e04381468819dfe7655b4559847747a1f9fe18fb3910",
+  "chatroom.ask_human": {
+    "schema_hash": "5b2088f2470b60138b3231accdbb6b89deebf7f7c4976ae11458f7f5dafcb3ce",
     "tool_version": 1
   },
+  "chatroom.board": {
+    "schema_hash": "56f1ca9fea6d03fcaa03c07921001b063cb1ad9bcc5038c4bfde2a3b67ff2ce3",
+    "tool_version": 1
+  },
+  "chatroom.board_item": {
+    "schema_hash": "a680d7d81e5f30db04623c69c0dd3dc979e4b90e287e1af89fdd2cd34d8b68da",
+    "tool_version": 1
+  },
+  "chatroom.board_outline": {
+    "schema_hash": "230b5b86a2cc23b4aa910d78bd19f141b44eefd686d23a49cdc3e8bd6cbf1fb7",
+    "tool_version": 1
+  },
+  "chatroom.join": {
+    "schema_hash": "8811ce4554357ba2363ee853a7bc5d3a18bec9a386544ae978d2b164cbaa3406",
+    "tool_version": 1
+  },
+  "chatroom.leave": {
+    "schema_hash": "b740d8febad6223accb55d6e145f5e33835a6b43cb29c0c96f107415f036af4e",
+    "tool_version": 1
+  },
+  "chatroom.list_rooms": {
+    "schema_hash": "84301a2732dc084b563c066e65f6df9e8e45d5bc9d35d33d6fa38e92b2823f24",
+    "tool_version": 1
+  },
+  "chatroom.pin": {
+    "schema_hash": "a159bbe2aa918f38b29d3e1e0ec3bf8cb72bca7380956cb71f064219d82a6d90",
+    "tool_version": 1
+  },
+  "chatroom.post": {
+    "schema_hash": "e74204b8c5fb58599c854091c940897d706ea5fe1f2998e5ceaaf8fce8a614ca",
+    "tool_version": 2
+  },
   "chatroom.read": {
-    "schema_hash": "61f5c7a6b8bbf5ae3739beb0a1e6935710b1bc3a4f6ec89d729cbf50b7dbdae3",
+    "schema_hash": "a37034e6bdb5e5681e5e06addcf782d0a3bb6232bc1a792e070765cf1fee6b1e",
+    "tool_version": 2
+  },
+  "chatroom.read_answer": {
+    "schema_hash": "a05fa4917813a4ba3858dca8f6635f802a8f1faa297a988a5394947acdad9fcd",
     "tool_version": 1
   },
   "chatroom.wait": {
-    "schema_hash": "8a9f03826ab6d999001a015545706eea43c45fb21864cb6a522a452226efb17e",
-    "tool_version": 1
+    "schema_hash": "a2ec01ae5065e7fe2e4622f765ae11469082158d87afb152413452168124be35",
+    "tool_version": 2
   },
   "correct_about_me": {
     "schema_hash": "e10ae85c05f190c877318510692c866f226cd9b5c9cfabca24e732d8d3f2878e",

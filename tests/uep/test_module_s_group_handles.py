@@ -22,7 +22,7 @@ from uep.tools.web_image import image_read_available, web_search_available
 SECRET = "tok-SECRET-123"
 _ENV_KEYS = (
     "UEP_LLM_API_KEY", "OPENAI_API_KEY", "UEP_LORE_URL", "UEP_LORE_TOKEN", "UEP_CHATROOM_URL", "UEP_CHATROOM_SESSION_KEY",
-    "UEP_CHATROOM_TOKEN", "UEP_CHATROOM_TOKEN_FILE", "UEP_CHATROOM_ROOMS", "UEP_WEB_SEARCH_PROVIDERS",
+    "UEP_CHATROOM_TOKEN", "UEP_CHATROOM_TOKEN_FILE", "UEP_CHATROOM_KIND", "UEP_WEB_SEARCH_PROVIDERS",
 )
 
 
@@ -49,7 +49,7 @@ def full_settings(**kw: Any) -> UepSettings:
     base: dict[str, Any] = {
         "lore_url": "http://lore.invalid", "lore_token": SecretStr(SECRET),
         "chatroom_url": "http://hub.invalid", "chatroom_session_key": "k", "chatroom_token": SecretStr(SECRET),
-        "chatroom_rooms": "room-1", "web_search_providers": "duckduckgo", "web_fetch_enabled": True,
+        "web_search_providers": "duckduckgo", "web_fetch_enabled": True,
     }
     base.update(kw)
     return UepSettings(_env_file=None, **base)
@@ -91,7 +91,7 @@ def test_unconfigured_probe_dead_and_load_raises_short_code(no_network: None) ->
 
 def test_partial_config_each_module_independent(no_network: None) -> None:
     fake_vision = lambda timeout: object()  # noqa: E731
-    regs = table(full_settings(lore_url="", chatroom_rooms="", lore_delete_enabled=False, web_fetch_enabled=False),
+    regs = table(full_settings(lore_url="", chatroom_url="", lore_delete_enabled=False, web_fetch_enabled=False),
                  client_factory=fake_vision)
     assert regs["lore"][1].probe() == "dead" and regs["chatroom"][1].probe() == "dead"
     assert regs["lore_delete"][1].probe() == "dead" and regs["web_fetch"][1].probe() == "dead"

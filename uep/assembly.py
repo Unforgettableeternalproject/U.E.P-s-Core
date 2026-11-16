@@ -225,6 +225,7 @@ class CoreAssembly:
     module_coordinator: ModuleCoordinator | None = None  # producer（UEP_MODULE_COORDINATOR，預設關閉）；關閉時為 None
     proactive_shadow: ProactiveShadow | None = None  # DL-6b：proactive.initiate 的 shadow 入口（有 echo 且決策日誌啟用時才有；不啟動 Run）
     dream_probe: StateBusForegroundProbe | None = None  # 做夢迴圈的前景 Probe（memory 啟用 dream_loop 且未自帶 Probe 時由組裝層建立）
+    chatroom_executor: Any = None  # Chatroom 工具的 executor（agent 路徑才有）；shutdown 時停止它的背景 heartbeat
 
     def start(self) -> None:
         """依上述順序啟動；冪等。失敗時關閉已綁定的入口（stop API、endpoint socket）、訂閱與 Bus 後上拋。"""
@@ -323,6 +324,8 @@ class CoreAssembly:
             self.start_log.append("dream_probe.close")
         if self.endpoint_server is not None:
             self.endpoint_server.close()
+        if self.chatroom_executor is not None:
+            self.chatroom_executor.close()  # 停止背景 heartbeat（冪等；沒離開的房間由 Hub 閒置逾時清掉）
         if self.module_coordinator is not None:
             # 入口都停止之後才停 coordinator（最終 shutdown 事件仍送得出去、被 registry 套用），然後退訂；Bus 在 _stop_infrastructure 才關
             try:
@@ -846,6 +849,7 @@ def assemble_core(
                 raise AssemblyError(f"module_registrations 登記失敗：{exc}") from exc
     elif module_registrations:
         raise AssemblyError("給了 module_registrations 但 UEP_MODULE_COORDINATOR 未開")
+    chatroom_executor: Any = None
     gate_coordinator = coordinator_obj  # 觀測模式也套設定閘（D108 R3：未設定的服務 probe 成功也不發 ready）
     testkit_on = get_settings().tool_testkit if tool_testkit is None else tool_testkit
     if testkit_on and tool_path != "agent":
@@ -874,7 +878,8 @@ def assemble_core(
             tool_resolver = with_chatroom(tool_resolver, configured=chatroom_config is not None, coordinator=gate_coordinator,
                 drive_registry=coordinator_drives_registry,
             )
-            executors = {**executors, CHATROOM_EXECUTOR: ChatroomToolExecutor(chatroom_config, cache=agent_cache)}
+            chatroom_executor = ChatroomToolExecutor(chatroom_config, cache=agent_cache)
+            executors = {**executors, CHATROOM_EXECUTOR: chatroom_executor}
         from uep.tools.registry import ToolRegistry as _Registry
 
         if isinstance(tool_resolver, _Registry):
@@ -1114,5 +1119,5 @@ def assemble_core(
         endpoint_server=endpoint_server, relay_starters=tuple(relay_starters), memory=memory, echo=echo,
         decision_log=writer, supervisor=supervisor_obj, supervisor_loop=supervisor_loop, loop_launcher=loop_launcher,
         module_events_unsubscribe=module_events_unsubscribe, module_coordinator=coordinator_obj, dream_probe=dream_probe,
-        proactive_shadow=proactive_shadow,
+        proactive_shadow=proactive_shadow, chatroom_executor=chatroom_executor,
     )

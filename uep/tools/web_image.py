@@ -229,4 +229,5 @@ def with_web_image(
         known = set(getattr(registry, "_known_modules", frozenset())) | set(coordinator.known_ids())
         return ToolRegistry.build([*existing.values(), *web_entries(), *image_entries()], known_modules=known), executors
     built = ToolRegistry.build([*existing.values(), *web_entries(), *image_entries()], known_modules=modules)
+    built.inherit_module_state(registry)  # 先前併入者（chatroom 等）的未設定標記不因重建而遺失
     return built, executors

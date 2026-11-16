@@ -591,6 +591,16 @@ class ToolRegistry:
                 result = "warming"
         return result
 
+    def inherit_module_state(self, prior: ToolRegistry) -> None:
+        """重建註冊表（``with_*`` 併入條目）時沿用先前註冊表已套用的模組就緒狀態（只留本表已知的模組）。
+
+        ``build`` 一律產生全新的狀態；沒有這一步，先前併入者送的 ``module.state_changed``（例如未設定標記）會在下一次重建時遺失。"""
+        with prior._event_lock:
+            version, states = prior._module_view
+        kept = {module: record for module, record in states.items() if module in self._known_modules}
+        with self._event_lock:
+            self._module_view = (version, MappingProxyType(kept))
+
     def apply_module_event(self, event_type: str, payload: Mapping[str, Any]) -> bool:
         """接 module coordinator 事件（``module.state_changed``，payload 取 ``{module_id, revision, epoch?, readiness}``，
         ``state`` 若帶了合法值須與 ``readiness`` 對照一致，否則拒收；``state``／``reason_code`` 另存供 R5 判斷 degraded；§5.8、D108 R2、D109）。``readiness`` 必須是 ready／warming／unavailable，

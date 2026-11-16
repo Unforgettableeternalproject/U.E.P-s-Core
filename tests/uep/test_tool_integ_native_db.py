@@ -26,7 +26,7 @@ def _configure(monkeypatch, *, lore=False, chatroom=False, web=True, lore_delete
     # 先清掉可能來自環境的設定，再依參數開啟（fake 值只用於組裝，不會連線）
     for name, value in (
         ("lore_url", None), ("lore_token", None),
-        ("chatroom_url", None), ("chatroom_session_key", None), ("chatroom_token", None), ("chatroom_rooms", None),
+        ("chatroom_url", None), ("chatroom_session_key", None), ("chatroom_token", None),
         ("chatroom_token_file", None), ("lore_delete_enabled", lore_delete),
     ):
         monkeypatch.setattr(settings, name, value)
@@ -37,7 +37,6 @@ def _configure(monkeypatch, *, lore=False, chatroom=False, web=True, lore_delete
         monkeypatch.setattr(settings, "chatroom_url", "http://127.0.0.1:9")
         monkeypatch.setattr(settings, "chatroom_session_key", "fake-key")
         monkeypatch.setattr(settings, "chatroom_token", SecretStr("fake-token"))
-        monkeypatch.setattr(settings, "chatroom_rooms", "room_fake")
     if not web:
         monkeypatch.setattr(settings, "web_fetch_enabled", False)
         monkeypatch.setattr(settings, "web_search_providers", "")

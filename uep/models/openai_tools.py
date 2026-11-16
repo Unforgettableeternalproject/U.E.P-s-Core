@@ -87,6 +87,9 @@ class OpenAIWebSearch:
         except TimeoutError as exc:
             raise ProviderError("timeout", "OpenAI 搜尋逾時") from exc
         except Exception as exc:
+            # openai.APITimeoutError 不是 TimeoutError 的子類，以名稱辨識，避免逾時被誤記成 network
+            if type(exc).__name__ == "APITimeoutError":
+                raise ProviderError("timeout", "OpenAI 搜尋逾時") from exc
             raise ProviderError("network", f"OpenAI 搜尋失敗（{type(exc).__name__}）") from exc
         return self._hits(response)
 

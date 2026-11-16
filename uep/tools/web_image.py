@@ -106,19 +106,21 @@ def build_search_chain(
             providers.append(SearxngProvider(url, searx_policy, **kwargs))
     providers.extend(extra_providers or [])
     fallback = None
+    fallback_timeout_s = settings.web_search_budget_s
     if settings.web_search_openai_fallback or listed_openai:
         from uep.models.openai_tools import OpenAIWebSearch, make_client
 
         think = settings.think_config()
         factory = client_factory or (lambda timeout: make_client(think, timeout))
         model = (settings.web_search_openai_model or "").strip() or think.model
+        # OpenAI 內建 web_search 實測常要 20 秒以上；備援時限取整條鏈預算，實際仍受剩餘預算截止
         fallback = OpenAIWebSearch(
-            lambda: factory(settings.web_search_timeout_s * 2), model, has_credentials=bool(think.api_key),
-            timeout_s=settings.web_search_timeout_s * 2,
+            lambda: factory(fallback_timeout_s), model, has_credentials=bool(think.api_key),
+            timeout_s=fallback_timeout_s,
         )
     return SearchChain(
         providers, fallback=fallback, budget_s=settings.web_search_budget_s,
-        provider_timeout_s=settings.web_search_timeout_s, fallback_timeout_s=settings.web_search_timeout_s * 2,
+        provider_timeout_s=settings.web_search_timeout_s, fallback_timeout_s=fallback_timeout_s,
     )
 
 

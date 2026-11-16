@@ -1,0 +1,12 @@
+services:
+  searxng:
+    image: searxng/searxng:2026.11.14-a7128d5d1
+    container_name: uep-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8888:8080"
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:?請在 deploy/searxng/.env 設定 SEARXNG_SECRET}
+      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro

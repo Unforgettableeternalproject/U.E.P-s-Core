@@ -339,6 +339,10 @@ class _StdlibOpened:
         self.headers = {k.lower(): v for k, v in response.getheaders()}
 
     def read(self, size: int, timeout_s: float) -> bytes:
+        # 本文讀完時 http.client 會自動關閉回應；若伺服器回 Connection: close，socket 也隨之真正關閉，
+        # 這時再 settimeout 會丟 OSError（Windows: WinError 10038），所以先檢查、直接回 EOF
+        if self._response.isclosed():
+            return b""
         self._sock.settimeout(max(timeout_s, 0.001))
         return self._response.read1(size)  # read1：有資料就回，不等湊滿 size
 

@@ -1,0 +1,30 @@
+# U.E.P 本機 SearXNG 設定；secret_key 由環境變數 SEARXNG_SECRET 提供，不寫在檔案內
+use_default_settings: true
+
+general:
+  instance_name: "UEP SearXNG"
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+  default_lang: "zh-TW"
+
+server:
+  limiter: false
+  image_proxy: false
+
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: google news
+    disabled: false
+  - name: bing news
+    disabled: false

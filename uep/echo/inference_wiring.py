@@ -180,6 +180,7 @@ class InferenceConfig:
     vox_terminal_pause_ms: float | None = None  # 句號／問號／驚嘆號切開處的停頓；None＝沿用 segment_silence_ms
     vox_secondary_pause_ms: float | None = None  # 逗號切開處的停頓；None＝沿用 segment_silence_ms
     vox_emotion_enabled: bool = False  # VOX 情緒開關（UEP_INFER_VOX_EMOTION_ENABLED）（Bernie 11/11 裁決；real-mode 驗證後再開）；關＝不傳 emotion／intensity
+    vox_lead_trim_enabled: bool = True  # VOX 句首雜音／過長前導處理（UEP_INFER_VOX_LEAD_TRIM_ENABLED）；關＝輸出原樣
     vox_emotion_map: Mapping[str, Any] | None = None  # SpeechStyle → Vox 情緒對照表覆寫；None＝預設全 neutral
     speak_prepare_timeout_s: float | None = None  # None：依 tts_engine 取 SPEAK_PREPARE_TIMEOUT_DEFAULTS
     think_prepare_timeout_s: float = 8.0
@@ -234,6 +235,7 @@ class InferenceConfig:
             vox_terminal_pause_ms=settings.infer_vox_terminal_pause_ms,
             vox_secondary_pause_ms=settings.infer_vox_secondary_pause_ms,
             vox_emotion_enabled=settings.infer_vox_emotion_enabled,
+            vox_lead_trim_enabled=settings.infer_vox_lead_trim_enabled,
             vox_emotion_map=_parse_vox_emotion_map(settings.infer_vox_emotion_map),
             tts_repo=settings.infer_tts_repo, stt_repo=settings.infer_stt_repo,
             session_repo=settings.infer_session_repo, tts_device=settings.infer_tts_device,
@@ -504,6 +506,9 @@ def _build_vox_speak(cfg: InferenceConfig, extra: Mapping[str, Any]) -> Any:
         vox_kwargs["emotion_enabled"] = True
     if cfg.vox_emotion_map:
         vox_kwargs["emotion_map"] = dict(cfg.vox_emotion_map)
+    # 句首處理預設開：只有明確關閉時才傳
+    if not cfg.vox_lead_trim_enabled:
+        vox_kwargs["lead_trim_enabled"] = False
     vox_kwargs.update(extra)
     return VoxSpeakStage(**vox_kwargs)
 

@@ -685,6 +685,27 @@ def test_vox_情緒_預設不傳_環境變數接線到_VoxSpeakStage(monkeypatch
         InferenceConfig.from_settings(UepSettings(_env_file=None))
 
 
+def test_vox_句首處理_預設開_環境變數可關閉(monkeypatch):
+    monkeypatch.delenv("UEP_INFER_VOX_LEAD_TRIM_ENABLED", raising=False)
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.vox_lead_trim_enabled is True
+    captured: dict = {}
+    _install_fake_vox(monkeypatch, captured)
+    build_inference_wiring(
+        InferenceConfig(**{**cfg.__dict__, "stt_mode": "single"}), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert captured == {}  # 預設開：不傳參數，沿用 adapter 預設
+
+    monkeypatch.setenv("UEP_INFER_VOX_LEAD_TRIM_ENABLED", "false")
+    cfg = InferenceConfig.from_settings(UepSettings(_env_file=None))
+    assert cfg.vox_lead_trim_enabled is False
+    captured.clear()
+    build_inference_wiring(
+        InferenceConfig(**{**cfg.__dict__, "stt_mode": "single"}), think_backend=FakeLlm(), stt_backend=FakeStt(),
+    )
+    assert captured == {"lead_trim_enabled": False}
+
+
 def test_vox_語速_未設_vox_speed_時退回_tts_speed(monkeypatch):
     captured: dict = {}
     _install_fake_vox(monkeypatch, captured)

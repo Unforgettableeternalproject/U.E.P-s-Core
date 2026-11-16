@@ -26,6 +26,13 @@
 所以只在句首淡入、句尾淡出 + 靜音墊。為了在不知道哪個 chunk 是最後一個的
 情況下仍能淡出，會把輸出尾端 ``edge_fade_ms`` 的樣本留在 carry buffer
 延後一個 chunk 送出——只多延遲幾毫秒，不影響 TTFA。
+
+## 句首冷啟動雜音與過長前導空白（VoxLeadTrimmer）
+
+每一句開頭都有約 20~35ms 的小爆發（峰值約 -36 dBFS），之後 330~870ms 近乎無聲
+才開口。:class:`VoxLeadTrimmer` 在 48kHz 原始串流上、重採樣與段緣平滑之前處理：
+特徵完全符合才刪爆發、前導超過保留長度才縮短，且只動開口點之前；任何不確定一律原樣。
+判斷開口點需要多看幾個 chunk，所以句首會暫存（上限 ``lead_trim_max_hold_s``）。
 """
 
 from __future__ import annotations
@@ -109,6 +116,179 @@ def normalize_emotion_map(
     return table
 
 
+LEAD_WINDOW_MS = 5.0
+"""前導分析的視窗長度（取每個視窗的峰值）。"""
+LEAD_QUIET_PEAK = 80
+"""視窗峰值（int16 LSB）不超過此值視為「安靜」（底噪約 20~30）；超過即視為開口點的候選。
+比離線 B 版的 120 保守：寧可少刪。"""
+BURST_PEAK_MIN = 200
+BURST_PEAK_MAX = 1200
+"""句首爆發的峰值範圍（LSB）。實測約 370~684；超出範圍不當成爆發。"""
+BURST_MAX_MS = 50.0
+"""爆發最長持續時間；持續更久代表是語音或其他內容。實測約 20~35ms。"""
+BURST_MIN_QUIET_MS = 80.0
+"""爆發之後必須接一段至少這麼長的安靜區，否則不刪（實測 330ms 以上）。"""
+LEAD_KEEP_MS = 150.0
+"""開口點前保留的前導長度；前導不超過它就不縮短。"""
+LEAD_FADE_MS = 8.0
+"""刪除後新句首的餘弦淡入長度。"""
+LEAD_MAX_HOLD_S = 1.0
+"""句首最多暫存多久的音訊來找開口點；超過就原樣放行。"""
+
+
+class VoxLeadTrimmer:
+    """每句一個：刪除句首冷啟動爆發並縮短過長的前導空白（48kHz float32 單聲道）。
+
+    保護規則（Bernie 硬性要求，不得截到主要音訊）：
+
+    * 只有「句首第一個視窗就有短爆發（峰值落在範圍內、持續不超過 :data:`BURST_MAX_MS`）、
+      接著至少 :data:`BURST_MIN_QUIET_MS` 的安靜區」才算爆發；不符合就不動。
+    * 前導只縮短到「開口點前 keep_ms」，且被刪的區段全部已確認是安靜視窗，絕不越過開口點。
+    * 看不出來（第一段就有持續能量、找不到開口點、暫存到上限）一律原樣放行。
+
+    用法：逐 chunk :meth:`feed`，回傳可以送出的樣本（決定前為空）；來源結束時 :meth:`flush`。
+    """
+
+    def __init__(
+        self,
+        sample_rate: int = VOX_SAMPLE_RATE,
+        *,
+        keep_ms: float = LEAD_KEEP_MS,
+        fade_ms: float = LEAD_FADE_MS,
+        max_hold_s: float = LEAD_MAX_HOLD_S,
+    ) -> None:
+        self.sample_rate = sample_rate
+        self._win = max(1, int(sample_rate * LEAD_WINDOW_MS / 1000))
+        self._keep = int(sample_rate * keep_ms / 1000)
+        self._fade = int(sample_rate * fade_ms / 1000)
+        self._cap = int(sample_rate * max_hold_s)
+        self._max_burst_win = max(1, int(BURST_MAX_MS / LEAD_WINDOW_MS))
+        self._min_quiet_win = max(1, int(BURST_MIN_QUIET_MS / LEAD_WINDOW_MS))
+        self._parts: list[Any] = []
+        self._held = 0
+        self._decided = False
+        self.fade_applied = False
+        """True＝已在句首做過淡入，呼叫端不要再疊 smooth_segment_edges 的淡入。"""
+        self.trimmed_samples = 0
+        """從句首刪掉的樣本數（爆發＋縮短的空白）。"""
+        self.info: dict[str, Any] = {"reason": "undecided", "burst": False}
+        """逐句診斷：reason、burst、burst_ms、cut_ms、orig_lead_ms、kept_lead_ms。"""
+
+    def feed(self, samples: Any) -> Any:
+        """餵入一個 chunk；回傳此刻可送出的樣本（尚在暫存、等更多資料時為空陣列）。"""
+        import numpy as np
+
+        if self._decided:
+            return samples
+        self._parts.append(np.asarray(samples, dtype="float32"))
+        self._held += len(samples)
+        buf = np.concatenate(self._parts)
+        result = self._analyze(buf, final=False)
+        if result is None and self._held >= self._cap:
+            result = self._analyze(buf, final=True, reason="hold_cap")
+        if result is None:
+            return buf[:0]
+        return self._release(buf, result)
+
+    def flush(self) -> Any:
+        """來源結束：把還在暫存的樣本放出（資料不足以判斷就原樣）。"""
+        import numpy as np
+
+        if self._decided or not self._parts:
+            self._decided = True
+            return np.zeros(0, dtype="float32")
+        buf = np.concatenate(self._parts)
+        return self._release(buf, self._analyze(buf, final=True, reason="stream_ended"))
+
+    def _release(self, buf: Any, result: tuple[int, dict[str, Any]]) -> Any:
+        import numpy as np
+
+        cut_end, info = result
+        self._decided = True
+        self._parts = []
+        self.info = info
+        out = buf[cut_end:]
+        if cut_end > 0:
+            out = out.copy()
+            n = min(self._fade, len(out))
+            if n > 0:
+                out[:n] *= 0.5 * (1.0 - np.cos(np.pi * np.arange(n) / n))
+            self.fade_applied = True
+            self.trimmed_samples = cut_end
+        return out
+
+    def _analyze(
+        self, buf: Any, *, final: bool, reason: str = "undecided"
+    ) -> tuple[int, dict[str, Any]] | None:
+        """回傳 (刪除的句首樣本數, 診斷)；資料還不夠決定時回 None（final 時一律有結果）。"""
+        import numpy as np
+
+        win, rate = self._win, self.sample_rate
+        nw = len(buf) // win
+        if nw == 0:
+            return (0, {"reason": reason, "burst": False}) if final else None
+        peaks = (np.abs(buf[: nw * win]) * 32768.0).reshape(nw, win).max(axis=1)
+
+        def keep(why: str, **extra: Any) -> tuple[int, dict[str, Any]]:
+            return 0, {"reason": why, "burst": False, **extra}
+
+        def undecided() -> tuple[int, dict[str, Any]] | None:
+            return keep(reason) if final else None
+
+        def ms(n_samples: int) -> float:
+            return n_samples * 1000.0 / rate
+
+        loud = np.flatnonzero(peaks > LEAD_QUIET_PEAK)
+        if peaks[0] > LEAD_QUIET_PEAK:
+            # 第一個視窗就有能量：只有「短爆發＋之後一段安靜」才是冷啟動爆發
+            if peaks[0] > BURST_PEAK_MAX:
+                return keep("loud_start")
+            quiet_idx = np.flatnonzero(peaks <= LEAD_QUIET_PEAK)
+            if quiet_idx.size == 0:
+                return keep("sustained_energy") if nw > self._max_burst_win else undecided()
+            k = int(quiet_idx[0])  # 爆發佔前 k 個視窗
+            if k > self._max_burst_win:
+                return keep("sustained_energy")
+            burst_peak = float(peaks[:k].max())
+            if not BURST_PEAK_MIN <= burst_peak <= BURST_PEAK_MAX:
+                return keep("burst_peak_out_of_range", burst_peak=burst_peak)
+            after = loud[loud >= k]
+            if after.size and int(after[0]) - k < self._min_quiet_win:
+                return keep("burst_without_quiet", burst_peak=burst_peak)
+            if not after.size:
+                return undecided()  # 還沒看到開口點
+            j = int(after[0])  # 開口點視窗
+            burst_end = k * win
+            lead = (j - k) * win
+            cut_end = burst_end
+            if lead > self._keep:
+                cut_end = j * win - self._keep
+            return cut_end, {
+                "reason": "burst_trimmed" if cut_end == burst_end else "burst_and_lead_trimmed",
+                "burst": True,
+                "burst_ms": ms(burst_end),
+                "burst_peak": burst_peak,
+                "orig_lead_ms": ms(lead),
+                "kept_lead_ms": ms(j * win - cut_end),
+                "cut_ms": ms(cut_end),
+            }
+
+        # 沒有爆發：只有前導超過保留長度才縮短，且只刪到開口點前 keep
+        if not loud.size:
+            return undecided()
+        lead = int(loud[0]) * win
+        if lead <= self._keep:
+            return keep("short_lead", orig_lead_ms=ms(lead))
+        cut_end = lead - self._keep
+        return cut_end, {
+            "reason": "lead_trimmed",
+            "burst": False,
+            "orig_lead_ms": ms(lead),
+            "kept_lead_ms": ms(self._keep),
+            "cut_ms": ms(cut_end),
+        }
+
+
 DEFAULT_QUEUE_SIZE = 12
 """音訊通道上限（chunk 數）預設值；M5 前由 ES 的 ``ECHO_STREAM_VOX_QUEUE`` 環境變數覆寫，已移除，改由建構參數 ``queue_size`` 指定。"""
 
@@ -138,6 +318,9 @@ class VoxSpeakStage:
         secondary_pause_ms: float | None = None,
         emotion_enabled: bool = False,
         emotion_map: Mapping[str, Any] | None = None,
+        lead_trim_enabled: bool = True,
+        lead_trim_keep_ms: float = LEAD_KEEP_MS,
+        lead_trim_max_hold_s: float = LEAD_MAX_HOLD_S,
     ) -> None:
         self._backend = backend
         self.backend_config = backend_config
@@ -165,6 +348,11 @@ class VoxSpeakStage:
         """情緒開關：False 時完全不傳 emotion／intensity（行為同未接情緒）。"""
         self.emotion_map = normalize_emotion_map(emotion_map)
         """SpeechStyle → Vox 情緒對照表（已疊上預設）；預設全 neutral，開關打開也不會帶情緒。"""
+        self.lead_trim_enabled = lead_trim_enabled
+        """句首冷啟動雜音／過長前導處理開關（UEP_INFER_VOX_LEAD_TRIM_ENABLED）；False＝完全原樣輸出。"""
+        self.lead_trim_keep_ms = lead_trim_keep_ms
+        self.lead_trim_max_hold_s = lead_trim_max_hold_s
+        """找開口點時句首最多暫存的音訊長度；超過就原樣放行。"""
         self._backend_lock = threading.Lock()
         """backend 同時只能處理一個請求；跨 turn 也要串行。"""
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -361,10 +549,33 @@ class VoxSpeakStage:
         carry = np.zeros(0, dtype="float32")
         chunk_index = 0
         lead_ms: float | None = None
+        trimmer = (
+            VoxLeadTrimmer(
+                VOX_SAMPLE_RATE,
+                keep_ms=self.lead_trim_keep_ms,
+                max_hold_s=self.lead_trim_max_hold_s,
+            )
+            if self.lead_trim_enabled
+            else None
+        )
 
         def set_lead(value: float) -> None:
             nonlocal lead_ms
             lead_ms = value
+
+        def push(mono: Any) -> None:
+            """重採樣、保留尾端、送出一個 chunk。"""
+            nonlocal carry
+            buf = np.concatenate([carry, self._resample(resampler, mono, last=False)])
+            if n_hold > 0:
+                # 尾端留 n_hold 個樣本，等句尾時才能正確淡出
+                if len(buf) <= n_hold:
+                    carry = buf
+                    return
+                carry, buf = buf[-n_hold:], buf[:-n_hold]
+            else:
+                carry = buf[:0]
+            emit(buf, first=chunk_index == 0, final=False)
 
         def emit(samples: Any, *, first: bool, final: bool) -> None:
             nonlocal chunk_index
@@ -375,7 +586,8 @@ class VoxSpeakStage:
                     self.sample_rate,
                     fade_ms=self.edge_fade_ms,
                     tail_silence_ms=tail_silence_ms if final else 0.0,
-                    fade_in=first,
+                    # 句首已被 trimmer 淡入時不再疊 4ms 淡入
+                    fade_in=first and not (trimmer is not None and trimmer.fade_applied),
                     fade_out=final,
                 )
             is_last = final and sentence.is_last
@@ -430,23 +642,27 @@ class VoxSpeakStage:
                     raw_samples += len(raw)
                     if token.is_cancelled or stop.is_set():
                         return
-                    buf = np.concatenate([carry, self._resample(resampler, raw, last=False)])
-                    if n_hold > 0:
-                        # 尾端留 n_hold 個樣本，等句尾時才能正確淡出
-                        if len(buf) <= n_hold:
-                            carry = buf
-                            continue
-                        carry, buf = buf[-n_hold:], buf[:-n_hold]
+                    if trimmer is None:
+                        push(raw)
                     else:
-                        carry = buf[:0]
-                    emit(buf, first=chunk_index == 0, final=False)
+                        # 句首暫存期間回傳空陣列；決定後才把（可能已裁過的）樣本送進後段
+                        released = trimmer.feed(self._to_mono_f32(raw))
+                        if len(released):
+                            push(released)
+                if trimmer is not None:
+                    released = trimmer.flush()  # 句子太短、來不及判斷時原樣放出
+                    if len(released):
+                        push(released)
                 if token.is_cancelled or stop.is_set():
                     return
                 tail = np.concatenate([carry, self._resample(resampler, None, last=True)])
                 emit(tail, first=chunk_index == 0, final=True)
+                trimmed = trimmer.trimmed_samples if trimmer is not None else 0
+                if trimmer is not None:
+                    self._log_lead_trim(sentence, trimmer)
                 self._log_sentence(
                     sentence, speak_text, wall_start, t_start, prev_end, first_chunk_s,
-                    synth_s, raw_samples, n_raw, max_gap_s, lead_ms,
+                    synth_s, raw_samples, n_raw, max_gap_s, lead_ms, trimmed,
                 )
             except (CancelledError, ChannelClosed, concurrent.futures.CancelledError):
                 return
@@ -488,28 +704,48 @@ class VoxSpeakStage:
         n_chunks: int,
         max_gap_s: float,
         lead_ms: float | None,
+        trimmed_samples: int = 0,
     ) -> None:
         """逐句一行 INFO，用來分辨斷感出在句間還是句內。只讀計時，不影響音訊。
 
         ``synth_ms`` 是 backend 產生音訊的累計耗時（不含通道背壓等待）；
+        ``audio_s`` 是實際送出的音訊長度（已扣掉 trim 刪掉的句首）；``rtf`` 仍以
+        backend 產出的原始長度計，``trim_ms`` 為刪掉的句首毫秒數。
         ``max_chunk_gap_ms`` 是首 chunk 之後、相鄰 chunk 之間最長的生成間隔
         （一個 chunk 約 160ms 音訊，超過就代表該段生成慢於即時）。
         """
         t_end = time.perf_counter()
         self._last_synth_end = (sentence.turn_id, t_end)
-        audio_s = raw_samples / VOX_SAMPLE_RATE
-        rtf = synth_s / audio_s if audio_s > 0 else 0.0
+        raw_s = raw_samples / VOX_SAMPLE_RATE
+        audio_s = (raw_samples - trimmed_samples) / VOX_SAMPLE_RATE
+        rtf = synth_s / raw_s if raw_s > 0 else 0.0
         gap = f"{(t_start - prev_end) * 1000:.0f}" if prev_end is not None else "-"
         start_txt = time.strftime("%H:%M:%S", time.localtime(wall_start))
         start_txt += f".{int((wall_start % 1) * 1000):03d}"
         logger.info(
             "vox sentence turn=%s idx=%d chars=%d reason=%s start=%s first_chunk_ms=%.0f "
             "synth_ms=%.0f audio_s=%.2f rtf=%.2f gap_prev_ms=%s chunks=%d "
-            "max_chunk_gap_ms=%.0f lead_ms=%s",
+            "max_chunk_gap_ms=%.0f lead_ms=%s trim_ms=%.0f",
             sentence.turn_id, sentence.index, len(speak_text),
             sentence.split_reason or "-", start_txt, first_chunk_s * 1000,
             synth_s * 1000, audio_s, rtf, gap, n_chunks, max_gap_s * 1000,
             f"{lead_ms:.0f}" if lead_ms is not None else "-",
+            trimmed_samples * 1000.0 / VOX_SAMPLE_RATE,
+        )
+
+    @staticmethod
+    def _log_lead_trim(sentence: Sentence, trimmer: VoxLeadTrimmer) -> None:
+        """逐句 DEBUG：有沒有偵測到爆發、刪了多少、原本與保留的前導長度。"""
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        info = trimmer.info
+        logger.debug(
+            "vox lead_trim turn=%s idx=%d reason=%s burst=%s burst_ms=%.0f cut_ms=%.0f "
+            "orig_lead_ms=%s kept_lead_ms=%s",
+            sentence.turn_id, sentence.index, info.get("reason", "-"), bool(info.get("burst")),
+            info.get("burst_ms", 0.0), trimmer.trimmed_samples * 1000.0 / VOX_SAMPLE_RATE,
+            f"{info['orig_lead_ms']:.0f}" if "orig_lead_ms" in info else "-",
+            f"{info['kept_lead_ms']:.0f}" if "kept_lead_ms" in info else "-",
         )
 
     def _acquire_backend(self, token: CancellationToken, stop: threading.Event) -> bool:
@@ -573,6 +809,7 @@ class VoxSpeakStage:
 
 __all__ = [
     "VoxSpeakStage",
+    "VoxLeadTrimmer",
     "VOX_SAMPLE_RATE",
     "DEFAULT_VOX_EMOTION_MAP",
     "VOX_EMOTION_LABELS",

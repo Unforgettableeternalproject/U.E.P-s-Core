@@ -212,6 +212,8 @@ class UepSettings(BaseSettings):
     # VOX 情緒：開關預設關（Bernie 11/11 裁決；real-mode 驗證後再開）；對照表為 JSON 物件字串（SpeechStyle 名 → 標籤或 {"emotion","intensity"}），疊在已定案的預設表上
     infer_vox_emotion_enabled: bool = Field(default=False, validation_alias="UEP_INFER_VOX_EMOTION_ENABLED")
     infer_vox_emotion_map: str | None = Field(default=None, validation_alias="UEP_INFER_VOX_EMOTION_MAP")
+    # VOX 句首冷啟動雜音與過長前導空白處理：預設開；關＝串流輸出完全原樣
+    infer_vox_lead_trim_enabled: bool = Field(default=True, validation_alias="UEP_INFER_VOX_LEAD_TRIM_ENABLED")
     infer_tts_device: str = Field(default="cuda", validation_alias="UEP_INFER_TTS_DEVICE")
     infer_tts_fp16: bool = Field(default=True, validation_alias="UEP_INFER_TTS_FP16")
     infer_tts_use_accel: bool = Field(default=False, validation_alias="UEP_INFER_TTS_USE_ACCEL")

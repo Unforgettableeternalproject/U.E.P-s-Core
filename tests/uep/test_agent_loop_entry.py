@@ -66,8 +66,8 @@ def test_enabled_tags_does_not_mutate_or_read_outside_memory():
 def test_tags_for_agent_loop_is_route_table_intersect_enabled():
     metrics: Counter[str] = Counter()
     tags_for = make_capability_tags_for(memory_registry(), metrics)
-    # 生產註冊表尚未註冊 decision.consult 工具 -> consult 不在快照內 -> 只剩 memory.read
-    assert tags_for(TICKET, _proposal()) == frozenset({"memory.read"})
+    # 生產註冊表尚未註冊 decision.consult 工具 -> consult 不在快照內 -> 只剩記憶標籤（read／write／correct 都在 agent_loop 表內）
+    assert tags_for(TICKET, _proposal()) == frozenset({"memory.read", "memory.write", "memory.correct"})
     reg = ToolRegistry.build([
         make_entry("read.ok", spec={"capability": "memory.read"}),
         make_entry("consult", spec={"capability": "decision.consult"}),
@@ -83,8 +83,10 @@ def test_tags_for_hint_only_narrows_and_never_widens():
     ])
     metrics: Counter[str] = Counter()
     tags_for = make_capability_tags_for(reg, metrics)
-    # hint 要求 memory.write（表外於 agent_loop base）-> 不會新增；consult 保留 -> 只剩 consult -> 視為空
-    assert tags_for(TICKET, _proposal(hint=("memory.write",))) == frozenset()
+    # memory.write 已在 agent_loop base：hint 只留 memory.write 時，加上恆保留的 consult
+    assert tags_for(TICKET, _proposal(hint=("memory.write",))) == frozenset({"memory.write", "decision.consult"})
+    # hint 要求 base 以外的標籤（lore.write 不在這個註冊表快照內）-> 不會新增；只剩 consult -> 視為空
+    assert tags_for(TICKET, _proposal(hint=("lore.write",))) == frozenset()
     assert tags_for(TICKET, _proposal(hint=("memory.read",))) == frozenset({"memory.read", "decision.consult"})
     assert tags_for(TICKET, _proposal(hint=("memory.read", "no.such.tag"))) == frozenset({"memory.read", "decision.consult"})
     assert metrics[COUNT_HINT_DROPPED] == 1  # 表外標籤被丟棄並計數

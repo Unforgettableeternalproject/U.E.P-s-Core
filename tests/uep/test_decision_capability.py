@@ -66,7 +66,7 @@ def _all_cases():
 def test_route_table_initial_content_d4_4():
     assert dict(ROUTE_DEFAULT_CAPABILITIES) == {
         "direct_chat": frozenset({"memory.read", *_NATIVE_READ}),
-        "agent_loop": frozenset({"memory.read", CONSULT_TAG, *_NATIVE_READ, *_NATIVE_WRITE}),
+        "agent_loop": frozenset({"memory.read", "memory.write", "memory.correct", CONSULT_TAG, *_NATIVE_READ, *_NATIVE_WRITE}),
         "task_request": frozenset({"lore.write", "chatroom.post"}),  # PR-R：提醒、轉告類，只給寫入類原生標籤
         "ignore": frozenset(),
     }
@@ -112,6 +112,7 @@ def test_task_request_labels_stay_within_write_native_ceiling():
     )
 
     labels = ROUTE_DEFAULT_CAPABILITIES["task_request"]
+    assert "memory.correct" not in labels and "memory.write" not in labels  # 只開 agent_loop，task_request 不繼承
     assert labels and labels <= _NATIVE_WRITE and labels <= CAPABILITY_CEILING.keys() and labels <= NATIVE_EXEMPT_CAPABILITIES
     assert not (labels & _NATIVE_READ) and CONSULT_TAG not in labels and not any(t.startswith("memory.") for t in labels)
     ceiling = SIDE_EFFECT_ORDER.index("external_effect")
@@ -181,7 +182,7 @@ def test_hint_narrowing_is_monotone_in_hint():
 
 def test_none_hint_applies_table_and_snapshot_only():
     r = narrow_capability(route_base("agent_loop"), None, KNOWN, KNOWN, route="agent_loop")
-    assert r.tags == frozenset({"memory.read", CONSULT_TAG}) and not (r.dropped or r.ignored_wider)
+    assert r.tags == frozenset({"memory.read", "memory.write", CONSULT_TAG}) and not (r.dropped or r.ignored_wider)
     r = narrow_capability(route_base("agent_loop"), None, {"memory.read"}, KNOWN, route="agent_loop")
     assert r.tags == frozenset({"memory.read"}) and r.route == "agent_loop"  # 快照缺 consult：不補回
 
@@ -274,7 +275,7 @@ def test_known_filters_base_and_snapshot():
 def test_model_empty_hint_is_dropped_and_counted_not_degraded():
     base = route_base("agent_loop")
     r = narrow_capability(base, (), KNOWN, KNOWN, route="agent_loop", hint_source=HINT_SOURCE_MODEL)
-    assert r.hint_empty_model and r.tags == frozenset({"memory.read", CONSULT_TAG}) and r.route == "agent_loop"
+    assert r.hint_empty_model and r.tags == frozenset({"memory.read", "memory.write", CONSULT_TAG}) and r.route == "agent_loop"
     assert not r.degraded
     m: Counter = Counter()
     record_narrow(r, m)
@@ -330,8 +331,9 @@ def test_plan_hint_and_trigger_cannot_exceed_table_exhaustive():
 
 def test_agent_loop_default_is_minimal_set_d4_4():
     r = narrow_capability(route_base("agent_loop"), None, KNOWN, KNOWN, route="agent_loop")
-    assert r.tags == frozenset({"memory.read", CONSULT_TAG})
-    for forbidden in ("memory.write", "desktop.file_read"):
+    # memory.write 於 agent_loop 開放（寫入記憶需請求者綁定）；memory.correct 不在 KNOWN 內，被閉集過濾
+    assert r.tags == frozenset({"memory.read", "memory.write", CONSULT_TAG})
+    for forbidden in ("memory.correct", "desktop.file_read"):
         assert forbidden not in r.tags
 
 

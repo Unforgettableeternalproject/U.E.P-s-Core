@@ -18,7 +18,7 @@ _NATIVE = {
 
 
 def test_exempt_set_is_the_closed_pair():
-    assert NATIVE_EXEMPT_CAPABILITIES == frozenset({"lore.write", "chatroom.post"})
+    assert NATIVE_EXEMPT_CAPABILITIES == frozenset({"lore.write", "chatroom.post", "memory.correct"})
     assert NATIVE_EXEMPT_CAPABILITIES <= set(CAPABILITY_CEILING)
 
 
@@ -60,7 +60,8 @@ def test_native_requires_builtin_core_local_and_no_approval(bad):
 def test_lore_write_ceiling_raised_and_memory_tools_unaffected():
     assert CAPABILITY_CEILING["lore.write"] == "external_effect"
     assert CAPABILITY_CEILING["memory.write"] == "reversible_local"
-    assert not any(s.native for s in memory_registry().specs().values())  # 既有記憶工具（含 force_remember）皆非 native
+    native = {n for n, s in memory_registry().specs().items() if s.native}
+    assert native == {"correct_about_me"}  # 只有 memory.correct 的更正工具是 native；force_remember 等皆非 native
 
 
 def test_native_enters_schema_hash_only_when_true():

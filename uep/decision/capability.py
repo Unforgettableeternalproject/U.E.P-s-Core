@@ -28,12 +28,13 @@ READ_ONLY_NATIVE_TAGS: frozenset[str] = frozenset({
     "lore.read", "chatroom.read", "web.search", "web.fetch", "image.read",
 })
 WRITE_NATIVE_TAGS: frozenset[str] = frozenset({"lore.write", "chatroom.post"})
+# memory.write／memory.correct 只開進 agent_loop（記憶寫入需要請求者綁定與 guild 脈絡）；刻意不放進 WRITE_NATIVE_TAGS，task_request 不繼承
 
 # 預設表（D4-4 a：最小集合起步；原生工具標籤依裁決擴充）。擴充必須是「改程式碼＋測試＋審核」，與標籤閉集同規格。
 # 表內標籤是否屬於工具層閉集，由組裝層（PR3）以 CAPABILITY_CEILING 驗證，未知標籤 = 啟動失敗。
 ROUTE_DEFAULT_CAPABILITIES: Mapping[str, frozenset[str]] = MappingProxyType({
     "direct_chat": frozenset({"memory.read"}) | READ_ONLY_NATIVE_TAGS,
-    "agent_loop": frozenset({"memory.read", CONSULT_TAG}) | READ_ONLY_NATIVE_TAGS | WRITE_NATIVE_TAGS,
+    "agent_loop": frozenset({"memory.read", "memory.write", "memory.correct", CONSULT_TAG}) | READ_ONLY_NATIVE_TAGS | WRITE_NATIVE_TAGS,
     # task_request（PR-R，Q-S）：單一動作的提醒／轉告類，只給寫入類原生標籤；不含 memory.*、讀取類與 consult
     "task_request": WRITE_NATIVE_TAGS,
     "ignore": frozenset(),

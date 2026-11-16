@@ -616,7 +616,7 @@ class MemoryAccessLayer:
 
         場域取自 Core 注入的 ``guild_id``，說話者身分由 ``_admit`` 解析（audience、成員資格 fail-closed），
         LLM 的 ``args`` 不能指定對象；``projection_id`` 由 executor 依回合內 member_recall 登記的旁證編號解析後放進
-        ``context``。``correct_about_me`` 不可逆、未註冊（TOOL_CLASSES 沒有它），不在此處理。"""
+        ``context``。``correct_about_me``（``memory.correct``）同走這裡：只經 adapter 的 ``correct_about_me`` 寫入，不直接寫 engine。"""
         ctx = context or {}
         guild_id = ctx.get("guild_id")
         if not isinstance(guild_id, str) or not guild_id:
@@ -641,6 +641,17 @@ class MemoryAccessLayer:
             if not isinstance(projection_id, str) or not projection_id:
                 return {"success": False, "result": _contract.ABOUT_BAD_REF}
             call_args = (scope_id, actor_uid, projection_id)
+            if name == _contract.CORRECT_ABOUT_ME:
+                correction_text = args.get("correction_text")
+                correction_text = correction_text.strip() if isinstance(correction_text, str) else ""
+                if not correction_text:
+                    return {"success": False, "result": "更正內容是空的，請使用者說出正確的說法。"}
+                call_args = (*call_args, correction_text)
+                # evidence=None：更正內容當私有陳述寫入，不進共享投影；session_id 供引擎關聯本輪
+                call_kwargs = {"evidence": None, "session_id": session_id}
+        if name == _contract.CORRECT_ABOUT_ME and self._runtime.adapter(namespace_id) is None:
+            # 更正只經 adapter 寫入；沒有 adapter 時不退回直寫 engine（那是 retract／opt_out 的相容路徑）
+            return {"success": False, "result": _contract.ABOUT_UNSUPPORTED}
         try:
             if self._runtime.adapter(namespace_id) is not None:
                 async def via_adapter(adapter: MemoryAdapterLike) -> Any:

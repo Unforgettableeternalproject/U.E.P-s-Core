@@ -139,8 +139,9 @@ def test_access_py_has_no_schema_literal():
 def test_tool_classes_are_derived_from_registry():
     assert dict(access.TOOL_CLASSES) == memory_registry().tool_classes() == {
         "force_remember": "reversible_local", "deep_recall": "internal_read", "member_recall": "internal_read",
-        # E3：「關於我」可逆寫入（DQ-16 暫定 reversible_local，無核准）；correct_about_me 不可逆、不註冊
+        # E3：「關於我」可逆寫入（DQ-16 暫定 reversible_local，無核准）；correct_about_me 不可逆，照實標 external_effect（memory.correct、native 免核准）
         "retract_about_me": "reversible_local", "opt_out_about_me": "reversible_local",
+        "correct_about_me": "external_effect",
     }
     with pytest.raises(TypeError):
         access.TOOL_CLASSES["x"] = "internal_read"  # type: ignore[index]
@@ -265,7 +266,8 @@ def test_ra6_capability_closed_set_and_ceiling():
     assert rule_of(make_entry(spec={"capability": ""})) == "RA-6"
     assert rule_of(make_entry(spec={"capability": "memory.*"})) == "RA-6"
     assert rule_of(make_entry(spec={"capability": "memory.read", "side_effect_class": "reversible_local"})) == "RA-6"
-    assert CAPABILITY_CEILING["memory.write"] == "reversible_local"
+    assert CAPABILITY_CEILING["memory.write"] == "reversible_local"  # 不放寬
+    assert CAPABILITY_CEILING["memory.correct"] == "external_effect"
 
 
 def test_ra7_schema_linter_and_injected_params():

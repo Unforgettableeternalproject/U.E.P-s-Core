@@ -11,6 +11,10 @@
     "schema_hash": "8a9f03826ab6d999001a015545706eea43c45fb21864cb6a522a452226efb17e",
     "tool_version": 1
   },
+  "correct_about_me": {
+    "schema_hash": "e10ae85c05f190c877318510692c866f226cd9b5c9cfabca24e732d8d3f2878e",
+    "tool_version": 1
+  },
   "deep_recall": {
     "schema_hash": "6d53da405e34d3fba27b7e38e0ebec9b4e988374d9d7961e7d40dcd9bad489da",
     "tool_version": 1

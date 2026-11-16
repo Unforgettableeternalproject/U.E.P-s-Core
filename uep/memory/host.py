@@ -533,7 +533,9 @@ class MemoryHost:
 
     def _resolve_user_engine(self, uid: str) -> MemoryEngineLike | None:
         """共享 engine 的 ``set_engine_resolver``：``uid`` 是 owner_id 或 discord 平台 uid，找不到回 None（拒絕）。
-        只回非共享 namespace 的 engine。注意：記憶端的 ``correct_about_me`` 會直接寫這個 engine（繞過 adapter，EM 介面決定）。"""
+        只回非共享 namespace 的 engine。這是引擎內部機制：``correct_about_me`` 在共享 engine 上遮蔽旁證後，由引擎把更正
+        寫進當事人自己的 engine（retract／opt_out 不需要）。Core 這邊的 ``correct_about_me`` 只經 adapter 呼叫共享 engine
+        （``MemoryAccessLayer._execute_about_me``），沒有任何 Core 路徑直接對 engine 呼叫 ``correct_about_me``。"""
         ns = self._owner_ns.get(str(uid))
         if ns is None:
             ident = self._identity.resolve_platform(f"discord:{uid}")

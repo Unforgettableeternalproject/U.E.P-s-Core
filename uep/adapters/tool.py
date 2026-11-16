@@ -33,6 +33,7 @@ APPROVAL_ORDER: tuple[str, ...] = ("none", "per_action", "standing")
 CAPABILITY_CEILING: Mapping[str, SideEffectClass] = {
     "memory.read": "internal_read",
     "memory.write": "reversible_local",
+    "memory.correct": "external_effect",  # 照實分類：更正會遮蔽旁證、不可逆；免核准由 NATIVE_EXEMPT 決定（權限契約 §8.4a）
     "lore.read": "internal_read",
     "lore.write": "external_effect",  # 照實分類：lore 寫入對外部 Lore Vault 有副作用（核准權在 Vault 端）
     "chatroom.read": "internal_read",
@@ -51,7 +52,7 @@ CAPABILITY_CEILING: Mapping[str, SideEffectClass] = {
 
 # 原生工具（native）可免 Core 內部核准的能力標籤閉集（裁決：核准權在外部系統，Core 不重複把關）。
 # 新增標籤＝改程式碼＋測試＋審核；與 CAPABILITY_CEILING 同為閉集，無萬用字元。
-NATIVE_EXEMPT_CAPABILITIES: frozenset[str] = frozenset({"lore.write", "chatroom.post"})
+NATIVE_EXEMPT_CAPABILITIES: frozenset[str] = frozenset({"lore.write", "chatroom.post", "memory.correct"})
 
 
 @dataclass(frozen=True)

@@ -32,7 +32,7 @@ DEFAULT_CAPABILITIES: tuple[str, ...] = tuple(c for c in CAPABILITY_CATEGORIES i
 NO_CAPABILITIES = "none"
 
 # 工具層能力標籤 -> 能力類別。標籤集合來自工具層 CAPABILITY_CEILING（決策層不 import 工具層，這裡只存字面值；
-# 覆蓋由測試比對）。lore／memory 寫入歸 files（寫入內部儲存的檔案式資料，沒有更貼近的既有類別）。
+# 覆蓋由測試比對）。lore／memory 寫入與更正歸 files（寫入內部儲存的檔案式資料，沒有更貼近的既有類別）。
 TAG_CATEGORY: dict[str, str] = {
     "memory.read": "query",
     "lore.read": "query",
@@ -42,6 +42,7 @@ TAG_CATEGORY: dict[str, str] = {
     "chatroom.read": "query",
     "chatroom.post": "messaging",
     "memory.write": "files",
+    "memory.correct": "files",
     "lore.write": "files",
     "desktop.file_read": "files",
     "desktop.file_write": "files",

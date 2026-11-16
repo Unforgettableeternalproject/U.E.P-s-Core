@@ -43,6 +43,44 @@ def test_about_me_tools_need_guild_context_and_hide_injected_params():
         assert "guild_id" not in entry.descriptor.input_schema["properties"], name
 
 
+def test_correct_about_me_is_native_external_effect_without_approval():
+    """權限契約 §8.4a：memory.correct 照實標 external_effect，native 免核准；不得是 high_impact。"""
+    registry = memory_registry()
+    entry = registry.entry("correct_about_me")
+    spec = entry.spec
+    assert (spec.capability, spec.side_effect_class, spec.approval_level, spec.native) == (
+        "memory.correct", "external_effect", "none", True)
+    assert spec.executor == "core_memory" and spec.idempotency == "none"
+    assert entry.scope.requires_context == frozenset({"guild_roster"})
+    assert set(entry.descriptor.injected_params) == {"actor_id", "audience", "segment_id", "guild_id", "run_id"}
+    assert not {"actor_id", "guild_id", "run_id"} & set(entry.descriptor.input_schema["properties"])
+    assert entry.output_schema is not None
+
+
+def test_task_manager_does_not_require_approval_for_correct_but_does_for_non_native():
+    from uep.tasks.manager import _needs_approval
+
+    spec = memory_registry().entry("correct_about_me").spec
+    assert _needs_approval(spec.side_effect_class, spec) is False
+    assert _needs_approval("external_effect", types.SimpleNamespace(native=False)) is True
+
+
+def test_lore_write_path_is_unchanged_by_memory_correct():
+    """Lore Vault 寫入路徑不受影響：上限、native 資格與 lore 工具條目都維持原狀。"""
+    from uep.adapters.tool import CAPABILITY_CEILING, NATIVE_EXEMPT_CAPABILITIES
+    from uep.tools.catalog.lore import lore_entries, lore_write_entries
+
+    assert CAPABILITY_CEILING["lore.write"] == "external_effect" and CAPABILITY_CEILING["memory.write"] == "reversible_local"
+    assert {"lore.write", "chatroom.post"} <= NATIVE_EXEMPT_CAPABILITIES
+    assert NATIVE_EXEMPT_CAPABILITIES == frozenset({"lore.write", "chatroom.post", "memory.correct"})
+    writes = lore_write_entries()
+    assert writes
+    for entry in writes:
+        assert entry.spec.native is True and entry.spec.approval_level == "none"
+        assert entry.spec.side_effect_class == "external_effect"
+    assert not any(e.spec.capability == "memory.correct" for e in (*lore_entries(), *writes))
+
+
 # ---- Access Layer：「關於我」寫入 ----
 
 class FakeAdapter:
@@ -125,9 +163,79 @@ def test_access_retract_uses_projection_id_from_context_not_args():
     layer = make_layer(adapter)
     assert run_about(layer, "retract_about_me", {"ref": 1, "projection_id": "evil"})["success"] is True
     assert adapter.calls == [("retract_about_me", "guild:123", "111", "proj_1")]
-    # correct_about_me 不可逆、未註冊：Access 不處理
-    denied = run_about(layer, "correct_about_me", {"ref": 1, "correction_text": "x"})
-    assert denied["code"] == "denied" and len(adapter.calls) == 1
+
+
+def test_access_correct_goes_through_adapter_with_text_session_and_no_evidence():
+    adapter = FakeAdapter({"ok": True, "correction_stored": True})
+    layer = make_layer(adapter)
+    out = run_about(layer, "correct_about_me", {"ref": 1, "correction_text": "  我其實不玩  ", "projection_id": "evil"})
+    assert out["success"] is True and "更正已保存" in out["result"]
+    # projection_id 取自 context；文字去頭尾空白；evidence=None（私有陳述）；session_id 傳入
+    assert adapter.calls == [("correct_about_me", "guild:123", "111", "proj_1", "我其實不玩", None, "seg_1")]
+
+
+@pytest.mark.parametrize("text", ["", "   ", None, 5])
+def test_access_correct_rejects_empty_text_without_touching_adapter(text):
+    adapter = FakeAdapter()
+    out = run_about(make_layer(adapter), "correct_about_me", {"ref": 1, "correction_text": text})
+    assert out["success"] is False and "空" in out["result"] and adapter.calls == []
+
+
+def test_access_correct_never_falls_back_to_direct_engine_write():
+    class Engine:
+        def __init__(self):
+            self.calls = []
+
+        def correct_about_me(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return {"ok": True}
+
+    engine = Engine()
+    out = run_about(make_layer(None, engine=engine), "correct_about_me", {"ref": 1, "correction_text": "x"})
+    assert out["success"] is False and out["result"] == contract.ABOUT_UNSUPPORTED and engine.calls == []
+
+
+def test_access_correct_guest_is_denied_and_never_touches_adapter():
+    adapter = FakeAdapter()
+    out = run_about(make_layer(adapter), "correct_about_me", {"ref": 1, "correction_text": "x"}, actor="actor_unknown")
+    assert out["success"] is False and out["code"] == "denied" and adapter.calls == []
+
+
+@pytest.mark.parametrize("name", ["deep_recall", "force_remember"])
+def test_access_guest_memory_tools_are_denied_without_calling_backend(name):
+    class Backend:
+        def __init__(self):
+            self.calls = []
+
+        def definitions(self):
+            return []
+
+        def execute(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return {"success": True}
+
+        __call__ = execute
+
+    backend = Backend()
+    adapter = FakeAdapter()
+    layer = MemoryAccessLayer(
+        FakeRuntime(adapter, engine=object()), IdentityDirectory(platform_to_actor={}, actor_to_owner={}),
+        tool_backend=backend, guild_membership=FakeMembership(),
+    )
+    args = {"query": "x"} if name == "deep_recall" else {"content": "x"}
+    out = layer.execute_tool(name, args, actor_id="actor_unknown", audience="scope_private_owner", session_id="seg_1")
+    assert out["success"] is False and out["code"] == "denied"
+    assert backend.calls == [] and adapter.calls == []
+
+
+def test_access_guest_member_recall_is_denied_without_touching_adapter():
+    adapter = FakeAdapter()
+    layer = make_layer(adapter)
+    out = layer.execute_tool(
+        "member_recall", {"member": "自己"}, actor_id="actor_unknown", audience=GROUP, session_id="seg_1",
+        context={"guild_id": "123", "member_uid": "111", "present_uids": ["111"]},
+    )
+    assert out["success"] is False and out["code"] == "denied" and adapter.calls == []
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -441,8 +549,10 @@ def db_rig(session_factory):
     executor = _executor(port, cache)
     tm = TaskManager(session_factory, EventPublisher(session_factory, EventBus()),
                      {"core_memory": executor}, tool_resolver=memory_registry())
-    # direct_chat 仍只讀；寫入類只在 agent_loop 的標籤集合內才投出，這裡以明示標籤模擬
-    turns = AgentToolTurns(tm, memory_registry(), cache, capability_tags={"memory.read", "memory.write"})
+    # direct_chat 仍只讀；寫入類只在 agent_loop 的標籤集合內才投出，這裡直接取 route 表的 agent_loop 標籤（正式路徑）
+    from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
+
+    turns = AgentToolTurns(tm, memory_registry(), cache, capability_tags=set(ROUTE_DEFAULT_CAPABILITIES["agent_loop"]))
     return types.SimpleNamespace(tm=tm, turns=turns, port=port, cache=cache, sf=session_factory)
 
 
@@ -565,16 +675,20 @@ def test_db_about_me_tools_four_stage_with_ref_pipeline(db_rig):
     assert db_rig.turns.run_tool("opt_out_about_me", {"enabled": True}, ctx)["success"] is True
     assert db_rig.turns.run_tool("member_recall", {"member": "自己"}, ctx)["success"] is True
     assert db_rig.turns.run_tool("retract_about_me", {"ref": 1}, ctx)["success"] is True
-    assert db_rig.turns.run_tool("correct_about_me", {"ref": 1, "correction_text": "我不玩"}, ctx)["success"] is False
+    assert db_rig.turns.run_tool("correct_about_me", {"ref": 1, "correction_text": "我不玩"}, ctx)["success"] is True
     calls = {c["name"]: c for c in db_rig.port.calls}
     assert calls["retract_about_me"]["context"]["projection_id"] == "proj_a"
-    assert "correct_about_me" not in calls  # 未註冊、不可達：沒有呼叫記憶
+    assert calls["correct_about_me"]["context"]["projection_id"] == "proj_a"
+    assert calls["correct_about_me"]["args"] == {"ref": 1, "correction_text": "我不玩"}
     assert calls["opt_out_about_me"]["context"] == {"guild_id": "123"}
     actions, receipts, approvals = _rows(db_rig.sf)
     write_actions = [a for a in actions if a.tool != "member_recall"]
-    assert {a.tool for a in write_actions} == set(ABOUT_ME_REGISTERED)
-    assert all(a.side_effect_class == "reversible_local" and a.status == ActionStatus.SUCCEEDED.value for a in write_actions)
-    assert len(receipts) == 3 and all(r.succeeded for r in receipts) and approvals == []
+    assert {a.tool for a in write_actions} == {*ABOUT_ME_REGISTERED, "correct_about_me"}
+    assert all(a.status == ActionStatus.SUCCEEDED.value for a in write_actions)
+    classes = {a.tool: a.side_effect_class for a in write_actions}
+    assert classes["correct_about_me"] == "external_effect"  # 照實分類，但 native 免核准
+    assert classes["retract_about_me"] == classes["opt_out_about_me"] == "reversible_local"
+    assert len(receipts) == 4 and all(r.succeeded for r in receipts) and approvals == []  # 沒有核准等待
     db_rig.turns.finish_turn(turn_id)
 
 
@@ -609,19 +723,44 @@ def test_db_about_me_not_offered_without_guild_context(db_rig):
     db_rig.turns.finish_turn(turn_id)
 
 
-def test_correct_about_me_is_not_registered_nor_projected_anywhere():
-    registry = memory_registry()
-    assert "correct_about_me" not in registry.entries()
-    every_tag = {"memory.read", "memory.write", "decision.consult", "chatroom.post", "lore.write", "desktop.file_write"}
+def test_correct_about_me_is_registered_and_projected_only_in_agent_loop():
+    from uep.agent.bridge import DIRECT_CHAT_TAGS
+    from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES, WRITE_NATIVE_TAGS
+    from uep.memory.access import TOOL_CLASSES
     from uep.tools.projection import ProjectionContext
 
-    projected = registry.project(every_tag, ProjectionContext(available_context=frozenset({"guild_roster"})))
-    assert "correct_about_me" not in {t["tool"] for t in projected["tools"]}
-    from uep.memory.access import TOOL_CLASSES
+    registry = memory_registry()
+    assert "correct_about_me" in registry.entries() and TOOL_CLASSES["correct_about_me"] == "external_effect"
+    ctx = ProjectionContext(available_context=frozenset({"guild_roster"}))
 
-    assert "correct_about_me" not in TOOL_CLASSES
-    from uep.agent.bridge import DIRECT_CHAT_TAGS
+    def projected(tags):
+        return {t["tool"] for t in registry.project(set(tags), ctx)["tools"]}
+
+    # 只有帶 memory.correct 標籤才投出；memory.write 標籤不夾帶它
+    assert "correct_about_me" in projected({"memory.correct"})
+    assert "correct_about_me" not in projected({"memory.write", "memory.read"})
+    # route 表：memory.write／memory.correct 只在 agent_loop；direct_chat、task_request、ignore 都沒有
+    for tag in ("memory.write", "memory.correct"):
+        assert tag in ROUTE_DEFAULT_CAPABILITIES["agent_loop"]
+        assert tag not in WRITE_NATIVE_TAGS
+        assert all(tag not in tags for route, tags in ROUTE_DEFAULT_CAPABILITIES.items() if route != "agent_loop")
+        assert tag not in DIRECT_CHAT_TAGS  # direct_chat 維持只讀（Q-E）
+    assert "memory.write" not in DIRECT_CHAT_TAGS
+
+
+def test_agent_loop_route_tags_project_force_remember_and_all_about_me_tools():
+    """正式路徑：以 route 表的 agent_loop 標籤（非測試明示標籤）投影，寫入類記憶工具都投得出來。"""
     from uep.decision.capability import ROUTE_DEFAULT_CAPABILITIES
+    from uep.tools.projection import ProjectionContext
 
-    assert "memory.write" not in DIRECT_CHAT_TAGS  # direct_chat 維持只讀（Q-E）
-    assert all("memory.write" not in tags for tags in ROUTE_DEFAULT_CAPABILITIES.values())
+    registry = memory_registry()
+    ctx = ProjectionContext(available_context=frozenset({"guild_roster"}))
+    names = {t["tool"] for t in registry.project(set(ROUTE_DEFAULT_CAPABILITIES["agent_loop"]), ctx)["tools"]}
+    assert {"force_remember", "retract_about_me", "opt_out_about_me", "correct_about_me"} <= names
+    # 沒有 guild 脈絡：「關於我」類不投出，force_remember 仍可
+    bare = {t["tool"] for t in registry.project(
+        set(ROUTE_DEFAULT_CAPABILITIES["agent_loop"]), ProjectionContext(available_context=frozenset()))["tools"]}
+    assert "force_remember" in bare and not bare & set(contract.ABOUT_ME_TOOLS)
+    for route in ("direct_chat", "task_request", "ignore"):
+        got = {t["tool"] for t in registry.project(set(ROUTE_DEFAULT_CAPABILITIES[route]), ctx)["tools"]}
+        assert not got & {"force_remember", *contract.ABOUT_ME_TOOLS}, route

@@ -594,3 +594,116 @@ def test_info_log_shows_normalized_text_and_settings(caplog):
     assert "'{zhou1}末步{zou4}'" in msgs[0]  # 正規化後（含 pinyin）的文字
     assert "mode=ULT lora=on scale=1.0 speed=1.05 emotion=None" in msgs[1] and "步{zou4}" in msgs[1]
     assert "lang=en mode=REF lora=off" in msgs[2] and "hello world" in msgs[2]
+
+
+# ---- _load_model：載入期間的 torch 預設 dtype ----
+
+
+def _install_fake_voxcpm(monkeypatch, from_pretrained):
+    """以替身取代 voxcpm 套件（from_pretrained 由測試提供），回傳 load_lora 呼叫時的預設 dtype 紀錄。"""
+    import sys
+    import types
+
+    seen: dict = {}
+
+    class FakeModel:
+        def load_lora(self, path):
+            import torch
+
+            seen["lora_dtype"] = torch.get_default_dtype()
+
+    class FakeVoxCPM:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return from_pretrained(FakeModel)
+
+    pkg = types.ModuleType("voxcpm")
+    pkg.VoxCPM = FakeVoxCPM
+    model_pkg = types.ModuleType("voxcpm.model")
+    v2 = types.ModuleType("voxcpm.model.voxcpm2")
+    v2.LoRAConfig = lambda **kw: kw
+    pkg.model = model_pkg
+    model_pkg.voxcpm2 = v2
+    monkeypatch.setitem(sys.modules, "voxcpm", pkg)
+    monkeypatch.setitem(sys.modules, "voxcpm.model", model_pkg)
+    monkeypatch.setitem(sys.modules, "voxcpm.model.voxcpm2", v2)
+    return seen
+
+
+def test_load_model_builds_in_bf16_and_audio_vae_stays_fp32(monkeypatch):
+    """載入期間預設 dtype 為 bf16（模組直接以 bf16 建出），audio_vae 由模型自己轉回 fp32；結束後還原。"""
+    torch = pytest.importorskip("torch")
+    assert torch.get_default_dtype() == torch.float32
+    seen = {}
+
+    def from_pretrained(model_cls):
+        seen["during"] = torch.get_default_dtype()
+        model = model_cls()
+        model.lm = torch.nn.Linear(2, 2)  # 與 voxcpm 的 cls(...) 相同：依預設 dtype 建出
+        model.audio_vae = torch.nn.Linear(2, 2)
+        model.audio_vae = model.audio_vae.to(torch.float32)  # voxcpm2.py：model.audio_vae.to(torch.float32)
+        seen["lm"] = model.lm.weight.dtype
+        seen["vae"] = model.audio_vae.weight.dtype
+        return model
+
+    fake_seen = _install_fake_voxcpm(monkeypatch, from_pretrained)
+    b = VoxBackend({"model_dir": ".", "lora_dir": "."})
+    model = b._load_model()
+    assert seen["during"] == torch.bfloat16
+    assert seen["lm"] == torch.bfloat16 and seen["vae"] == torch.float32
+    assert model.audio_vae.weight.dtype == torch.float32
+    assert torch.get_default_dtype() == torch.float32
+    assert fake_seen["lora_dtype"] == torch.float32  # load_lora 不在 bf16 視窗內
+
+
+def test_load_model_restores_default_dtype_on_error(monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    def from_pretrained(model_cls):
+        assert torch.get_default_dtype() == torch.bfloat16
+        raise RuntimeError("載入失敗")
+
+    _install_fake_voxcpm(monkeypatch, from_pretrained)
+    b = VoxBackend({"model_dir": ".", "lora_dir": "."})
+    with pytest.raises(RuntimeError, match="載入失敗"):
+        b._load_model()
+    assert torch.get_default_dtype() == torch.float32
+
+
+def test_load_model_restores_previous_non_default_dtype(monkeypatch):
+    """還原的是進入前的值，而不是固定 fp32。"""
+    torch = pytest.importorskip("torch")
+    torch.set_default_dtype(torch.float64)
+    try:
+        _install_fake_voxcpm(monkeypatch, lambda model_cls: model_cls())
+        VoxBackend({"model_dir": ".", "lora_dir": "."})._load_model()
+        assert torch.get_default_dtype() == torch.float64
+    finally:
+        torch.set_default_dtype(torch.float32)
+
+
+def test_bf16_default_dtype_serializes_concurrent_loads():
+    """兩條執行緒同時載入時互斥：視窗內不會有另一個視窗把 dtype 還原成 bf16 以外的值，結束後回到 fp32。"""
+    torch = pytest.importorskip("torch")
+    inside = []
+    errors = []
+    barrier = threading.Barrier(2)
+
+    def run():
+        try:
+            barrier.wait(timeout=5)
+            with vb._bf16_default_dtype():
+                inside.append(torch.get_default_dtype())
+                time.sleep(0.05)
+                inside.append(torch.get_default_dtype())
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert not errors
+    assert inside == [torch.bfloat16] * 4
+    assert torch.get_default_dtype() == torch.float32

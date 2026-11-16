@@ -30,6 +30,7 @@ import re
 import sys
 import threading
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -288,14 +289,17 @@ class VoxBackend:
         from voxcpm.model.voxcpm2 import LoRAConfig
 
         cfg = LoRAConfig(enable_lm=True, enable_dit=True, enable_proj=False, r=32, alpha=32, dropout=0.0)
-        model = VoxCPM.from_pretrained(
-            str(self.model_dir),
-            load_denoiser=False,
-            optimize=self.optimize,
-            local_files_only=True,
-            device=self.device,
-            lora_config=cfg,
-        )
+        # voxcpm 預設先以 fp32 建模再 .to(bf16)，commit 峰值多約 13GB 且約 8GB 不還給 OS。磁碟權重與 config dtype 皆為 bf16，
+        # 載入期間把預設 dtype 設成 bf16 直接建模（逐位元結果相同；audio_vae 由 voxcpm 自己轉回 fp32）。
+        with _bf16_default_dtype():
+            model = VoxCPM.from_pretrained(
+                str(self.model_dir),
+                load_denoiser=False,
+                optimize=self.optimize,
+                local_files_only=True,
+                device=self.device,
+                lora_config=cfg,
+            )
         model.load_lora(str(self.lora_dir))
         return model
 
@@ -467,6 +471,28 @@ class VoxBackend:
             streaming=True,
         )
         return _to_numpy(raw)
+
+
+_DEFAULT_DTYPE_LOCK = threading.Lock()
+
+
+@contextmanager
+def _bf16_default_dtype() -> Iterator[None]:
+    """載入期間暫時把 torch 全域預設 dtype 設成 bfloat16，離開（含例外）一律還原。
+
+    ``torch.set_default_dtype`` 是行程全域、不分執行緒：視窗內其他執行緒新建的 torch 模組也會拿到 bf16。
+    因此只包住 ``VoxCPM.from_pretrained``（不含 LoRA、暖機與生成），並用鎖讓多個 VoxBackend 的載入互斥；
+    其餘元件的載入時序由組裝層保證不與 VOX prepare 重疊（EchoPipelineHost 在 speak prepare 完成後才啟動 Laya／embedding 暖機）。
+    """
+    import torch
+
+    with _DEFAULT_DTYPE_LOCK:
+        previous = torch.get_default_dtype()
+        torch.set_default_dtype(torch.bfloat16)
+        try:
+            yield
+        finally:
+            torch.set_default_dtype(previous)
 
 
 def _ensure_cudagraph_tls() -> None:

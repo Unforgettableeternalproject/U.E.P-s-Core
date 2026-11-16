@@ -11,9 +11,11 @@ SDK（``pydantic_ai``）的 import 只允許出現在 ``uep/models/``（tests/ue
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
+import weakref
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -102,19 +104,41 @@ class PydanticAIModelPort:
             tools_with_reasoning=dialect != "openai_chat",
             emits_thinking=dialect != "openai_chat",
         )
-        self._model = model if model is not None else self._build_model(
-            dialect, model_name, api_key, project, organization, base_url, timeout,
+        self._model_factory = None if model is not None else (
+            lambda: self._build_model(dialect, model_name, api_key, project, organization, base_url, timeout)
         )
-        # 工具重試設 0：模型叫了不在清單內的工具時，SDK 預設會自行再打一次模型（多一次請求），這裡不要；
-        # 未知工具改由 ``stream`` 轉成 tool_intent 交給 Core 的 Gateway 拒絕（output 重試維持預設）
-        self._agent: Agent[None, Any] = Agent(
-            self._model, output_type=[str, DeferredToolRequests], retries={"tools": 0},
-        )
+        # 注入的 model（測試用）整個生命週期共用；自建的 model 內含 AsyncOpenAI／httpx 連線池，
+        # 連線綁在建立它的 event loop 上，所以依 loop 各建一份，絕不跨 loop 重用（loop 關閉後舊連線無法收尾）
+        self._model = model if model is not None else self._model_factory()  # type: ignore[misc]
+        self._agents: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Agent[None, Any]] = weakref.WeakKeyDictionary()
+        self._agent = self._new_agent(self._model)
+        self._agent_used = False
         self._tokens: dict[str, CancellationToken] = {}
         self._cancelled: set[str] = set()
         self.sdk_tool_executions: list[int] = [0]  # S1-1：SDK 自行執行工具的次數（必須恆為 0）
         self.dropped_deltas: list[str] = []  # fail-closed 丟棄的 delta 原因（S1-2；正常情況應為空）
         self.audit: list[tuple[str, str]] = []  # (SDK part 歸屬, 對映出的事件 kind)；S1-2 結構判定用
+
+    @staticmethod
+    def _new_agent(model: Model) -> Agent[None, Any]:
+        # 工具重試設 0：模型叫了不在清單內的工具時，SDK 預設會自行再打一次模型（多一次請求），這裡不要；
+        # 未知工具改由 ``stream`` 轉成 tool_intent 交給 Core 的 Gateway 拒絕（output 重試維持預設）
+        return Agent(model, output_type=[str, DeferredToolRequests], retries={"tools": 0})
+
+    def _agent_for_running_loop(self) -> Agent[None, Any]:
+        """目前 event loop 專用的 Agent；自建 model 依 loop 各一份，注入的 model 一律共用。"""
+        if self._model_factory is None:
+            return self._agent
+        loop = asyncio.get_running_loop()
+        agent = self._agents.get(loop)
+        if agent is None:
+            if not self._agent_used:
+                agent = self._agent  # 建構時那份尚未使用過，第一個 loop 直接採用
+                self._agent_used = True
+            else:
+                agent = self._new_agent(self._model_factory())
+            self._agents[loop] = agent
+        return agent
 
     @staticmethod
     def _build_model(
@@ -223,7 +247,7 @@ class PydanticAIModelPort:
         back = wire_map(t["function"]["name"] for t in expected)  # provider 名稱 -> 內部名稱
         known = set(back.values())
         try:
-            async with self._agent.run_stream_events(
+            async with self._agent_for_running_loop().run_stream_events(
                 None, message_history=history, toolsets=[toolset],
                 model_settings=self._settings(req, bool(defs)), cancellation_token=token,
             ) as events:

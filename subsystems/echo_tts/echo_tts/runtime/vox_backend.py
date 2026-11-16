@@ -67,23 +67,11 @@ LANGS: dict[str, LangSpec] = {
     "ja": LangSpec(lora=False, default_speed=1.0, preprocess="kana"),
 }
 
-# 暖機句：每種語言短、中、長各一句
-WARMUP_TEXTS: dict[str, tuple[str, str, str]] = {
-    "zh": (
-        "你好。",
-        "週末我想去市場買點菜，順便繞去書店逛逛。",
-        "今天早上我先把信箱整理了一遍，接著確認了下午會議要用的資料，等一下還要去超商領包裹，應該可以在天黑之前把事情都處理完。",
-    ),
-    "en": (
-        "Hello there.",
-        "The weather is nice today. I finished organizing everything on my desk.",
-        "The report is almost finished. I only need to check the numbers once more, and then I will send it to the team before the meeting starts this afternoon.",
-    ),
-    "ja": (
-        "こんにちは。",
-        "今日はいい天気ですね。机の上の仕事を全部片付けました。",
-        "今朝の会議では、来月の予定と新しい計画について話し合い、最後に資料を全員に送りました。そのあと、静かな店で温かいお茶を飲みました。",
-    ),
+# 暖機句：每種語言一句中等長度（Bernie 11/16：短、中、長三句縮為一句）
+WARMUP_TEXTS: dict[str, str] = {
+    "zh": "週末我想去市場買點菜，順便繞去書店逛逛。",
+    "en": "The weather is nice today. I finished organizing everything on my desk.",
+    "ja": "今日はいい天気ですね。机の上の仕事を全部片付けました。",
 }
 
 # 假名：平假名、片假名（不含中點 U+30FB 與長音 U+30FC，中文名字常用到）、片假名擴充、半形片假名
@@ -274,15 +262,14 @@ class VoxBackend:
                 self._caches[(lang, tier)] = self._build_cache(spec["mode"], item)
         self._zh_refs = dict(manifest["zh"]["speeds"])
         self._emotion_clips = load_emotion_clips(self.assets_dir)
-        # 暖機：每種語言短、中、長；zh 走 ULT（預設檔位 1.0）
+        # 暖機：每種語言一句；zh 走 ULT（預設檔位 1.0）
         for lang in LANGS:
-            for text in WARMUP_TEXTS[lang]:
-                for _ in self._generate(text, lang, None):
-                    pass
+            for _ in self._generate(WARMUP_TEXTS[lang], lang, None):
+                pass
         # zh 情緒路徑暖機一次（含 LoRA 0.85）；沒有情緒片段就略過
         if self._emotion_clips:
             label = "calm" if "calm" in self._emotion_clips else next(iter(self._emotion_clips))
-            for _ in self._generate(WARMUP_TEXTS["zh"][1], "zh", None, label, None):
+            for _ in self._generate(WARMUP_TEXTS["zh"], "zh", None, label, None):
                 pass
 
     def _load_model(self) -> Any:

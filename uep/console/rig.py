@@ -135,6 +135,7 @@ class ConsoleRuntime:
     schedule_planner: Any = None  # PP-4b：PresencePlanner（UEP_SCHEDULE_PLANNER=shadow 且 real 記憶路徑才有）
     presence_arbiter: Any = None  # AR-2：在場請求仲裁 shadow（UEP_PRESENCE_ARBITER=shadow 且 real 記憶路徑才有）
     ingress_endpoint_id: str | None = None  # UEP_CONSOLE_INGRESS_ENDPOINT 開啟才為 CONSOLE_ENDPOINT_ID，否則 None
+    tool_tap: Any = None  # 工具呼叫觀測（transcript 用；只在 Console 組裝時包住 TaskManager 的 executor）
 
     def close(self) -> None:
         try:
@@ -253,12 +254,16 @@ def build_fake_runtime(
             **assemble_extra,
         },
     )
+    from uep.console.transcript import ToolCallTap
+
+    tool_tap = ToolCallTap()
+    tool_tap.install(core.tasks)  # 只在 Console 組裝：正式平台的組裝不 import uep.console，沒有這層包裝
     runtime = ConsoleRuntime(
         "fake" if think_factory is None else "real", core, host, session_factory, think, speak, tracer, session_dir,
         input_stage=input_stage, memory_host=memory_host, memory_root=memory_root, warmups=warmups, player=player,
         decision_log=core.decision_log, tool_path=(host_kwargs or {}).get("tool_path", "legacy"),
         loop_switch=loop_switch, model_port=model_port,
-        ingress_endpoint_id=_console_ingress_endpoint_id(),
+        ingress_endpoint_id=_console_ingress_endpoint_id(), tool_tap=tool_tap,
     )
     if input_stage is not None:
         runtime.seq = TEXT_SEQ_BASE  # 與 Host 內部 STT utterance 的 seq 錯開，文字與語音混用時不碰撞

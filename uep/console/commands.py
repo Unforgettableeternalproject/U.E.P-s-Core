@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from uep.config import get_settings
 from uep.console import restart as restart_mod
+from uep.console import transcript as transcript_mod
 from uep.console.rig import (
     CONSOLE_ACTOR,
     CONSOLE_SPEAKER,
@@ -182,7 +183,7 @@ class Console:
             self.out("提醒：未啟用 UEP_AGENT_LOOP_ENTRY=1，這句會退回一般 direct_chat 回覆（不會跑 agent_loop）。")
         rt.loop_switch.arm()
         try:
-            self._submit(text)
+            self._submit(text, source="loop")
         finally:
             rt.loop_switch.disarm()  # 這句沒被採用（例如 pass、未開 turn）時不留到下一句
 
@@ -203,7 +204,7 @@ class Console:
         # fake STT：不做辨識，只依音檔產生一句固定格式的 utterance
         text = f"（fake STT）{path.name}，{seconds:.1f} 秒"
         self.out(f"fake STT：{text}")
-        self._submit(text, duration_ms=int(seconds * 1000))
+        self._submit(text, source="wav", duration_ms=int(seconds * 1000))
 
     def _wav_real(self, path: Path) -> None:
         from uep.console.stt_cmd import load_wav_16k_mono
@@ -255,7 +256,7 @@ class Console:
             index += 1
             self.out(self._describe_event(kind, fact, result, time.perf_counter() - t0))
             if not _is_buffered(result):
-                self._report_turn(result)
+                self._report_turn(result, source="wav", fact=fact)
             # 句子還在聚合器等待時，turn 要等聚合逾時才會被 tick 交出（依當下頻道模式：被動最多 3 秒，主動約 0.25 秒，
             # 主動模式敘述中另需安靜 2.5 秒）：等待上限取聚合器目前的 pending_wait_s
             wait = self.settle_s + (self._aggregator_wait_s() if _is_buffered(result) else 0.0)
@@ -277,7 +278,7 @@ class Console:
         suffix = "（聚合中，等待併入 turn）" if _is_buffered(result) else ""
         return f"STT 辨識（餵入後 {elapsed_s:.2f} 秒）：{text}{suffix}"
 
-    def _submit(self, text: str, **over) -> None:
+    def _submit(self, text: str, source: str = "say", **over) -> None:
         rt = self.rt
         rt.seq += 1
         if "source_location" not in over:
@@ -302,12 +303,13 @@ class Console:
         fact = UtteranceFact(
             speaker_ref=speaker, text=text, seq=rt.seq, source_endpoint_id=endpoint_id, **over,
         )
-        self._report_turn(rt.host.submit_utterance(fact))
+        self._report_turn(rt.host.submit_utterance(fact), source=source, fact=fact)
 
-    def _report_turn(self, result) -> None:
+    def _report_turn(self, result, source: str = "say", fact=None) -> None:
         rt = self.rt
         if result.ticket is None:
             self.out(f"未開 turn：{result.reason_code}")
+            self._write_transcript(None, None, result, source, fact)
             return
         turn_id = result.ticket.turn_id
         self.last_turn_id = turn_id
@@ -315,15 +317,22 @@ class Console:
         kinds = self._wait_terminal(turn_id)
         if not kinds or kinds[-1] not in TERMINAL_EVENTS:
             self.out(f"turn {turn_id} 逾時未結束（{self.wait_s:.0f} 秒），事件：{' > '.join(kinds)}")
+            self._write_transcript(turn_id, "timeout", result, source, fact, events=kinds)
             return
         self.out(f"turn {turn_id}：{kinds[-1]}（{time.perf_counter() - started:.2f} 秒）")
         self._write_latency(turn_id, kinds[-1])
         claimed = getattr(rt.host.orchestrator, "loop_claimed", None)
         if callable(claimed) and claimed(turn_id):
             # agent_loop 回合：沒有走 Think／Speak，回覆是端點在 Output Gate 放行後渲染的文字（系統訊息另標示）
-            for item in getattr(rt.host.endpoint, "rendered_texts", lambda _t: [])(turn_id):
+            rendered = list(getattr(rt.host.endpoint, "rendered_texts", lambda _t: [])(turn_id))
+            for item in rendered:
                 self.out(f"{'系統訊息' if item.system else '回應'}：{item.text}")
             self._report_loop(turn_id)
+            self._write_transcript(
+                turn_id, kinds[-1], result, source, fact, events=kinds,
+                reply="\n".join(i.text for i in rendered if not i.system) or None,
+                system_messages=[i.text for i in rendered if i.system],
+            )
             return
         reply = self._reply_text(turn_id) if kinds[-1] == "turn.completed" else None  # 被取消的輪沒有（完整）回應
         if reply:
@@ -333,6 +342,36 @@ class Console:
             self.out(f"TTFA：{trace.ttfa_ms:.0f} ms")
         for wav in rt.wavs.get(turn_id, []):
             self.out(f"音訊：{wav}（{_wav_seconds(wav):.1f} 秒）")
+        self._write_transcript(turn_id, kinds[-1], result, source, fact, events=kinds, reply=reply)
+
+    def _write_transcript(
+        self, turn_id: str | None, terminal: str | None, result, source: str, fact, *, events: list[str] | None = None,
+        reply: str | None = None, system_messages: list[str] | None = None,
+    ) -> None:
+        """每輪結束（或決定不開 turn）附加寫成一行 JSON 到 transcript.jsonl，事後對照這一輪實際發生了什麼。
+        只寫檔、不進正式 journal；資料取自既有觀測點（IntakeResult、tracer、action_intents／receipts、``ToolCallTap``）。
+        關閉或任何失敗都不影響回合（失敗只記警告）。"""
+        try:
+            path = transcript_mod.transcript_path(self.rt.session_dir)
+            if path is None:
+                return
+            text = getattr(fact, "text", None)
+            if text is None:
+                text = getattr(getattr(result, "fact", None), "text", None)
+            if text is None:
+                text = getattr(getattr(result, "ticket", None), "user_text", "")
+            tools = (
+                transcript_mod.collect_tool_calls(self.rt.session_factory, turn_id, getattr(self.rt, "tool_tap", None))
+                if turn_id is not None else []
+            )
+            trace = self.rt.tracer.get(turn_id) if turn_id is not None else None
+            record = transcript_mod.build_record(
+                turn_id=turn_id, terminal=terminal, source=source, text=text or "", fact=fact or getattr(result, "fact", None),
+                result=result, reply=reply, system_messages=system_messages or [], tools=tools, trace=trace, events=events,
+            )
+            transcript_mod.append_record(path, record)
+        except Exception as exc:  # noqa: BLE001 - 對話紀錄是旁路，任何失敗都不能讓回合失敗
+            logger.warning("對話紀錄寫檔失敗（turn %s）：%s", turn_id, exc)
 
     def _write_latency(self, turn_id: str, terminal: str) -> None:
         """每輪結束把 tracer 的延遲欄位（同 ``/trace`` 報告的資料）附加寫成一行 JSON 到 latency.jsonl，供 A8 事後彙整。
@@ -659,7 +698,7 @@ class Console:
         declared = getattr(rt.input_stage, "source_location", None)
         if declared is not None:  # stage 有宣告輸入場域就用它，否則 _submit 預設為本機 Host 的 location
             over["source_location"] = declared
-        self._submit(text, **over)
+        self._submit(text, source="mic", **over)
 
     def _save_wav(self, pcm: bytes, prefix: str) -> Path:
         """把 16 kHz mono int16 PCM 存成 session 目錄下的 wav 並回傳路徑。"""
@@ -742,7 +781,7 @@ class Console:
                     if result.ticket is not None:
                         turn_ids.add(result.ticket.turn_id)
                     if not _is_buffered(result):
-                        reports.submit(self._report_turn_safe, result)  # 無 ticket 時只印「未開 turn：原因」
+                        reports.submit(self._report_turn_safe, result, "stream", fact)  # 無 ticket 時只印「未開 turn：原因」
                 except Exception as exc:  # noqa: BLE001 - 單一事件顯示失敗不中止報告
                     self.out(f"/stream：事件顯示失敗（{type(exc).__name__}：{exc}）")
 
@@ -828,9 +867,9 @@ class Console:
         if dropped:
             self.out(f"警告：消費端跟不上，麥克風佇列丟棄了 {dropped} 塊音訊。")
 
-    def _report_turn_safe(self, result) -> None:
+    def _report_turn_safe(self, result, source: str = "say", fact=None) -> None:
         try:
-            self._report_turn(result)
+            self._report_turn(result, source=source, fact=fact)
         except Exception as exc:  # noqa: BLE001 - 單一 turn 的報告失敗不影響 /stream
             self.out(f"turn 報告失敗：{type(exc).__name__}：{exc}")
 

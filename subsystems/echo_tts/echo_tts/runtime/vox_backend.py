@@ -26,6 +26,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import mmap
 import re
 import sys
 import threading
@@ -516,16 +517,17 @@ def _load_file_per_tensor(filename: str | Path, device: str = "cpu") -> dict[str
             if nbytes == 0:
                 out[name] = torch.empty(shape, dtype=dtype)
             else:
-                raw = torch.empty(nbytes, dtype=torch.uint8)  # 可寫 buffer，直接讀進去
-                view = memoryview(raw.numpy())
+                # 匿名 mmap（VirtualAlloc／頁面檔支援）當可寫 buffer：張量釋放時整塊立刻還給 OS。
+                # 用 torch.empty 的話，這些短命的大量中型 buffer 走 CRT heap，釋放後 commit 約 5GB 不會還（實測）
+                buf = mmap.mmap(-1, nbytes)
                 f.seek(base + start)
                 got = 0
                 while got < nbytes:
-                    n = f.readinto(view[got:])
+                    n = f.readinto(memoryview(buf)[got:])
                     if not n:
                         raise ValueError(f"safetensors 檔案被截斷：張量 {name} 只讀到 {got}/{nbytes} bytes")
                     got += n
-                out[name] = raw.view(dtype).reshape(shape)
+                out[name] = torch.frombuffer(buf, dtype=torch.uint8).view(dtype).reshape(shape)
             if str(device) != "cpu":
                 out[name] = out[name].to(device)
     return out

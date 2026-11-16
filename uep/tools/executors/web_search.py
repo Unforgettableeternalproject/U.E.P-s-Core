@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 import time
 from collections.abc import Callable, Sequence
@@ -30,7 +31,10 @@ from uep.tools.executors.web_http import (
 )
 from uep.tools.executors.web_text import collapse, decode_body, sanitize_markup
 
+logger = logging.getLogger(__name__)
+
 TITLE_MAX = 200
+LOG_QUERY_MAX = 80
 SNIPPET_MAX = 400
 URL_MAX = 1000
 _CJK = re.compile(r"[㐀-鿿぀-ヿ豈-﫿]")
@@ -89,6 +93,10 @@ def clean_text(text: str, limit: int) -> str:
     text = collapse(html.unescape(_TAGS.sub("", text)))
     text = " ".join(text.split())
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+def _ms(began: float) -> str:
+    return f"{(time.monotonic() - began) * 1000:.0f}ms"
 
 
 def _norm_url(url: str) -> str:
@@ -342,6 +350,29 @@ class SearchChain:
         return [p.name for p in self._providers] + ([self._fallback.name] if self._fallback else [])
 
     def run(self, query: str, *, limit: int, language: str | None = None) -> SearchOutcome:
+        started = time.monotonic()  # 只用在 log 的耗時；不動注入的 clock（測試以它控制預算）
+        details: list[str] = []  # 每個 provider 的「名稱:結果(筆數,耗時)」，供 log
+        try:
+            outcome = self._run(query, limit=limit, language=language, details=details)
+        except SearchChainError:
+            self._log(query, details, None, started)
+            raise
+        self._log(query, details, outcome, started)
+        return outcome
+
+    @staticmethod
+    def _log(query: str, details: list[str], outcome: SearchOutcome | None, started: float) -> None:
+        """一行 INFO：查詢（截斷）、依序嘗試的 provider 與各自結果、最後採用哪一個、總耗時。查詢字串是使用者／模型給的外部內容，只截斷、不回放其餘欄位。"""
+        shown = query if len(query) <= LOG_QUERY_MAX else query[:LOG_QUERY_MAX] + "…"
+        chosen = f"{outcome.provider}（備援={'是' if outcome.fallback_used else '否'}，{len(outcome.hits)} 筆）" if outcome else "無（全部失敗）"
+        logger.info(
+            "web.search 查詢=%r 嘗試=[%s] 採用=%s 耗時=%dms",
+            shown, " > ".join(details) or "（沒有可用 provider）", chosen, (time.monotonic() - started) * 1000,
+        )
+
+    def _run(
+        self, query: str, *, limit: int, language: str | None, details: list[str],
+    ) -> SearchOutcome:
         deadline = self._clock() + self._budget_s
         languages = preferred_languages(query, language)
         attempts: list[dict[str, str]] = []
@@ -351,22 +382,28 @@ class SearchChain:
         for provider, is_fallback in sequence:
             if self._clock() >= deadline:
                 attempts.append({"provider": provider.name, "outcome": "skipped_budget"})
+                details.append(f"{provider.name}:skipped_budget")
                 continue
             # 每個 provider 一個自己的 deadline（不超過整條鏈的）：同一 provider 內的多次請求（例如 Wikipedia 兩個語言）共用它
             own = self._fallback_timeout_s if is_fallback else self._provider_timeout_s
             provider_deadline = deadline if own is None else min(deadline, self._clock() + own)
+            began = time.monotonic()
             try:
                 raw = provider.search(query, limit=limit, languages=languages, deadline=provider_deadline)
             except ProviderError as exc:
                 attempts.append({"provider": provider.name, "outcome": exc.code})
+                details.append(f"{provider.name}:{exc.code}(0 筆,{_ms(began)})")
                 continue
             except Exception:  # noqa: BLE001 - provider 的任何失敗都只換下一個
                 attempts.append({"provider": provider.name, "outcome": "error"})
+                details.append(f"{provider.name}:error(0 筆,{_ms(began)})")
                 continue
             hits = tidy_hits(raw, limit)
             if not hits:
                 attempts.append({"provider": provider.name, "outcome": "empty"})
+                details.append(f"{provider.name}:empty(原始 {len(raw)} 筆,{_ms(began)})")
                 continue
             attempts.append({"provider": provider.name, "outcome": "ok"})
+            details.append(f"{provider.name}:ok({len(hits)} 筆,{_ms(began)})")
             return SearchOutcome(hits, provider.name, is_fallback, attempts)
         raise SearchChainError(attempts)

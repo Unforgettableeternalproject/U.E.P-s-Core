@@ -81,4 +81,4 @@ def main(
                 break
     finally:
         runtime.close()
-    return 0
+    return console.exit_code

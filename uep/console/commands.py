@@ -18,6 +18,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from uep.config import get_settings
+from uep.console import restart as restart_mod
 from uep.console.rig import (
     CONSOLE_ACTOR,
     CONSOLE_SPEAKER,
@@ -80,6 +82,9 @@ HELP_TEXT = """\
   /llm <文字>        (a) 隔離：直接呼叫 Think（真實 LLM），印切句與耗時（需 UEP_LLM_API_KEY）
   /tts <文字> [--engine vox|indextts2]   (a) 隔離：以 Core Speak adapter 合成並寫 wav，印首音延遲與總耗時
                      （需 GPU；未設 UEP_E2E_ALLOW_GPU=1 時提示並結束該指令）
+  /flags             列出測試相關 UEP_* 旗標在本行程的實際生效值（取自 settings），並標出 bat 本次執行中被 /restart 覆寫的
+  /restart [KEY=VALUE ...]  正常關閉後以退出碼 75 結束，由 scripts\\console.bat 帶新旗標、同一組參數重啟；
+                     只收 UEP_ 開頭的 KEY；KEY= 還原成 bat 基線；不帶參數＝原樣重啟
   /log [level <名稱空間> <等級> | console <等級>]   顯示或調整日誌等級（例：/log level uep.decision DEBUG）
   /check             (a) 子系統隔離群（尚未支援）
   /help              本說明
@@ -105,9 +110,11 @@ class Console:
         self.feed_sleep = feed_sleep
         self.settle_s = settle_s
         self.last_turn_id: str | None = None
+        self.exit_code = 0  # /restart 設為 RESTART_EXIT_CODE，由 main 當行程退出碼
         self._commands: dict[str, Callable[[str], None]] = {
             "say": self._say, "loop": self._loop, "approve": self._approve, "reject": self._reject, "wav": self._wav, "cancel": self._cancel, "status": self._status,
             "trace": self._trace, "mem": self._mem, "session": self._session, "mic": self._mic, "stream": self._stream, "help": self._help, "log": self._log, "stt": self._stt, "llm": self._llm, "tts": self._tts,
+            "flags": self._flags, "restart": self._restart,
         }
 
     def execute(self, line: str) -> bool:
@@ -132,7 +139,7 @@ class Console:
             handler(arg.strip())
         except Exception as exc:  # noqa: BLE001 - console 不因單一指令失敗而中止
             self.out(f"指令失敗：{type(exc).__name__}：{exc}")
-        return True
+        return self.exit_code != restart_mod.RESTART_EXIT_CODE
 
     # ---- 指令 ----
 
@@ -506,6 +513,31 @@ class Console:
             self.out("　最近 turn 事件：" + " > ".join(self._turn_kinds(self.last_turn_id)))
         metrics = {k: v for k, v in sorted(rt.host.metrics.items()) if v}
         self.out("Host 指標：" + (", ".join(f"{k}={v}" for k, v in metrics.items()) or "（空）"))
+
+    def _flags(self, _arg: str) -> None:
+        overridden = restart_mod.read_overrides()
+        self.out("測試旗標（生效值取自 settings；* ＝ bat 本次執行中被 /restart 覆寫）：")
+        for key, value, desc in restart_mod.effective_flags(get_settings()):
+            mark = "*" if key in overridden else " "
+            self.out(f"{mark} {key} = {value}　{desc}")
+        known = {key for key, _ in restart_mod.TEST_FLAGS}
+        extra = sorted(k for k in overridden if k not in known)
+        if extra:
+            self.out("其他覆寫（不在上表）：" + "、".join(f"{k}={overridden[k]}" for k in extra))
+
+    def _restart(self, arg: str) -> None:
+        try:
+            new = restart_mod.parse_overrides(arg)
+        except restart_mod.RestartError as exc:
+            self.out(f"/restart：{exc}（例：/restart UEP_BEHAVIOR_DRIVER=on UEP_SCHEDULE_REST_WINDOW=plan）")
+            return
+        merged = restart_mod.merge_overrides(restart_mod.read_overrides(), new)
+        path = restart_mod.write_overrides(merged)
+        shown = "、".join(f"{k}={v}" for k, v in merged.items()) or "（無，回到 bat 基線）"
+        self.out(f"/restart：目前覆寫 {shown}（已寫入 {path}），關閉後以退出碼 {restart_mod.RESTART_EXIT_CODE} 重啟…")
+        if os.environ.get(restart_mod.RELAUNCH_ENV) != "1":
+            self.out("提醒：不是由 scripts\\console.bat 啟動，不會自動重啟；請用 bat 再開一次。")
+        self.exit_code = restart_mod.RESTART_EXIT_CODE
 
     def _trace(self, arg: str) -> None:
         tracer = self.rt.tracer

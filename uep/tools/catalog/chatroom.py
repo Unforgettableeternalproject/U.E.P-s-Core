@@ -17,11 +17,12 @@ from __future__ import annotations
 from typing import Any
 
 from uep.adapters.tool import ToolDescriptor, ToolEntry, ToolScope, ToolSpec
+from uep.lifecycle.states import MODULE_STATE_CHANGED, unavailable_payload
 from uep.tools.module_events import apply_config_gates
 from uep.tools.registry import ToolRegistry
 
 CHATROOM_EXECUTOR = "core_chatroom"
-CHATROOM_MODULE = "chatroom"  # readiness 的 requires：未設定時不列入 known_modules，工具恆為 unavailable（RA-15）
+CHATROOM_MODULE = "chatroom"  # readiness 的 requires：未設定時以 module.state_changed 標為 unavailable
 CHATROOM_READ_TAG = "chatroom.read"
 CHATROOM_POST_TAG = "chatroom.post"
 CHATROOM_TAGS: frozenset[str] = frozenset({CHATROOM_READ_TAG, CHATROOM_POST_TAG})
@@ -192,8 +193,8 @@ def with_chatroom(
 ) -> ToolRegistry:
     """在既有註冊表之上併入 Chatroom 工具，回傳新的（已驗證、已凍結）註冊表；不改動傳入的實例，已含者原樣回傳（冪等）。
 
-    ``configured=False``（未設定 ``UEP_CHATROOM_*``）時不把 ``chatroom`` 列入 known_modules：readiness 恆為 ``unavailable``
-    （RA-15），工具不投出、不貢獻能力標籤，組裝照常成功。
+    ``configured=False``（未設定 ``UEP_CHATROOM_*``）時對新註冊表送 ``module.state_changed``（readiness=unavailable，
+    reason_code=not_configured）：工具不投出、不貢獻能力標籤，組裝照常成功，也不會因 requires 含未知模組而警告（與 ``with_lore`` 一致）。
 
     ``coordinator`` 給了時：known modules 取自 ``coordinator.known_ids()``，未設定改為關閉 coordinator 的閘（見 ``with_lore``）。"""
     existing = registry.entries()
@@ -204,6 +205,7 @@ def with_chatroom(
         apply_config_gates(coordinator, {CHATROOM_MODULE: None if configured else "not_configured"})
     if coordinator is not None and drive_registry:
         return ToolRegistry.build([*existing.values(), *chatroom_entries()], known_modules={*known, *coordinator.known_ids()})
-    if configured:
-        known = frozenset(known) | {CHATROOM_MODULE}
-    return ToolRegistry.build([*existing.values(), *chatroom_entries()], known_modules=known)
+    built = ToolRegistry.build([*existing.values(), *chatroom_entries()], known_modules={*known, CHATROOM_MODULE})
+    if not configured:
+        built.apply_module_event(MODULE_STATE_CHANGED, unavailable_payload(CHATROOM_MODULE, reason_code="not_configured"))
+    return built

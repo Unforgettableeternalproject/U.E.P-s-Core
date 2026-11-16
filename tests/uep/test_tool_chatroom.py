@@ -188,6 +188,14 @@ def test_unconfigured_is_unavailable_and_not_projected():
     assert err.value.code == "tool_not_ready"
 
 
+def test_unconfigured_does_not_warn_unknown_module(caplog):
+    # 未設定是正常狀態：以 module.state_changed 標 unavailable，不應出現 RA-15「requires 含未知模組」警告
+    with caplog.at_level(logging.WARNING):
+        registry = with_chatroom(memory_registry(), configured=False)
+    assert registry.readiness(TOOL_POST) == "unavailable"
+    assert not any("未知模組" in r.getMessage() for r in caplog.records)
+
+
 def test_configured_is_ready_and_contributes_tag():
     registry = with_chatroom(memory_registry(), configured=True)
     assert registry.readiness(TOOL_READ) == "ready"

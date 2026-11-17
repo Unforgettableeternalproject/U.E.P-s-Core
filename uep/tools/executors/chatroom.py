@@ -11,8 +11,8 @@ ask_human／read_answer／board／board_outline／board_item。
   流程操作；房間類工具只能用在**本行程已加入**的房間，未加入回 ``not_joined``（提示先 join）。房間 id 是模型給的外部輸入：
   只接受 ``[A-Za-z0-9_-]{1,64}``，不合法一律當參數錯誤，不會進到 URL。
 - **已加入狀態只存在記憶體**：行程重啟後一律視為未加入（需要的話模型重新 ``list_rooms``／``join``）；Hub 端同一 session key 的 join 冪等，
-  重啟後再 join 會拿回同一個身分，持久化游標也照用（不漏訊息、不重讀）。重啟前沒離開的房間由 Hub 的閒置逾時（約 10 分鐘）清掉。
-- **背景 heartbeat**：只對已加入的房間，每 ``heartbeat_s``（預設 120 秒，遠小於 Hub 的 10 分鐘閒置逾時）送一次 ``POST /heartbeat``；
+  重啟後再 join 會拿回同一個身分，持久化游標也照用（不漏訊息、不重讀）。重啟前沒離開的房間由 Hub 的閒置逾時（約 30 分鐘）清掉。
+- **背景 heartbeat**：只對已加入的房間，每 ``heartbeat_s``（預設 120 秒，遠小於 Hub 的 30 分鐘（1800 秒）閒置逾時）送一次 ``POST /heartbeat``；
   第一次 join 時啟動，沒有已加入的房間或 ``close()`` 時停止。heartbeat 或任何房間請求得到「身分失效」（被閒置移出、被踢、已離開、401）
   就把該房標成未加入、記下原因，下一次對該房的呼叫以 Hub 的原因碼回報（例如 ``participant_removed_idle``），**不自動重新 join**
   （加入必須是模型主動決定）。連線失敗不當成移出（下一輪再試）。
@@ -97,7 +97,7 @@ NOT_CONFIGURED = "not_configured"  # 不可叫 unavailable：AgentLoop 的 TRANS
 UNREACHABLE = "unreachable"
 NOT_JOINED = "not_joined"
 DEFAULT_SLICE_S = 3.0  # wait 每片 long-poll 秒數，也是取消生效的最大延遲
-HEARTBEAT_INTERVAL_S = 120.0  # Hub 閒置 10 分鐘會移出；間隔取其 1/5
+HEARTBEAT_INTERVAL_S = 120.0  # Hub 閒置 30 分鐘（1800 秒）會移出；120 秒留足餘裕
 HTTP_TIMEOUT_S = 10.0
 _MAX_PENDING_CANCELS = 256
 CODE_MAX = 64

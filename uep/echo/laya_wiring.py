@@ -40,6 +40,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from uep import memtrace
 from uep.decision.laya_schema import (
     CONTEXT_MAX_CHARS,
     NO_CONTEXT,
@@ -176,11 +177,13 @@ class LayaProposer:
         autoload: bool = True,
         capabilities: Sequence[str] | None = None,
         capabilities_source: Callable[[], Iterable[str]] | None = None,
+        log_label: str = "laya.shadow",
     ) -> None:
+        self._log_label = log_label  # 日誌顯示的角色名（laya.primary 內層為 "laya.primary"）；不影響 proposer_id
         if not laya_available():
             raise ValueError(
-                "laya.shadow 需要 laya 套件，但目前環境未安裝；請安裝後再啟用，"
-                "或從 UEP_DECISION_SHADOW_PROPOSERS 移除 laya.shadow"
+                f"{log_label} 需要 laya 套件，但目前環境未安裝；請安裝後再啟用，"
+                f"或從 UEP_DECISION_SHADOW_PROPOSERS 移除 {log_label}"
             )
         self._model_id = model_id
         # 可用能力清單：None＝laya_schema.DEFAULT_CAPABILITIES；固定清單走 capabilities，
@@ -261,6 +264,7 @@ class LayaProposer:
         """載入失敗的例外類別名（None = 尚未失敗）；module coordinator 的觀測 handle 用它區分「載入中」與「失敗」。"""
         return self._load_error
 
+    @memtrace.traced(lambda s: f"Laya[{s._log_label}]", key=lambda s: f"laya:{s._model_id}@{s._device}")
     def _load(self) -> None:
         try:
             laya = preimport_laya_deps()  # 與記憶 embedding 暖機共用 import 鎖，避免並行第一次 import transformers
@@ -283,10 +287,10 @@ class LayaProposer:
             revision = getattr(agent, "revision", None) or self._revision or self._source_revision or "unpinned"
             self.version = _safe_code(f"laya-{getattr(laya, '__version__', 'unknown')}:{revision}")
             self._agent = agent
-            logger.info("laya.shadow 載入完成：model=%s device=%s version=%s", self._model_id, device, self.version)
+            logger.info("%s 載入完成：model=%s device=%s version=%s", self._log_label, self._model_id, device, self.version)
         except BaseException as exc:
             self._load_error = type(exc).__name__
-            logger.exception("laya.shadow 載入失敗，之後一律回預設")
+            logger.exception("%s 載入失敗，之後一律回預設", self._log_label)
         finally:
             self._ready.set()
 
@@ -328,7 +332,7 @@ class LayaProposer:
         try:
             parts = (to_en(user_text), to_en(reply_text))
         except Exception:
-            logger.exception("laya.shadow 脈絡翻譯失敗")
+            logger.exception("%s 脈絡翻譯失敗", self._log_label)
             return
         with self._context_lock:
             self._context_parts = parts
@@ -485,7 +489,8 @@ def bind_laya_capabilities(orchestrator: object, registry: object, mode: str = "
 
 
 def create_laya_proposer(
-    config: DecisionConfig | None = None, settings: object | None = None, defer_warmup: bool = False, **_: object,
+    config: DecisionConfig | None = None, settings: object | None = None, defer_warmup: bool = False,
+    log_label: str = "laya.shadow", **_: object,
 ) -> LayaProposer:
     """registry 工廠：組態來自 ``UEP_LAYA_MODELS_DIR``／``UEP_LAYA_MODEL``／``UEP_LAYA_REVISION``／``UEP_LAYA_DEVICE``。
 
@@ -506,8 +511,8 @@ def create_laya_proposer(
         local = default_laya_model_dir(getattr(st, "laya_models_dir", None))
         if not local.is_dir():
             raise ValueError(
-                f"laya.shadow 找不到本地模型目錄：{local}；請把 laya-multilingual 權重放在該處，"
-                "或設定 UEP_LAYA_MODELS_DIR／UEP_LAYA_MODEL，或從 UEP_DECISION_SHADOW_PROPOSERS 移除 laya.shadow"
+                f"{log_label} 找不到本地模型目錄：{local}；請把 laya-multilingual 權重放在該處，"
+                f"或設定 UEP_LAYA_MODELS_DIR／UEP_LAYA_MODEL，或從 UEP_DECISION_SHADOW_PROPOSERS 移除 {log_label}"
             )
         model_id = str(local)
         source_revision = read_source_revision(local)
@@ -525,6 +530,7 @@ def create_laya_proposer(
         assistant_name=cfg.bot_identity.primary_name,
         source_revision=source_revision,
         autoload=not defer_warmup,
+        log_label=log_label,
     )
 
 
@@ -809,6 +815,6 @@ def create_laya_primary_proposer(
 ) -> LayaRulesProposer:
     """registry 工廠（``laya.primary``）：Laya 設定同 ``create_laya_proposer``，規則部分用同一份 ``DecisionConfig``。"""
     cfg = config or DecisionConfig()
-    laya = create_laya_proposer(cfg, settings, defer_warmup=bool(kwargs.get("defer_warmup")))
+    laya = create_laya_proposer(cfg, settings, defer_warmup=bool(kwargs.get("defer_warmup")), log_label=LAYA_PRIMARY_ID)
     rules_kwargs = {k: v for k, v in kwargs.items() if k in ("clock", "on_mode_change")}
     return LayaRulesProposer(laya, RuleProposer(cfg, **rules_kwargs))  # type: ignore[arg-type]

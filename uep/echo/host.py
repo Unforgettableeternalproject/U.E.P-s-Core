@@ -604,6 +604,10 @@ class EchoPipelineHost:
         self._post_start_hooks.append(hook)
 
     def _run_post_start_hooks(self) -> None:
+        if get_settings().poststart_serial:
+            # 串行：單一背景執行緒依序載入（Laya＋翻譯器 → hook 如 bge-m3），不阻塞 prepare 返回與 Console prompt
+            threading.Thread(target=self._run_post_start_serial, name="uep-poststart-serial", daemon=True).start()
+            return
         for target in self._deferred_warmups:
             try:
                 target.start_warmup()
@@ -614,6 +618,40 @@ class EchoPipelineHost:
                 hook()
             except Exception:
                 logger.exception("啟動完成後的暖機 hook 失敗")
+
+    def _run_post_start_serial(self) -> None:
+        """依序執行延後的暖機與 post-start hook；每一項等到完全結束（含暖機）並釋放暫存後才開始下一項。"""
+        for target in self._deferred_warmups:
+            try:
+                target.start_warmup()
+                wait_ready = getattr(target, "wait_ready", None)
+                if callable(wait_ready):
+                    wait_ready()
+            except Exception:
+                logger.exception("延後的暖機啟動失敗：%s", type(target).__name__)
+            self._release_transient_memory()
+        for hook in self._post_start_hooks:
+            try:
+                started = hook()
+                if isinstance(started, threading.Thread):  # hook 回傳其背景執行緒時等它結束，才算這一項完成
+                    started.join()
+            except Exception:
+                logger.exception("啟動完成後的暖機 hook 失敗")
+            self._release_transient_memory()
+
+    @staticmethod
+    def _release_transient_memory() -> None:
+        """串行步驟之間盡量把暫存還給系統（gc；已載入 torch 時再清 CUDA caching allocator）。"""
+        import gc
+        import sys
+
+        gc.collect()
+        torch = sys.modules.get("torch")
+        try:
+            if torch is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # 釋放失敗不影響載入
+            logger.debug("empty_cache 失敗，略過", exc_info=True)
 
     async def _startup(self) -> None:
         # 暖機順序（ES 介面清單 B3）：speak -> think -> prewarm -> 輸入 stage

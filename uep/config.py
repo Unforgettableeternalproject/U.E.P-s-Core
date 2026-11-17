@@ -192,6 +192,12 @@ class UepSettings(BaseSettings):
     log_file: bool = Field(default=True, validation_alias="UEP_LOG_FILE")
     log_dir: Path | None = Field(default=None, validation_alias="UEP_LOG_DIR")
     log_json: bool = Field(default=False, validation_alias="UEP_LOG_JSON")
+    # 記憶體追蹤（uep/memtrace.py）：背景取樣 private／commit／CUDA，並標記各載入階段，寫入 logs/mem-*.log（逐行 flush）；預設關
+    mem_trace: bool = Field(default=False, validation_alias="UEP_MEM_TRACE")
+    mem_trace_interval_s: float = Field(default=0.25, validation_alias="UEP_MEM_TRACE_INTERVAL_S")
+    # 啟動完成後的重量級載入（Laya＋翻譯器、bge-m3）改在單一背景執行緒內串行，前一個完全結束（含暖機與暫存釋放）才開始下一個；
+    # 設 0／false 退回舊行為（同時並行啟動），供 A/B 比較 commit 暫態
+    poststart_serial: bool = Field(default=True, validation_alias="UEP_POSTSTART_SERIAL")
 
     # 推理 Host 組裝（P3 S6，uep/echo/inference_wiring.py）：子系統 repo 路徑一律由設定明確給（不猜同層目錄；
     # ES 的同層猜測在非 editable 安裝下指向 site-packages 之上而失效）。未設定時對應的 stage 拒絕組裝。

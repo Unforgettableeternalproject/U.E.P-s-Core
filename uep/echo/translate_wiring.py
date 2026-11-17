@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from uep import memtrace
+
 logger = logging.getLogger("uep.echo.translate_wiring")
 
 STATUS_OK = "ok"
@@ -220,6 +222,7 @@ class BoundaryTranslator:
             backend.translate(sentence)
         return backend
 
+    @memtrace.traced("翻譯器", key=lambda s: f"marian-translator@{s._device}")
     def _load(self) -> None:
         try:
             try:

@@ -29,6 +29,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from uep import memtrace
 from uep.turn.decision_config import DecisionConfig
 from uep.turn.models import Proposal, ReplyMode, TurnCandidate
 from uep.turn.proposer import fallback_proposal
@@ -279,6 +280,7 @@ class NlpLegacyProposer:
         """載入失敗的例外類別名（None = 尚未失敗）；module coordinator 的觀測 handle 用它區分「載入中」與「失敗」。"""
         return self._load_error
 
+    @memtrace.traced("NLP", key=lambda s: f"nlp:{s._model_dir}")
     def _load(self) -> None:
         try:
             backend, version = load_backend(self._model_dir)

@@ -53,6 +53,18 @@ class _FakePrimary(RespondProposer):
         self.laya = laya
 
 
+@pytest.fixture(autouse=True)
+def _poststart_parallel(monkeypatch):
+    """既有測試驗證「prepare 結束後同步觸發」的並行路徑；串行路徑在下方另有測試。"""
+    from uep.config import get_settings
+
+    monkeypatch.setenv("UEP_POSTSTART_SERIAL", "0")
+    get_settings.cache_clear()
+    yield
+    monkeypatch.undo()
+    get_settings.cache_clear()
+
+
 def _make_host(monkeypatch, events: list[str], *, fail_speak: bool = False, shadows: tuple[str, ...] = ()):
     created: list[tuple[str, dict]] = []
     loadables = {"laya.primary": _Loadable("laya", events), "nlp.legacy": _Loadable("nlp", events)}
@@ -219,3 +231,56 @@ def test_think_prepare_失敗時延後的載入仍會啟動(monkeypatch):
         ]
     finally:
         host.orchestrator.close()
+
+
+def test_串行模式_laya_與_embedding_依序且前一個完全結束才開始下一個(monkeypatch):
+    """UEP_POSTSTART_SERIAL=1：單一背景執行緒內 Laya 載入（含 wait_ready）完成後才跑 hook，hook 回傳的執行緒也先 join。"""
+    from uep.config import get_settings
+
+    monkeypatch.setenv("UEP_POSTSTART_SERIAL", "1")
+    get_settings.cache_clear()
+    events: list[str] = []
+    lock = threading.Lock()
+
+    def log(item: str) -> None:
+        with lock:
+            events.append(item)
+
+    class _SlowLaya:
+        def start_warmup(self) -> None:
+            log("laya.start")
+            self._done = threading.Event()
+            threading.Thread(target=self._load, daemon=True).start()
+
+        def _load(self) -> None:
+            import time
+
+            time.sleep(0.2)
+            log("laya.end")
+            self._done.set()
+
+        def wait_ready(self, timeout=None) -> bool:
+            return self._done.wait(timeout)
+
+    def embed_hook() -> threading.Thread:
+        def work() -> None:
+            import time
+
+            log("embedding.start")
+            time.sleep(0.1)
+            log("embedding.end")
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        return thread
+
+    done = threading.Event()
+    host = EchoPipelineHost.__new__(EchoPipelineHost)  # 只測串行機制，不組裝整個 Host
+    host._deferred_warmups = [_SlowLaya()]
+    host._post_start_hooks = [embed_hook, lambda: (log("hook2"), done.set())[0]]
+    try:
+        host._run_post_start_hooks()
+        assert done.wait(5)
+    finally:
+        get_settings.cache_clear()
+    assert events == ["laya.start", "laya.end", "embedding.start", "embedding.end", "hook2"]

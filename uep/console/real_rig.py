@@ -13,6 +13,7 @@ from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import Any
 
+from uep import memtrace
 from uep.console.rig import CONSOLE_ENDPOINT_ID, CONSOLE_LOCATION, CONSOLE_SPEAKER
 from uep.contracts.presence import PresenceLocation
 from uep.memory import MemoryHost, NamespaceSpec
@@ -75,17 +76,18 @@ def timed_prepare(stage: Any, name: str, warmups: MutableMapping[str, float], *,
 
     async def prepare() -> Any:
         t0 = time.perf_counter()
-        try:
-            return await original()
-        finally:
-            if after is not None:
-                try:
-                    import asyncio
+        with memtrace.phase(f"prepare:{name}{memtrace.instance_tag(stage)}", f"prepare:{name}"):  # 記憶體追蹤：載入（含 after 暖機）的起訖與增量
+            try:
+                return await original()
+            finally:
+                if after is not None:
+                    try:
+                        import asyncio
 
-                    await asyncio.get_running_loop().run_in_executor(None, after, stage)
-                except Exception:  # noqa: BLE001 - 暖機失敗只記 log，首輪會較慢
-                    logger.exception("%s 暖機失敗", name)
-            warmups[name] = time.perf_counter() - t0
+                        await asyncio.get_running_loop().run_in_executor(None, after, stage)
+                    except Exception:  # noqa: BLE001 - 暖機失敗只記 log，首輪會較慢
+                        logger.exception("%s 暖機失敗", name)
+                warmups[name] = time.perf_counter() - t0
 
     stage.prepare = prepare
 
@@ -161,14 +163,17 @@ class WarmEngineFactory:
 
             t0 = time.perf_counter()
             try:
-                warmup_embedding(self._model, self._device)
+                with memtrace.phase(f"bge-m3{memtrace.instance_tag(self)}", f"embedding:{self._model}@{self._device}"):
+                    warmup_embedding(self._model, self._device)
             except Exception:  # noqa: BLE001 - 暖機失敗不阻擋啟動，首次檢索會降級並記 log
                 logger.exception("記憶 embedding 暖機失敗（檢索可能降級）")
             self._warmups["memory_embedding"] = self._warmups.get("memory_embedding", 0.0) + (time.perf_counter() - t0)
 
-    def start_warm(self) -> None:
-        """在背景執行緒暖機（供 ``EchoPipelineHost.add_post_start_hook``；立即返回）。"""
-        threading.Thread(target=self.warm, name="uep-embedding-warmup", daemon=True).start()
+    def start_warm(self) -> threading.Thread:
+        """在背景執行緒暖機（供 ``EchoPipelineHost.add_post_start_hook``；立即返回執行緒，串行模式下 Host 會 join 它）。"""
+        thread = threading.Thread(target=self.warm, name="uep-embedding-warmup", daemon=True)
+        thread.start()
+        return thread
 
     def __call__(self, namespace_id: str, data_root: Path) -> Any:
         if not self._defer:

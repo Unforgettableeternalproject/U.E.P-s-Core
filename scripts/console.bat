@@ -56,6 +56,9 @@ rem Cold VOX load can exceed the 240s default when disk cache is cold; an alread
 if not defined UEP_INFER_SPEAK_PREPARE_TIMEOUT_S set "UEP_INFER_SPEAK_PREPARE_TIMEOUT_S=600"
 set "UEP_CONSOLE_OVERRIDE_FILE=%OVR%"
 set "UEP_CONSOLE_RELAUNCH=1"
+rem Memory trace: writes logs\mem-*.log (flushed per line) for diagnosing commit exhaustion crashes
+rem Set UEP_MEM_TRACE=0 before running this bat to turn it off
+if not defined UEP_MEM_TRACE set "UEP_MEM_TRACE=1"
 
 rem ---- Baseline (on from the first start) ----
 set "UEP_TOOL_PATH=agent"
